@@ -140,6 +140,8 @@ describe('settings — page defaults HTTP', () => {
     expect(form).toContain('data-settings-fetch-save-status role="status" aria-live="polite" aria-atomic="true"');
     expect(form.match(/data-settings-fetch-save-status/g)).toHaveLength(1);
     expect(settingsSection(form, 'defaults-new-projects')).toContain('data-settings-fetch-save-status');
+    // Status and Project Type pair in the shared grid; the save status stays a direct child of the section.
+    expect(settingsSection(form, 'defaults-new-projects')).toMatch(/<\/p>\s*<div class="field page-defaults-grid">\s*<div class="field">[\s\S]*?name="new_projectStatus"[\s\S]*?name="new_projectProjectType"[\s\S]*?<\/div>\s*<\/div>\s*<span class="help-text" data-settings-fetch-save-status/);
     expect(res.text.indexOf('data-settings-defaults-region')).toBeLessThan(res.text.indexOf('<form id="settings-defaults-form"'));
     expect(form).toContain('<noscript>');
     expect(form).toContain('<button type="submit" class="button button-primary">Save Defaults</button>');
@@ -155,8 +157,11 @@ describe('settings — page defaults HTTP', () => {
 
     const initial = await agent.get('/settings/defaults').expect(200);
     const display = settingsSection(initial.text, 'defaults-display');
-    expect(display).toContain('<label for="clockFormat">Clock format</label>');
-    expect(display).toContain('name="clockFormat" required data-autosubmit="fetch"');
+    expect(display).toContain('<legend>Clock format</legend>');
+    expect(display).toContain('<select id="clockFormat" name="clockFormat" class="cc-dropdown-native-select" data-cc-dropdown-native-select aria-label="Clock format" required data-autosubmit="fetch">');
+    expect(display).toMatch(/<details class="[^"]*\bcc-dropdown\b[^"]*" id="clockFormat-dropdown" data-cc-dropdown data-cc-dropdown-mode="single"[^>]*data-cc-dropdown-dispatch-native-change[^>]*hidden>/);
+    expect(display).toContain('<input id="clockFormat-option-1" type="radio" value="12h">');
+    expect(display).toContain('<input id="clockFormat-option-2" type="radio" value="24h" checked>');
     expect(selectedValue(display, 'clockFormat')).toBe('24h');
     expect(display).toContain('Application fallback: <strong>24-hour</strong>');
     expect(readMeta(db, CLOCK_FORMAT_KEY)).toBeUndefined();
@@ -186,7 +191,9 @@ describe('settings — page defaults HTTP', () => {
       .expect(422);
 
     const display = settingsSection(res.text, 'defaults-display');
-    expect(display).toContain('aria-describedby="clockFormat-error" aria-invalid="true"');
+    expect(display).toContain('required data-autosubmit="fetch" aria-describedby="clockFormat-error" aria-invalid="true">');
+    expect(display).toMatch(/<summary id="clockFormat-dropdown-trigger"[^>]*aria-describedby="clockFormat-error" aria-invalid="true">/);
+    expect(selectedValue(display, 'clockFormat')).toBe('12h');
     expect(display).toContain('id="clockFormat-error">Clock format must be 12h or 24h.</span>');
     expect(readMeta(db, CLOCK_FORMAT_KEY)).toBe('12h');
     expect(readMeta(db, defaultKey('new_project', 'status'))).toBe('planned');
@@ -236,8 +243,8 @@ describe('settings — page defaults HTTP', () => {
       [preview, 'imagesPreviewFormat', ['webp', 'png', 'original']],
     ]) {
       expect(section).toContain('class="settings-section settings-defaults-section settings-defaults-section--compact"');
-      // The compact card relies on its header rule alone: the first body field directly follows the h3.
-      expect(section).toMatch(/<\/h3>\s*<div class="field[ "]/);
+      // The compact card relies on its header rule alone: the control grid follows the h3 and any section introduction.
+      expect(section).toMatch(/<\/h3>\s*(?:<p class="help-text">[^<]*<\/p>\s*)?<div class="field page-defaults-grid" data-project-image-layout="webp">\s*<div class="field project-image-format-field">/);
       expect(section).toContain('data-project-image-settings-group');
       expect(section).toContain(`name="${name}" class="cc-dropdown-native-select" data-cc-dropdown-native-select`);
       expect(section).toContain('data-cc-dropdown-mode="single"');
@@ -253,12 +260,14 @@ describe('settings — page defaults HTTP', () => {
     expect(inputMarkup(preview, 'imagesPreviewMaxDimension')).toContain('value="1600" min="320" max="2560" step="1"');
     expect(thumbnail).toContain('The longest edge is limited to this value; smaller images are not enlarged.');
     expect(preview).toContain('The longest edge is limited to this value; smaller images are not enlarged.');
-    // Thumbnail Format shares the quality/dimension grid; the WebP layout keeps Format on its own row.
+    // Format, WebP quality, and Maximum dimension share one grid in reading order in both sections.
     expect(thumbnail).toMatch(/<div class="field page-defaults-grid" data-project-image-layout="webp">\s*<div class="field project-image-format-field">[\s\S]*?name="imagesThumbnailFormat"[\s\S]*?name="imagesThumbnailWebpQuality"[\s\S]*?name="imagesThumbnailMaxDimension"/);
-    // Preview explanation is one concise help block beside the Format control.
-    const formatHelp = preview.slice(preview.indexOf('name="imagesPreviewFormat"'), preview.indexOf('data-project-image-fields-row'))
+    expect(preview).toMatch(/<div class="field page-defaults-grid" data-project-image-layout="webp">\s*<div class="field project-image-format-field">[\s\S]*?name="imagesPreviewFormat"[\s\S]*?name="imagesPreviewWebpQuality"[\s\S]*?name="imagesPreviewMaxDimension"/);
+    expect(preview).not.toContain('data-project-image-fields-row');
+    // Preview explanation is one concise section introduction outside the control grid.
+    const previewHelp = preview.slice(0, preview.indexOf('class="field page-defaults-grid"'))
       .match(/<p class="help-text">[\s\S]*?<\/p>/g);
-    expect(formatHelp).toEqual([
+    expect(previewHelp).toEqual([
       '<p class="help-text">Controls project previews and the fitted slideshow image. Original uses the source image when available; animated sources may keep a generated WebP and Krita assets use a generated fallback.</p>',
     ]);
     expect(preview).not.toContain('substantially more bandwidth');
@@ -299,7 +308,10 @@ describe('settings — page defaults HTTP', () => {
     expect(inputMarkup(thumbnail, 'imagesThumbnailMaxDimension')).not.toContain('disabled');
     expect(preview).toMatch(/data-project-image-dependent="webp" hidden>[\s\S]*?name="imagesPreviewWebpQuality"[^>]*disabled/);
     expect(preview).toMatch(/data-project-image-dependent="generated" hidden>[\s\S]*?name="imagesPreviewMaxDimension"[^>]*disabled/);
-    expect(preview).toContain('data-project-image-fields-row hidden');
+    // Original leaves Format alone in the grid; both dependent fields stay hidden.
+    expect(preview).toContain('<div class="field page-defaults-grid" data-project-image-layout="original">');
+    expect(preview).toMatch(/data-project-image-dependent="webp" hidden>/);
+    expect(preview).toMatch(/data-project-image-dependent="generated" hidden>/);
   });
 
   it.each([

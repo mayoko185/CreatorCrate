@@ -2,6 +2,7 @@
 {% import "partials/page-heading.njk" as pageHeading %}
 
 {% set page_title = "Settings" %}
+{% block body_class %}settings-page{% endblock %}
 
 {% block content %}
   {{ pageHeading.render("Application control center") }}

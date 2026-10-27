@@ -2,6 +2,7 @@
 {% import "partials/page-heading.njk" as pageHeading %}
 
 {% set page_title = "Settings — Security" %}
+{% block body_class %}settings-page{% endblock %}
 
 {% block content %}
   {{ pageHeading.render("Rotate the single operator password. Existing sessions are revoked after a successful change.") }}
@@ -26,7 +27,7 @@
 
       <form method="post" action="/settings/security/password" class="project-form settings-security-form" novalidate>
         <input type="hidden" name="_csrf" value="{{ _csrf }}">
-        <div class="form-section settings-security-section">
+        <div class="settings-section settings-security-section">
           <h2>Change password</h2>
           <p class="help-text">Use at least 12 characters. Passwords are never displayed or stored in plaintext.</p>
 

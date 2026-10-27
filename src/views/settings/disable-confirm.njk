@@ -2,6 +2,7 @@
 {% import "partials/page-heading.njk" as pageHeading %}
 
 {% set page_title = "Settings — Disable Authentication" %}
+{% block body_class %}settings-page{% endblock %}
 
 {% block content %}
   {% call pageHeading.render() %}
@@ -14,7 +15,7 @@
     </div>
   {% endif %}
 
-  <div class="destructive-section">
+  <div class="destructive-section settings-security-destructive">
     <h2>Turn off login for everyone?</h2>
     <p>Once authentication is disabled, <strong>anyone who can reach this server will be able to access CreatorCrate</strong> — no username or password will be required. All current sessions will be signed out immediately.</p>
     <p>Your current password and session key are discarded; enabling authentication again later will require choosing a new username and password.</p>

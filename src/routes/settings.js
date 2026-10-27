@@ -122,6 +122,9 @@ const NOTICES = {
   logging_cleared: { variant: 'success', text: 'Application logs cleared.' },
 };
 
+const NSFW_FILTER_NOTICES = new Set(['nsfw_filter_enabled', 'nsfw_filter_disabled']);
+const NSFW_FILTER_ANCHOR = 'defaults-nsfw-filter';
+
 function resolveNotice(code) {
   return Object.prototype.hasOwnProperty.call(NOTICES, code) ? NOTICES[code] : null;
 }
@@ -673,20 +676,6 @@ function renderOpenLocallyPage(req, res, {
   });
 }
 
-function renderNsfwFilterPage(req, res, {
-  appName,
-  status = 200,
-  notice = null,
-  errors = [],
-} = {}) {
-  res.status(status).render('settings/nsfw-filter.njk', {
-    appName,
-    enabled: getNsfwFilterSettingsService(req).isEnabled(),
-    notice,
-    errors,
-  });
-}
-
 function renderSocialPrepPage(req, res, {
   appName,
   status = 200,
@@ -1056,6 +1045,7 @@ function renderDefaultsPage(req, res, {
   clockFormatSubmitted = false,
   submittedImageValues = null,
   errors = {},
+  nsfwFilterErrors = [],
 } = {}) {
   const service = getPageDefaultsService(req);
   const noteRevisionSettingsService = getNoteRevisionSettingsService(req);
@@ -1098,6 +1088,11 @@ function renderDefaultsPage(req, res, {
     },
     imageSettings,
     imageRebuild: presentGeneratedImageRebuild(req.app.locals.generatedImageRebuildService?.readStatus()),
+    // The NSFW Filter section keeps its own form, region, and errors.
+    nsfwFilter: {
+      enabled: getNsfwFilterSettingsService(req).isEnabled(),
+      errors: nsfwFilterErrors,
+    },
   });
 }
 
@@ -1656,11 +1651,11 @@ export function createSettingsRouter({
     res.redirect('/settings/defaults?notice=defaults_saved');
   });
 
+  // NSFW Filter lives in Settings > Defaults; the legacy page URL redirects
+  // there, keeping only its own recognized notices.
   router.get('/nsfw-filter', (req, res) => {
-    renderNsfwFilterPage(req, res, {
-      appName,
-      notice: resolveNotice(req.query.notice),
-    });
+    const notice = NSFW_FILTER_NOTICES.has(req.query.notice) ? `?notice=${req.query.notice}` : '';
+    res.redirect(`/settings/defaults${notice}#${NSFW_FILTER_ANCHOR}`);
   });
 
   router.post('/nsfw-filter', (req, res, next) => {
@@ -1669,10 +1664,10 @@ export function createSettingsRouter({
       enabled = parseEnabledField(req.body?.enabled, { defaultValue: false });
     } catch (err) {
       if (err instanceof AssetCategoryValidationError) {
-        renderNsfwFilterPage(req, res, {
+        renderDefaultsPage(req, res, {
           appName,
           status: 422,
-          errors: Object.values(err.errors),
+          nsfwFilterErrors: Object.values(err.errors),
         });
         return;
       }
@@ -1685,7 +1680,7 @@ export function createSettingsRouter({
       if (outcome.changed) {
         logSettingsActivity(applicationLogger, 'settings.nsfw_filter.updated', { enabled });
       }
-      res.redirect(`/settings/nsfw-filter?notice=${enabled ? 'nsfw_filter_enabled' : 'nsfw_filter_disabled'}`);
+      res.redirect(`/settings/defaults?notice=${enabled ? 'nsfw_filter_enabled' : 'nsfw_filter_disabled'}#${NSFW_FILTER_ANCHOR}`);
     } catch (err) {
       return next(err);
     }

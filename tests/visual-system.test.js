@@ -330,11 +330,12 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       expect(css).toContain('.notes-workspace-secondary.project-actions { width: 100%; }');
     });
 
-    it('scopes Settings Tags name-field padding away from form actions', async () => {
+    it('lets the Settings Tags name field take the foundation section inset at a readable width', async () => {
       const css = STYLESHEET;
 
-      expect(css).toMatch(/\.settings-tags-name-field\s*\{[^}]*padding-left:\s*var\(--space-md\);[^}]*padding-right:\s*var\(--space-md\);/);
-      expect(css).toMatch(/\.settings-tags-name-field\s+\.help-text,\s*\.settings-tags-name-field\s+\.field-error-message\s*\{[^}]*padding-left:\s*0;[^}]*padding-right:\s*0;/);
+      expect(css).toMatch(/\.settings-tags-name-field\s*\{[^}]*max-width:\s*36rem;/);
+      expect(css).not.toMatch(/\.settings-tags-name-field\s*\{[^}]*\bpadding/);
+      expect(css).not.toMatch(/\.settings-tags-content \.settings-tags-name-field\s*\{/);
       expect(css).not.toMatch(/\.form-actions\s*\{[^}]*\bpadding(?:-(?:left|right))?\s*:/);
     });
 
@@ -359,9 +360,11 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
 
       expect(css).toMatch(/\.settings-tag-list\s*\{[^}]*list-style:\s*none;/);
       expect(css).toMatch(/\.settings-tag-row\s*\{[^}]*display:\s*flex;[^}]*justify-content:\s*space-between;/);
-      expect(css).toMatch(/\.settings-tag-row\s*\{[^}]*padding:\s*var\(--space-sm\)\s*var\(--space-md\);/);
-      expect(css).toMatch(/\.settings-tag-row\s*\{[^}]*border-bottom:\s*1px solid var\(--border\);/);
-      expect(css).toMatch(/\.settings-tag-row:last-child\s*\{[^}]*border-bottom:\s*none;/);
+      // Rows are flat catalogue cards, like the project-option cards.
+      expect(css).toMatch(/\.settings-tag-row\s*\{[^}]*border:\s*1px solid var\(--border\);[^}]*border-radius:\s*var\(--radius-md\);[^}]*background:\s*var\(--surface-card\);/);
+      expect(css).toMatch(/\.settings-tag-row:focus-within\s*\{[^}]*border-color:\s*var\(--border-strong\);/);
+      expect(css).not.toMatch(/\.settings-tag-row[^{]*\{[^}]*(?:box-shadow|transform):/);
+      expect(css).toMatch(/\.settings-tag-name\s*\{[^}]*min-width:\s*0;[^}]*overflow-wrap:\s*anywhere;/);
       expect(css).toMatch(/\.settings-tag-actions\s*\{[^}]*display:\s*flex;/);
     });
 
@@ -382,8 +385,14 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       expect(openLocally.text).toContain('settings-open-locally-mapping-body');
       expect(openLocally.text).toMatch(/settings-open-locally-installer-section">\s*<h3>Open locally helper<\/h3>\s*<div class="settings-open-locally-section-body/);
       expect(openLocally.text).toMatch(/<div(?=[^>]*\bclass="[^"]*\bsettings-open-locally-mapping-section\b[^"]*")(?=[^>]*\bdata-settings-open-locally-mapping-region\b)[^>]*>\s*<h3>Projects path<\/h3>\s*<div class="settings-open-locally-section-body/);
-      expect(css).toMatch(/\.settings-tags-content\s+\.settings-tag-row\s*\{[^}]*background:\s*var\(--surface\);[^}]*border:\s*1px solid var\(--border\);[^}]*border-radius:\s*var\(--radius-md\);[^}]*box-shadow:\s*var\(--shadow-sm\);/);
-      expect(css).toMatch(/\.settings-open-locally-content\s+\.settings-open-locally-section-body\s*\{[^}]*padding:\s*var\(--space-md\)\s+var\(--space-lg\)\s+var\(--space-lg\);/);
+      // Tags takes the shared Settings foundation instead of the WP13 cards.
+      expect(tags.text).toMatch(/<body class="settings-page">/);
+      expect(css).not.toMatch(/\.settings-tags-content[^{]*\{[^}]*box-shadow:/);
+      // Open locally takes the shared Settings foundation: the section pads
+      // its bodies, and the WP13 card shadow is gone.
+      expect(openLocally.text).toMatch(/<body class="settings-page">/);
+      expect(css).toMatch(/\.settings-open-locally-content\s+\.settings-open-locally-section-body\s*\{[^}]*padding:\s*0;/);
+      expect(css).not.toMatch(/\.settings-open-locally-content[^{]*\{[^}]*box-shadow:/);
       expect(css).toMatch(/\.settings-open-locally-content\s+\.settings-open-locally-section-body\s+\.help-text\s*\{[^}]*padding:\s*0;/);
       expect(css).toMatch(/\.settings-open-locally-content\s+\.settings-section\s+\.form-actions\.open-locally-installer-actions\s*\{[^}]*justify-content:\s*center;[^}]*margin-left:\s*0;[^}]*margin-bottom:\s*0;/);
       expect(css).toMatch(/\.settings-open-locally-content\s+\.open-locally-path-row\s*>\s*input\s*\{[^}]*min-width:\s*min\(100%,\s*16rem\);/);
@@ -400,14 +409,16 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
     });
 
     it('scopes Project Assets-derived Settings cards without recoloring shared form sections', async () => {
-      const [overview, security, defaults, nsfw, categories, tags, openLocally, logs, project] = await Promise.all([
+      const [overview, security, defaults, nsfw, categories, tags, openLocally, releaseNotifications, logs, project] = await Promise.all([
         request(getApp()).get('/settings').expect(200),
         request(getApp()).get('/settings/security').expect(200),
         request(getApp()).get('/settings/defaults').expect(200),
-        request(getApp()).get('/settings/nsfw-filter').expect(200),
+        // NSFW Filter renders as a section of Defaults.
+        request(getApp()).get('/settings/defaults').expect(200),
         request(getApp()).get('/settings/asset-categories').expect(200),
         request(getApp()).get('/settings/tags').expect(200),
         request(getApp()).get('/settings/open-locally').expect(200),
+        request(getApp()).get('/settings/release-notifications').expect(200),
         request(getApp()).get('/settings/logs').expect(200),
         request(getApp()).get('/projects/new').expect(200),
       ]);
@@ -420,13 +431,21 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       for (const res of [overview, security, defaults, nsfw, categories, tags, openLocally]) {
         expect(res.text).toMatch(/settings-(?:overview|security|defaults|nsfw-filter|asset-categories|tags|open-locally)-content/);
       }
-      expect(css).toMatch(/\.settings-overview-content \.settings-section,[\s\S]*?\.settings-open-locally-content \.settings-section\s*\{[^}]*background:\s*var\(--surface\);/);
-      expect(css).toMatch(/\.settings-overview-content \.settings-section h3,[\s\S]*?\.settings-open-locally-content \.settings-section h3\s*\{[^}]*background:\s*var\(--surface-hover\);/);
+      // Overview, Security, Defaults, NSFW Filter, Open locally, and Release
+      // Notifications take the shared Settings foundation's sections instead
+      // of the legacy header bands.
+      expect(css).not.toMatch(/\.settings-(?:overview|security|defaults)-content \.settings-section/);
+      expect(css).not.toMatch(/\.settings-(?:nsfw-filter|open-locally|release-notifications)-content \.settings-section[^{]*\{[^}]*(?:background|box-shadow):/);
+      expect(css).not.toMatch(/\.settings-(?:nsfw-filter|open-locally|release-notifications)-content \.settings-section h3/);
+      for (const res of [defaults, nsfw, openLocally, releaseNotifications]) {
+        expect(res.text).toMatch(/<body class="settings-page">/);
+      }
       expect(project.text).toContain('class="settings-section project-form-section"');
       expect(project.text).not.toContain('settings-overview-content');
       expect(project.text).not.toContain('settings-security-content');
       expect(project.text).not.toContain('settings-defaults-content');
-      expect(logs.text).not.toContain('settings-section');
+      // Logs takes the foundation section for its results, not a header band.
+      expect(logs.text).toContain('class="settings-section logs-results-section"');
     });
 
     it('includes the Overview authentication warning in compact persistent-alert treatment', async () => {
@@ -460,9 +479,16 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       expect(security.text).toContain('settings-security-section');
       expect(defaults.text).toContain('settings-defaults-section');
       expect(css).toMatch(/\.settings-overview-stats\s*\{[^}]*gap:\s*var\(--space-md\);[^}]*background:\s*transparent;[^}]*border:\s*0;/);
-      expect(css).toMatch(/\.settings-overview-stats \.settings-stat\s*\{[^}]*border:\s*1px solid var\(--border\);[^}]*border-radius:\s*var\(--radius-lg\);[^}]*box-shadow:\s*var\(--shadow-sm\);/);
-      expect(css).toMatch(/\.settings-security-form\s*>\s*\.settings-security-section\s*\{[^}]*background:\s*var\(--surface\);[^}]*border:\s*1px solid var\(--border\);[^}]*border-radius:\s*var\(--radius-lg\);/);
-      expect(css).toMatch(/\.settings-defaults-section\s*>\s*\.field\s*\{[^}]*padding:\s*var\(--space-md\);[^}]*border-top:\s*1px solid var\(--border\);/);
+      expect(css).toMatch(/\.settings-overview-stats \.settings-stat\s*\{[^}]*border:\s*1px solid var\(--border\);[^}]*border-radius:\s*var\(--radius-lg\);/);
+      expect(css).not.toMatch(/\.settings-overview-stats \.settings-stat:hover/);
+      expect(security.text).toContain('class="settings-section settings-security-section"');
+      expect(css).toMatch(/:where\(\.settings-page main\) \.project-form \.settings-section[^{]*\{[^}]*border:\s*1px solid var\(--border\);[^}]*border-radius:\s*var\(--radius-lg\);[^}]*background:\s*var\(--surface\);/);
+      expect(css).toMatch(/\.settings-defaults-section\s*>\s*\.field\s*\{(?![^}]*border-top)[^}]*max-width:\s*40rem;/);
+      // Image generation grids drop a hidden field's column instead of leaving it empty, and Format no longer spans a row.
+      expect(css).toMatch(/@media\s*\(min-width:\s*1024px\)\s*\{\s*\.settings-defaults-section > \.page-defaults-grid\[data-project-image-layout\]\s*\{[^}]*grid-template-columns:\s*minmax\(0, 14rem\) minmax\(0, 10rem\) minmax\(0, 20rem\);/);
+      expect(css).toMatch(/\[data-project-image-layout\]:has\(> \[data-project-image-dependent='webp'\]\[hidden\]\)\s*\{\s*grid-template-columns:\s*minmax\(0, 14rem\) minmax\(0, 20rem\);/);
+      expect(css).toMatch(/\[data-project-image-layout\]:has\(> \[data-project-image-dependent='generated'\]\[hidden\]\)\s*\{\s*grid-template-columns:\s*minmax\(0, 14rem\);/);
+      expect(css).not.toMatch(/\.project-image-format-field\s*\{[^}]*grid-column:\s*1 \/ -1/);
       expect(css).not.toMatch(/\.settings-content\s+\.data-table[^\{]*\{[^}]*settings-(?:overview|security|defaults)/);
     });
 
@@ -492,14 +518,18 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
 
     it('keeps transient Settings notices outside wrapper structural margin resets', async () => {
       const [nsfw, categories] = await Promise.all([
-        request(getApp()).get('/settings/nsfw-filter?notice=nsfw_filter_enabled').expect(200),
+        request(getApp()).get('/settings/defaults?notice=nsfw_filter_enabled').expect(200),
         request(getApp()).get('/settings/asset-categories?notice=category_reordered').expect(200),
       ]);
       const css = STYLESHEET;
       const wrappers = [
-        ['settings-nsfw-filter-content', nsfw.text],
         ['settings-asset-categories-content', categories.text],
       ];
+
+      // On Defaults, the NSFW Filter notice leads the page, outside the
+      // NSFW Filter section wrapper.
+      expect(nsfw.text).toMatch(/<div class="notice\b[^"]*"[^>]*>[\s\S]*?NSFW Filter enabled\.[\s\S]*?<div class="settings-layout settings-defaults-layout">/);
+      expect(nsfw.text.slice(nsfw.text.indexOf('data-settings-nsfw-filter-region'))).not.toContain('class="notice');
       const resetSelectors = [...css.matchAll(/([^{}]+)\{[^{}]*margin-bottom:\s*0;[^{}]*\}/g)]
         .flatMap(([, selectors]) => selectors.split(',').map((selector) => selector.trim()));
 
@@ -544,43 +574,61 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
   // ─── 6. Form density ─────────────────────────────────────────────────────
 
   describe('Asset Categories dropdown layering', () => {
-    it('keeps both wrapper-scoped Settings dropdown hosts visible while retaining their rounded card headers', async () => {
+    it('keeps the combined Defaults dropdown host visible on the shared Settings foundation', async () => {
       const res = await request(getApp()).get('/settings/asset-categories').expect(200);
       const css = STYLESHEET;
-      const settingsHost = '.settings-asset-categories-content .settings-content > .settings-section.asset-browser-default-section';
+      const settingsHost = '.settings-asset-categories-content .settings-content > .settings-section.settings-asset-category-defaults';
       const wrapperIndex = res.text.indexOf('<div class="settings-asset-categories-content">');
       const layoutIndex = res.text.indexOf('<div class="settings-layout">', wrapperIndex);
       const settingsContentIndex = res.text.indexOf('<div class="settings-content">', layoutIndex);
-      const firstHostIndex = res.text.indexOf('class="settings-section asset-browser-default-section"');
+      const hostIndex = res.text.indexOf('class="settings-section settings-asset-category-defaults"');
 
       expect(layoutIndex).toBeGreaterThan(wrapperIndex);
       expect(settingsContentIndex).toBeGreaterThan(layoutIndex);
-      expect(firstHostIndex).toBeGreaterThan(settingsContentIndex);
-      expect(res.text.match(/class="settings-section asset-browser-default-section"/g)).toHaveLength(2);
-      expect(css).toMatch(/\.settings-asset-categories-content\s+\.settings-content\s*>\s*\.settings-section\.asset-browser-default-section\s*\{\s*overflow:\s*visible;/);
-      expect(css).toContain(`${settingsHost} > h3 {`);
+      expect(hostIndex).toBeGreaterThan(settingsContentIndex);
+      expect(res.text.match(/class="settings-section settings-asset-category-defaults"/g)).toHaveLength(1);
+      expect(res.text).not.toContain('class="settings-section asset-browser-default-section"');
+      expect(res.text.match(/class="asset-browser-default-section settings-asset-category-preference"/g)).toHaveLength(2);
+      expect(css).toMatch(/\.settings-asset-categories-content\s+\.settings-content\s*>\s*\.settings-section\.settings-asset-category-defaults\s*\{\s*overflow:\s*visible;/);
+      // Without the header band, the headings need no rounded top corners.
+      expect(css).not.toContain(`${settingsHost} > h3 {`);
+      expect(res.text).toMatch(/<body class="settings-page">/);
       expect(css).toMatch(/\.settings-section\s*\{[^}]*overflow:\s*hidden/);
     });
 
     it('contains Settings dropdown Save rows without obsolete unwrapped host selectors', async () => {
       const css = STYLESHEET;
-      const settingsHost = '.settings-asset-categories-content .settings-content > .settings-section.asset-browser-default-section';
 
-      expect(css).toMatch(/\.settings-asset-categories-content\s+\.settings-content\s*>\s*\.settings-section\.asset-browser-default-section\s+\.asset-browser-default-action-row\s*\{\s*margin:\s*0;/);
+      expect(css).toMatch(/\.settings-asset-categories-content\s+\.settings-asset-category-preference\s+\.asset-browser-default-action-row\s*\{\s*margin:\s*0;/);
+      expect(css).not.toContain('.settings-asset-categories-content .settings-content > .settings-section.asset-browser-default-section');
       expect(css).not.toMatch(/(^|\n)\s*\.settings-content\s*>\s*\.settings-section\.asset-browser-default-section/);
       expect(css).not.toMatch(/(^|\n)\s*\.settings-section\.asset-browser-default-section\s*\{/);
       expect(css).not.toMatch(/(^|\n)\s*\.settings-section\.asset-browser-default-section\s*>\s*h3\s*\{/);
     });
-    it('spaces only Asset Categories cards through the inner content grid and keeps the Add card body below its full-width header', async () => {
+    it('lays the two Defaults preferences out in page-scoped columns from 768px and stacks them below', async () => {
+      const css = STYLESHEET;
+
+      expect(css).toMatch(/\.settings-asset-categories-content \.settings-asset-category-defaults-grid\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(0, 1fr\);/);
+      expect(css).toMatch(/@media \(min-width: 768px\)\s*\{\s*\.settings-asset-categories-content \.settings-asset-category-defaults-grid\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\);/);
+      expect(css).toMatch(/\.settings-asset-categories-content \.settings-asset-category-preference\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*min-width:\s*0;/);
+      // The blocks stay unbordered inside the one Defaults card, and no
+      // ordering rule moves them away from source (keyboard) order.
+      expect(css).not.toMatch(/\.settings-asset-category-(?:defaults-grid|preference)[^{]*\{[^}]*\border:/);
+      expect(css).not.toMatch(/(^|\n)\.settings-asset-category-(?:defaults|preference)/);
+    });
+
+    it('spaces only Asset Categories cards through the inner content grid and lines the Add row up with its inputs', async () => {
       const css = STYLESHEET;
       expect(css).toMatch(/\.settings-asset-categories-content \.settings-content\s*\{[^}]*display:\s*grid;[^}]*gap:\s*var\(--space-lg\);/);
-      expect(css).toMatch(/\.settings-asset-categories-content \.settings-category-management-add\s*\{[^}]*background:\s*var\(--surface\);/);
-      expect(css).toMatch(/\.settings-asset-categories-content \.category-management-add-row\s*\{[^}]*align-items:\s*flex-start;/);
-      expect(css).toMatch(/\.settings-asset-categories-content \.category-management-add-submit\s*\{[^}]*display:\s*flex;[^}]*flex:\s*0\s+0\s+auto;[^}]*align-self:\s*flex-start;[^}]*margin:\s*0;[^}]*padding-top:\s*calc\(1\.4rem\s*\+\s*var\(--space-xs\)\);/);
-      expect(css).not.toMatch(/\.settings-asset-categories-content \.category-management-add-submit\s*\{[^}]*align-self:\s*flex-end;/);
+      // The foundation section's padding is the inset, so the Add form drops
+      // its band padding, and Add sits below the label line like the dialog's.
+      expect(css).toMatch(/\.settings-asset-categories-content \.settings-category-management-add > \.category-management-form\s*\{[^}]*padding:\s*0;/);
+      expect(css).toMatch(/\.settings-asset-categories-content \.category-management-add-row\s*\{[^}]*display:\s*grid;[^}]*align-items:\s*start;/);
+      expect(css).toMatch(/\.settings-asset-categories-content \.category-management-add-row > \.category-management-add-submit\s*\{[^}]*display:\s*flex;[^}]*align-self:\s*start;[^}]*margin:\s*0;[^}]*padding-top:\s*calc\(0\.8125rem \* 1\.3 \+ 0\.3125rem\);/);
+      expect(css).not.toMatch(/\.settings-asset-categories-content [^{]*\.category-management-add-submit\s*\{[^}]*align-self:\s*flex-end;/);
       expect(css).toMatch(/#project-asset-category-management-dialog \.project-category-management-add-submit\s*\{[^}]*align-self:\s*start;[^}]*padding-top:\s*calc\(0\.8125rem \* 1\.3 \+ 0\.3125rem\);/);
-      expect(css).toMatch(/@media \(max-width: 767px\)\s*\{[\s\S]*?\.settings-asset-categories-content \.category-management-add > \.category-management-form,[\s\S]*?padding:\s*var\(--space-sm\);/);
-      expect(css).toMatch(/@media \(max-width: 540px\)\s*\{[\s\S]*?\.settings-asset-categories-content \.category-management-add-submit\s*\{[^}]*padding-top:\s*0;/);
+      expect(css).toMatch(/@media \(max-width: 767px\)\s*\{[\s\S]*?\.settings-asset-categories-content \.category-management-add-row\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) minmax\(0, 1fr\);/);
+      expect(css).toMatch(/@media \(max-width: 540px\)\s*\{[\s\S]*?\.settings-asset-categories-content \.category-management-add-row\s*\{[^}]*grid-template-columns:\s*max-content minmax\(0, 1fr\);/);
       expect(css).not.toMatch(/\.settings-asset-categories-content\s*>\s*\*\s*\{[^}]*margin-bottom:\s*0;/);
     });
   });
@@ -599,7 +647,8 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       expect(logs.text).not.toContain('settings-defaults-section');
       expect(css).toMatch(/\.settings-section h3\s*\{[^}]*padding:\s*var\(--space-sm\)\s+var\(--space-md\);[^}]*font-family:\s*var\(--mono\);[^}]*text-transform:\s*uppercase;[^}]*background:\s*var\(--surface-card\);[^}]*border-bottom:\s*1px solid var\(--border\);/);
       expect(css).toMatch(/\.settings-defaults-content\s+\.project-form\s*>\s*\.settings-defaults-section\s*\{\s*overflow:\s*visible;/);
-      expect(css).toMatch(/\.settings-defaults-content\s+\.project-form\s*>\s*\.settings-defaults-section\s*>\s*h3,\s*\.settings-defaults-content\s*>\s*\.settings-project-option-editor\s*>\s*h3\s*\{\s*border-radius:\s*var\(--radius-lg\)\s+var\(--radius-lg\)\s+0\s+0;/);
+      // Without the header band, the headings need no rounded top corners.
+      expect(css).not.toMatch(/\.settings-defaults-section\s*>\s*h3,\s*\.settings-defaults-content\s*>\s*\.settings-project-option-editor\s*>\s*h3\s*\{/);
       for (const [kind, headingId, heading] of [
         ['status', 'defaults-project-status-heading', 'Project Status'],
         ['project-type', 'defaults-project-type-heading', 'Project Type'],
@@ -651,13 +700,15 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       expect(css).toMatch(/\.data-table td\s*\{[^}]*word-break/);
     });
 
-    it('applies the compact Settings table treatment to backups without coupling it to Logs', async () => {
+    it('applies the Dashboard table treatment to backups without coupling it to Logs', async () => {
       const css = STYLESHEET;
 
-      expect(css).toMatch(/\.backups-table-scroll\s*\{[^}]*margin:\s*var\(--space-sm\)\s+0;[^}]*scrollbar-width:\s*thin;/);
+      expect(css).toMatch(/\.backups-table-scroll\s*\{[^}]*margin:\s*0;[^}]*border:\s*1px solid var\(--border\);[^}]*scrollbar-width:\s*thin;/);
       expect(css).toMatch(/\.backups-table\s*\{[^}]*min-width:\s*52rem;[^}]*margin:\s*0;/);
-      expect(css).toMatch(/\.backups-table th,\s*\.backups-table td\s*\{[^}]*padding:\s*var\(--space-xs\)\s+var\(--space-sm\);/);
+      expect(css).toMatch(/\.backups-table th,\s*\.backups-table td\s*\{[^}]*padding:\s*var\(--space-sm\)\s+0\.625rem;/);
+      expect(css).toMatch(/\.backups-table th\s*\{[^}]*background:\s*var\(--surface-card\);/);
       expect(css).toMatch(/\.backups-table\s+\.row-actions\s*\{[^}]*white-space:\s*nowrap;/);
+      expect(css).not.toMatch(/\.logs-table[^{]*\.backups-table|\.backups-table[^{]*\.logs-table/);
     });
 
     it('calendar day cells have overflow-wrap for long content', async () => {
@@ -727,7 +778,7 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       expect(css).not.toMatch(/body\.settings-page\s+main/);
     });
 
-    it('asset, calendar, and settings pages render an empty body class and inherit the shared width', async () => {
+    it('asset, calendar, and settings pages inherit the shared width', async () => {
       const projRes = await request(getApp())
         .post('/projects')
         .send('title=Width+Inherit+Test')
@@ -743,8 +794,10 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       const calendar = await request(getApp()).get('/calendar').expect(200);
       expect(calendar.text).toContain('<body class="">');
 
+      // Settings opts into the shared Settings foundation, which is scoped
+      // without a page-width override (guarded above).
       const settings = await request(getApp()).get('/settings').expect(200);
-      expect(settings.text).toContain('<body class="">');
+      expect(settings.text).toContain('<body class="settings-page">');
     });
   });
 

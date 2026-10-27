@@ -1,13 +1,15 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
+{% import "partials/icons.njk" as icons %}
 
 {% set page_title = "Settings — Backups" %}
+{% block body_class %}settings-page{% endblock %}
 
 {% block content %}
   {% call pageHeading.render() %}
     <form method="post" action="/settings/backups" class="inline-form">
       <input type="hidden" name="_csrf" value="{{ _csrf }}">
-      <button type="submit" class="button button-primary">Create Backup</button>
+      <button type="submit" class="button button-primary dashboard-create-action"><span class="project-create-submit-icon" aria-hidden="true">{{ icons.icon('plus') }}</span>Create Backup</button>
     </form>
   {% endcall %}
 
@@ -19,14 +21,14 @@
 
   <div class="settings-layout">
 
-    <div class="settings-content">
+    <div class="settings-content settings-backups-content">
       <div class="panel panel--info">
-        <p>Backups contain a complete snapshot of the SQLite application database, including all projects, releases, and asset records.</p>
-        <p>Media files and project files stored under <code>PROJECTS_ROOT</code> are <strong>not</strong> included in backups and are not affected by a restore.</p>
-        <p>After each new backup completes, older backups beyond the configured retention count are automatically deleted. See <code>BACKUP_RETENTION_COUNT</code> in the README for how to change or disable this.</p>
+        <p>Backups save CreatorCrate's database, including projects, releases, and asset records. Restoring a backup replaces the current database, so database changes made since that backup will be lost.</p>
+        <p>Project files and media stored under <code>PROJECTS_ROOT</code> are not included in backups and are not changed by a restore.</p>
+        <p>After a successful backup, older managed backups exceeding <code>BACKUP_RETENTION_COUNT</code> are automatically deleted. The default is 10; set it to 0 to keep all backups. See the README for configuration details.</p>
       </div>
 
-      <section class="project-detail-section backups-results-section" aria-labelledby="backups-results-heading">
+      <section class="settings-section backups-results-section" aria-labelledby="backups-results-heading">
         <h2 id="backups-results-heading">Existing backups</h2>
         <div class="project-detail-section-body">
           {% if backups.length > 0 %}

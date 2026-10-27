@@ -93,6 +93,19 @@ function getPreviewCategory(db) {
   return db.prepare('SELECT value FROM app_meta WHERE key = ?').pluck().get(PREVIEW_CATEGORY_KEY);
 }
 
+// Both preferences sit in one Defaults section, so a region runs from its
+// identity to the next region or to the section's close.
+function preferenceRegion(html, identity) {
+  const start = html.indexOf(`data-settings-asset-category-preference="${identity}"`);
+  if (start === -1) return '';
+  const rest = html.slice(start + 1);
+  const ends = [
+    rest.indexOf('data-settings-asset-category-preference="'),
+    rest.indexOf('</section>'),
+  ].filter((index) => index !== -1);
+  return html.slice(start, start + 1 + Math.min(...ends));
+}
+
 function getProjectBrowserPreference(db, projectId) {
   return db.prepare(`
     SELECT default_category_mode, default_category_id
@@ -278,6 +291,65 @@ describe('settings — asset category defaults HTTP', () => {
       expect(new Set(ids).size).toBe(ids.length);
     });
 
+    it('groups both preferences as independent forms in one Defaults section', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      await agent.post('/settings/asset-categories/browser-default').type('form')
+        .send({ defaultCategory: 'wip', _csrf: csrfToken }).expect(302);
+
+      const res = await agent.get('/settings/asset-categories').expect(200);
+      const sections = [...res.text.matchAll(/<section class="settings-section settings-asset-category-defaults" aria-labelledby="asset-category-defaults-heading">/g)];
+      expect(sections).toHaveLength(1);
+      const section = res.text.slice(sections[0].index, res.text.indexOf('</section>', sections[0].index));
+
+      expect(section).toMatch(/^<section[^>]*>\s*<h3 id="asset-category-defaults-heading">Defaults<\/h3>\s*<div class="settings-asset-category-defaults-grid">\s*<div class="asset-browser-default-section settings-asset-category-preference" data-settings-asset-category-preference="browser-default">/);
+      expect([...section.matchAll(/data-settings-asset-category-preference="([^"]+)"/g)].map((match) => match[1]))
+        .toEqual(['browser-default', 'preview-category']);
+      expect(section.match(/<h3\b/g)).toHaveLength(1);
+      expect(section).not.toContain('class="settings-section asset-browser-default-section"');
+      expect(res.text).not.toContain('global-asset-browser-default-heading');
+      expect(res.text).not.toContain('global-preview-category-heading');
+
+      const browser = preferenceRegion(res.text, 'browser-default');
+      const preview = preferenceRegion(res.text, 'preview-category');
+      for (const [region, action, field, label] of [
+        [browser, '/settings/asset-categories/browser-default', 'defaultCategory', 'Asset browser default'],
+        [preview, '/settings/asset-categories/preview-category', 'previewCategory', 'Preview category'],
+      ]) {
+        expect(region.match(/<form\b/g)).toHaveLength(1);
+        expect(region).toContain(`<form method="post" action="${action}"`);
+        expect(region.match(/name="_csrf"/g)).toHaveLength(1);
+        expect(region.match(/data-settings-fetch-save-status/g)).toHaveLength(1);
+        expect(region).toContain(`<legend>${label}</legend>`);
+        expect(region).toMatch(new RegExp(`<select[^>]*name="${field}"[^>]*aria-label="${label}"`));
+        expect(region).toMatch(/<\/form>\s*<p class="asset-browser-default-description" id="[^"]+-help">/);
+      }
+      expect(section).not.toMatch(/<form\b(?:(?!<\/form>)[\s\S])*<form\b/);
+      expect(browser).toMatch(/<option value="wip" selected>WIP/);
+      expect(preview).toContain(`<option value="${PREVIEW_CATEGORY_DISABLED_VALUE}" selected>Disabled`);
+    });
+
+    it('returns both preference regions so a rejected Preview save leaves the Asset browser default intact', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      await agent.post('/settings/asset-categories/browser-default').type('form')
+        .send({ defaultCategory: 'wip', _csrf: csrfToken }).expect(302);
+
+      const res = await agent.post('/settings/asset-categories/preview-category').type('form')
+        .send({ previewCategory: 'unknown-slug', _csrf: csrfToken }).expect(422);
+      const browser = preferenceRegion(res.text, 'browser-default');
+      const preview = preferenceRegion(res.text, 'preview-category');
+
+      expect(preview).toContain('id="global-preview-category-error"');
+      expect(preview).toMatch(/<select id="global-preview-category"[^>]*aria-invalid/);
+      expect(browser).not.toContain('error-summary');
+      expect(browser).not.toContain('aria-invalid');
+      expect(browser).toMatch(/<option value="wip" selected>WIP/);
+      expect(getGlobalBrowserDefault(ctx.db)).toBe('wip');
+    });
+
     it('selects All by default and offers enabled global categories only', async () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
@@ -286,9 +358,7 @@ describe('settings — asset category defaults HTTP', () => {
       await agent.post(`/settings/asset-categories/${final.id}/enabled`).type('form').send({ enabled: '0', _csrf: csrfToken }).expect(302);
 
       const res = await agent.get('/settings/asset-categories').expect(200);
-      const section = res.text.match(
-        /<section class="settings-section asset-browser-default-section" aria-labelledby="global-asset-browser-default-heading"[^>]*>[\s\S]*?<\/section>/
-      )?.[0] || '';
+      const section = preferenceRegion(res.text, 'browser-default');
       expect(section).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
       expect(section).toMatch(
         /<select id="global-asset-browser-default" name="defaultCategory" class="cc-dropdown-native-select form-control" data-cc-dropdown-native-select/
@@ -417,30 +487,26 @@ describe('settings — asset category defaults HTTP', () => {
         .send({ displayName: 'Ambiguous All', directorySlug: 'all', enabled: 'on', _csrf: csrfToken }).expect(302);
       const res = await agent.get('/settings/asset-categories').expect(200);
       expect(res.text).toMatch(/directory slug .*all.*reserved|reserved.*all.*sentinel/i);
-      const browserDefaultSection = res.text.match(
-        /<section class="settings-section asset-browser-default-section" aria-labelledby="global-asset-browser-default-heading"[^>]*>[\s\S]*?<\/section>/
-      )?.[0] || '';
+      const browserDefaultSection = preferenceRegion(res.text, 'browser-default');
       expect((browserDefaultSection.match(/<option value="all"/g) || []).length).toBe(1);
     });
   });
 
   describe('preview category control', () => {
     function previewSection(html) {
-      return html.match(
-        /<section class="settings-section asset-browser-default-section" aria-labelledby="global-preview-category-heading"[^>]*>[\s\S]*?<\/section>/
-      )?.[0] || '';
+      return preferenceRegion(html, 'preview-category');
     }
 
-    it('appears directly after Default category and selects Disabled when unset', async () => {
+    it('appears directly after Asset browser default and selects Disabled when unset', async () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
       const { agent } = await authenticate(app);
 
       const res = await agent.get('/settings/asset-categories').expect(200);
       expect(res.text).toMatch(
-        /id="global-asset-browser-default-heading"[\s\S]*?<\/section>\s*<section class="settings-section asset-browser-default-section" aria-labelledby="global-preview-category-heading"/
+        /data-settings-asset-category-preference="browser-default"[\s\S]*?<\/form>[\s\S]*?<\/div>\s*<\/div>\s*<div class="asset-browser-default-section settings-asset-category-preference" data-settings-asset-category-preference="preview-category"/
       );
-      expect(res.text.indexOf('global-preview-category-heading')).toBeLessThan(
+      expect(res.text.indexOf('data-settings-asset-category-preference="preview-category"')).toBeLessThan(
         res.text.indexOf('category-management-add')
       );
       const section = previewSection(res.text);

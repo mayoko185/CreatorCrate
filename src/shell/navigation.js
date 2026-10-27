@@ -77,14 +77,8 @@ const SETTINGS_CHILDREN = [
       icon: 'sliders-horizontal',
     label: 'Defaults',
     href: '/settings/defaults',
-    matches: ['/settings/defaults'],
-  },
-  {
-    key: 'nsfw-filter',
-      icon: 'content-filter',
-    label: 'NSFW Filter',
-    href: '/settings/nsfw-filter',
-    matches: ['/settings/nsfw-filter'],
+    // NSFW Filter is a Defaults section; its POST re-renders Defaults on 422.
+    matches: ['/settings/defaults', '/settings/nsfw-filter'],
   },
   {
     key: 'social-prep',

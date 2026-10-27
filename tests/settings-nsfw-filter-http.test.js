@@ -24,7 +24,7 @@ function settingsNavLabels(html) {
     /<a\b(?=[^>]*\bclass="(?:app-nav-child-link|mobile-nav-child-link)")(?=[^>]*\bdata-nav-key="settings-([^"]+)")(?=[^>]*\baria-current="page")[^>]*>(?:(?!<\/a>)[\s\S])*?<span class="app-nav-child-label">([^<]+)<\/span>\s*<\/a>/g,
   )];
   expect(currentChildren).toHaveLength(2);
-  expect(new Set(currentChildren.map((match) => match[1]))).toEqual(new Set(['nsfw-filter']));
+  expect(new Set(currentChildren.map((match) => match[1]))).toEqual(new Set(['defaults']));
 
   return [...new Set([...html.matchAll(
     /<a\b(?=[^>]*\bclass="(?:app-nav-child-link|mobile-nav-child-link)")(?=[^>]*\bdata-nav-key="settings-[^"]+")[^>]*>(?:(?!<\/a>)[\s\S])*?<span class="app-nav-child-label">([^<]+)<\/span>\s*<\/a>/g,
@@ -37,6 +37,32 @@ function nsfwControl(html) {
 
 function nsfwFilterForm(html) {
   return html.match(/<form method="post" action="\/settings\/nsfw-filter" class="project-form" novalidate>[\s\S]*?<\/form>/)?.[0] || '';
+}
+
+// Returns the outerHTML of the <div> opening at `start`, following nesting.
+function divAt(html, start) {
+  const tags = /<\/?div\b[^>]*>/g;
+  tags.lastIndex = start;
+  let depth = 0;
+  let match;
+  while ((match = tags.exec(html))) {
+    depth += match[0].startsWith('</') ? -1 : 1;
+    if (depth === 0) return html.slice(start, tags.lastIndex);
+  }
+  return '';
+}
+
+function regionOf(html, attribute) {
+  const start = html.search(new RegExp(`<div\\b[^>]*\\b${attribute}[\\s>]`));
+  return start === -1 ? '' : divAt(html, start);
+}
+
+function nsfwRegion(html) {
+  return regionOf(html, 'data-settings-nsfw-filter-region');
+}
+
+function defaultsRegion(html) {
+  return regionOf(html, 'data-settings-defaults-region');
 }
 
 function readMeta(db) {
@@ -76,6 +102,10 @@ describe('settings — NSFW Filter HTTP', () => {
       .expect(302);
   }
 
+  async function defaultsPage(query = '') {
+    return agent.get(`/settings/defaults${query}`).expect(200);
+  }
+
   function settingsSectionCss(css) {
     const buttonRule = css.match(/\.button\s*\{[^}]*\}/s)?.[0] || '';
     const primaryRule = css.match(/\.button-primary\s*\{[^}]*\}/s)?.[0] || '';
@@ -84,17 +114,17 @@ describe('settings — NSFW Filter HTTP', () => {
   }
 
 
-  it('renders the page disabled by default, includes the note, and places navigation correctly', async () => {
-    const res = await agent.get('/settings/nsfw-filter').expect(200);
+  it('renders the section on Defaults disabled by default, includes the note, and places navigation correctly', async () => {
+    const res = await defaultsPage();
 
-    expect(res.text).toContain('<h1 class="app-section-title">Settings — NSFW Filter</h1>');
+    expect(res.text).toContain('<h1 class="app-section-title">Settings — Defaults</h1>');
+    expect((res.text.match(/<h1\b/g) || []).length).toBe(1);
     expect(settingsNavLabels(res.text)).toEqual([
       'Overview',
       'Security',
       'Backups',
       'Logs',
       'Defaults',
-      'NSFW Filter',
       'Social Preparation',
       'Release Notifications',
       'Asset Categories',
@@ -103,9 +133,9 @@ describe('settings — NSFW Filter HTTP', () => {
     ]);
 
     const form = nsfwFilterForm(res.text);
-    expect(form).toContain('<h3>NSFW Filter</h3>');
+    expect(form).toContain('<h3 id="defaults-nsfw-filter-heading">NSFW Filter</h3>');
     expect(form).toContain('Enabling the filter will add the <strong>NSFW</strong> tag as an available option if it does not already exist.');
-    expect(form).toContain('<div class="settings-section">');
+    expect(form).toContain('<section id="defaults-nsfw-filter" class="settings-section" aria-labelledby="defaults-nsfw-filter-heading">');
     expect(form).toContain('<div class="field field--switch">');
     expect(nsfwControl(form)).toContain('data-autosubmit="fetch"');
     expect(nsfwControl(form)).not.toContain('data-autosubmit="submit"');
@@ -136,10 +166,58 @@ describe('settings — NSFW Filter HTTP', () => {
     expect(res.text).toContain('<form method="post" action="/settings/nsfw-filter" class="project-form" novalidate>');
   });
 
+  it('places the NSFW region last, outside the Defaults region and form, without nesting forms', async () => {
+    const res = await defaultsPage();
+    const defaults = defaultsRegion(res.text);
+    const nsfw = nsfwRegion(res.text);
+
+    expect(defaults).toContain('id="settings-defaults-form"');
+    expect(defaults).not.toContain('data-settings-nsfw-filter-region');
+    expect(defaults).not.toContain('action="/settings/nsfw-filter"');
+    expect(defaults).not.toContain('id="nsfw-filter-enabled"');
+    expect(nsfw).toMatch(/^<div class="settings-content settings-nsfw-filter-content" data-settings-nsfw-filter-region>/);
+    expect(nsfw).not.toContain('data-settings-defaults-region');
+    expect(nsfw).not.toContain('id="settings-defaults-form"');
+    expect((nsfw.match(/<form\b/g) || []).length).toBe(1);
+
+    // The section follows the Project Type catalogue, after the Defaults region closes.
+    expect(res.text.indexOf('id="defaults-project-type"')).toBeGreaterThan(-1);
+    expect(res.text.indexOf('id="defaults-project-type"')).toBeLessThan(res.text.indexOf('id="defaults-nsfw-filter"'));
+    expect(res.text.indexOf(defaults) + defaults.length).toBeLessThanOrEqual(res.text.indexOf(nsfw));
+    expect((res.text.match(/id="defaults-nsfw-filter"/g) || []).length).toBe(1);
+    expect((res.text.match(/id="nsfw-filter-enabled"/g) || []).length).toBe(1);
+
+    let depth = 0;
+    for (const [tag] of res.text.matchAll(/<\/?form\b[^>]*>/g)) {
+      depth += tag.startsWith('</') ? -1 : 1;
+      expect(depth).toBeLessThanOrEqual(1);
+    }
+    expect(depth).toBe(0);
+  });
+
+  it('redirects the legacy page to the Defaults section, keeping only NSFW notices', async () => {
+    const plain = await agent.get('/settings/nsfw-filter').expect(302);
+    expect(plain.headers.location).toBe('/settings/defaults#defaults-nsfw-filter');
+
+    const enabled = await agent.get('/settings/nsfw-filter?notice=nsfw_filter_enabled').expect(302);
+    expect(enabled.headers.location).toBe('/settings/defaults?notice=nsfw_filter_enabled#defaults-nsfw-filter');
+
+    const disabled = await agent.get('/settings/nsfw-filter?notice=nsfw_filter_disabled').expect(302);
+    expect(disabled.headers.location).toBe('/settings/defaults?notice=nsfw_filter_disabled#defaults-nsfw-filter');
+
+    for (const query of ['?notice=defaults_saved', '?notice=https://example.com', '?next=//example.com', '?notice[]=nsfw_filter_enabled']) {
+      const res = await agent.get(`/settings/nsfw-filter${query}`).expect(302);
+      expect(res.headers.location).toBe('/settings/defaults#defaults-nsfw-filter');
+    }
+
+    const page = await defaultsPage('?notice=nsfw_filter_enabled');
+    expect(page.text).toContain('NSFW Filter enabled.');
+  });
+
   it('renders the stored enabled state', async () => {
     db.prepare('INSERT INTO app_meta (key, value) VALUES (?, ?)').run(NSFW_FILTER_ENABLED_KEY, '1');
 
-    const res = await agent.get('/settings/nsfw-filter').expect(200);
+    const res = await defaultsPage();
 
     expect(nsfwControl(res.text)).toContain('checked');
     expect(res.text).toContain('>Enabled</span>');
@@ -148,7 +226,8 @@ describe('settings — NSFW Filter HTTP', () => {
   it('enables and persists the filter while creating NSFW when absent', async () => {
     const res = await setFilter(true);
 
-    expect(res.headers.location).toBe('/settings/nsfw-filter?notice=nsfw_filter_enabled');
+    expect(res.headers.location).toBe('/settings/defaults?notice=nsfw_filter_enabled#defaults-nsfw-filter');
+    expect(nsfwControl((await defaultsPage('?notice=nsfw_filter_enabled')).text)).toContain('checked');
     expect(readMeta(db)).toBe('1');
     expect(listNsfwTags(db)).toEqual([
       expect.objectContaining({ display_name: 'NSFW', normalized_name: 'nsfw' }),
@@ -188,7 +267,8 @@ describe('settings — NSFW Filter HTTP', () => {
 
     const res = await setFilter(false);
 
-    expect(res.headers.location).toBe('/settings/nsfw-filter?notice=nsfw_filter_disabled');
+    expect(res.headers.location).toBe('/settings/defaults?notice=nsfw_filter_disabled#defaults-nsfw-filter');
+    expect(nsfwControl((await defaultsPage()).text)).not.toContain('checked');
     expect(readMeta(db)).toBe('0');
     expect(listNsfwTags(db)).toEqual([expect.objectContaining({
       id: existing.id,
@@ -239,14 +319,26 @@ describe('settings — NSFW Filter HTTP', () => {
       .send({ enabled: ['0', '1', '1'], _csrf: csrfToken })
       .expect(422);
 
-    expect(res.text).toContain('Enabled value must be 0, 1, on, off, true, or false.');
+    expect(res.text).toContain('<h1 class="app-section-title">Settings — Defaults</h1>');
+    settingsNavLabels(res.text);
+    const region = nsfwRegion(res.text);
+    expect(region).toContain('id="nsfw-filter-errors"');
+    expect(region).toContain('Enabled value must be 0, 1, on, off, true, or false.');
+    expect(nsfwControl(region)).toContain('aria-describedby="nsfw-filter-help nsfw-filter-errors"');
+    expect(nsfwControl(region)).toContain('aria-invalid="true"');
     expect(nsfwControl(res.text)).not.toContain('checked');
+    // The Defaults region renders its saved state without the NSFW errors.
+    const defaults = defaultsRegion(res.text);
+    expect(defaults).toContain('id="settings-defaults-form"');
+    expect(defaults).not.toContain('id="defaults-errors"');
+    expect(defaults).not.toContain('Enabled value must be');
+    expect(defaults).not.toContain('aria-invalid="true"');
     expect(readMeta(db)).toBeUndefined();
   });
 
   describe('CSRF regression', () => {
     it('renders a CSRF token in the form', async () => {
-      const res = await agent.get('/settings/nsfw-filter').expect(200);
+      const res = await defaultsPage();
       const formMatch = res.text.match(/<form method="post" action="\/settings\/nsfw-filter"[\s\S]*?<\/form>/);
       expect(formMatch).not.toBeNull();
       const csrfInForm = (formMatch[0].match(/name="_csrf"/g) || []).length;
@@ -254,7 +346,7 @@ describe('settings — NSFW Filter HTTP', () => {
     });
 
     it('enables the filter using the token rendered in the page', async () => {
-      const page = await agent.get('/settings/nsfw-filter').expect(200);
+      const page = await defaultsPage();
       const renderedToken = extractCsrfToken(page.text);
 
       await agent
@@ -270,7 +362,7 @@ describe('settings — NSFW Filter HTTP', () => {
       await setFilter(true);
       expect(readMeta(db)).toBe('1');
 
-      const page = await agent.get('/settings/nsfw-filter').expect(200);
+      const page = await defaultsPage();
       const renderedToken = extractCsrfToken(page.text);
 
       await agent

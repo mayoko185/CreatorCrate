@@ -197,7 +197,9 @@ describe('settings — logs HTTP', () => {
     );
     expect(page.text).toContain('<nav class="project-filter-actions project-filter-actions--projects" aria-label="Log actions">');
     expect(page.text).toContain('<form method="get" action="/settings/logs" class="filters asset-viewer-filters asset-viewer-filters--projects logs-filter-form" data-logs-filter-form>');
-    expect(page.text).toContain('class="project-detail-section logs-results-section"');
+    expect(page.text).toContain('<body class="settings-page">');
+    expect(page.text).toContain('class="settings-content settings-logs-content"');
+    expect(page.text).toContain('class="settings-section logs-results-section"');
     expect(page.text).toContain('<h2 id="logs-results-heading">Log entries</h2>');
     expect(page.text).toContain('class="project-detail-section-body"');
     expect(page.text).toContain('class="table-scroll logs-table-scroll"');

@@ -633,11 +633,15 @@
       .scheduling-section .picker-input::-webkit-inner-spin-button,
       .dashboard-schedule .picker-input::-webkit-calendar-picker-indicator,
       .dashboard-schedule .picker-input::-webkit-clear-button,
-      .dashboard-schedule .picker-input::-webkit-inner-spin-button {
+      .dashboard-schedule .picker-input::-webkit-inner-spin-button,
+      .settings-release-notifications-content .release-notification-date-only .picker-input::-webkit-calendar-picker-indicator,
+      .settings-release-notifications-content .release-notification-date-only .picker-input::-webkit-clear-button,
+      .settings-release-notifications-content .release-notification-date-only .picker-input::-webkit-inner-spin-button {
         display: none;
       }
       .scheduling-section .picker-input::-moz-calendar-picker-indicator,
-      .dashboard-schedule .picker-input::-moz-calendar-picker-indicator {
+      .dashboard-schedule .picker-input::-moz-calendar-picker-indicator,
+      .settings-release-notifications-content .release-notification-date-only .picker-input::-moz-calendar-picker-indicator {
         display: none;
       }
       @media (max-width: 767px) {
@@ -6510,24 +6514,6 @@
         background: var(--surface-card);
         border-bottom: 1px solid var(--border);
       }
-      .settings-overview-content .settings-section,
-      .settings-security-content .settings-section,
-      .settings-defaults-content .settings-section,
-      .settings-nsfw-filter-content .settings-section,
-      .settings-asset-categories-content .settings-section,
-      .settings-tags-content .settings-section,
-      .settings-open-locally-content .settings-section {
-        background: var(--surface);
-      }
-      .settings-overview-content .settings-section h3,
-      .settings-security-content .settings-section h3,
-      .settings-defaults-content .settings-section h3,
-      .settings-nsfw-filter-content .settings-section h3,
-      .settings-asset-categories-content .settings-section h3,
-      .settings-tags-content .settings-section h3,
-      .settings-open-locally-content .settings-section h3 {
-        background: var(--surface-hover);
-      }
       .settings-section .kv,
       .settings-section .help-text {
         padding-left: var(--space-md);
@@ -6569,113 +6555,112 @@
         border-radius: 0;
         overflow: visible;
       }
+      /* Overview and Security take the shared Settings foundation; the rules
+         below keep only their tiles, rows, and form widths. The tiles are
+         flat Dashboard tiles without hover, since they are not links. */
       .settings-overview-stats .settings-stat {
         min-width: 0;
+        padding: var(--space-md) var(--space-lg);
         border: 1px solid var(--border);
         border-radius: var(--radius-lg);
-        box-shadow: var(--shadow-sm);
-        transition: background var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
       }
-      .settings-overview-stats .settings-stat:hover {
-        background: var(--surface-hover);
-        border-color: var(--border-strong);
-        box-shadow: var(--shadow-md);
+      .settings-overview-persistent-warning {
+        border-radius: 0 var(--radius-md) var(--radius-md) 0;
       }
-      .settings-overview-persistent-warning,
-      .settings-security-disabled-warning {
-        box-shadow: var(--shadow-sm);
+      /* Long paths wrap inside the row instead of widening the page. */
+      .settings-overview-section > .kv {
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: var(--space-xs) var(--space-md);
+        font-size: 0.875rem;
       }
-      .settings-overview-content > .settings-overview-section,
-      .settings-defaults-content .settings-defaults-section,
-      .settings-security-content .settings-security-section,
-      .settings-security-destructive {
-        box-shadow: var(--shadow-sm);
-      }
-      .settings-overview-content > .settings-overview-section:hover,
-      .settings-security-content .settings-security-section:hover {
-        border-color: var(--border-strong);
-      }
-      .settings-overview-section .kv:hover {
-        background: var(--surface-hover);
+      .settings-overview-section .kv-value {
+        min-width: 0;
+        overflow-wrap: anywhere;
       }
 
-      .settings-security-form > .settings-security-section {
-        overflow: hidden;
-        padding-bottom: var(--space-md);
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: var(--radius-lg);
-      }
-      .settings-security-section > h2,
-      .settings-security-section > h3 {
-        margin: 0;
-        padding: var(--space-sm) var(--space-md);
-        color: var(--muted);
-        font-family: var(--mono);
-        font-size: 0.75rem;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        background: var(--surface-hover);
-        border-bottom: 1px solid var(--border);
-      }
-      .settings-security-section > .help-text {
-        margin: var(--space-md) 0;
-        padding: 0 var(--space-md);
-      }
-      .settings-security-section > .field {
-        margin: 0 var(--space-md) var(--space-md);
+      .settings-security-section > .field,
+      .settings-security-destructive .field {
+        max-width: 28rem;
       }
       .settings-security-form .form-actions {
         margin: 0;
-      }
-      .settings-security-save-action,
-      .settings-security-enable-action {
-        box-shadow: var(--shadow-sm);
       }
       .settings-security-destructive {
         margin-top: var(--space-lg);
       }
 
+      /* Sections space themselves with their margin, as the catalogue
+         sections after the form do, so the form adds no gap of its own. */
       .settings-defaults-form {
-        gap: var(--space-lg);
+        gap: 0;
       }
-      .settings-defaults-section > .help-text {
-        margin: 0;
-        padding-top: var(--space-md);
-      }
+      /* Defaults takes the shared Settings foundation: fields stack inside
+         the section's padding like a refined dialog's section body, at a
+         readable width, instead of full-width bands split by dividers. */
       .settings-defaults-section > .field {
-        margin: 0;
-        padding: var(--space-md);
-        border-top: 1px solid var(--border);
+        width: 100%;
+        max-width: 40rem;
       }
-      .settings-defaults-section > .help-text + .field {
-        border-top: 0;
+      .settings-defaults-section > .field + .field {
+        margin-top: calc(var(--space-md) - 0.625rem);
       }
-      .settings-defaults-section > .field .help-text {
-        margin-top: var(--space-xs);
-        padding: 0;
-      }
-      .settings-defaults-section > .field select,
-      .settings-defaults-section > .field .cc-dropdown-field {
+      .settings-defaults-section > .field select {
         max-width: 100%;
       }
+      /* The foundation's field gap would otherwise collapse the grid gap.
+         Grid cells may shrink below the base field width, and dropdowns fill
+         their cell as in the refined dialogs so paired controls align. */
+      .settings-defaults-section .page-defaults-grid {
+        gap: var(--space-md) var(--space-lg);
+      }
+      .settings-defaults-section .page-defaults-grid > .field {
+        min-width: 0;
+      }
+      .settings-defaults-section .page-defaults-grid .asset-filter-multiselect-field {
+        width: 100%;
+        max-width: none;
+      }
+      .settings-defaults-section .page-defaults-grid .asset-filter-multiselect--sized,
+      .settings-defaults-section .page-defaults-grid .asset-filter-multiselect--sized summary {
+        width: 100%;
+      }
+      /* Image generation controls sit in one row on wide screens: Format,
+         WebP quality, Maximum dimension. A hidden dependent field drops its
+         column, so PNG pairs Format with Maximum dimension and Original
+         leaves Format alone. Between 541px and 1023px the shared two-column
+         grid applies, and at 540px and below the shared single column. */
+      @media (min-width: 1024px) {
+        .settings-defaults-section > .page-defaults-grid[data-project-image-layout] {
+          grid-template-columns: minmax(0, 14rem) minmax(0, 10rem) minmax(0, 20rem);
+          max-width: none;
+        }
+        .settings-defaults-section > .page-defaults-grid[data-project-image-layout]:has(> [data-project-image-dependent='webp'][hidden]) {
+          grid-template-columns: minmax(0, 14rem) minmax(0, 20rem);
+        }
+        .settings-defaults-section > .page-defaults-grid[data-project-image-layout]:has(> [data-project-image-dependent='generated'][hidden]) {
+          grid-template-columns: minmax(0, 14rem);
+        }
+      }
+      /* The save status moves into the section that changed; while empty it
+         adds no gap, and it stays rendered so it is still announced. */
+      .settings-defaults-section > [data-settings-fetch-save-status]:empty {
+        margin-top: -0.625rem;
+      }
+      .settings-defaults-form[data-settings-fetch-save-state='error'] [data-settings-fetch-save-status] {
+        color: var(--danger);
+      }
 
+      /* Catalogue cards follow Manage signatures' cards. The section's gap
+         spaces the list and the Add row, so neither adds a margin. */
       .settings-project-option-editor {
         overflow: visible;
-      }
-      .settings-project-option-editor > :not(h3) {
-        margin-left: var(--space-md);
-        margin-right: var(--space-md);
-      }
-      .settings-project-option-editor > .notice {
-        margin-top: var(--space-md);
       }
       .project-option-list {
         display: flex;
         flex-direction: column;
-        gap: var(--space-xs);
-        margin-top: var(--space-md);
-        margin-bottom: var(--space-md);
+        gap: var(--space-sm);
+        margin: 0;
         padding: 0;
         list-style: none;
       }
@@ -6684,13 +6669,20 @@
         align-items: center;
         gap: var(--space-md);
         min-width: 0;
-        padding: var(--space-xs) var(--space-sm);
+        padding: var(--space-sm) var(--space-sm) var(--space-sm) var(--space-md);
         border: 1px solid var(--border);
-        border-radius: var(--radius-md);
+        border-radius: var(--refined-control-radius);
+        background: var(--surface-card);
+        transition: background var(--transition-fast), border-color var(--transition-fast);
+      }
+      .project-option-card:hover {
         background: var(--surface-hover);
       }
+      .project-option-card:focus-within {
+        border-color: var(--border-strong);
+      }
       .project-option-label {
-        flex: 0 1 auto;
+        flex: 1 1 auto;
         min-width: 0;
         overflow-wrap: anywhere;
       }
@@ -6699,20 +6691,39 @@
         display: flex;
         align-items: center;
       }
+      /* Color and delete end the card together, so every card's controls
+         line up whatever its label's length; the wider gap keeps the
+         destructive action apart from the color trigger. */
       .project-option-card-controls {
-        flex: 1 1 auto;
-        justify-content: space-between;
+        flex: 0 0 auto;
         gap: var(--space-lg);
-        min-width: 0;
       }
       .project-option-color-form,
       .project-option-delete-form {
         margin: 0;
       }
+      /* The color trigger reads as a field control, like a dropdown's
+         trigger: compact in a card, full height in the Add row. */
       .project-option-color-trigger {
         display: inline-flex;
         align-items: center;
         gap: var(--space-xs);
+        min-height: 1.875rem;
+        padding: 0 0.5rem;
+        border: 1px solid var(--border);
+        border-radius: var(--refined-control-radius);
+        background: var(--bg);
+        color: var(--text);
+        transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+      }
+      .project-option-color-trigger:hover {
+        border-color: var(--border-strong);
+      }
+      .project-option-color-trigger:focus-visible,
+      [open] > .project-option-color-trigger {
+        outline: none;
+        border-color: var(--accent);
+        box-shadow: var(--refined-focus-shadow);
       }
       .project-option-color-swatch {
         width: 1rem;
@@ -6757,23 +6768,26 @@
       .project-option-color-choice[aria-pressed="true"] { outline: 2px solid var(--text); outline-offset: 1px; }
       .project-option-color-choice[aria-pressed="true"]::after { content: '✓'; color: #000; background: #fff; border-radius: 50%; }
       .project-option-color-panel .field-error-message { color: var(--danger); font-size: 0.75rem; }
-      .project-option-delete {
-        min-width: 2rem;
-        padding-inline: var(--space-xs);
-        border-color: var(--danger);
-        color: var(--danger);
+      /* An icon-only square beside the compact color trigger; the Settings
+         danger variant supplies its tint. Named within its card so the
+         square outranks the Settings small-button padding. */
+      .project-option-card .project-option-delete {
+        width: 1.875rem;
+        min-width: 1.875rem;
+        padding: 0;
         font-size: 1rem;
         line-height: 1;
       }
+      /* The separator sits midway between the list and the Add row: the
+         section gap above it, the same padding below. */
       .project-option-add-row {
         display: grid;
         grid-template-columns: minmax(0, 18rem) auto auto;
         align-items: end;
         justify-content: start;
         gap: var(--space-sm);
-        margin-top: 0;
-        margin-bottom: var(--space-md);
-        padding-top: var(--space-md);
+        margin: 0;
+        padding-top: 0.625rem;
         border-top: 1px solid var(--border);
       }
       .project-option-add-row > .field {
@@ -6781,17 +6795,14 @@
         max-width: 18rem;
         margin: 0;
       }
-      .project-option-add-row .project-option-color-control,
+      .project-option-add-row .project-option-color-trigger,
       .project-option-add-row > .button {
-        min-height: var(--control-height);
+        min-height: var(--refined-control-height);
       }
 
       @media (max-width: 540px) {
         .settings-overview-stats {
           grid-template-columns: minmax(0, 1fr);
-        }
-        .settings-security-section > .field {
-          margin-inline: var(--space-md);
         }
         .project-option-color-code {
           display: none;
@@ -6803,70 +6814,82 @@
           grid-column: 1 / -1;
         }
       }
-      /* Backups table reads as console/data output, not prose. */
+      /* Settings data tables read as console/data output, not prose;
+         Backups keeps the monospace face for its filenames only. */
       .settings-content .data-table th,
       .settings-content .data-table td {
         font-family: var(--mono);
       }
-      .logs-export-feedback {
-        flex-basis: 100%;
-        min-width: 0;
-      }
-      .logs-export-feedback > .form-help { margin-block: 0; overflow-wrap: anywhere; }
-      .logs-export-status[data-status-kind='error'] { color: var(--danger); }
-      .logs-count {
-        margin: var(--space-sm) 0;
-        color: var(--muted);
-        font-size: 0.8125rem;
-      }
-      .logs-table-scroll,
       .releases-table-scroll {
         margin: var(--space-sm) 0;
         scrollbar-color: var(--border-strong) transparent;
         scrollbar-width: thin;
       }
-      .logs-table-scroll::-webkit-scrollbar,
       .releases-table-scroll::-webkit-scrollbar {
         height: 0.5rem;
       }
-      .logs-table-scroll::-webkit-scrollbar-track,
       .releases-table-scroll::-webkit-scrollbar-track {
         background: transparent;
       }
-      .logs-table-scroll::-webkit-scrollbar-thumb,
       .releases-table-scroll::-webkit-scrollbar-thumb {
         border: 2px solid var(--surface-card);
         border-radius: 999px;
         background: var(--border-strong);
       }
-      .logs-table-scroll::-webkit-scrollbar-thumb:hover,
       .releases-table-scroll::-webkit-scrollbar-thumb:hover {
         background: var(--muted);
       }
-      .logs-table {
-        min-width: 72rem;
-      }
-      .logs-table,
       .releases-table {
         margin: 0;
       }
-      .logs-table th,
-      .logs-table td,
       .releases-table th,
       .releases-table td {
         padding: var(--space-xs) var(--space-sm);
       }
-      .logs-table td,
       .releases-table td {
         font-size: 0.8125rem;
         line-height: 1.4;
       }
-      .logs-table th,
       .releases-table th {
         font-size: 0.75rem;
       }
+      /* Backups and its Restore and Delete confirmations take the Settings
+         foundation's sections; the grid gap spaces the info panel and the
+         sections in place of their own margins. */
+      .settings-content.settings-backups-content {
+        display: grid;
+        gap: var(--space-lg);
+      }
+      .settings-content.settings-backups-content > * {
+        margin: 0;
+      }
+      /* The section's padding is the inset, so the body adds none. */
+      .backups-results-section > .project-detail-section-body {
+        min-width: 0;
+        padding: 0;
+      }
+      .backups-selected-backup .detail-list {
+        margin: 0;
+        font-size: 0.875rem;
+      }
+      .backups-selected-backup .detail-list dt {
+        font-size: 0.8125rem;
+      }
+      .settings-backups-content :is(.detail-list, .backups-table) code {
+        font-family: var(--mono);
+        font-size: 0.8125rem;
+        overflow-wrap: anywhere;
+      }
+      .settings-backups-content .destructive-section p {
+        overflow-wrap: anywhere;
+      }
+      /* The backup list takes the Dashboard projects table treatment: a
+         bordered scroller with a tinted header row. Only the filename keeps
+         the monospace face. */
       .backups-table-scroll {
-        margin: var(--space-sm) 0;
+        margin: 0;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
         scrollbar-color: var(--border-strong) transparent;
         scrollbar-width: thin;
       }
@@ -6877,7 +6900,7 @@
         background: transparent;
       }
       .backups-table-scroll::-webkit-scrollbar-thumb {
-        border: 2px solid var(--surface-card);
+        border: 2px solid var(--surface);
         border-radius: 999px;
         background: var(--border-strong);
       }
@@ -6890,18 +6913,198 @@
       }
       .backups-table th,
       .backups-table td {
-        padding: var(--space-xs) var(--space-sm);
+        padding: var(--space-sm) 0.625rem;
+        vertical-align: middle;
+      }
+      .backups-table th {
+        background: var(--surface-card);
+        font-family: var(--mono);
+        font-size: 0.75rem;
+        letter-spacing: 0.06em;
+      }
+      /* As on the Dashboard, values stay on one line; only the filename
+         wraps, so a long name grows its row instead of the table. */
+      .settings-backups-content .backups-table td {
+        font-family: inherit;
       }
       .backups-table td {
+        font-size: 0.875rem;
+        line-height: 1.4;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+      .backups-table td:first-child {
+        min-width: 16rem;
+        white-space: normal;
+      }
+      .backups-table tbody tr:last-child td {
+        border-bottom: 0;
+      }
+      .backups-table tbody tr:hover,
+      .backups-table tbody tr:focus-within {
+        background: var(--surface-hover);
+      }
+      /* The actions stay a table cell so their separator lines up with the
+         row's; the markup's whitespace spaces the buttons. */
+      .backups-table .row-actions {
+        display: table-cell;
+        text-align: right;
+        white-space: nowrap;
+      }
+      /* Logs and its Clear confirmation take the Settings foundation; the
+         column gap spaces the action row, the filter card, and the results
+         section in place of their own margins. A column flexbox, unlike a
+         grid, leaves the filter card's height indefinite, so the mobile
+         filter fields' 100% basis keeps resolving to their content. */
+      .settings-content.settings-logs-content {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-md);
+      }
+      .settings-content.settings-logs-content > * {
+        margin: 0;
+      }
+      /* With no view switcher beside it, the action row needs no offset. */
+      .settings-logs-content .project-filter-actions--projects {
+        top: 0;
+      }
+      /* The filter card takes the sections' inset; its notes read as the
+         foundation's help text, each on a row of its own. */
+      .settings-logs-content .logs-filter-form {
+        gap: var(--space-md);
+        padding: var(--space-md) var(--space-lg);
+      }
+      .logs-filter-form > .form-help,
+      .logs-export-feedback {
+        flex-basis: 100%;
+        min-width: 0;
+      }
+      .logs-filter-form .form-help {
+        margin-block: 0;
+        color: var(--muted);
+        font-size: 0.75rem;
+        line-height: 1.4;
+        overflow-wrap: anywhere;
+      }
+      /* The export status reserves no space while idle. */
+      .logs-export-status:not(:empty) {
+        margin-top: var(--space-xs);
+      }
+      .logs-export-status[data-status-kind='success'] { color: var(--success); }
+      .logs-export-status[data-status-kind='error'] { color: var(--danger); }
+      /* The section's padding is the inset, so the body adds none; the
+         count, table, and pagination stack on the gap. */
+      .logs-results-section > .project-detail-section-body {
+        min-width: 0;
+        padding: 0;
+      }
+      .logs-results-section [data-logs-results] {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 0.625rem;
+      }
+      .logs-results-section [data-logs-results] > * {
+        margin: 0;
+      }
+      .logs-count {
+        color: var(--muted);
+        font-size: 0.8125rem;
+        font-variant-numeric: tabular-nums;
+      }
+      /* The log table takes the Dashboard projects table treatment, as
+         Backups does: a bordered scroller with a tinted header row. */
+      .logs-table-scroll {
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        scrollbar-color: var(--border-strong) transparent;
+        scrollbar-width: thin;
+      }
+      .logs-table-scroll::-webkit-scrollbar {
+        height: 0.5rem;
+      }
+      .logs-table-scroll::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .logs-table-scroll::-webkit-scrollbar-thumb {
+        border: 2px solid var(--surface);
+        border-radius: 999px;
+        background: var(--border-strong);
+      }
+      .logs-table-scroll::-webkit-scrollbar-thumb:hover {
+        background: var(--muted);
+      }
+      .logs-table {
+        min-width: 72rem;
+        margin: 0;
+      }
+      .logs-table th,
+      .logs-table td {
+        padding: var(--space-sm) 0.625rem;
+        vertical-align: top;
+      }
+      .logs-table th {
+        background: var(--surface-card);
+        font-size: 0.75rem;
+        letter-spacing: 0.06em;
+      }
+      /* Messages read in the body face; codes, IDs, timestamps, and context
+         values keep the monospace face. */
+      .settings-logs-content .logs-table td {
+        font-family: inherit;
+      }
+      .logs-table td {
         font-size: 0.8125rem;
         line-height: 1.4;
       }
-      .backups-table th {
+      .logs-table td :is(code, time),
+      .logs-context-list dd {
+        font-family: var(--mono);
         font-size: 0.75rem;
+        font-variant-numeric: tabular-nums;
       }
-      .backups-table .row-actions {
+      /* Timestamp, level, kind, subsystem, and project ID stay on one line;
+         the correlation ID wraps only when its column runs out. */
+      .logs-table td:is(:nth-child(-n + 4), :nth-child(6)) {
         white-space: nowrap;
       }
+      .logs-table td:nth-child(7) {
+        min-width: 10rem;
+      }
+      .logs-table tbody tr:last-child td {
+        border-bottom: 0;
+      }
+      .logs-table tbody tr:hover,
+      .logs-table tbody tr:focus-within {
+        background: var(--surface-hover);
+      }
+      /* Levels read as status badges: the word carries the meaning and the
+         tint reinforces it. */
+      .logs-level {
+        display: inline-block;
+        padding: 0.0625rem 0.375rem;
+        border-radius: var(--radius-sm);
+        background: rgba(136, 136, 136, 0.2);
+        color: var(--muted);
+        font-weight: 600;
+        line-height: 1.4;
+      }
+      .logs-level--info {
+        background: rgba(34, 211, 238, 0.14);
+        color: var(--accent);
+      }
+      .logs-level--warn {
+        background: rgba(167, 139, 250, 0.18);
+        color: var(--warning);
+      }
+      .logs-level--error,
+      .logs-level--fatal {
+        background: rgba(251, 113, 133, 0.18);
+        color: var(--badge-danger-fg);
+      }
+      .logs-level--fatal {
+        box-shadow: inset 0 0 0 1px rgba(251, 113, 133, 0.55);
+      }
+      /* The event leads as a muted identifier above the message. */
       .logs-message-cell {
         min-width: 18rem;
         max-width: 32rem;
@@ -6912,32 +7115,107 @@
         display: block;
         overflow-wrap: anywhere;
       }
+      .logs-message-cell code {
+        color: var(--muted);
+      }
+      .logs-message-cell span {
+        margin-top: 0.125rem;
+        color: var(--text);
+      }
+      /* The context disclosure keeps its native summary: a chevron replaces
+         the marker, and the open context reads as an inset card. */
       .logs-context {
         min-width: 12rem;
         font-size: 0.8125rem;
       }
-      .logs-context[open] {
-        padding: var(--space-xs);
-        border-radius: var(--radius-sm);
-        background: var(--surface-hover);
-      }
       .logs-context summary {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25rem;
+        border-radius: var(--radius-sm);
+        color: var(--link);
         cursor: pointer;
+        list-style: none;
+        white-space: nowrap;
+      }
+      .logs-context summary::-webkit-details-marker {
+        display: none;
+      }
+      .logs-context summary::before {
+        flex: none;
+        width: 0.875rem;
+        height: 0.875rem;
+        background-color: currentColor;
+        content: '';
+        -webkit-mask: var(--refined-chevron) center / contain no-repeat;
+        mask: var(--refined-chevron) center / contain no-repeat;
+        transform: rotate(-90deg);
+        transition: transform var(--transition-fast);
+      }
+      .logs-context[open] > summary::before {
+        transform: none;
+      }
+      .logs-context summary:hover {
+        text-decoration: underline;
+      }
+      .logs-context summary:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 2px;
+      }
+      .logs-context > p {
+        margin: var(--space-xs) 0 0;
+        color: var(--muted);
       }
       .logs-context-list {
-        margin-top: var(--space-xs);
+        min-width: 16rem;
+        margin: var(--space-xs) 0 0;
+        padding: var(--space-sm) 0.625rem;
+        gap: 0.25rem 0.75rem;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: var(--surface-card);
       }
-      .logs-context-list dt,
+      .logs-context-list dt {
+        font-size: 0.75rem;
+        line-height: 1.4;
+      }
       .logs-context-list dd {
-        font-size: 0.8125rem;
+        line-height: 1.4;
       }
       .logs-pagination {
         display: flex;
         align-items: center;
         gap: var(--space-sm);
         justify-content: space-between;
-        margin-top: var(--space-sm);
+        color: var(--muted);
         font-size: 0.8125rem;
+        font-variant-numeric: tabular-nums;
+      }
+      /* Previous and Next are square icon buttons at the small size. */
+      .logs-pagination .button {
+        justify-content: center;
+        min-inline-size: 1.875rem;
+        padding: 0;
+      }
+      .logs-pagination .button svg {
+        width: 1rem;
+        height: 1rem;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .logs-context summary::before {
+          transition: none;
+        }
+      }
+      @media (max-width: 540px) {
+        .settings-logs-content .logs-filter-form {
+          padding: var(--space-md);
+        }
+        /* The last action's left-aligned tooltip would pass the viewport's
+           right edge; it ends on its button instead. */
+        .settings-logs-content .project-filter-actions--projects > .asset-tooltip--left:last-child[data-tooltip]::after {
+          left: auto;
+          right: 0;
+        }
       }
 
       /* ── Asset-category management rows ── */
@@ -8177,55 +8455,20 @@
         max-width: 24rem;
       }
 
-      /* ═══ Settings — Open locally page ═══
-         Indent the Projects path label and input so they line up with the
-         padded help text and key/value rows above, instead of sitting flush
-         against the card's left edge. Buttons are intentionally left flush in
-         the card corner and are not affected. */
-      .settings-open-locally-content .open-locally-field {
-        padding-left: var(--space-md);
-        padding-right: var(--space-md);
-      }
-      .settings-open-locally-content .open-locally-field .help-text {
-        padding-left: 0;
-        padding-right: 0;
-      }
-
-      .settings-open-locally-content .settings-section .form-actions.open-locally-installer-actions {
-        justify-content: center;
-        margin-left: 0;
-        margin-bottom: 0;
-      }
-
-      /* Keep Save immediately before Clear mapping while letting the path and
-         controls wrap without overflowing narrow viewports. */
-      .settings-open-locally-content .open-locally-path-row {
-        display: flex;
-        align-items: center;
-        gap: var(--space-md);
-        flex-wrap: wrap;
-      }
-      .settings-open-locally-content .open-locally-path-row > input {
-        flex: 1 1 16rem;
-        min-width: 0;
-      }
-      .settings-open-locally-content .open-locally-path-row > .button,
-      .settings-open-locally-content .open-locally-path-row > .inline-form {
-        flex: 0 0 auto;
-      }
-
+      /* The Tags pages take the shared Settings foundation, whose section
+         padding is the field's inset; the field keeps a readable width. */
       .settings-tags-name-field {
-        padding-left: var(--space-md);
-        padding-right: var(--space-md);
-      }
-      .settings-tags-name-field .help-text,
-      .settings-tags-name-field .field-error-message {
-        padding-left: 0;
-        padding-right: 0;
+        width: 100%;
+        max-width: 36rem;
       }
 
-      /* ── Populated tag list rows ── */
+      /* ── Populated tag list rows ──
+         Rows follow the catalogue cards: names take the free width and wrap,
+         and the actions stay grouped at the end until the row is too narrow. */
       .settings-tag-list {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-sm);
         margin: 0;
         padding: 0;
         list-style: none;
@@ -8236,19 +8479,30 @@
         justify-content: space-between;
         flex-wrap: wrap;
         gap: var(--space-sm) var(--space-md);
-        padding: var(--space-sm) var(--space-md);
-        border-bottom: 1px solid var(--border);
+        min-width: 0;
+        padding: var(--space-sm) var(--space-sm) var(--space-sm) var(--space-md);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: var(--surface-card);
+        transition: background var(--transition-fast), border-color var(--transition-fast);
       }
-      .settings-tag-row:last-child {
-        border-bottom: none;
+      .settings-tag-row:hover {
+        background: var(--surface-hover);
+      }
+      .settings-tag-row:focus-within {
+        border-color: var(--border-strong);
       }
       .settings-tag-name {
+        flex: 1 1 12rem;
         min-width: 0;
         overflow-wrap: anywhere;
-        font-size: 0.9375rem;
+        font-size: 0.875rem;
+        font-weight: 500;
+        line-height: 1.4;
       }
       .settings-tag-actions {
         display: flex;
+        flex-wrap: wrap;
         gap: var(--space-sm);
         flex-shrink: 0;
       }
@@ -9585,7 +9839,7 @@
         pointer-events: none;
       }
       .project-option-card[draggable="true"] { cursor: grab; }
-      .project-option-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+      .project-option-card:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
       .notes-reorder-row.is-dragging,
       .project-option-card.is-dragging { opacity: 0.55; }
       .notes-reorder-row.is-drop-before,
@@ -10457,7 +10711,8 @@
 .app-dialog--processing .processing-watermark-choice-control input[type='radio'],
 .app-dialog--processing :is(.processing-scope-option, .processing-checkbox-label) input:is([type='checkbox'], [type='radio']),
 .release-notification-channel-choice input[type='checkbox'],
-.release-no-set-date-field input[type='checkbox'] {
+.release-no-set-date-field input[type='checkbox'],
+.settings-social-prep-content .checkbox-label input[type='checkbox'] {
   appearance: none;
   inline-size: 1rem;
   block-size: 1rem;
@@ -10470,7 +10725,8 @@
 .app-dialog--processing .processing-watermark-choice-control input:is([type='checkbox'], [type='radio']):checked,
 .app-dialog--processing :is(.processing-scope-option, .processing-checkbox-label) input:is([type='checkbox'], [type='radio']):checked,
 .release-notification-channel-choice input[type='checkbox']:checked,
-.release-no-set-date-field input[type='checkbox']:checked {
+.release-no-set-date-field input[type='checkbox']:checked,
+.settings-social-prep-content .checkbox-label input[type='checkbox']:checked {
   border-color: var(--accent);
   background: var(--accent);
   box-shadow: inset 0 0 0 0.2rem var(--surface);
@@ -11427,92 +11683,111 @@
   margin-bottom: 0;
 }
 
+/* NSFW Filter and Social Preparation take the shared Settings foundation.
+   The switch field stacks its label, switch, help, and save status at the
+   field gap; the switch keeps its own track, thumb, and hit target. */
 .settings-nsfw-filter-content .settings-section,
-.settings-asset-categories-content .settings-section,
-.settings-asset-categories-content .category-management-section {
-  box-shadow: var(--shadow-sm);
-}
-
-.settings-nsfw-filter-content .settings-section {
+.settings-social-prep-content .settings-section {
   margin-bottom: 0;
 }
 
-.settings-nsfw-filter-content .field--switch {
-  display: grid;
-  gap: var(--space-xs);
-  padding: var(--space-md);
-  border-top: 1px solid var(--border);
-  background: var(--surface);
+:is(.settings-nsfw-filter-content, .settings-social-prep-content) .field--switch {
+  align-items: flex-start;
+  gap: 0.3125rem;
 }
 
-.settings-nsfw-filter-content .form-switch-label {
-  min-height: 2.5rem;
+/* While idle the save status adds no gap; it stays rendered so it is
+   still announced. */
+:is(.settings-nsfw-filter-content, .settings-social-prep-content) .field--switch > [data-settings-fetch-save-status]:empty {
+  margin-top: -0.3125rem;
 }
 
-.settings-release-notifications-content .settings-section {
-  margin-bottom: var(--space-md);
-  background: var(--surface);
-  box-shadow: var(--shadow-sm);
+:is(.settings-nsfw-filter-content, .settings-social-prep-content) form[data-settings-fetch-save-state='error'] [data-settings-fetch-save-status] {
+  color: var(--danger);
 }
 
-.settings-release-notifications-content .settings-section h3 {
-  background: var(--surface-hover);
-}
-
-/* Compact variant: the shared Settings and project-form rules pad and gap every
-   section child by --space-md/--space-lg, which is too loose for this page's
-   many small controls. Children below own their spacing instead. */
-.settings-release-notifications-content .project-form .release-notifications-section {
-  gap: 0;
-  padding: 0 0 var(--space-xs);
-}
-
-.settings-release-notifications-content .project-form .release-notifications-section > h3 {
-  margin-inline: 0;
-}
-
-.settings-release-notifications-content .settings-section .help-text {
+/* Platforms read as a wrapping row of choice chips below their help. */
+.settings-social-prep-content fieldset.field {
+  flex-flow: row wrap;
+  gap: var(--space-sm);
+  min-width: 0;
   margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.settings-social-prep-content fieldset.field > legend {
+  margin-bottom: 0.3125rem;
   padding: 0;
 }
 
-.settings-release-notifications-content .release-notifications-section > .help-text,
-.settings-release-notifications-content .release-notification-channels > .help-text {
-  padding: var(--space-sm) var(--space-md) var(--space-xs);
-}
-
-.settings-release-notifications-content .release-notifications-section > .help-text + .help-text {
-  padding-top: 0;
-}
-
-/* Label and toggle share one row; help, errors, and save status wrap below. */
-.settings-release-notifications-content .field--switch {
-  flex-direction: row;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0 var(--space-md);
-  padding: var(--space-xs) var(--space-md) var(--space-sm);
-}
-
-.settings-release-notifications-content .field--switch > :not(.field-label):not(.form-switch) {
+.settings-social-prep-content fieldset.field > .help-text {
   flex: 1 0 100%;
 }
 
-.settings-release-notifications-content .field--switch .form-switch-label {
-  min-height: 2rem;
+.settings-social-prep-content .checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-height: var(--refined-control-height);
+  padding: 0 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--refined-control-radius);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: border-color var(--transition-fast);
 }
 
-.settings-release-notifications-content .release-notification-duration,
-.settings-release-notifications-content .release-notification-date-only,
-.settings-release-notifications-content .release-notification-channels > .field-error-message,
-.settings-release-notifications-content .release-notification-timing > [data-release-notification-detail] > .field-error-message {
-  padding: 0 var(--space-md) var(--space-sm);
+.settings-social-prep-content .checkbox-label:hover {
+  border-color: var(--border-strong);
+}
+
+.settings-social-prep-content .checkbox-label:has(input:checked) {
+  border-color: var(--accent);
+}
+
+.settings-social-prep-content .field-error .checkbox-label {
+  border-color: var(--danger);
+}
+
+/* Release Notifications takes the shared Settings foundation: each section
+   is a padded card whose gap spaces its content. Switch fields stack like
+   NSFW Filter's, channel cards follow the category cards, and each card
+   keeps configuration readiness and the latest delivery result apart: the
+   result sits below a divider with its own badge and attempt line. */
+.settings-release-notifications-content .settings-section {
+  margin-bottom: 0;
+}
+
+.settings-release-notifications-content .field--switch {
+  align-items: flex-start;
+  gap: 0.3125rem;
+}
+
+/* While idle the save status adds no gap; it stays rendered so it is
+   still announced. */
+.settings-release-notifications-content .field--switch > [data-settings-fetch-save-status]:empty {
+  margin-top: -0.3125rem;
+}
+
+.settings-release-notifications-content form[data-settings-fetch-save-state='error'] [data-settings-fetch-save-status] {
+  color: var(--danger);
+}
+
+.settings-release-notifications-content .field--switch .form-switch-label {
+  min-height: var(--refined-control-height);
+  font-size: 0.875rem;
+}
+
+.settings-release-notifications-content .release-notification-duration {
+  max-width: 32rem;
 }
 
 .settings-release-notifications-content .release-notification-date-only {
   flex: 0 0 auto;
   max-width: none;
-  padding-top: var(--space-sm);
 }
 
 .settings-release-notifications-content .release-notification-date-only .picker-control {
@@ -11520,58 +11795,67 @@
   max-width: 16rem;
 }
 
-.settings-release-notifications-content .release-notifications-warning,
-.settings-release-notifications-content .error-summary {
-  margin: 0 var(--space-md) var(--space-sm);
-}
-
 .settings-release-notifications-content .release-notifications-warning {
-  padding: var(--space-xs) var(--space-sm);
-  font-size: 0.875rem;
+  margin: 0;
+  padding: var(--space-sm) var(--space-md);
+  border-radius: 0 var(--refined-control-radius) var(--refined-control-radius) 0;
+  font-size: 0.8125rem;
+  line-height: 1.5;
 }
 
 .settings-release-notifications-content .release-notifications-warning p {
   margin: 0;
 }
 
-.settings-release-notifications-content .release-notifications-section > .kv {
-  padding: var(--space-xs) var(--space-md);
+.settings-release-notifications-content .error-summary {
+  margin: 0;
 }
 
 .settings-release-notifications-content .release-notification-channels {
-  border: 0;
+  gap: var(--space-sm);
+  min-width: 0;
   margin: 0;
   padding: 0;
+  border: 0;
 }
 
+/* ── Channel cards ── */
 .release-notification-channel-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-sm);
-  padding: var(--space-sm) var(--space-md) var(--space-md);
+  gap: var(--space-md);
 }
 
 .release-notification-channel {
   display: flex;
   flex-direction: column;
-  gap: var(--space-xs);
+  gap: var(--space-sm);
   min-width: 0;
-  padding: var(--space-sm) var(--space-md);
+  padding: var(--space-md);
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: var(--refined-control-radius, var(--radius-md));
+  background: var(--surface-card);
+  transition: border-color var(--transition-fast);
+}
+
+.release-notification-channel:focus-within {
+  border-color: var(--border-strong);
 }
 
 .release-notification-channel-choice {
   display: inline-flex;
   align-items: center;
   align-self: flex-start;
-  gap: var(--space-xs);
+  gap: var(--space-sm);
+  min-height: 2rem;
+  font-size: 0.875rem;
   font-weight: 600;
   cursor: pointer;
 }
 
 .release-notification-channel-choice input[type='checkbox'],
-.release-no-set-date-field input[type='checkbox'] {
+.release-no-set-date-field input[type='checkbox'],
+.settings-social-prep-content .checkbox-label input[type='checkbox'] {
   border-color: var(--border-strong);
   cursor: pointer;
 }
@@ -11582,7 +11866,8 @@
 }
 
 .release-notification-channel-choice input[type='checkbox']:focus-visible,
-.release-no-set-date-field input[type='checkbox']:focus-visible {
+.release-no-set-date-field input[type='checkbox']:focus-visible,
+.settings-social-prep-content .checkbox-label input[type='checkbox']:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
@@ -11593,6 +11878,7 @@
 }
 
 .release-notification-channel .status-badge {
+  flex: none;
   padding: 0.0625rem 0.375rem;
   font-size: 0.6875rem;
 }
@@ -11601,7 +11887,7 @@
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
-  gap: var(--space-xs);
+  gap: var(--space-sm);
 }
 
 .release-notification-readiness,
@@ -11609,9 +11895,10 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-xs);
+  gap: var(--space-xs) var(--space-sm);
   margin: 0;
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
+  line-height: 1.4;
 }
 
 .settings-release-notifications-content .release-notification-channel .release-notification-selected-warning {
@@ -11620,12 +11907,28 @@
 }
 
 .release-notification-summary .kv {
-  padding-block: 0.125rem;
+  gap: var(--space-sm);
+  padding-block: 0.3125rem;
   font-size: 0.8125rem;
+}
+
+.release-notification-summary .kv-value {
+  min-width: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.release-notification-recent {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--border);
 }
 
 .release-notification-recent p {
   margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .release-notification-test {
@@ -11634,7 +11937,14 @@
   align-items: center;
   gap: var(--space-xs) var(--space-sm);
   margin-top: auto;
-  padding-top: var(--space-xs);
+}
+
+.release-notification-test [data-release-notification-test-button][aria-busy='true'] {
+  cursor: progress;
+}
+
+.release-notification-test [data-release-notification-test-status] {
+  flex: 1 0 100%;
 }
 
 .release-notification-test [data-release-notification-test-status]:empty {
@@ -11645,17 +11955,24 @@
 .release-notification-test-feedback--warning { color: var(--warning); }
 .release-notification-test-feedback--error { color: var(--danger); }
 
+.release-notification-help {
+  border-top: 0;
+}
+
 .release-notification-help summary {
-  min-height: 1.75rem;
-  padding: 0.125rem 0;
+  min-height: 2rem;
+  padding: 0;
   font-size: 0.8125rem;
 }
 
+
 .release-notification-help-content {
   gap: var(--space-xs);
-  padding-bottom: var(--space-xs);
+  padding: var(--space-xs) 0 var(--space-xs) var(--space-sm);
+  border-left: 2px solid var(--border);
   color: var(--muted);
   font-size: 0.8125rem;
+  line-height: 1.5;
 }
 
 .release-notification-help-content p {
@@ -11663,12 +11980,28 @@
   overflow-wrap: anywhere;
 }
 
+/* ── Timing ──
+   Each rule is a divided group; a group's dependent fields follow its
+   switch at the section gap, and the nested repeat rule hangs off the
+   overdue group by an indent rule rather than a second divider. */
 .release-notification-timing {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+  padding-top: 0.625rem;
   border-top: 1px solid var(--border);
 }
 
+.release-notification-timing > [data-release-notification-detail] {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+
 .release-notification-timing--nested {
-  margin-left: var(--space-md);
+  margin-left: var(--space-xs);
+  padding: 0 0 0 var(--space-md);
+  border-top: 0;
   border-left: 2px solid var(--border);
 }
 
@@ -11680,62 +12013,145 @@
 
 .settings-nsfw-filter-content .help-text,
 .settings-asset-categories-content .asset-browser-default-description,
+.settings-asset-categories-content .asset-browser-default-summary,
 .settings-asset-categories-content .category-management-section-note {
   color: var(--muted);
 }
 
 .settings-nsfw-filter-content .error-summary,
-.settings-asset-categories-content .error-summary {
-  margin: var(--space-md);
-  border-radius: var(--radius-md);
+.settings-social-prep-content .error-summary {
+  margin: 0;
 }
 
+/* Asset Categories takes the shared Settings foundation: each section is a
+   padded card whose gap spaces its content, so the rules below reset the
+   header-band insets that the shared preference and category rules apply
+   elsewhere, and keep only this page's own layout. The Manage signatures
+   dialog shares the card rules, so everything here stays page-scoped. */
 .settings-asset-categories-content .settings-content {
   display: grid;
   gap: var(--space-lg);
 }
 
-.settings-asset-categories-content .asset-browser-default-section {
+.settings-asset-categories-content .settings-content > .settings-section {
   margin-bottom: 0;
 }
 
-.settings-asset-categories-content .asset-browser-default-section .asset-browser-default-summary,
-.settings-asset-categories-content .asset-browser-default-section .asset-browser-default-control-row {
-  padding-inline: var(--space-md);
+.settings-asset-categories-content .error-summary,
+.settings-asset-categories-content .asset-browser-default-section .notice {
+  margin: 0;
 }
 
-.settings-asset-categories-content .asset-browser-default-section .asset-browser-default-control-row {
-  padding-bottom: var(--space-md);
+/* ── Preferences ──
+   One Defaults section holds both preferences as unbordered blocks: two
+   columns from 768px, stacked in source order below it. Each block stacks
+   its control, description, and feedback at the section gap. */
+.settings-asset-categories-content .settings-content > .settings-section.settings-asset-category-defaults {
+  overflow: visible;
 }
 
-.settings-asset-categories-content .category-management-section {
-  margin-bottom: 0;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  overflow: hidden;
+.settings-asset-categories-content .settings-asset-category-defaults-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-lg);
 }
 
-.settings-asset-categories-content .category-management-section > h3,
-.settings-asset-categories-content .category-management-section > .category-management-section-note {
-  padding-inline: var(--space-md);
+@media (min-width: 768px) {
+  .settings-asset-categories-content .settings-asset-category-defaults-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-lg) var(--space-xl);
+  }
 }
 
-.settings-asset-categories-content .settings-category-management-add {
-  background: var(--surface);
+.settings-asset-categories-content .settings-asset-category-preference {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+  min-width: 0;
+}
+
+.settings-asset-categories-content .asset-browser-default-description,
+.settings-asset-categories-content .asset-browser-default-summary {
+  margin: 0;
+  padding: 0;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
+.settings-asset-categories-content .asset-browser-default-description strong,
+.settings-asset-categories-content .asset-browser-default-summary strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* The warning, error, and fallback summary stack in their own wrapper,
+   which adds no gap while it holds none of them. */
+.settings-asset-categories-content [data-settings-asset-category-preference-secondary] {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.settings-asset-categories-content [data-settings-asset-category-preference-secondary]:not(:has(*)) {
+  display: none;
+}
+
+.settings-asset-categories-content .asset-browser-default-section .asset-browser-default-form {
+  gap: var(--space-sm);
+  padding: 0;
+}
+
+/* The autosave status reads as a status line; while idle it reserves no
+   space below the dropdown, and it stays rendered so it is announced. */
+.settings-asset-categories-content .asset-browser-default-form > [data-settings-fetch-save-status] {
+  min-height: 0;
+  margin: 0;
+  font-size: 0.8125rem;
+}
+
+.settings-asset-categories-content .asset-browser-default-form > [data-settings-fetch-save-status]:empty {
+  margin-top: calc(-1 * var(--space-sm));
+}
+
+.settings-asset-categories-content .asset-browser-default-form[data-settings-fetch-save-state='error'] > [data-settings-fetch-save-status] {
+  color: var(--danger);
+}
+
+.settings-asset-categories-content .settings-asset-category-preference .asset-browser-default-action-row {
+  margin: 0;
+}
+
+/* ── Add category ──
+   Inputs, labels, and help text take the foundation's field treatment; Add
+   and the Enabled switch line up with the inputs below their labels. */
+.settings-asset-categories-content .settings-category-management-add > .category-management-form {
+  gap: var(--space-sm);
+  padding: 0;
 }
 
 .settings-asset-categories-content .category-management-add-row {
-  align-items: flex-start;
-  gap: var(--space-md);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) max-content max-content;
+  align-items: start;
+  gap: var(--space-sm) var(--space-md);
+  min-width: 0;
 }
 
-.settings-asset-categories-content .category-management-add-submit {
+.settings-asset-categories-content .category-management-add-row > .field {
+  min-width: 0;
+}
+
+.settings-asset-categories-content .category-management-add-row > .field--switch {
+  gap: 0.3125rem;
+  min-width: 7rem;
+}
+
+.settings-asset-categories-content .category-management-add-row > .category-management-add-submit {
   display: flex;
-  flex: 0 0 auto;
-  align-self: flex-start;
+  align-self: start;
   margin: 0;
-  padding-top: calc(1.4rem + var(--space-xs));
+  padding-top: calc(0.8125rem * 1.3 + 0.3125rem);
 }
 
 .settings-asset-categories-content .category-management-add-submit > .button {
@@ -11743,46 +12159,101 @@
   width: auto;
 }
 
-.settings-asset-categories-content .category-management-add .field--switch {
-  min-height: 2.75rem;
-  padding: var(--space-sm) var(--space-md);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+.settings-asset-categories-content .form-switch-label {
+  min-height: var(--refined-control-height);
+  font-size: 0.875rem;
 }
 
-.settings-asset-categories-content .category-management-list {
-  padding: var(--space-md);
-  background: var(--surface);
+/* ── Category cards ──
+   Cards follow the Manage signatures cards. The handle and the card
+   controls drop below the field labels to line up with the inputs. */
+.settings-asset-categories-content .settings-category-management-section .category-reorder-list {
+  padding: 0;
 }
 
 .settings-asset-categories-content .category-management-card {
-  background: var(--surface);
+  --category-label-offset: calc(0.8125rem * 1.3 + 0.3125rem);
+  padding: var(--space-sm) var(--space-md) var(--space-sm) var(--space-sm);
   border-color: var(--border);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-sm);
+  border-radius: var(--refined-control-radius);
+  background: var(--surface-card);
 }
 
-.settings-asset-categories-content .category-management-card:hover,
+.settings-asset-categories-content .category-management-card:hover {
+  background: var(--surface-hover);
+}
+
 .settings-asset-categories-content .category-management-card:focus-within {
   border-color: var(--border-strong);
-  background: var(--surface-hover);
 }
 
-.settings-asset-categories-content .category-management-card-controls {
-  padding: var(--space-sm);
-  background: var(--surface-hover);
+.settings-asset-categories-content .category-management-card:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.settings-asset-categories-content .category-management-card.is-dragging {
+  border-color: var(--border-strong);
+}
+
+.settings-asset-categories-content .category-reorder-handle {
+  margin-top: calc(var(--category-label-offset) + (var(--refined-control-height) - 2rem) / 2);
+  font-size: 1.125rem;
+}
+
+.settings-asset-categories-content .category-details-form label {
+  margin-bottom: 0.3125rem;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.3;
+}
+
+/* Card inputs sit outside .field, so they take the foundation's field
+   treatment here. */
+.settings-asset-categories-content .category-details-form input {
+  min-height: var(--refined-control-height);
+  padding: 0.375rem 0.625rem;
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: var(--refined-control-radius);
+  background: var(--bg);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
-.settings-asset-categories-content .category-management-actions .button-danger {
+.settings-asset-categories-content .category-details-form input:hover {
+  border-color: var(--border-strong);
+}
+
+.settings-asset-categories-content .category-details-form input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--refined-focus-shadow);
+}
+
+.settings-asset-categories-content .category-details-form input[aria-invalid='true'] {
   border-color: var(--danger);
+}
+
+.settings-asset-categories-content .category-management-card .button-small {
+  min-height: var(--refined-control-height);
 }
 
 .settings-asset-categories-content .category-management-details-actions,
 .settings-asset-categories-content .category-management-actions {
   gap: var(--space-sm);
+}
+
+/* Cards stack below 768px, where the controls follow the fields instead. */
+@media (min-width: 768px) {
+  .settings-asset-categories-content .category-management-card-body {
+    align-items: flex-start;
+  }
+
+  .settings-asset-categories-content .category-management-card-controls {
+    margin-top: var(--category-label-offset);
+  }
 }
 
 @media (max-width: 767px) {
@@ -11791,67 +12262,56 @@
     gap: var(--space-md);
   }
 
-  .settings-asset-categories-content .category-management-add > .category-management-form,
-  .settings-asset-categories-content .category-management-list {
-    padding: var(--space-sm);
-  }
-
-  .settings-asset-categories-content .asset-browser-default-section .asset-browser-default-summary,
-  .settings-asset-categories-content .asset-browser-default-section .asset-browser-default-control-row {
-    padding-inline: var(--space-sm);
+  .settings-asset-categories-content .category-management-add-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   }
 }
 
+/* Add and the Enabled switch share a row below the stacked inputs. */
 @media (max-width: 540px) {
-  .settings-asset-categories-content .category-management-add-submit {
-    padding-top: 0;
+  .settings-asset-categories-content .category-management-add-row {
+    grid-template-columns: max-content minmax(0, 1fr);
   }
-}
 
-
-.settings-asset-categories-content .settings-content > .settings-section.asset-browser-default-section {
-  overflow: visible;
-}
-
-.settings-asset-categories-content .settings-content > .settings-section.asset-browser-default-section > h3 {
-  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-}
-
-.settings-asset-categories-content .settings-content > .settings-section.asset-browser-default-section .asset-browser-default-action-row {
-  margin: 0;
+  .settings-asset-categories-content .category-management-add-row > .field:not(.field--switch) {
+    grid-column: 1 / -1;
+  }
 }
 
 .settings-defaults-content .project-form > .settings-defaults-section {
   overflow: visible;
 }
 
-.settings-defaults-content .project-form > .settings-defaults-section > h3,
-.settings-defaults-content > .settings-project-option-editor > h3 {
-  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+/* The rebuild status reads as a status line, tinted by the run's phase. */
+.settings-defaults-section [data-rebuild-status] {
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border-strong);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  background: var(--bg);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+.settings-defaults-section[data-rebuild-phase='queued'] [data-rebuild-status],
+.settings-defaults-section[data-rebuild-phase='running'] [data-rebuild-status] {
+  border-left-color: var(--accent);
+}
+.settings-defaults-section[data-rebuild-phase='completed'] [data-rebuild-status] {
+  border-left-color: var(--success);
+}
+.settings-defaults-section[data-rebuild-phase='completed_with_failures'] [data-rebuild-status] {
+  border-left-color: var(--warning);
+}
+.settings-defaults-section[data-rebuild-phase='failed'] [data-rebuild-status] {
+  border-left-color: var(--danger);
 }
 
-/* Generated-image cards: each .field supplies the body padding, so drop the
-   section gap/bottom padding and the divider that would repeat the header rule. */
-.settings-defaults-content .project-form > .settings-defaults-section--compact {
-  gap: 0;
-  padding-bottom: 0;
-}
-
-.settings-defaults-content .project-form > .settings-defaults-section--compact > h3 + .field {
-  border-top: 0;
-}
-
-.settings-defaults-section--compact [data-rebuild-message] {
+.settings-defaults-section [data-rebuild-message] {
   margin: 0;
 }
 
-.settings-defaults-section--compact .form-actions.settings-defaults-action-row {
-  margin: var(--space-sm) 0 0;
-}
-
-/* WebP keeps Format on its own row; PNG pairs Format with Maximum dimension. */
-.page-defaults-grid[data-project-image-layout="webp"] > .project-image-format-field {
-  grid-column: 1 / -1;
+.settings-defaults-section .form-actions.settings-defaults-action-row {
+  margin: var(--space-xs) 0 0;
 }
 
 /* WP13: Project Assets-derived treatment for Settings Tags and Open locally. */
@@ -11866,20 +12326,19 @@
   margin-bottom: 0;
 }
 
-.settings-tags-content .settings-section,
-.settings-open-locally-content .settings-section {
+/* Tags takes the shared Settings foundation: the sections, error summary,
+   and empty state use its treatments, and the grid gap spaces the sections. */
+.settings-tags-content .settings-section {
   margin-bottom: 0;
-  box-shadow: var(--shadow-sm);
 }
 
-.settings-tags-content :is(.notice, .error-summary),
-.settings-open-locally-content .error-summary {
-  margin: var(--space-md);
-  border-radius: var(--radius-md);
+.settings-tags-content .error-summary {
+  margin: 0;
 }
 
-.settings-tags-content .settings-tags-name-field {
-  padding: var(--space-md);
+/* Long tag names wrap where the Rename and Delete pages name the tag. */
+.settings-tags-content :is(.settings-section > .help-text, .destructive-section p) {
+  overflow-wrap: anywhere;
 }
 
 .settings-tags-content .settings-tags-create-row {
@@ -11898,66 +12357,12 @@
   flex: 0 0 auto;
 }
 
-.settings-tags-content .settings-tag-list {
-  display: grid;
-  gap: var(--space-sm);
-  margin: 0;
-  padding: var(--space-md);
-  background: var(--surface);
-}
-
-.settings-tags-content .settings-tag-row {
-  padding: var(--space-sm) var(--space-md);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-sm);
-  transition: background var(--transition-fast), border-color var(--transition-fast),
-    box-shadow var(--transition-fast), transform var(--transition-fast);
-}
-
-.settings-tags-content .settings-tag-row:last-child {
-  border-bottom: 1px solid var(--border);
-}
-
-.settings-tags-content .settings-tag-row:hover,
-.settings-tags-content .settings-tag-row:focus-within {
-  background: var(--surface-hover);
-  border-color: var(--border-strong);
-  box-shadow: var(--shadow-md);
-  transform: translateY(-1px);
-}
-
-.settings-tags-content .settings-tag-name {
-  font-weight: 600;
-}
-
-.settings-tags-content .settings-tag-actions {
-  gap: var(--space-sm);
-}
-
-.settings-tags-content .settings-tag-actions .button-danger {
-  border-color: var(--danger);
-}
-
-.settings-tags-content .settings-tags-list-section .empty-state {
-  padding: var(--space-xl) var(--space-md);
-}
-
 .settings-open-locally-content .settings-open-locally-section-body {
   display: flex;
   flex-direction: column;
-  gap: var(--space-md);
+  gap: 0.625rem;
   min-width: 0;
-  padding: var(--space-md) var(--space-lg) var(--space-lg);
-}
-
-.settings-open-locally-content .settings-open-locally-section-body > :first-child {
-  margin-top: 0;
-}
-
-.settings-open-locally-content .settings-open-locally-section-body > :last-child {
-  margin-bottom: 0;
+  padding: 0;
 }
 
 .settings-open-locally-content .settings-open-locally-section-body .help-text {
@@ -11965,29 +12370,35 @@
   color: var(--muted);
 }
 
-.settings-open-locally-content .open-locally-installer-actions {
-  margin-top: 0;
+.settings-open-locally-content .settings-section .form-actions.open-locally-installer-actions {
+  justify-content: center;
+  margin-left: 0;
+  margin-bottom: 0;
 }
 
-.settings-open-locally-content .settings-open-locally-mapping-section .kv {
-  margin-inline: 0;
-  padding: var(--space-sm) 0;
-  border-bottom: 1px solid var(--border);
+/* A row's separator sits midway between rows, as in the foundation. Long
+   paths wrap inside the value instead of widening the card. */
+.settings-open-locally-content .settings-open-locally-mapping-body > .kv {
+  padding: 0 0 0.625rem;
 }
 
-.settings-open-locally-content .open-locally-field {
-  margin-top: 0;
-  padding: 0;
-  background: transparent;
-  border-top: 0;
+.settings-open-locally-content .settings-open-locally-mapping-body > .kv > .kv-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: end;
 }
 
 .settings-open-locally-content .settings-open-locally-mapping-body > .error-summary {
   margin: 0;
 }
 
+/* Keep Save immediately before Clear mapping while letting the path and
+   controls wrap without overflowing narrow viewports. */
 .settings-open-locally-content .open-locally-path-row {
+  display: flex;
+  align-items: center;
   gap: var(--space-sm);
+  flex-wrap: wrap;
 }
 
 .settings-open-locally-content .open-locally-path-row > input {
@@ -11999,8 +12410,19 @@
   flex: 0 0 auto;
 }
 
-.settings-open-locally-content .open-locally-field > .help-text {
-  margin-top: var(--space-sm);
+/* The save status lives in the detached save form at the top of the field;
+   it reads below the field's help instead, and while idle adds no gap. It
+   stays rendered so it is still announced. */
+.settings-open-locally-content .open-locally-field > form {
+  order: 1;
+}
+
+.settings-open-locally-content .open-locally-field > form:has(> [data-settings-fetch-save-status]:empty) {
+  margin-top: -0.3125rem;
+}
+
+.settings-open-locally-content form[data-settings-fetch-save-state='error'] [data-settings-fetch-save-status] {
+  color: var(--danger);
 }
 
 @media (max-width: 767px) {
@@ -12008,15 +12430,18 @@
   .settings-open-locally-content {
     gap: var(--space-md);
   }
+}
 
-  .settings-tags-content .settings-tag-list,
-  .settings-tags-content .settings-tags-name-field,
-  .settings-open-locally-content .settings-open-locally-section-body {
-    padding: var(--space-sm);
+/* On phones each row stacks its key above the value, so a long path takes
+   the card's full width. */
+@media (max-width: 540px) {
+  .settings-open-locally-content .settings-open-locally-mapping-body > .kv {
+    flex-direction: column;
+    gap: var(--space-xs);
   }
 
-  .settings-open-locally-content .settings-open-locally-mapping-section .kv {
-    margin-inline: 0;
+  .settings-open-locally-content .settings-open-locally-mapping-body > .kv > .kv-value {
+    text-align: start;
   }
 }
 
@@ -13565,7 +13990,8 @@
 }
 .app-dialog .field-error input:not([type='checkbox']):not([type='radio'], [type='file']),
 .app-dialog .field-error textarea,
-.app-dialog .field-error .asset-filter-multiselect summary {
+.app-dialog .field-error .asset-filter-multiselect summary,
+:where(.settings-page main) .field-error .asset-filter-multiselect summary {
   border-color: var(--danger);
 }
 /* Number steppers join the input to their buttons, so the shared input
@@ -13586,8 +14012,9 @@
 
 /* ── Dropdowns ──
    Option rows also cover the slideshow speed picker, the one dropdown on
-   the fullscreen media surfaces. */
-.app-dialog .asset-filter-multiselect summary {
+   the fullscreen media surfaces. Settings pages share the whole treatment. */
+.app-dialog .asset-filter-multiselect summary,
+:where(.settings-page main) .asset-filter-multiselect summary {
   min-height: var(--refined-control-height);
   padding: 0.375rem 0.625rem;
   border-radius: var(--refined-control-radius);
@@ -13595,12 +14022,15 @@
   line-height: 1.5;
   transition: border-color var(--transition-fast), box-shadow var(--transition-fast), background var(--transition-fast);
 }
-.app-dialog .asset-filter-multiselect summary:hover {
+.app-dialog .asset-filter-multiselect summary:hover,
+:where(.settings-page main) .asset-filter-multiselect summary:hover {
   border-color: var(--border-strong);
   background: var(--bg);
 }
 .app-dialog .asset-filter-multiselect summary::after,
-.app-dialog .asset-filter-multiselect[open] summary::after {
+.app-dialog .asset-filter-multiselect[open] summary::after,
+:where(.settings-page main) .asset-filter-multiselect summary::after,
+:where(.settings-page main) .asset-filter-multiselect[open] summary::after {
   width: 1rem;
   height: 1rem;
   background-color: var(--muted);
@@ -13609,17 +14039,21 @@
   mask: var(--refined-chevron) center / contain no-repeat;
   transition: transform var(--transition-fast), background-color var(--transition-fast);
 }
-.app-dialog .asset-filter-multiselect[open] summary::after {
+.app-dialog .asset-filter-multiselect[open] summary::after,
+:where(.settings-page main) .asset-filter-multiselect[open] summary::after {
   background-color: var(--accent);
   transform: rotate(180deg);
 }
 .app-dialog .asset-filter-multiselect summary:focus-visible,
-.app-dialog .asset-filter-multiselect[open] summary {
+.app-dialog .asset-filter-multiselect[open] summary,
+:where(.settings-page main) .asset-filter-multiselect summary:focus-visible,
+:where(.settings-page main) .asset-filter-multiselect[open] summary {
   outline: none;
   border-color: var(--accent);
   box-shadow: var(--refined-focus-shadow);
 }
-.app-dialog .asset-filter-multiselect-panel {
+.app-dialog .asset-filter-multiselect-panel,
+:where(.settings-page main) .asset-filter-multiselect-panel {
   top: calc(100% + 0.3125rem);
   gap: 1px;
   padding: var(--space-xs);
@@ -13629,12 +14063,14 @@
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
 }
 .app-dialog .asset-filter-multiselect-option,
-.slideshow-controls .asset-filter-multiselect-option {
+.slideshow-controls .asset-filter-multiselect-option,
+:where(.settings-page main) .asset-filter-multiselect-option {
   border-radius: var(--radius-sm);
   transition: background var(--transition-fast);
 }
 .app-dialog .asset-filter-multiselect--sized .asset-filter-multiselect-option > label,
-.slideshow-controls .asset-filter-multiselect--sized .asset-filter-multiselect-option > label {
+.slideshow-controls .asset-filter-multiselect--sized .asset-filter-multiselect-option > label,
+:where(.settings-page main) .asset-filter-multiselect--sized .asset-filter-multiselect-option > label {
   align-items: center;
   gap: var(--space-sm);
   padding: 0.375rem var(--space-sm);
@@ -13642,24 +14078,29 @@
   line-height: 1.4;
 }
 .app-dialog .asset-filter-multiselect-option > label > span,
-.slideshow-controls .asset-filter-multiselect-option > label > span {
+.slideshow-controls .asset-filter-multiselect-option > label > span,
+:where(.settings-page main) .asset-filter-multiselect-option > label > span {
   flex: 1 1 auto;
 }
 .app-dialog .asset-filter-multiselect-option:has(input:checked),
-.slideshow-controls .asset-filter-multiselect-option:has(input:checked) {
+.slideshow-controls .asset-filter-multiselect-option:has(input:checked),
+:where(.settings-page main) .asset-filter-multiselect-option:has(input:checked) {
   background: rgba(34, 211, 238, 0.08);
 }
 .app-dialog .asset-filter-multiselect-option:has(input:checked):hover,
-.slideshow-controls .asset-filter-multiselect-option:has(input:checked):hover {
+.slideshow-controls .asset-filter-multiselect-option:has(input:checked):hover,
+:where(.settings-page main) .asset-filter-multiselect-option:has(input:checked):hover {
   background: rgba(34, 211, 238, 0.14);
 }
 .app-dialog .asset-filter-multiselect-option:has(input:focus-visible),
-.slideshow-controls .asset-filter-multiselect-option:has(input:focus-visible) {
+.slideshow-controls .asset-filter-multiselect-option:has(input:focus-visible),
+:where(.settings-page main) .asset-filter-multiselect-option:has(input:focus-visible) {
   outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
 }
 .app-dialog .asset-filter-multiselect-option input,
-.slideshow-controls .asset-filter-multiselect-option input {
+.slideshow-controls .asset-filter-multiselect-option input,
+:where(.settings-page main) .asset-filter-multiselect-option input {
   flex: none;
   width: 1rem;
   height: 1rem;
@@ -13670,22 +14111,26 @@
   cursor: pointer;
 }
 .app-dialog .asset-filter-multiselect-option input:focus-visible,
-.slideshow-controls .asset-filter-multiselect-option input:focus-visible {
+.slideshow-controls .asset-filter-multiselect-option input:focus-visible,
+:where(.settings-page main) .asset-filter-multiselect-option input:focus-visible {
   outline: none;
 }
 /* Single- and multi-select options share one look: no radio dot or checkbox
    square; each chosen row gets a trailing check. Option text keeps the same
    typography and color whether or not it is selected. */
 .app-dialog .asset-filter-multiselect-option input,
-.slideshow-controls .asset-filter-multiselect-option input {
+.slideshow-controls .asset-filter-multiselect-option input,
+:where(.settings-page main) .asset-filter-multiselect-option input {
   order: 1;
 }
 .app-dialog .asset-filter-multiselect-option input:checked,
-.slideshow-controls .asset-filter-multiselect-option input:checked {
+.slideshow-controls .asset-filter-multiselect-option input:checked,
+:where(.settings-page main) .asset-filter-multiselect-option input:checked {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2322d3ee' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E");
   background-size: 0.875rem;
 }
-.app-dialog .asset-filter-multiselect-empty {
+.app-dialog .asset-filter-multiselect-empty,
+:where(.settings-page main) .asset-filter-multiselect-empty {
   font-size: 0.8125rem;
 }
 
@@ -14237,23 +14682,29 @@ button[aria-disabled="true"] > .project-create-submit-icon {
 }
 /* The picker row is the visible control; its native input sits inside it
    borderless, so the shared dialog input treatment must not double up.
-   These apply to date/time pickers in every dialog. */
+   These apply to date/time pickers in every dialog and to Release
+   Notifications' date-only time picker. */
+.settings-release-notifications-content .scheduling-field .picker-input-row,
 .app-dialog .scheduling-field .picker-input-row {
   border-color: var(--border);
   border-radius: var(--refined-control-radius);
   transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
+.settings-release-notifications-content .scheduling-field .picker-input-row:hover,
 .app-dialog .scheduling-field .picker-input-row:hover {
   border-color: var(--border-strong);
 }
+.settings-release-notifications-content .scheduling-field .picker-input-row:focus-within,
 .app-dialog .scheduling-field .picker-input-row:focus-within {
   outline: none;
   border-color: var(--accent);
   box-shadow: var(--refined-focus-shadow);
 }
+.settings-release-notifications-content .scheduling-field.field-error .picker-input-row,
 .app-dialog .scheduling-field.field-error .picker-input-row {
   border-color: var(--danger);
 }
+.settings-release-notifications-content .scheduling-field .picker-input-row input.picker-input,
 .app-dialog .scheduling-field .picker-input-row input.picker-input {
   min-height: calc(var(--refined-control-height) - 2px);
   padding: 0.375rem calc(1.75rem + 2 * var(--space-xs)) 0.375rem 0.625rem;
@@ -14264,6 +14715,7 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   font-size: 0.875rem;
   line-height: 1.5;
 }
+.settings-release-notifications-content .scheduling-field .picker-trigger,
 .app-dialog .scheduling-field .picker-trigger {
   width: 1.75rem;
   height: 1.75rem;
@@ -14272,6 +14724,8 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   background: transparent;
   color: var(--muted);
 }
+.settings-release-notifications-content .scheduling-field .picker-trigger:hover:not(:disabled),
+.settings-release-notifications-content .scheduling-field .picker-trigger[aria-expanded="true"],
 .app-dialog .scheduling-field .picker-trigger:hover:not(:disabled),
 .app-dialog .scheduling-field .picker-trigger[aria-expanded="true"] {
   background: var(--surface-hover);
@@ -14730,6 +15184,296 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   .app-dialog--refined.project-form-dialog .project-edit-dialog-section,
   .app-dialog--refined.asset-form-dialog .asset-edit-dialog-section,
   #project-asset-category-management-dialog.app-dialog--refined .project-category-management-panel {
+    padding: var(--space-md);
+  }
+}
+
+/* ═══ Settings pages: shared refined foundation ═══
+   Settings pages opt in with the settings-page body class and then take the
+   Dashboard panel surface and the refined dialogs' section cards, fields,
+   and buttons. Every rule is scoped to the page's <main> through :where(),
+   so the scope adds no specificity: these rules outrank only the generic
+   Settings and form rules they follow, and each page's own rules still win.
+   The shell, sidebar, and dialogs (rendered outside <main>) are untouched,
+   and pages without the class keep the generic .settings-section bands.
+   Switches, checkbox labels, color swatches, reorder handles, icon-only
+   buttons, dropdown panels, and date/time pickers keep their own styling. */
+:where(.settings-page) main {
+  /* The refined dialogs' control tokens, which .app-dialog keeps local. */
+  --refined-control-height: 2.25rem;
+  --refined-control-radius: var(--radius-md);
+  --refined-focus-shadow: 0 0 0 3px rgba(34, 211, 238, 0.22);
+  --refined-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+}
+
+/* ── Sections ──
+   A section is a Dashboard panel laid out like a refined dialog section:
+   padded, with an accent-marked heading in place of the mono header band.
+   Without the band nothing needs clipping, so dropdown panels can overflow.
+   A section inside a .project-form is named with that class too, so the
+   foundation outranks the form's band padding and heading bleed. A
+   destructive section takes the same layout with a danger tint. */
+:where(.settings-page main) .settings-section,
+:where(.settings-page main) .project-form .settings-section,
+:where(.settings-page main) .destructive-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+  min-width: 0;
+  padding: var(--space-md) var(--space-lg) var(--space-lg);
+  overflow: visible;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+:where(.settings-page main) .destructive-section {
+  border-color: rgba(251, 113, 133, 0.45);
+  background: rgba(251, 113, 133, 0.06);
+}
+:where(.settings-page main) :is(.settings-section, .destructive-section) > :is(h2, h3),
+:where(.settings-page main) .project-form .settings-section > :is(h2, h3) {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.3;
+  text-transform: none;
+}
+:where(.settings-page main) :is(.settings-section, .destructive-section) > :is(h2, h3)::before {
+  flex: none;
+  width: 0.1875rem;
+  height: 0.875rem;
+  border-radius: 999px;
+  background: var(--accent-gradient);
+  content: '';
+}
+:where(.settings-page main) .destructive-section > :is(h2, h3) {
+  color: var(--danger);
+}
+:where(.settings-page main) .destructive-section > :is(h2, h3)::before {
+  background: var(--danger);
+}
+:where(.settings-page main) .destructive-section p {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+:where(.settings-page main) .destructive-section > form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+:where(.settings-page main) .destructive-section > .button {
+  align-self: flex-start;
+}
+/* The section's padding is the inset, so rows and help text drop the
+   band layout's side padding and the actions drop its negative margins. */
+:where(.settings-page main) .settings-section :is(.kv, .help-text) {
+  padding-left: 0;
+  padding-right: 0;
+}
+/* A row's separator sits midway between rows: the row pads below its
+   value by the section gap, and the gap supplies the space above. */
+:where(.settings-page main) .settings-section > .kv {
+  padding-top: 0;
+  padding-bottom: 0.625rem;
+}
+:where(.settings-page main) .settings-section > .kv:last-of-type {
+  padding-bottom: 0;
+}
+:where(.settings-page main) .settings-section .help-text {
+  margin: 0;
+  padding-bottom: 0;
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+:where(.settings-page main) :is(.settings-section, .destructive-section) .form-actions {
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  margin: var(--space-xs) 0 0;
+}
+
+/* ── Fields ── */
+:where(.settings-page main) .field:not(:where(.field--switch, .field--checkbox)) {
+  gap: 0.3125rem;
+}
+:where(.settings-page main) .field > :is(label, .field-label):not(:where(.sr-only, .checkbox-label, .form-switch-label)),
+:where(.settings-page main) .asset-filter-multiselect-field > legend {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.3;
+}
+/* A legend sits outside its fieldset's gap, so it spaces itself. */
+:where(.settings-page main) .asset-filter-multiselect-field > legend {
+  margin-bottom: 0.3125rem;
+}
+:where(.settings-page main) .field-error-message {
+  font-size: 0.75rem;
+}
+/* Text inputs, textareas, and native selects. Choice, file, color, range,
+   and picker inputs, a dropdown's hidden native select, and controls inside
+   a dropdown panel keep their own treatments. */
+:where(.settings-page main) .field :is(input:not(:where([type='checkbox'], [type='radio'], [type='file'], [type='color'], [type='range'], .picker-input)), textarea, select:not(.cc-dropdown-native-select)):not(:where(.asset-filter-multiselect-panel *)) {
+  min-height: var(--refined-control-height);
+  padding: 0.375rem 0.625rem;
+  border: 1px solid var(--border);
+  border-radius: var(--refined-control-radius);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+:where(.settings-page main) .field textarea {
+  min-height: 4.75rem;
+  resize: vertical;
+}
+:where(.settings-page main) .field :is(input, textarea)::placeholder {
+  color: var(--muted);
+  opacity: 0.7;
+}
+:where(.settings-page main) .field :is(input:not(:where([type='checkbox'], [type='radio'], [type='file'], [type='color'], [type='range'], .picker-input)), textarea, select:not(.cc-dropdown-native-select)):not(:where(.asset-filter-multiselect-panel *)):hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+:where(.settings-page main) .field :is(input:not(:where([type='checkbox'], [type='radio'], [type='file'], [type='color'], [type='range'], .picker-input)), textarea, select:not(.cc-dropdown-native-select)):not(:where(.asset-filter-multiselect-panel *)):focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--refined-focus-shadow);
+}
+:where(.settings-page main) .field-error :is(input:not(:where([type='checkbox'], [type='radio'], [type='file'], [type='color'], [type='range'], .picker-input)), textarea, select:not(.cc-dropdown-native-select)) {
+  border-color: var(--danger);
+}
+/* Disabled controls read like a disabled number stepper. */
+:where(.settings-page main) .field :is(input:not(:where([type='checkbox'], [type='radio'], [type='file'], [type='color'], [type='range'], .picker-input)), textarea, select:not(.cc-dropdown-native-select)):disabled {
+  background: var(--surface-card);
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+/* Number steppers join the input to their buttons, as in the dialogs. */
+:where(.settings-page main) .field .cc-number-stepper > input[type='number'] {
+  border-inline-end: 0;
+  border-radius: var(--refined-control-radius) 0 0 var(--refined-control-radius);
+}
+:where(.settings-page main) .field .cc-number-stepper-button {
+  min-height: var(--refined-control-height);
+}
+:where(.settings-page main) .field .cc-number-stepper-button--increment {
+  border-radius: 0 var(--refined-control-radius) var(--refined-control-radius) 0;
+}
+/* Dropdown triggers, panels, and options share the dialog dropdown rules
+   (see "Dropdowns" in the refined dialog section). */
+
+/* ── Buttons ──
+   Text buttons take the refined sizing and variants. The primary action is
+   the dialogs' dark outlined submit, as on the Dashboard; disabled styling
+   and the focus ring come from the shared .button rules. Icon-only filter
+   controls and the color trigger keep their own sizing. */
+:where(.settings-page main) .button:not(:where(.project-filter-control, .project-option-color-trigger)) {
+  gap: 0.375rem;
+  min-height: var(--refined-control-height);
+  padding: 0 0.875rem;
+  border-radius: var(--refined-control-radius);
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), filter var(--transition-fast), box-shadow var(--transition-fast);
+}
+:where(.settings-page main) .button:not(:where(.project-filter-control, .project-option-color-trigger)):active:not(:disabled):not([aria-disabled="true"]) {
+  transform: translateY(1px);
+}
+:where(.settings-page main) .button-primary:not(:where(.project-filter-control, .project-option-color-trigger)) {
+  gap: var(--space-sm);
+  padding: 0 var(--space-md);
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+}
+:where(.settings-page main) .button-primary:not(:where(.project-filter-control, .project-option-color-trigger)):not(:disabled):not([aria-disabled="true"]) {
+  border: 1px solid var(--border-strong);
+  background: var(--bg);
+  color: var(--text);
+  box-shadow: none;
+}
+:where(.settings-page main) .button-primary:not(:where(.project-filter-control, .project-option-color-trigger)):hover:not(:disabled):not([aria-disabled="true"]) {
+  border-color: var(--accent);
+  background: var(--bg);
+  filter: none;
+}
+:where(.settings-page main) .button-secondary:not(:where(.project-filter-control, .project-option-color-trigger)):not(:disabled):not([aria-disabled="true"]) {
+  border-color: var(--border-strong);
+  background: transparent;
+  color: var(--text);
+}
+:where(.settings-page main) .button-secondary:not(:where(.project-filter-control, .project-option-color-trigger)):hover:not(:disabled):not([aria-disabled="true"]) {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+  color: var(--text);
+}
+/* Destructive actions stay tinted so they never read as the primary. */
+:where(.settings-page main) .button-danger:not(:where(.project-filter-control, .project-option-color-trigger)):not(:disabled):not([aria-disabled="true"]) {
+  border-color: rgba(251, 113, 133, 0.45);
+  background: rgba(251, 113, 133, 0.1);
+  color: var(--badge-danger-fg);
+}
+:where(.settings-page main) .button-danger:not(:where(.project-filter-control, .project-option-color-trigger)):hover:not(:disabled):not([aria-disabled="true"]) {
+  border-color: var(--danger);
+  background: rgba(251, 113, 133, 0.18);
+}
+:where(.settings-page main) .button-small:not(:where(.project-filter-control, .project-option-color-trigger)) {
+  min-height: 1.875rem;
+  padding: 0 0.625rem;
+  font-size: 0.8125rem;
+}
+
+/* ── Notices, warnings, and errors ──
+   Variant colors stay with .notice and .panel; Settings gives them the
+   refined radius and type size. Error summaries read like a dialog's error
+   line. */
+:where(.settings-page main) :is(.notice, .settings-content > .panel--info, .settings-content > .panel--warning) {
+  border-radius: 0 var(--refined-control-radius) var(--refined-control-radius) 0;
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+:where(.settings-page main) .error-summary {
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid rgba(251, 113, 133, 0.45);
+  border-radius: var(--refined-control-radius);
+  background: rgba(251, 113, 133, 0.1);
+  color: var(--badge-danger-fg);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+:where(.settings-page main) .error-summary :is(p, ul) {
+  margin: 0;
+}
+:where(.settings-page main) .error-summary p + ul {
+  margin-top: var(--space-xs);
+}
+
+/* ── Empty states ── */
+:where(.settings-page main) .settings-section .empty-state {
+  padding: var(--space-lg) var(--space-md);
+  font-size: 0.875rem;
+}
+:where(.settings-page main) .settings-section .empty-state :is(h2, .empty-state-heading) {
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+@media (max-width: 540px) {
+  :where(.settings-page main) .settings-section,
+  :where(.settings-page main) .project-form .settings-section,
+  :where(.settings-page main) .destructive-section {
     padding: var(--space-md);
   }
 }

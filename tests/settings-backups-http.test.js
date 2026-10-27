@@ -385,7 +385,7 @@ describe('settings — backup management HTTP', () => {
       await backupService.createBackup(db);
       const res = await agent.get('/settings/backups').expect(200);
 
-      expect(res.text).toContain('class="project-detail-section backups-results-section"');
+      expect(res.text).toContain('class="settings-section backups-results-section"');
       expect(res.text).toContain('id="backups-results-heading">Existing backups</h2>');
       expect(res.text).toContain('class="table-scroll backups-table-scroll"');
       expect(res.text).toContain('class="data-table backups-table"');
@@ -400,14 +400,14 @@ describe('settings — backup management HTTP', () => {
       expect(res.text).not.toMatch(/[A-Za-z]:[/\\]/);
     });
 
-    it('explains that backups cover SQLite application data', async () => {
+    it('explains that backups cover the application database', async () => {
       const res = await agent.get('/settings/backups').expect(200);
-      expect(res.text).toContain('SQLite');
+      expect(res.text).toContain("Backups save CreatorCrate's database");
     });
 
     it('states that project files are not included', async () => {
       const res = await agent.get('/settings/backups').expect(200);
-      expect(res.text).toContain('project files');
+      expect(res.text).toContain('Project files and media stored under <code>PROJECTS_ROOT</code> are not included in backups');
     });
   });
 
@@ -522,6 +522,11 @@ describe('settings — backup management HTTP', () => {
         .expect(200);
       expect(res.text).toContain('method="post"');
       expect(res.text).toContain('href="/settings/backups"');
+      expect(res.text).toContain(`<form method="post" action="/settings/backups/${result.filename}/restore">`);
+      expect(res.text.match(/>Cancel<\/a>/g)).toHaveLength(1);
+      expect(res.text).toMatch(/<div class="form-actions">\s*<button type="submit" class="button button-danger">[^<]+<\/button>\s*<a class="button button-secondary" href="\/settings\/backups">Cancel<\/a>/);
+      expect(res.text).not.toContain('<header class="page-heading">');
+      expect(res.text).toContain(`name="_csrf"`);
     });
   });
 
@@ -999,6 +1004,11 @@ describe('settings — backup management HTTP', () => {
         .expect(200);
       expect(res.text).toContain('method="post"');
       expect(res.text).toContain('href="/settings/backups"');
+      expect(res.text).toContain(`<form method="post" action="/settings/backups/${result.filename}/delete">`);
+      expect(res.text.match(/>Cancel<\/a>/g)).toHaveLength(1);
+      expect(res.text).toMatch(/<div class="form-actions">\s*<button type="submit" class="button button-danger">[^<]+<\/button>\s*<a class="button button-secondary" href="\/settings\/backups">Cancel<\/a>/);
+      expect(res.text).not.toContain('<header class="page-heading">');
+      expect(res.text).toContain(`name="_csrf"`);
     });
 
     it('returns 404 for an unknown backup', async () => {
@@ -1183,6 +1193,21 @@ describe('settings — backup management HTTP', () => {
       expect(res.text).toContain('method="post"');
       expect(res.text).toContain('action="/settings/backups"');
       expect(res.text).not.toContain('onclick=');
+    });
+
+    it('Create Backup shows the Dashboard plus icon and keeps its accessible name', async () => {
+      const res = await agent.get('/settings/backups').expect(200);
+      const button = res.text.match(/<button type="submit" class="button button-primary dashboard-create-action">([\s\S]*?)<\/button>/);
+      expect(button).not.toBeNull();
+      expect(button[1]).toMatch(/^<span class="project-create-submit-icon" aria-hidden="true">\s*<svg[\s\S]*<\/svg>\s*<\/span>Create Backup$/);
+      expect(button[1].match(/<svg/g)).toHaveLength(1);
+    });
+
+    it('explains backup scope, restore impact, and retention in the revised copy', async () => {
+      const res = await agent.get('/settings/backups').expect(200);
+      expect(res.text).toContain("<p>Backups save CreatorCrate's database, including projects, releases, and asset records. Restoring a backup replaces the current database, so database changes made since that backup will be lost.</p>");
+      expect(res.text).toContain('<p>Project files and media stored under <code>PROJECTS_ROOT</code> are not included in backups and are not changed by a restore.</p>');
+      expect(res.text).toContain('<p>After a successful backup, older managed backups exceeding <code>BACKUP_RETENTION_COUNT</code> are automatically deleted. The default is 10; set it to 0 to keep all backups. See the README for configuration details.</p>');
     });
 
     it('Restore form uses a plain HTML POST form with no onclick attributes', async () => {

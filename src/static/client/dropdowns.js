@@ -100,7 +100,8 @@ function resetDropdownPanelOverlay(panel) {
 function dropdownViewport(dropdown) {
   const document = dropdown?.ownerDocument || globalThis.document;
   const viewport = document?.defaultView || globalThis;
-  const width = Number(viewport?.innerWidth) || Number(document?.documentElement?.clientWidth) || 0;
+  // clientWidth excludes a classic vertical scrollbar (and its stable gutter); innerWidth does not.
+  const width = Number(document?.documentElement?.clientWidth) || Number(viewport?.innerWidth) || 0;
   const height = Number(viewport?.innerHeight) || Number(document?.documentElement?.clientHeight) || 0;
   return { viewport, width, height };
 }

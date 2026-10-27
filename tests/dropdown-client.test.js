@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { enhanceDropdowns } from '../src/static/creatorcrate.js';
+import { updateAssetViewerFilterDisclosureState } from '../src/static/client/dropdowns.js';
 
 function makeMockElement(tag, document = null) {
   const attrs = {};
@@ -769,5 +770,51 @@ describe('async dropdown intrinsic-width sizer synchronization', () => {
     fixture.nativeSelect.options.length = 0;
     fixture.scope.dispatch('change', fixture.nativeSelect);
     expect(fixture.widthSizer.children).toEqual([]);
+  });
+});
+
+describe('viewport disclosure right-edge clamp', () => {
+  function viewportDisclosure({ triggerLeft, clientWidth, innerWidth }) {
+    const panel = {
+      style: {},
+      getBoundingClientRect() { return { width: 240, height: 120 }; },
+      setAttribute() {},
+      removeAttribute() {},
+    };
+    const summary = {
+      getBoundingClientRect() { return { left: triggerLeft, top: 100, bottom: 130, right: triggerLeft + 120, width: 120 }; },
+      setAttribute() {},
+    };
+    return {
+      panel,
+      disclosure: {
+        open: true,
+        isConnected: true,
+        hasAttribute: (name) => name === 'data-cc-viewport-disclosure',
+        querySelector: (selector) => (selector === 'summary' ? summary : panel),
+        ownerDocument: {
+          documentElement: { clientWidth, scrollTop: 0 },
+          defaultView: {
+            innerWidth,
+            innerHeight: 640,
+            addEventListener() {},
+            removeEventListener() {},
+            getComputedStyle() { return { maxWidth: 'none' }; },
+          },
+        },
+      },
+    };
+  }
+
+  it('keeps the panel inside the usable width when a classic scrollbar reserves a gutter', () => {
+    const { disclosure, panel } = viewportDisclosure({ triggerLeft: 60, clientWidth: 305, innerWidth: 320 });
+    updateAssetViewerFilterDisclosureState(disclosure);
+    expect(panel.style.left).toBe('57px');
+  });
+
+  it('does not shift a panel that already fits', () => {
+    const { disclosure, panel } = viewportDisclosure({ triggerLeft: 20, clientWidth: 305, innerWidth: 320 });
+    updateAssetViewerFilterDisclosureState(disclosure);
+    expect(panel.style.left).toBe('20px');
   });
 });

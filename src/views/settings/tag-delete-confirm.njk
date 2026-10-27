@@ -1,16 +1,12 @@
 {% extends "layout.njk" %}
-{% import "partials/page-heading.njk" as pageHeading %}
 
 {% set page_title = "Settings — Delete Tag" %}
+{% block body_class %}settings-page{% endblock %}
 
 {% block content %}
-  {% call pageHeading.render() %}
-    <a class="button button-secondary" href="/settings/tags">Cancel</a>
-  {% endcall %}
-
   <div class="settings-layout">
 
-    <div class="settings-content">
+    <div class="settings-content settings-tags-content">
       <div class="destructive-section">
         <h2>Delete this tag?</h2>
         <p>Tag: <strong>{{ tag.display_name }}</strong></p>

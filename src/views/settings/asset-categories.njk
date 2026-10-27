@@ -4,6 +4,7 @@
 {% import "partials/form-switch.njk" as formSwitch %}
 
 {% set page_title = "Settings — Asset Categories" %}
+{% block body_class %}settings-page{% endblock %}
 
 {% block content %}
   {{ pageHeading.render("Global defaults copied into every new project.") }}
@@ -22,19 +23,24 @@
         <p>These are the global asset category defaults used only when a project is created — future projects will be seeded from whichever defaults are enabled here. Changing, disabling, or deleting a default here does <strong>not</strong> modify categories already copied into existing projects.</p>
       </div>
 
-      {{ assetBrowserPreferenceForm.global(
-        assetBrowserPreference,
-        "/settings/asset-categories/browser-default",
-        "global-asset-browser-default",
-        _csrf
-      ) }}
+      <section class="settings-section settings-asset-category-defaults" aria-labelledby="asset-category-defaults-heading">
+        <h3 id="asset-category-defaults-heading">Defaults</h3>
+        <div class="settings-asset-category-defaults-grid">
+          {{ assetBrowserPreferenceForm.global(
+            assetBrowserPreference,
+            "/settings/asset-categories/browser-default",
+            "global-asset-browser-default",
+            _csrf
+          ) }}
 
-      {{ assetBrowserPreferenceForm.preview(
-        previewCategory,
-        "/settings/asset-categories/preview-category",
-        "global-preview-category",
-        _csrf
-      ) }}
+          {{ assetBrowserPreferenceForm.preview(
+            previewCategory,
+            "/settings/asset-categories/preview-category",
+            "global-preview-category",
+            _csrf
+          ) }}
+        </div>
+      </section>
 
       <div class="settings-section category-management-section category-management-add settings-category-management-add">
         <h3>Add category</h3>

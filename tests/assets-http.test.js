@@ -4163,9 +4163,10 @@ describe('asset browser HTTP workflow', () => {
     };
 
     expect(style).toMatch(/:root\s*\{[^}]*--control-height:\s*2\.5rem\s*;/);
-    const projectOptionControlRule = extractRule('.project-option-add-row .project-option-color-control');
+    // The catalogue Add row matches its Name input's refined control height.
+    const projectOptionControlRule = extractRule('.project-option-add-row .project-option-color-trigger');
     expect(projectOptionControlRule.selectors).toContain('.project-option-add-row>.button');
-    expect(projectOptionControlRule.declarations).toMatch(/min-height:\s*var\(--control-height\)\s*;/);
+    expect(projectOptionControlRule.declarations).toMatch(/min-height:\s*var\(--refined-control-height\)\s*;/);
 
     expect(style).not.toContain('var(--text-muted)');
     const nsfwAndCategoryHelpRule = extractRule('.settings-nsfw-filter-content .help-text');

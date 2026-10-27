@@ -3,6 +3,7 @@
 {% import "partials/dropdown.njk" as dropdown %}
 
 {% set page_title = "Settings — Defaults" %}
+{% block body_class %}settings-page{% endblock %}
 
 {% block content %}
   {{ pageHeading.render("Choose persistent defaults for CreatorCrate.") }}
@@ -35,6 +36,7 @@
               <p class="help-text">These defaults apply only to new projects. Changing them does not modify existing projects.</p>
             {% endif %}
 
+            <div class="field page-defaults-grid">
             {% for field in section.fields %}
               <div class="field{% if field.error %} field-error{% endif %}">
                 {% if section.page == 'new_project' %}
@@ -90,6 +92,7 @@
                 {% if field.error %}<span class="field-error-message" id="{{ field.id }}-error">{{ field.error }}</span>{% endif %}
               </div>
             {% endfor %}
+            </div>
 
             {% if loop.first %}<span class="help-text" data-settings-fetch-save-status role="status" aria-live="polite" aria-atomic="true"></span>{% endif %}
 
@@ -133,7 +136,9 @@
 
         <section id="defaults-preview-generation" class="settings-section settings-defaults-section settings-defaults-section--compact" aria-labelledby="defaults-preview-generation-heading" data-project-image-settings-group>
           <h3 id="defaults-preview-generation-heading">Change preview &amp; slideshow generation</h3>
-          <div class="field{% if imageSettings.previewFormat.error %} field-error{% endif %}">
+          <p class="help-text">Controls project previews and the fitted slideshow image. Original uses the source image when available; animated sources may keep a generated WebP and Krita assets use a generated fallback.</p>
+          <div class="field page-defaults-grid" data-project-image-layout="{{ imageSettings.previewFormat.value }}">
+            <div class="field project-image-format-field{% if imageSettings.previewFormat.error %} field-error{% endif %}">
               {{ dropdown.singleSelect({
                 id: 'imagesPreviewFormat-dropdown',
                 name: 'imagesPreviewFormat',
@@ -149,10 +154,8 @@
                   attributes: [['required', true], ['data-autosubmit', 'fetch'], ['data-project-image-format', true], ['aria-describedby', 'imagesPreviewFormat-error'], ['aria-invalid', 'true']] if imageSettings.previewFormat.error else [['required', true], ['data-autosubmit', 'fetch'], ['data-project-image-format', true]]
                 }
               }) }}
-              <p class="help-text">Controls project previews and the fitted slideshow image. Original uses the source image when available; animated sources may keep a generated WebP and Krita assets use a generated fallback.</p>
               {% if imageSettings.previewFormat.error %}<span class="field-error-message" id="imagesPreviewFormat-error">{{ imageSettings.previewFormat.error }}</span>{% endif %}
-          </div>
-          <div class="field page-defaults-grid" data-project-image-fields-row{% if imageSettings.previewFormat.value == 'original' %} hidden{% endif %}>
+            </div>
               <div class="field{% if imageSettings.previewWebpQuality.error %} field-error{% endif %}" data-project-image-dependent="webp"{% if imageSettings.previewFormat.value != 'webp' %} hidden{% endif %}>
                 <label for="imagesPreviewWebpQuality">WebP quality (%)</label>
                 <input id="imagesPreviewWebpQuality" name="imagesPreviewWebpQuality" type="number" value="{{ imageSettings.previewWebpQuality.value }}" min="1" max="95" step="1" required inputmode="numeric" data-autosubmit="fetch"{% if imageSettings.previewFormat.value != 'webp' %} disabled{% endif %}{% if imageSettings.previewWebpQuality.error %} aria-describedby="imagesPreviewWebpQuality-error" aria-invalid="true"{% endif %}>
@@ -185,11 +188,20 @@
         <section id="defaults-display" class="settings-section settings-defaults-section" aria-labelledby="defaults-display-heading">
           <h3 id="defaults-display-heading">Display</h3>
           <div class="field{% if clockFormat.error %} field-error{% endif %}">
-            <label for="clockFormat">Clock format</label>
-            <select id="clockFormat" name="clockFormat" required data-autosubmit="fetch"{% if clockFormat.error %} aria-describedby="clockFormat-error" aria-invalid="true"{% endif %}>
-              <option value="12h"{% if clockFormat.value == '12h' %} selected{% endif %}>12-hour</option>
-              <option value="24h"{% if clockFormat.value == '24h' %} selected{% endif %}>24-hour</option>
-            </select>
+            {{ dropdown.singleSelect({
+              id: 'clockFormat-dropdown',
+              name: 'clockFormat',
+              label: 'Clock format',
+              options: [{ value: '12h', label: '12-hour' }, { value: '24h', label: '24-hour' }],
+              selected: clockFormat.value,
+              optionIdPrefix: 'clockFormat',
+              summaryAttributes: [['aria-describedby', 'clockFormat-error'], ['aria-invalid', 'true']] if clockFormat.error else [],
+              dispatchNativeChange: true,
+              nativeSelect: {
+                id: 'clockFormat',
+                attributes: [['required', true], ['data-autosubmit', 'fetch'], ['aria-describedby', 'clockFormat-error'], ['aria-invalid', 'true']] if clockFormat.error else [['required', true], ['data-autosubmit', 'fetch']]
+              }
+            }) }}
             {% if clockFormat.usesFallback %}
               <span class="help-text" data-settings-defaults-effective>Application fallback: <strong>24-hour</strong></span>
             {% else %}
@@ -233,5 +245,7 @@
         {% include "settings/project-option-catalogue.njk" %}
       {% endfor %}
     </div>
+
+    {% include "settings/nsfw-filter.njk" %}
   </div>
 {% endblock %}

@@ -4,6 +4,7 @@
 {% import "partials/dropdown.njk" as dropdown %}
 
 {% set page_title = "Settings — Logs" %}
+{% block body_class %}settings-page{% endblock %}
 
 {% block content %}
 
@@ -19,7 +20,7 @@
        data-logs-auto-refresh-enabled="{{ 'true' if autoRefreshEnabled else 'false' }}"
        data-logs-auto-refresh-preference="{{ 'true' if autoRefreshPreferenceEnabled else 'false' }}">
 
-    <div class="settings-content">
+    <div class="settings-content settings-logs-content">
       <div class="asset-viewer-display-controls">
         <nav class="project-filter-actions project-filter-actions--projects" aria-label="Log actions">
           <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
@@ -112,7 +113,7 @@
         </div>
       </form>
 
-      <section class="project-detail-section logs-results-section" aria-labelledby="logs-results-heading">
+      <section class="settings-section logs-results-section" aria-labelledby="logs-results-heading">
         <h2 id="logs-results-heading">Log entries</h2>
         <div class="project-detail-section-body">
           <div data-logs-results data-logs-total="{{ totalLogs }}">
@@ -136,7 +137,7 @@
               {% for log in logs %}
                 <tr data-log-id="{{ log.id }}">
                   <td><time{% if log.timestampMs is not none %} datetime="{{ log.timestampIso }}" data-log-timestamp-ms="{{ log.timestampMs }}"{% endif %}>{{ log.timestamp }}</time></td>
-                  <td><code>{{ log.level }}</code></td>
+                  <td><code class="logs-level logs-level--{{ log.level }}">{{ log.level }}</code></td>
                   <td><code>{{ log.kind }}</code></td>
                   <td><code>{{ log.subsystem }}</code></td>
                   <td class="logs-message-cell"><code>{{ log.event }}</code><span>{{ log.message }}</span></td>

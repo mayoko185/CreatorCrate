@@ -186,6 +186,10 @@ describe('settings — tags HTTP', () => {
     expect(res.text).toContain(`<form method="post" action="/settings/tags/${tag.id}/delete">`);
     expect(res.text).toContain('>Delete Tag</button>');
     expect(res.text).toContain('href="/settings/tags"');
+    expect(res.text.match(/>Cancel<\/a>/g)).toHaveLength(1);
+    expect(res.text).toMatch(/<div class="form-actions">\s*<button type="submit" class="button button-danger">Delete Tag<\/button>\s*<a class="button button-secondary" href="\/settings\/tags">Cancel<\/a>/);
+    expect(res.text).not.toContain('<header class="page-heading">');
+    expect(res.text).toContain('name="_csrf"');
     expect(res.text).not.toContain('data-confirm');
     expect(db.prepare('SELECT * FROM tags WHERE id = ?').get(tag.id)).toEqual(before);
   });
