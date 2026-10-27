@@ -482,7 +482,7 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       expect(css).toMatch(/\.settings-overview-stats \.settings-stat\s*\{[^}]*border:\s*1px solid var\(--border\);[^}]*border-radius:\s*var\(--radius-lg\);/);
       expect(css).not.toMatch(/\.settings-overview-stats \.settings-stat:hover/);
       expect(security.text).toContain('class="settings-section settings-security-section"');
-      expect(css).toMatch(/:where\(\.settings-page main\) \.project-form \.settings-section[^{]*\{[^}]*border:\s*1px solid var\(--border\);[^}]*border-radius:\s*var\(--radius-lg\);[^}]*background:\s*var\(--surface\);/);
+      expect(css).toMatch(/:where\(\.settings-page main, \.refined-page main\) \.project-form \.settings-section[^{]*\{[^}]*border:\s*1px solid var\(--border\);[^}]*border-radius:\s*var\(--radius-lg\);[^}]*background:\s*var\(--surface\);/);
       expect(css).toMatch(/\.settings-defaults-section\s*>\s*\.field\s*\{(?![^}]*border-top)[^}]*max-width:\s*40rem;/);
       // Image generation grids drop a hidden field's column instead of leaving it empty, and Format no longer spans a row.
       expect(css).toMatch(/@media\s*\(min-width:\s*1024px\)\s*\{\s*\.settings-defaults-section > \.page-defaults-grid\[data-project-image-layout\]\s*\{[^}]*grid-template-columns:\s*minmax\(0, 14rem\) minmax\(0, 10rem\) minmax\(0, 20rem\);/);
@@ -568,6 +568,68 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       // Phase 15: buttons were made ~20% smaller; 1.6rem (25.6px) stays
       // above the WCAG 2.5.8 AA minimum target size (24px).
       expect(css).toMatch(/\.button-small\s*\{[^}]*min-height:\s*1\.6rem/);
+    });
+  });
+
+  describe('refined page foundation', () => {
+    it('shares the Settings foundation and dropdowns with an opt-in refined-page class', async () => {
+      const css = STYLESHEET;
+      // The tokens and every foundation rule cover both scopes through
+      // :where(), so neither adds specificity; no rule names only Settings.
+      expect(css).toMatch(/:where\(\.settings-page, \.refined-page\) main\s*\{[^}]*--refined-control-height:\s*2\.25rem;[^}]*--refined-control-radius:\s*var\(--radius-md\);[^}]*--refined-chevron:/);
+      expect(css).not.toContain(':where(.settings-page main)');
+      expect(css).not.toMatch(/(^|\n)\s*(body)?\.refined-page\b/);
+      expect(css).toMatch(/:where\(\.settings-page main, \.refined-page main\) \.settings-section,[^{]*\{[^}]*border-radius:\s*var\(--radius-lg\);/);
+      expect(css).toMatch(/:where\(\.settings-page main, \.refined-page main\) \.asset-filter-multiselect\[open\] summary\s*\{[^}]*border-color:\s*var\(--accent\);/);
+      expect(css).toMatch(/:where\(\.settings-page main, \.refined-page main\) \.asset-filter-multiselect-option:has\(input:checked\)\s*\{[^}]*background:\s*rgba\(34, 211, 238, 0\.08\);/);
+    });
+
+    it('keeps compact dropdown trigger sizing on refined pages and styles disabled triggers', async () => {
+      const css = STYLESHEET;
+      expect(css).toMatch(/:where\(\.settings-page main, \.refined-page main\) \.asset-filter-multiselect:not\(:where\(\.cc-dropdown--compact\)\) summary\s*\{[^}]*min-height:\s*var\(--refined-control-height\);[^}]*font-size:\s*0\.875rem;/);
+      expect(css).not.toMatch(/:where\(\.settings-page main, \.refined-page main\) \.asset-filter-multiselect summary\s*\{[^}]*min-height/);
+      expect(css).toMatch(/\.cc-dropdown--compact summary\s*\{[^}]*min-height:\s*2rem;/);
+      expect(css).toMatch(/:where\(\.settings-page main, \.refined-page main\) \.cc-dropdown\[data-cc-dropdown-disabled\] summary\s*\{[^}]*opacity:\s*0\.65;/);
+    });
+
+    it('shares the Dashboard table treatment through refined-table', async () => {
+      const css = STYLESHEET;
+      expect(css).toMatch(/\.dashboard-table-scroll,\s*\.refined-table-scroll\s*\{[^}]*overflow-x:\s*auto;/);
+      expect(css).toMatch(/\.dashboard-projects-table th,\s*\.refined-table th,\s*\.asset-list-header \.asset-list-cell\s*\{[^}]*font-family:\s*var\(--mono\);/);
+      expect(css).toMatch(/\.refined-table\s*\{[^}]*margin:\s*0;/);
+    });
+
+    it('keeps foundation controls, actions, and buttons off dialogs rendered inside <main>', async () => {
+      // A dialog can sit inside a refined page's <main> (Manage Signatures on
+      // /releases/new), so every foundation rule whose subject is a text
+      // control, a form-actions row, or a button must exclude .app-dialog
+      // descendants on that subject, through :where() so it adds no
+      // specificity, or it would outrank the dialog's own rules.
+      const prefix = ':where(.settings-page main, .refined-page main)';
+      const foundation = STYLESHEET
+        .slice(STYLESHEET.indexOf('═══ Refined pages: shared foundation ═══'))
+        .replace(/\/\*[\s\S]*?\*\//g, '');
+      // Splits on commas or spaces outside parentheses.
+      const splitTopLevel = (text, separator) => {
+        const parts = [''];
+        let depth = 0;
+        for (const char of text) {
+          if (char === '(') depth += 1;
+          if (char === ')') depth -= 1;
+          if (char === separator && depth === 0) parts.push('');
+          else parts[parts.length - 1] += char;
+        }
+        return parts.map(part => part.trim()).filter(Boolean);
+      };
+      const guarded = [...foundation.matchAll(/([^{}]+)\{[^{}]*\}/g)]
+        .flatMap(([, selectorList]) => splitTopLevel(selectorList, ','))
+        .filter(selector => selector.startsWith(prefix))
+        .filter(selector => /\.(?:button(?:-[a-z]+)?|form-actions)\b|\.field(?:-error)? (?:textarea|:is\(input:not)/.test(selector.slice(prefix.length)));
+      expect(guarded.length).toBeGreaterThanOrEqual(17);
+      for (const selector of guarded) {
+        const subject = splitTopLevel(selector, ' ').at(-1);
+        expect(subject, selector).toMatch(/:not\(:where\([^()]*\.app-dialog \*\)\)/);
+      }
     });
   });
 

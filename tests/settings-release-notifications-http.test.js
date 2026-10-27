@@ -387,6 +387,31 @@ describe('settings — Release Notifications HTTP', () => {
       expect(page.text).toContain('no selected channel is ready');
     });
 
+    it('renders each timing unit as a shared dropdown backed by one named native select', async () => {
+      notificationService.updateSettings(prefs({
+        advance: { enabled: true, leadMinutes: 120 },
+        overdue: { enabled: true, graceMinutes: 3 * 24 * 60 },
+        overdueRepeat: { enabled: true, intervalMinutes: 90 },
+      }));
+      const page = await mount();
+
+      for (const [prefix, selected] of [['advance', 'hours'], ['overdue', 'days'], ['repeat', 'minutes']]) {
+        const select = page.text.match(new RegExp(`<select id="release-notifications-${prefix}-unit"[^>]*>[\\s\\S]*?</select>`))?.[0] || '';
+        expect(select).toContain(`name="${prefix}Unit"`);
+        expect(select).toContain('data-cc-dropdown-native-select');
+        expect(select).toMatch(/ required[ >]/);
+        expect(select).toContain('data-autosubmit="fetch"');
+        expect([...select.matchAll(/<option value="([^"]*)"/g)].map((match) => match[1])).toEqual(['minutes', 'hours', 'days']);
+        expect(select).toContain(`<option value="${selected}" selected>`);
+        expect(page.text.match(new RegExp(`name="${prefix}Unit"`, 'g'))).toHaveLength(1);
+
+        const dropdown = page.text.match(new RegExp(`<details[^>]+id="release-notifications-${prefix}-unit-dropdown"[\\s\\S]*?</details>`))?.[0] || '';
+        expect(dropdown).toContain('data-cc-dropdown-dispatch-native-change');
+        expect(dropdown).toMatch(new RegExp(`id="release-notifications-${prefix}-unit-option-\\d+" type="radio" value="${selected}" checked`));
+        expect(dropdown).not.toMatch(/<input[^>]+name=/);
+      }
+    });
+
     it('converts advance, overdue, and repeat durations to core minutes', async () => {
       await mount();
       await save(form({

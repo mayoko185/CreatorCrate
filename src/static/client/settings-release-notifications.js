@@ -4,6 +4,7 @@ import {
   restoreRegionFocus,
 } from './settings-fetch-save.js';
 import { isEnhancementBound, markEnhancementBound, setHidden } from './dom.js';
+import { enhanceDropdowns } from './dropdowns.js';
 import { enhanceNumberInputs } from './number-input.js';
 import { enhanceTimePickers } from './pickers.js';
 
@@ -150,6 +151,9 @@ export function enhanceReleaseNotificationSettings(scope = globalThis.document) 
       markEnhancementBound(form, 'releaseNotificationTimingBound');
       form.addEventListener('change', () => syncReleaseNotificationTiming(form));
     }
+    // Dropdown listeners are delegated from the document, so a replaced region
+    // only needs initializing; binding on the region would handle each change twice.
+    enhanceDropdowns(region.ownerDocument || globalThis.document);
     enhanceNumberInputs(region);
     enhanceTimePickers(region);
     enhanceTestForms(region);

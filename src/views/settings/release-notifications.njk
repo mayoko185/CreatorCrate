@@ -1,6 +1,7 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
 {% import "partials/form-switch.njk" as formSwitch %}
+{% import "partials/dropdown.njk" as dropdown %}
 
 {% set page_title = "Settings — Release Notifications" %}
 {% block body_class %}settings-page{% endblock %}
@@ -13,14 +14,24 @@
       <label for="release-notifications-{{ prefix }}-amount">{{ label }}</label>
       <input type="number" id="release-notifications-{{ prefix }}-amount" name="{{ prefix }}Amount" value="{{ amount }}" min="{{ min }}" step="1" inputmode="numeric" required data-autosubmit="fetch"{% if errors[errorKey] %} aria-invalid="true" aria-describedby="release-notifications-{{ errorKey }}-error"{% endif %}>
     </div>
-    <div class="field">
-      <label for="release-notifications-{{ prefix }}-unit">Unit</label>
-      <select id="release-notifications-{{ prefix }}-unit" name="{{ prefix }}Unit" required data-autosubmit="fetch">
-        {% for option in units %}
-          <option value="{{ option.value }}"{% if option.value == unit %} selected{% endif %}>{{ option.label }}</option>
-        {% endfor %}
-      </select>
-    </div>
+    {% set unitLabel = "" %}
+    {% for option in units %}{% if option.value == unit %}{% set unitLabel = option.label %}{% endif %}{% endfor %}
+    {{ dropdown.singleSelect({
+      id: "release-notifications-" ~ prefix ~ "-unit-dropdown",
+      name: prefix ~ "Unit",
+      label: "Unit",
+      options: units,
+      selected: unit,
+      fieldClasses: "release-notification-unit-field",
+      panelLabel: label ~ " unit options",
+      triggerAriaLabel: label ~ " unit: " ~ unitLabel,
+      optionIdPrefix: "release-notifications-" ~ prefix ~ "-unit",
+      dispatchNativeChange: true,
+      nativeSelect: {
+        id: "release-notifications-" ~ prefix ~ "-unit",
+        attributes: [["required", true], ["data-autosubmit", "fetch"]]
+      }
+    }) }}
   </div>
   {{ fieldError(errorKey, errors) }}
 {% endmacro %}

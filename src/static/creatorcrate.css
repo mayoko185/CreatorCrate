@@ -13520,7 +13520,8 @@
   font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
 }
-.dashboard-table-scroll {
+.dashboard-table-scroll,
+.refined-table-scroll {
   min-width: 0;
   max-width: 100%;
   overflow-x: auto;
@@ -13530,7 +13531,8 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
 }
-.dashboard-table-scroll:focus-visible {
+.dashboard-table-scroll:focus-visible,
+.refined-table-scroll:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
 }
@@ -13539,8 +13541,18 @@
   min-width: 48rem;
   border-collapse: collapse;
 }
+/* Any page's table can opt into the Dashboard table treatment with the
+   refined-table class (on a .data-table) inside a refined-table-scroll
+   container; the table's own min-width, if any, stays with its page. */
+.refined-table {
+  width: 100%;
+  margin: 0;
+  border-collapse: collapse;
+}
 .dashboard-projects-table th,
 .dashboard-projects-table td,
+.refined-table th,
+.refined-table td,
 .asset-list-table .asset-list-cell {
   padding: var(--space-sm) 0.625rem;
   border-bottom: 1px solid var(--border);
@@ -13548,6 +13560,7 @@
   vertical-align: middle;
 }
 .dashboard-projects-table th,
+.refined-table th,
 .asset-list-header .asset-list-cell {
   background: var(--surface-card);
   color: var(--muted);
@@ -13559,16 +13572,20 @@
   white-space: nowrap;
 }
 .dashboard-projects-table td,
+.refined-table td,
 .asset-list-table .asset-list-card .asset-list-cell {
   font-size: 0.875rem;
   white-space: nowrap;
 }
 .dashboard-projects-table tbody tr:last-child td,
+.refined-table tbody tr:last-child td,
 .asset-list-table .asset-list-item:last-child .asset-list-cell {
   border-bottom: 0;
 }
 .dashboard-projects-table tbody tr:hover,
 .dashboard-projects-table tbody tr:focus-within,
+.refined-table tbody tr:hover,
+.refined-table tbody tr:focus-within,
 .asset-list-table .asset-list .asset-list-card:hover,
 .asset-list-table .asset-list .asset-list-card:focus-within {
   background: var(--surface-hover);
@@ -13991,7 +14008,7 @@
 .app-dialog .field-error input:not([type='checkbox']):not([type='radio'], [type='file']),
 .app-dialog .field-error textarea,
 .app-dialog .field-error .asset-filter-multiselect summary,
-:where(.settings-page main) .field-error .asset-filter-multiselect summary {
+:where(.settings-page main, .refined-page main) .field-error .asset-filter-multiselect summary {
   border-color: var(--danger);
 }
 /* Number steppers join the input to their buttons, so the shared input
@@ -14012,25 +14029,37 @@
 
 /* ── Dropdowns ──
    Option rows also cover the slideshow speed picker, the one dropdown on
-   the fullscreen media surfaces. Settings pages share the whole treatment. */
+   the fullscreen media surfaces. Settings pages and refined pages (see
+   "Refined pages" below) share the whole treatment, except that compact
+   dropdowns on those pages keep their toolbar trigger sizing. */
 .app-dialog .asset-filter-multiselect summary,
-:where(.settings-page main) .asset-filter-multiselect summary {
-  min-height: var(--refined-control-height);
-  padding: 0.375rem 0.625rem;
+:where(.settings-page main, .refined-page main) .asset-filter-multiselect summary {
   border-radius: var(--refined-control-radius);
-  font-size: 0.875rem;
-  line-height: 1.5;
   transition: border-color var(--transition-fast), box-shadow var(--transition-fast), background var(--transition-fast);
 }
+.app-dialog .asset-filter-multiselect summary,
+:where(.settings-page main, .refined-page main) .asset-filter-multiselect:not(:where(.cc-dropdown--compact)) summary {
+  min-height: var(--refined-control-height);
+  padding: 0.375rem 0.625rem;
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
 .app-dialog .asset-filter-multiselect summary:hover,
-:where(.settings-page main) .asset-filter-multiselect summary:hover {
+:where(.settings-page main, .refined-page main) .asset-filter-multiselect summary:hover {
   border-color: var(--border-strong);
   background: var(--bg);
 }
+/* A disabled trigger reads like the foundation's disabled text controls
+   and does not answer hover. */
+:where(.settings-page main, .refined-page main) .cc-dropdown[data-cc-dropdown-disabled] summary {
+  border-color: var(--border);
+  background: var(--surface-card);
+  opacity: 0.65;
+}
 .app-dialog .asset-filter-multiselect summary::after,
 .app-dialog .asset-filter-multiselect[open] summary::after,
-:where(.settings-page main) .asset-filter-multiselect summary::after,
-:where(.settings-page main) .asset-filter-multiselect[open] summary::after {
+:where(.settings-page main, .refined-page main) .asset-filter-multiselect summary::after,
+:where(.settings-page main, .refined-page main) .asset-filter-multiselect[open] summary::after {
   width: 1rem;
   height: 1rem;
   background-color: var(--muted);
@@ -14040,20 +14069,20 @@
   transition: transform var(--transition-fast), background-color var(--transition-fast);
 }
 .app-dialog .asset-filter-multiselect[open] summary::after,
-:where(.settings-page main) .asset-filter-multiselect[open] summary::after {
+:where(.settings-page main, .refined-page main) .asset-filter-multiselect[open] summary::after {
   background-color: var(--accent);
   transform: rotate(180deg);
 }
 .app-dialog .asset-filter-multiselect summary:focus-visible,
 .app-dialog .asset-filter-multiselect[open] summary,
-:where(.settings-page main) .asset-filter-multiselect summary:focus-visible,
-:where(.settings-page main) .asset-filter-multiselect[open] summary {
+:where(.settings-page main, .refined-page main) .asset-filter-multiselect summary:focus-visible,
+:where(.settings-page main, .refined-page main) .asset-filter-multiselect[open] summary {
   outline: none;
   border-color: var(--accent);
   box-shadow: var(--refined-focus-shadow);
 }
 .app-dialog .asset-filter-multiselect-panel,
-:where(.settings-page main) .asset-filter-multiselect-panel {
+:where(.settings-page main, .refined-page main) .asset-filter-multiselect-panel {
   top: calc(100% + 0.3125rem);
   gap: 1px;
   padding: var(--space-xs);
@@ -14064,13 +14093,13 @@
 }
 .app-dialog .asset-filter-multiselect-option,
 .slideshow-controls .asset-filter-multiselect-option,
-:where(.settings-page main) .asset-filter-multiselect-option {
+:where(.settings-page main, .refined-page main) .asset-filter-multiselect-option {
   border-radius: var(--radius-sm);
   transition: background var(--transition-fast);
 }
 .app-dialog .asset-filter-multiselect--sized .asset-filter-multiselect-option > label,
 .slideshow-controls .asset-filter-multiselect--sized .asset-filter-multiselect-option > label,
-:where(.settings-page main) .asset-filter-multiselect--sized .asset-filter-multiselect-option > label {
+:where(.settings-page main, .refined-page main) .asset-filter-multiselect--sized .asset-filter-multiselect-option > label {
   align-items: center;
   gap: var(--space-sm);
   padding: 0.375rem var(--space-sm);
@@ -14079,28 +14108,28 @@
 }
 .app-dialog .asset-filter-multiselect-option > label > span,
 .slideshow-controls .asset-filter-multiselect-option > label > span,
-:where(.settings-page main) .asset-filter-multiselect-option > label > span {
+:where(.settings-page main, .refined-page main) .asset-filter-multiselect-option > label > span {
   flex: 1 1 auto;
 }
 .app-dialog .asset-filter-multiselect-option:has(input:checked),
 .slideshow-controls .asset-filter-multiselect-option:has(input:checked),
-:where(.settings-page main) .asset-filter-multiselect-option:has(input:checked) {
+:where(.settings-page main, .refined-page main) .asset-filter-multiselect-option:has(input:checked) {
   background: rgba(34, 211, 238, 0.08);
 }
 .app-dialog .asset-filter-multiselect-option:has(input:checked):hover,
 .slideshow-controls .asset-filter-multiselect-option:has(input:checked):hover,
-:where(.settings-page main) .asset-filter-multiselect-option:has(input:checked):hover {
+:where(.settings-page main, .refined-page main) .asset-filter-multiselect-option:has(input:checked):hover {
   background: rgba(34, 211, 238, 0.14);
 }
 .app-dialog .asset-filter-multiselect-option:has(input:focus-visible),
 .slideshow-controls .asset-filter-multiselect-option:has(input:focus-visible),
-:where(.settings-page main) .asset-filter-multiselect-option:has(input:focus-visible) {
+:where(.settings-page main, .refined-page main) .asset-filter-multiselect-option:has(input:focus-visible) {
   outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
 }
 .app-dialog .asset-filter-multiselect-option input,
 .slideshow-controls .asset-filter-multiselect-option input,
-:where(.settings-page main) .asset-filter-multiselect-option input {
+:where(.settings-page main, .refined-page main) .asset-filter-multiselect-option input {
   flex: none;
   width: 1rem;
   height: 1rem;
@@ -14112,7 +14141,7 @@
 }
 .app-dialog .asset-filter-multiselect-option input:focus-visible,
 .slideshow-controls .asset-filter-multiselect-option input:focus-visible,
-:where(.settings-page main) .asset-filter-multiselect-option input:focus-visible {
+:where(.settings-page main, .refined-page main) .asset-filter-multiselect-option input:focus-visible {
   outline: none;
 }
 /* Single- and multi-select options share one look: no radio dot or checkbox
@@ -14120,17 +14149,17 @@
    typography and color whether or not it is selected. */
 .app-dialog .asset-filter-multiselect-option input,
 .slideshow-controls .asset-filter-multiselect-option input,
-:where(.settings-page main) .asset-filter-multiselect-option input {
+:where(.settings-page main, .refined-page main) .asset-filter-multiselect-option input {
   order: 1;
 }
 .app-dialog .asset-filter-multiselect-option input:checked,
 .slideshow-controls .asset-filter-multiselect-option input:checked,
-:where(.settings-page main) .asset-filter-multiselect-option input:checked {
+:where(.settings-page main, .refined-page main) .asset-filter-multiselect-option input:checked {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2322d3ee' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E");
   background-size: 0.875rem;
 }
 .app-dialog .asset-filter-multiselect-empty,
-:where(.settings-page main) .asset-filter-multiselect-empty {
+:where(.settings-page main, .refined-page main) .asset-filter-multiselect-empty {
   font-size: 0.8125rem;
 }
 
@@ -15188,17 +15217,21 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   }
 }
 
-/* ═══ Settings pages: shared refined foundation ═══
-   Settings pages opt in with the settings-page body class and then take the
-   Dashboard panel surface and the refined dialogs' section cards, fields,
-   and buttons. Every rule is scoped to the page's <main> through :where(),
-   so the scope adds no specificity: these rules outrank only the generic
-   Settings and form rules they follow, and each page's own rules still win.
-   The shell, sidebar, and dialogs (rendered outside <main>) are untouched,
-   and pages without the class keep the generic .settings-section bands.
+/* ═══ Refined pages: shared foundation ═══
+   Settings pages opt in with the settings-page body class; any other page
+   opts in with the refined-page body class ({% block body_class %}refined-page
+   {% endblock %}). Both take the Dashboard panel surface and the refined
+   dialogs' section cards, fields, buttons, and dropdowns (see "Dropdowns" in
+   the shared dialog foundation). Every rule is scoped to the page's <main>
+   through :where(), so the scope adds no specificity: these rules outrank
+   only the generic Settings and form rules they follow, and each page's own
+   rules still win. The shell, sidebar, and dialogs (rendered in the overlay
+   block, outside <main>) are untouched, and pages without either class keep
+   the generic .settings-section bands.
    Switches, checkbox labels, color swatches, reorder handles, icon-only
-   buttons, dropdown panels, and date/time pickers keep their own styling. */
-:where(.settings-page) main {
+   buttons, dropdown panels, and date/time pickers keep their own styling,
+   as do media, editor, processing, and asset grid/list surfaces. */
+:where(.settings-page, .refined-page) main {
   /* The refined dialogs' control tokens, which .app-dialog keeps local. */
   --refined-control-height: 2.25rem;
   --refined-control-radius: var(--radius-md);
@@ -15213,9 +15246,9 @@ button[aria-disabled="true"] > .project-create-submit-icon {
    A section inside a .project-form is named with that class too, so the
    foundation outranks the form's band padding and heading bleed. A
    destructive section takes the same layout with a danger tint. */
-:where(.settings-page main) .settings-section,
-:where(.settings-page main) .project-form .settings-section,
-:where(.settings-page main) .destructive-section {
+:where(.settings-page main, .refined-page main) .settings-section,
+:where(.settings-page main, .refined-page main) .project-form .settings-section,
+:where(.settings-page main, .refined-page main) .destructive-section {
   display: flex;
   flex-direction: column;
   gap: 0.625rem;
@@ -15226,12 +15259,12 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   border-radius: var(--radius-lg);
   background: var(--surface);
 }
-:where(.settings-page main) .destructive-section {
+:where(.settings-page main, .refined-page main) .destructive-section {
   border-color: rgba(251, 113, 133, 0.45);
   background: rgba(251, 113, 133, 0.06);
 }
-:where(.settings-page main) :is(.settings-section, .destructive-section) > :is(h2, h3),
-:where(.settings-page main) .project-form .settings-section > :is(h2, h3) {
+:where(.settings-page main, .refined-page main) :is(.settings-section, .destructive-section) > :is(h2, h3),
+:where(.settings-page main, .refined-page main) .project-form .settings-section > :is(h2, h3) {
   display: flex;
   align-items: center;
   gap: var(--space-sm);
@@ -15247,7 +15280,7 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   line-height: 1.3;
   text-transform: none;
 }
-:where(.settings-page main) :is(.settings-section, .destructive-section) > :is(h2, h3)::before {
+:where(.settings-page main, .refined-page main) :is(.settings-section, .destructive-section) > :is(h2, h3)::before {
   flex: none;
   width: 0.1875rem;
   height: 0.875rem;
@@ -15255,58 +15288,58 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   background: var(--accent-gradient);
   content: '';
 }
-:where(.settings-page main) .destructive-section > :is(h2, h3) {
+:where(.settings-page main, .refined-page main) .destructive-section > :is(h2, h3) {
   color: var(--danger);
 }
-:where(.settings-page main) .destructive-section > :is(h2, h3)::before {
+:where(.settings-page main, .refined-page main) .destructive-section > :is(h2, h3)::before {
   background: var(--danger);
 }
-:where(.settings-page main) .destructive-section p {
+:where(.settings-page main, .refined-page main) .destructive-section p {
   margin: 0;
   font-size: 0.875rem;
   line-height: 1.5;
 }
-:where(.settings-page main) .destructive-section > form {
+:where(.settings-page main, .refined-page main) .destructive-section > form {
   display: flex;
   flex-direction: column;
   gap: 0.625rem;
 }
-:where(.settings-page main) .destructive-section > .button {
+:where(.settings-page main, .refined-page main) .destructive-section > .button:not(:where(.app-dialog *)) {
   align-self: flex-start;
 }
 /* The section's padding is the inset, so rows and help text drop the
    band layout's side padding and the actions drop its negative margins. */
-:where(.settings-page main) .settings-section :is(.kv, .help-text) {
+:where(.settings-page main, .refined-page main) .settings-section :is(.kv, .help-text) {
   padding-left: 0;
   padding-right: 0;
 }
 /* A row's separator sits midway between rows: the row pads below its
    value by the section gap, and the gap supplies the space above. */
-:where(.settings-page main) .settings-section > .kv {
+:where(.settings-page main, .refined-page main) .settings-section > .kv {
   padding-top: 0;
   padding-bottom: 0.625rem;
 }
-:where(.settings-page main) .settings-section > .kv:last-of-type {
+:where(.settings-page main, .refined-page main) .settings-section > .kv:last-of-type {
   padding-bottom: 0;
 }
-:where(.settings-page main) .settings-section .help-text {
+:where(.settings-page main, .refined-page main) .settings-section .help-text {
   margin: 0;
   padding-bottom: 0;
   font-size: 0.75rem;
   line-height: 1.4;
 }
-:where(.settings-page main) :is(.settings-section, .destructive-section) .form-actions {
+:where(.settings-page main, .refined-page main) :is(.settings-section, .destructive-section) .form-actions:not(:where(.app-dialog *)) {
   flex-wrap: wrap;
   gap: var(--space-sm);
   margin: var(--space-xs) 0 0;
 }
 
 /* ── Fields ── */
-:where(.settings-page main) .field:not(:where(.field--switch, .field--checkbox)) {
+:where(.settings-page main, .refined-page main) .field:not(:where(.field--switch, .field--checkbox)) {
   gap: 0.3125rem;
 }
-:where(.settings-page main) .field > :is(label, .field-label):not(:where(.sr-only, .checkbox-label, .form-switch-label)),
-:where(.settings-page main) .asset-filter-multiselect-field > legend {
+:where(.settings-page main, .refined-page main) .field > :is(label, .field-label):not(:where(.sr-only, .checkbox-label, .form-switch-label)),
+:where(.settings-page main, .refined-page main) .asset-filter-multiselect-field > legend {
   margin: 0;
   color: var(--muted);
   font-size: 0.8125rem;
@@ -15314,16 +15347,16 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   line-height: 1.3;
 }
 /* A legend sits outside its fieldset's gap, so it spaces itself. */
-:where(.settings-page main) .asset-filter-multiselect-field > legend {
+:where(.settings-page main, .refined-page main) .asset-filter-multiselect-field > legend {
   margin-bottom: 0.3125rem;
 }
-:where(.settings-page main) .field-error-message {
+:where(.settings-page main, .refined-page main) .field-error-message {
   font-size: 0.75rem;
 }
 /* Text inputs, textareas, and native selects. Choice, file, color, range,
    and picker inputs, a dropdown's hidden native select, and controls inside
    a dropdown panel keep their own treatments. */
-:where(.settings-page main) .field :is(input:not(:where([type='checkbox'], [type='radio'], [type='file'], [type='color'], [type='range'], .picker-input)), textarea, select:not(.cc-dropdown-native-select)):not(:where(.asset-filter-multiselect-panel *)) {
+:where(.settings-page main, .refined-page main) .field :is(input:not(:where([type='checkbox'], [type='radio'], [type='file'], [type='color'], [type='range'], .picker-input)), textarea, select:not(.cc-dropdown-native-select)):not(:where(.asset-filter-multiselect-panel *, .app-dialog *)) {
   min-height: var(--refined-control-height);
   padding: 0.375rem 0.625rem;
   border: 1px solid var(--border);
@@ -15335,41 +15368,41 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   line-height: 1.5;
   transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
-:where(.settings-page main) .field textarea {
+:where(.settings-page main, .refined-page main) .field textarea:not(:where(.app-dialog *)) {
   min-height: 4.75rem;
   resize: vertical;
 }
-:where(.settings-page main) .field :is(input, textarea)::placeholder {
+:where(.settings-page main, .refined-page main) .field :is(input, textarea)::placeholder {
   color: var(--muted);
   opacity: 0.7;
 }
-:where(.settings-page main) .field :is(input:not(:where([type='checkbox'], [type='radio'], [type='file'], [type='color'], [type='range'], .picker-input)), textarea, select:not(.cc-dropdown-native-select)):not(:where(.asset-filter-multiselect-panel *)):hover:not(:disabled) {
+:where(.settings-page main, .refined-page main) .field :is(input:not(:where([type='checkbox'], [type='radio'], [type='file'], [type='color'], [type='range'], .picker-input)), textarea, select:not(.cc-dropdown-native-select)):not(:where(.asset-filter-multiselect-panel *, .app-dialog *)):hover:not(:disabled) {
   border-color: var(--border-strong);
 }
-:where(.settings-page main) .field :is(input:not(:where([type='checkbox'], [type='radio'], [type='file'], [type='color'], [type='range'], .picker-input)), textarea, select:not(.cc-dropdown-native-select)):not(:where(.asset-filter-multiselect-panel *)):focus-visible {
+:where(.settings-page main, .refined-page main) .field :is(input:not(:where([type='checkbox'], [type='radio'], [type='file'], [type='color'], [type='range'], .picker-input)), textarea, select:not(.cc-dropdown-native-select)):not(:where(.asset-filter-multiselect-panel *, .app-dialog *)):focus-visible {
   outline: none;
   border-color: var(--accent);
   box-shadow: var(--refined-focus-shadow);
 }
-:where(.settings-page main) .field-error :is(input:not(:where([type='checkbox'], [type='radio'], [type='file'], [type='color'], [type='range'], .picker-input)), textarea, select:not(.cc-dropdown-native-select)) {
+:where(.settings-page main, .refined-page main) .field-error :is(input:not(:where([type='checkbox'], [type='radio'], [type='file'], [type='color'], [type='range'], .picker-input)), textarea, select:not(.cc-dropdown-native-select)):not(:where(.app-dialog *)) {
   border-color: var(--danger);
 }
 /* Disabled controls read like a disabled number stepper. */
-:where(.settings-page main) .field :is(input:not(:where([type='checkbox'], [type='radio'], [type='file'], [type='color'], [type='range'], .picker-input)), textarea, select:not(.cc-dropdown-native-select)):disabled {
+:where(.settings-page main, .refined-page main) .field :is(input:not(:where([type='checkbox'], [type='radio'], [type='file'], [type='color'], [type='range'], .picker-input)), textarea, select:not(.cc-dropdown-native-select)):not(:where(.app-dialog *)):disabled {
   background: var(--surface-card);
   color: var(--muted);
   cursor: not-allowed;
   opacity: 0.65;
 }
 /* Number steppers join the input to their buttons, as in the dialogs. */
-:where(.settings-page main) .field .cc-number-stepper > input[type='number'] {
+:where(.settings-page main, .refined-page main) .field .cc-number-stepper > input[type='number'] {
   border-inline-end: 0;
   border-radius: var(--refined-control-radius) 0 0 var(--refined-control-radius);
 }
-:where(.settings-page main) .field .cc-number-stepper-button {
+:where(.settings-page main, .refined-page main) .field .cc-number-stepper-button {
   min-height: var(--refined-control-height);
 }
-:where(.settings-page main) .field .cc-number-stepper-button--increment {
+:where(.settings-page main, .refined-page main) .field .cc-number-stepper-button--increment {
   border-radius: 0 var(--refined-control-radius) var(--refined-control-radius) 0;
 }
 /* Dropdown triggers, panels, and options share the dialog dropdown rules
@@ -15380,7 +15413,7 @@ button[aria-disabled="true"] > .project-create-submit-icon {
    the dialogs' dark outlined submit, as on the Dashboard; disabled styling
    and the focus ring come from the shared .button rules. Icon-only filter
    controls and the color trigger keep their own sizing. */
-:where(.settings-page main) .button:not(:where(.project-filter-control, .project-option-color-trigger)) {
+:where(.settings-page main, .refined-page main) .button:not(:where(.project-filter-control, .project-option-color-trigger, .app-dialog *)) {
   gap: 0.375rem;
   min-height: var(--refined-control-height);
   padding: 0 0.875rem;
@@ -15389,47 +15422,47 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   font-weight: 500;
   transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), filter var(--transition-fast), box-shadow var(--transition-fast);
 }
-:where(.settings-page main) .button:not(:where(.project-filter-control, .project-option-color-trigger)):active:not(:disabled):not([aria-disabled="true"]) {
+:where(.settings-page main, .refined-page main) .button:not(:where(.project-filter-control, .project-option-color-trigger, .app-dialog *)):active:not(:disabled):not([aria-disabled="true"]) {
   transform: translateY(1px);
 }
-:where(.settings-page main) .button-primary:not(:where(.project-filter-control, .project-option-color-trigger)) {
+:where(.settings-page main, .refined-page main) .button-primary:not(:where(.project-filter-control, .project-option-color-trigger, .app-dialog *)) {
   gap: var(--space-sm);
   padding: 0 var(--space-md);
   border-radius: var(--radius-sm);
   font-weight: 600;
 }
-:where(.settings-page main) .button-primary:not(:where(.project-filter-control, .project-option-color-trigger)):not(:disabled):not([aria-disabled="true"]) {
+:where(.settings-page main, .refined-page main) .button-primary:not(:where(.project-filter-control, .project-option-color-trigger, .app-dialog *)):not(:disabled):not([aria-disabled="true"]) {
   border: 1px solid var(--border-strong);
   background: var(--bg);
   color: var(--text);
   box-shadow: none;
 }
-:where(.settings-page main) .button-primary:not(:where(.project-filter-control, .project-option-color-trigger)):hover:not(:disabled):not([aria-disabled="true"]) {
+:where(.settings-page main, .refined-page main) .button-primary:not(:where(.project-filter-control, .project-option-color-trigger, .app-dialog *)):hover:not(:disabled):not([aria-disabled="true"]) {
   border-color: var(--accent);
   background: var(--bg);
   filter: none;
 }
-:where(.settings-page main) .button-secondary:not(:where(.project-filter-control, .project-option-color-trigger)):not(:disabled):not([aria-disabled="true"]) {
+:where(.settings-page main, .refined-page main) .button-secondary:not(:where(.project-filter-control, .project-option-color-trigger, .app-dialog *)):not(:disabled):not([aria-disabled="true"]) {
   border-color: var(--border-strong);
   background: transparent;
   color: var(--text);
 }
-:where(.settings-page main) .button-secondary:not(:where(.project-filter-control, .project-option-color-trigger)):hover:not(:disabled):not([aria-disabled="true"]) {
+:where(.settings-page main, .refined-page main) .button-secondary:not(:where(.project-filter-control, .project-option-color-trigger, .app-dialog *)):hover:not(:disabled):not([aria-disabled="true"]) {
   border-color: var(--border-strong);
   background: var(--surface-hover);
   color: var(--text);
 }
 /* Destructive actions stay tinted so they never read as the primary. */
-:where(.settings-page main) .button-danger:not(:where(.project-filter-control, .project-option-color-trigger)):not(:disabled):not([aria-disabled="true"]) {
+:where(.settings-page main, .refined-page main) .button-danger:not(:where(.project-filter-control, .project-option-color-trigger, .app-dialog *)):not(:disabled):not([aria-disabled="true"]) {
   border-color: rgba(251, 113, 133, 0.45);
   background: rgba(251, 113, 133, 0.1);
   color: var(--badge-danger-fg);
 }
-:where(.settings-page main) .button-danger:not(:where(.project-filter-control, .project-option-color-trigger)):hover:not(:disabled):not([aria-disabled="true"]) {
+:where(.settings-page main, .refined-page main) .button-danger:not(:where(.project-filter-control, .project-option-color-trigger, .app-dialog *)):hover:not(:disabled):not([aria-disabled="true"]) {
   border-color: var(--danger);
   background: rgba(251, 113, 133, 0.18);
 }
-:where(.settings-page main) .button-small:not(:where(.project-filter-control, .project-option-color-trigger)) {
+:where(.settings-page main, .refined-page main) .button-small:not(:where(.project-filter-control, .project-option-color-trigger, .app-dialog *)) {
   min-height: 1.875rem;
   padding: 0 0.625rem;
   font-size: 0.8125rem;
@@ -15439,12 +15472,12 @@ button[aria-disabled="true"] > .project-create-submit-icon {
    Variant colors stay with .notice and .panel; Settings gives them the
    refined radius and type size. Error summaries read like a dialog's error
    line. */
-:where(.settings-page main) :is(.notice, .settings-content > .panel--info, .settings-content > .panel--warning) {
+:where(.settings-page main, .refined-page main) :is(.notice, .settings-content > .panel--info, .settings-content > .panel--warning) {
   border-radius: 0 var(--refined-control-radius) var(--refined-control-radius) 0;
   font-size: 0.875rem;
   line-height: 1.5;
 }
-:where(.settings-page main) .error-summary {
+:where(.settings-page main, .refined-page main) .error-summary {
   padding: var(--space-sm) var(--space-md);
   border: 1px solid rgba(251, 113, 133, 0.45);
   border-radius: var(--refined-control-radius);
@@ -15453,27 +15486,41 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   font-size: 0.8125rem;
   line-height: 1.5;
 }
-:where(.settings-page main) .error-summary :is(p, ul) {
+:where(.settings-page main, .refined-page main) .error-summary :is(p, ul) {
   margin: 0;
 }
-:where(.settings-page main) .error-summary p + ul {
+:where(.settings-page main, .refined-page main) .error-summary p + ul {
   margin-top: var(--space-xs);
 }
 
 /* ── Empty states ── */
-:where(.settings-page main) .settings-section .empty-state {
+:where(.settings-page main, .refined-page main) .settings-section .empty-state {
   padding: var(--space-lg) var(--space-md);
   font-size: 0.875rem;
 }
-:where(.settings-page main) .settings-section .empty-state :is(h2, .empty-state-heading) {
+:where(.settings-page main, .refined-page main) .settings-section .empty-state :is(h2, .empty-state-heading) {
   font-size: 0.9375rem;
   font-weight: 600;
 }
 
+/* ── Tables and detail lists ──
+   Tables opt in element by element with refined-table and
+   refined-table-scroll (see the Dashboard table rules). On refined pages a
+   detail list inside a section card takes the section's rhythm in place of
+   its own margins and reads at the card's type size, as Backups' selected
+   backup does; Settings detail lists keep their page rules. */
+:where(.refined-page main) :is(.settings-section, .destructive-section) .detail-list {
+  margin: 0;
+  font-size: 0.875rem;
+}
+:where(.refined-page main) :is(.settings-section, .destructive-section) .detail-list dt {
+  font-size: 0.8125rem;
+}
+
 @media (max-width: 540px) {
-  :where(.settings-page main) .settings-section,
-  :where(.settings-page main) .project-form .settings-section,
-  :where(.settings-page main) .destructive-section {
+  :where(.settings-page main, .refined-page main) .settings-section,
+  :where(.settings-page main, .refined-page main) .project-form .settings-section,
+  :where(.settings-page main, .refined-page main) .destructive-section {
     padding: var(--space-md);
   }
 }
