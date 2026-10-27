@@ -185,15 +185,34 @@
                     <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
                   {% endif %}
                 {% endfor %}
-                <div class="field">
-                  <label for="move-destination">Destination</label>
-                  <select id="move-destination" name="destinationCategory" data-confirmed-value="{{ asset.category_id if asset.category_id is not none else 'uncategorized' }}">
-                    <option value="uncategorized" {% if submittedDestinationCategory == 'uncategorized' %}selected{% endif %}>Uncategorized</option>
-                    {% for category in enabledCategories %}
-                      <option value="{{ category.id }}" {% if submittedDestinationCategory == (category.id ~ '') %}selected{% endif %}>{{ category.displayName }}</option>
-                    {% endfor %}
-                  </select>
-                </div>
+                {% set moveDestinationOptions = [{ value: 'uncategorized', label: 'Uncategorized' }] %}
+                {% for category in enabledCategories %}
+                  {% set _ = moveDestinationOptions.push({ value: category.id ~ '', label: category.displayName }) %}
+                {% endfor %}
+                {% set moveDestinationSelectedLabels = [] %}
+                {% for option in moveDestinationOptions %}
+                  {% if option.value == submittedDestinationCategory %}{% set _ = moveDestinationSelectedLabels.push(option.label) %}{% endif %}
+                {% endfor %}
+                {# The native select keeps the #move-destination form contract
+                   (name, values, data-confirmed-value) that the dialog's
+                   close reset reads; the dropdown is its presentation. It sits
+                   low in a long dialog, so its panel is placed against the
+                   viewport and opens upward when there is no room below. #}
+                {{ dropdown.singleSelect({
+                  id: "move-destination-dropdown",
+                  name: "destinationCategory",
+                  label: "Destination",
+                  options: moveDestinationOptions,
+                  selected: submittedDestinationCategory,
+                  triggerAriaLabel: "Destination: " ~ (moveDestinationSelectedLabels[0] or ''),
+                  fieldClasses: "asset-move-destination-field",
+                  attributes: [["data-cc-viewport-disclosure", true]],
+                  panelLabel: "Destination options",
+                  nativeSelect: {
+                    id: "move-destination",
+                    attributes: { "data-confirmed-value": (asset.category_id if asset.category_id is not none else 'uncategorized') ~ '' }
+                  }
+                }) }}
                 <div>
                   <button class="button button-primary" type="submit">Move file</button>
                 </div>

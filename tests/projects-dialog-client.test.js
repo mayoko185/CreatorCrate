@@ -837,6 +837,50 @@ describe('Reusable app dialog enhancement', () => {
     expect(bookForm.reset).toHaveBeenCalledOnce();
   });
 
+  it('restores the native-backed Move destination dropdown from the confirmed value', () => {
+    const page = makeDialogPage();
+    page.dialog.setAttribute('id', 'asset-edit-dialog');
+    page.trigger.setAttribute('data-dialog-open', 'asset-edit-dialog');
+    page.form.setAttribute('data-dialog-async', 'false');
+    page.form.reset = vi.fn();
+
+    const moveForm = makeElement('form');
+    const destination = makeElement('select', {
+      id: 'move-destination', name: 'destinationCategory', 'data-confirmed-value': '3',
+    });
+    addOption(destination, 'uncategorized', false, 'Uncategorized');
+    addOption(destination, '3', false, 'Renders');
+    addOption(destination, '4', true, 'Sketches');
+    destination.value = '4';
+    const moveField = makeElement('div');
+    const { details: moveDropdown } = addStandardDropdown(moveField, destination, 'move-destination', [
+      { value: 'uncategorized', label: 'Uncategorized' },
+      { value: '3', label: 'Renders' },
+      { value: '4', label: 'Sketches' },
+    ], '4');
+    moveForm.appendChild(moveField);
+    moveForm.reset = vi.fn(() => { destination.value = '4'; });
+    page.dialog.appendChild(moveForm);
+    const radios = moveDropdown.querySelectorAll('input[type="radio"]');
+
+    enhanceAppDialogs(page.document);
+    enhanceAssetEditDialog(page.document);
+    openAppDialogById(page.document, page.dialog.id, page.trigger);
+    // An abandoned draft selection in the custom control.
+    destination.value = 'uncategorized';
+    radios.forEach((radio) => { radio.checked = radio.value === 'uncategorized'; });
+    moveDropdown.open = true;
+    page.close.dispatch('click');
+    openAppDialogById(page.document, page.dialog.id, page.trigger);
+
+    expect(destination.value).toBe('3');
+    expect(radios.map((radio) => radio.checked)).toEqual([false, true, false]);
+    expect(moveDropdown.querySelector('[data-cc-dropdown-summary-current]').textContent).toBe('Renders');
+    expect(moveDropdown.querySelector('summary').getAttribute('aria-label')).toBe('move-destination filter: Renders');
+    expect(moveDropdown.open).toBe(false);
+    expect(moveForm.reset).toHaveBeenCalledOnce();
+  });
+
   it('uses a newly confirmed Edit Asset value after a successful operation', () => {
     const page = makeDialogPage();
     page.dialog.setAttribute('id', 'asset-edit-dialog');

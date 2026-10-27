@@ -49,7 +49,7 @@
         ["aria-describedby", idPrefix ~ "projectId-error" if errors.projectId else none],
         ["aria-invalid", "true" if errors.projectId else none]
       ],
-      fieldClasses: "asset-viewer-filter-field asset-viewer-project-filter{% if errors.projectId %} field-error{% endif %}",
+      fieldClasses: "asset-viewer-filter-field asset-viewer-project-filter" ~ (" field-error" if errors.projectId else ""),
       classes: "asset-project-filter-disclosure"
     }) }}
     {% if errors.projectId %}<span class="field-error-message" id="{{ idPrefix }}projectId-error">{{ errors.projectId }}</span>{% endif %}

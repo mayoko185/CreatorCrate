@@ -7,6 +7,8 @@
 {% set page_title = "Releases — " ~ title %}
 {% set formDescription = "Create a tracked release record." %}
 
+{% block body_class %}refined-page{% endblock %}
+
 {% block content %}
   {% call pageHeading.render(formDescription) %}
     <button class="button button-primary" type="submit" form="release-form">Create</button>

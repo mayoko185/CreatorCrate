@@ -5,6 +5,10 @@
 {% set page_title = "Projects — Edit " ~ project.title if action == 'Edit' else "Projects — " ~ title %}
 {% set formDescription = "Create a tracked project record." if action == 'Create' else "Update project metadata and planning fields." %}
 
+{# Only the standalone create page takes the refined-page foundation; the
+   edit page keeps its existing presentation. #}
+{% block body_class %}{% if action == 'Create' %}refined-page{% endif %}{% endblock %}
+
 {% block content %}
   {% call pageHeading.render(formDescription) %}
     <button class="button button-primary" type="submit" form="project-form">{{ action }}</button>

@@ -684,13 +684,40 @@ function autoRenameCreateOrderMarker(surface) {
 }
 
 function autoRenameBindSurface(state) {
+  // Chromium can retarget dragstart to the draggable item. Remember the
+  // pressed descendant until the gesture ends so a drag that began on a
+  // title trigger or control stays blocked.
+  let pressed = null;
+  const document = state.surface.ownerDocument;
+  const windowObject = document?.defaultView;
+  const clearPressed = () => {
+    pressed = null;
+    document?.removeEventListener?.('pointerdown', clearPressed, true);
+    document?.removeEventListener?.('pointerup', clearPressed, true);
+    document?.removeEventListener?.('pointercancel', clearPressed, true);
+    windowObject?.removeEventListener?.('blur', clearPressed);
+  };
+
   state.items.forEach((item) => {
+    item.addEventListener?.('pointerdown', (event) => {
+      clearPressed();
+      if (event.button !== 0 || event.isPrimary === false) return;
+      pressed = { item, target: event.target };
+      // The document capture phase has already run for this press, so the
+      // pointerdown listener only ends the gesture on the next press.
+      document?.addEventListener?.('pointerdown', clearPressed, true);
+      document?.addEventListener?.('pointerup', clearPressed, true);
+      document?.addEventListener?.('pointercancel', clearPressed, true);
+      windowObject?.addEventListener?.('blur', clearPressed);
+    }, true);
     item.addEventListener?.('dragstart', (event) => {
+      const target = pressed?.item === item ? pressed.target : event.target;
+      clearPressed();
       if (
         state.keyboardItem
         || state.draggedItem
         || !autoRenameMembershipIsValid(state)
-        || !autoRenameDragTargetIsAllowed(item, event.target)
+        || !autoRenameDragTargetIsAllowed(item, target)
       ) {
         event.preventDefault?.();
         return;

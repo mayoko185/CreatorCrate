@@ -348,6 +348,8 @@
 {% set page_title = "Assets — " + project.title %}
 {% set assetVideoPreview = true %}
 
+{% block body_class %}refined-page{% endblock %}
+
 {% block content %}
   {% set assetsHeadingDescription = "Browse scanned files, category, and release usage." %}
   {% if isArchived %}

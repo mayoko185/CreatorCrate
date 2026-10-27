@@ -48,6 +48,13 @@ function makeNode({ tagName = 'div', attrs = {}, textContent = '', rect = null }
     addEventListener(type, handler, options = {}) {
       listeners.push({ type, handler, capture: options === true || options?.capture === true });
     },
+    removeEventListener(type, handler, options = {}) {
+      const capture = options === true || options?.capture === true;
+      const index = listeners.findIndex((listener) => (
+        listener.type === type && listener.handler === handler && listener.capture === capture
+      ));
+      if (index >= 0) listeners.splice(index, 1);
+    },
     setAttribute(name, value) {
       const stringValue = String(value);
       attributes.set(name, stringValue);
@@ -814,6 +821,130 @@ describe('Assets-page Auto Rename ordering enhancement', () => {
     // Row background clicks keep toggling selection.
     card.dispatch('click', { target: { closest: () => null } });
     expect(page.assets[0].checkbox.checked).toBe(true);
+  });
+
+  it('keeps a drag pressed on a title trigger blocked when Chromium retargets dragstart to the item', () => {
+    const page = makeAssetPage({ view: 'grid', ids: [1, 2] });
+    enhanceAssetAutoRenameOrdering(page.document);
+    const item = page.assets[0].item;
+    const titleInfo = makeNode({ attrs: { 'data-dashboard-title-info': '' } });
+    const trigger = makeNode({ tagName: 'button', attrs: { type: 'button', 'data-calendar-info-trigger': '' } });
+    titleInfo.appendChild(trigger);
+    page.assets[0].body.appendChild(titleInfo);
+
+    trigger.dispatch('pointerdown', { button: 0, isPrimary: true });
+    const retargeted = item.dispatch('dragstart', { dataTransfer: dataTransfer() });
+    expect(retargeted.defaultPrevented).toBe(true);
+    expect(item.getAttribute('aria-grabbed')).toBe('false');
+
+    // The next gesture starts from the item body and may order.
+    page.assets[0].image.dispatch('pointerdown', { button: 0, isPrimary: true });
+    const allowed = item.dispatch('dragstart', { dataTransfer: dataTransfer() });
+    expect(allowed.defaultPrevented).toBe(false);
+    expect(item.getAttribute('aria-grabbed')).toBe('true');
+  });
+
+  describe('pressed-target guard lifecycle', () => {
+    const gestureTypes = ['pointerdown', 'pointerup', 'pointercancel'];
+
+    function withWindow(page) {
+      page.document.defaultView = makeNode({ tagName: 'window' });
+      return page.document.defaultView;
+    }
+
+    function gestureListeners(page) {
+      return {
+        document: page.document.listeners.filter((listener) => gestureTypes.includes(listener.type)).length,
+        blur: page.document.defaultView.listeners.filter((listener) => listener.type === 'blur').length,
+      };
+    }
+
+    function addTitleTrigger(asset) {
+      const titleInfo = makeNode({ attrs: { 'data-dashboard-title-info': '' } });
+      const trigger = makeNode({ tagName: 'button', attrs: { type: 'button', 'data-calendar-info-trigger': '' } });
+      titleInfo.appendChild(trigger);
+      asset.body.appendChild(titleInfo);
+      return trigger;
+    }
+
+    it('releases the pressed target and its listeners when the window loses focus', () => {
+      const page = makeAssetPage({ view: 'grid', ids: [1, 2] });
+      const windowObject = withWindow(page);
+      enhanceAssetAutoRenameOrdering(page.document);
+      const trigger = addTitleTrigger(page.assets[0]);
+
+      trigger.dispatch('pointerdown', { button: 0, isPrimary: true });
+      expect(gestureListeners(page)).toEqual({ document: 3, blur: 1 });
+
+      windowObject.dispatch('blur');
+      expect(gestureListeners(page)).toEqual({ document: 0, blur: 0 });
+      // The interrupted title press no longer governs a later item drag.
+      const later = page.assets[0].item.dispatch('dragstart', { dataTransfer: dataTransfer() });
+      expect(later.defaultPrevented).toBe(false);
+      // Repeated termination is harmless.
+      windowObject.dispatch('blur');
+      page.document.dispatch('pointerup');
+      expect(gestureListeners(page)).toEqual({ document: 0, blur: 0 });
+    });
+
+    it('ends an interrupted press on the next pointerdown without cancelling the new gesture', () => {
+      const page = makeAssetPage({ view: 'grid', ids: [1, 2] });
+      withWindow(page);
+      enhanceAssetAutoRenameOrdering(page.document);
+      const trigger = addTitleTrigger(page.assets[0]);
+
+      trigger.dispatch('pointerdown', { button: 0, isPrimary: true });
+      trigger.dispatch('pointerdown', { button: 0, isPrimary: true });
+      expect(gestureListeners(page)).toEqual({ document: 3, blur: 1 });
+      const blocked = page.assets[0].item.dispatch('dragstart', { dataTransfer: dataTransfer() });
+      expect(blocked.defaultPrevented).toBe(true);
+      expect(gestureListeners(page)).toEqual({ document: 0, blur: 0 });
+
+      trigger.dispatch('pointerdown', { button: 0, isPrimary: true });
+      page.assets[1].image.dispatch('pointerdown', { button: 0, isPrimary: true });
+      expect(gestureListeners(page)).toEqual({ document: 3, blur: 1 });
+      const allowed = page.assets[1].item.dispatch('dragstart', { dataTransfer: dataTransfer() });
+      expect(allowed.defaultPrevented).toBe(false);
+      expect(page.assets[1].item.getAttribute('aria-grabbed')).toBe('true');
+      page.assets[1].item.dispatch('dragend');
+    });
+
+    it('does not accumulate listeners across replaced surfaces with interrupted presses', () => {
+      const page = makeAssetPage({ view: 'grid', ids: [1, 2] });
+      withWindow(page);
+      enhanceAssetAutoRenameOrdering(page.document);
+      page.assets[0].image.dispatch('pointerdown', { button: 0, isPrimary: true });
+
+      for (const view of ['list', 'grid', 'list']) {
+        const replacement = makeAssetPage({ view, ids: [1, 2] });
+        page.document.children.splice(0, page.document.children.length);
+        page.document.appendChild(replacement.surface);
+        enhanceAssetAutoRenameOrdering(page.document);
+        replacement.assets[0].image.dispatch('pointerdown', { button: 0, isPrimary: true });
+        expect(gestureListeners(page)).toEqual({ document: 3, blur: 1 });
+      }
+
+      page.document.defaultView.dispatch('blur');
+      expect(gestureListeners(page)).toEqual({ document: 0, blur: 0 });
+    });
+
+    it('still releases listeners on pointerup, pointercancel, and dragstart', () => {
+      const page = makeAssetPage({ view: 'list', ids: [1, 2, 3] });
+      withWindow(page);
+      enhanceAssetAutoRenameOrdering(page.document);
+
+      ['pointerup', 'pointercancel'].forEach((type) => {
+        page.assets[0].image.dispatch('pointerdown', { button: 0, isPrimary: true });
+        page.document.dispatch(type);
+        expect(gestureListeners(page)).toEqual({ document: 0, blur: 0 });
+      });
+
+      page.assets[0].image.dispatch('pointerdown', { button: 0, isPrimary: true });
+      const result = dragTo(page, 0, { clientY: 140 });
+      expect(gestureListeners(page)).toEqual({ document: 0, blur: 0 });
+      expect(result.over.defaultPrevented).toBe(true);
+      expect(page.order()).toEqual(['2', '3', '1']);
+    });
   });
 
   it('enhances once and supports keyboard grab, movement, commit, and Escape restore', () => {

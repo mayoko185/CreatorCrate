@@ -337,7 +337,7 @@ describe('asset browser HTTP workflow', () => {
   // asserting no '<img ' anywhere in the response would false-positive on
   // that unrelated chrome rather than the asset preview itself.
   function previewSectionHtml(html) {
-    const match = html.match(/<section class="asset-preview-section"[^>]*>[\s\S]*?<\/section>/);
+    const match = html.match(/<section class="(?:[^"]* )?asset-preview-section(?: [^"]*)?"[^>]*>[\s\S]*?<\/section>/);
     if (!match) throw new Error('Rendered page did not include an asset-preview-section.');
     return match[0];
   }

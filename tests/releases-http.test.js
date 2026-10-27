@@ -1818,8 +1818,9 @@ describe('release HTTP workflow', () => {
       expectUniqueValidIdReferences(dialogRes.text);
 
       const css = (await agent.get('/creatorcrate.css').expect(200)).text;
-      // Picker rows are the visible control; the native input inside stays borderless.
-      expect(css).toMatch(/\.app-dialog \.scheduling-field \.picker-input-row input\.picker-input\s*\{[^}]*border:\s*0;[^}]*box-shadow:\s*none;/);
+      // Picker rows are the visible control; the native input inside stays
+      // borderless. Refined pages share the rule through later selectors.
+      expect(css).toMatch(/\.app-dialog \.scheduling-field \.picker-input-row input\.picker-input(?:,\s*[^{},]+)*\s*\{[^}]*border:\s*0;[^}]*box-shadow:\s*none;/);
     });
 
     it('re-renders a filtered Releases list with the exact invocation URL and submitted values after validation', async () => {
@@ -2694,7 +2695,9 @@ describe('release HTTP workflow', () => {
       .expect(422);
     expect(res.text).toContain('Project not found');
     const projectField = extractReleaseProjectField(res.text);
-    expect(projectField).toContain('field-error');
+    // field-error is a real class token, not template text left in the class.
+    expect(projectField).toMatch(/<fieldset class="[^"]*asset-viewer-project-filter field-error"/);
+    expect(projectField).not.toContain('{%');
     expect(projectField).toContain('id="projectId-error"');
     expect(projectField).toMatch(/name="projectId"[^>]*aria-describedby="projectId-error"[^>]*aria-invalid="true"/);
     expect(projectField).toMatch(/<summary[^>]*aria-describedby="projectId-error"[^>]*aria-invalid="true"/);

@@ -631,6 +631,93 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
         expect(subject, selector).toMatch(/:not\(:where\([^()]*\.app-dialog \*\)\)/);
       }
     });
+
+    it('opts the standalone New Project and New Release pages into refined-page', async () => {
+      const app = getApp();
+      // New Release needs a project to choose from.
+      app.locals.projectService.create({ title: 'Refined form project' });
+      const projectPage = await request(app).get('/projects/new').expect(200);
+      const releasePage = await request(app).get('/releases/new').expect(200);
+      expect(projectPage.text).toMatch(/<body class="refined-page">/);
+      expect(releasePage.text).toMatch(/<body class="refined-page">/);
+      // Manage Signatures stays inside the release page's <main>, which the
+      // foundation's .app-dialog exclusions cover.
+      expect(releasePage.text.indexOf('id="release-signatures-dialog"'))
+        .toBeGreaterThan(releasePage.text.indexOf('<main'));
+      expect(releasePage.text.indexOf('id="release-signatures-dialog"'))
+        .toBeLessThan(releasePage.text.indexOf('</main>'));
+      // Only the create page opts in; the shared form template's edit mode
+      // keeps its existing presentation.
+      const template = fs.readFileSync(path.join(VIEWS_DIR, 'projects/form.njk'), 'utf8');
+      expect(template).toContain("{% block body_class %}{% if action == 'Create' %}refined-page{% endif %}{% endblock %}");
+    });
+
+    it('lays out the creation forms like the refined create dialogs', async () => {
+      const css = STYLESHEET;
+      const scope = ':where\\(\\.refined-page main\\)';
+      expect(css).toMatch(new RegExp(`${scope} \\.project-form :is\\(\\.project-form-section-body, \\.release-form-section-body\\)\\s*\\{[^}]*flex-direction:\\s*column;[^}]*gap:\\s*var\\(--space-md\\);`));
+      expect(css).toMatch(new RegExp(`${scope} \\.project-form \\.status-row\\s*\\{[^}]*grid-template-columns:\\s*repeat\\(3, minmax\\(0, 1fr\\)\\);`));
+      // Date and time pickers share the dialogs' refined picker row.
+      expect(css).toMatch(new RegExp(`\\.app-dialog \\.scheduling-field \\.picker-input-row,\\s*${scope} \\.scheduling-field \\.picker-input-row\\s*\\{[^}]*border-radius:\\s*var\\(--refined-control-radius\\);`));
+      expect(css).toMatch(new RegExp(`${scope} \\.scheduling-field \\.picker-input\\s*\\{[^}]*font-family:\\s*inherit;`));
+    });
+
+    it('keeps the signature settings button a square icon button with an in-bounds tooltip', async () => {
+      const css = STYLESHEET;
+      const scope = ':where\\(\\.refined-page main\\)';
+      expect(css).toMatch(new RegExp(`${scope} \\.release-signature-row \\.release-signature-manage\\s*\\{[^}]*width:\\s*var\\(--refined-control-height\\);[^}]*min-height:\\s*var\\(--refined-control-height\\);[^}]*padding:\\s*0;`));
+      expect(css).toMatch(new RegExp(`${scope} \\.release-signature-manage\\[data-tooltip\\]::after\\s*\\{[^}]*left:\\s*auto;[^}]*right:\\s*0;`));
+    });
+
+    it('opts Project Detail and Project Tags into refined-page with their dialogs outside <main>', async () => {
+      const app = getApp();
+      const project = app.locals.projectService.create({ title: 'Refined detail project' });
+      const detail = await request(app).get(`/projects/${project.id}`).expect(200);
+      const tags = await request(app).get(`/projects/${project.id}/tags`).expect(200);
+      expect(detail.text).toMatch(/<body class="refined-page">/);
+      expect(tags.text).toMatch(/<body class="refined-page">/);
+      // The Edit Project dialog renders in the overlay block, so the
+      // foundation's page rules never reach it.
+      expect(detail.text.indexOf('id="project-edit-dialog"')).toBeGreaterThan(detail.text.indexOf('</main>'));
+    });
+
+    it('gives Project Detail sections the compact heading and keeps its icon actions square', async () => {
+      const css = STYLESHEET;
+      const scope = ':where\\(\\.refined-page main\\)';
+      expect(css).toMatch(new RegExp(`${scope} \\.project-detail-section > h2\\s*\\{[^}]*font-family:\\s*inherit;[^}]*text-transform:\\s*none;`));
+      expect(css).toMatch(new RegExp(`${scope} \\.project-detail-section > h2::before\\s*\\{[^}]*background:\\s*var\\(--accent-gradient\\);`));
+      expect(css).toMatch(new RegExp(`${scope} \\.project-detail-section-body\\s*\\{[^}]*padding:\\s*0;`));
+      // The refined small-button height would otherwise squash the
+      // 2.25rem + padding icon square.
+      expect(css).toMatch(new RegExp(`${scope} \\.project-detail-action\\.button\\s*\\{[^}]*min-block-size:\\s*2\\.25rem;[^}]*min-inline-size:\\s*2\\.25rem;[^}]*padding:\\s*var\\(--space-sm\\);`));
+    });
+
+    it('presents project tag choices as chips without changing the submitted fields', async () => {
+      const app = getApp();
+      const project = app.locals.projectService.create({ title: 'Refined tags project' });
+      const assigned = app.locals.tagService.createTag({ name: 'Assigned tag' });
+      const other = app.locals.tagService.createTag({ name: 'Other tag' });
+      app.locals.projectTagService.replaceProjectTags(project.id, [assigned.id]);
+      const res = await request(app).get(`/projects/${project.id}/tags`).expect(200);
+      expect(res.text).toMatch(/<section class="settings-section project-tags-current">\s*<h2>Current tags<\/h2>\s*<ul class="tag-chip-list">\s*<li class="tag-chip">Assigned tag<\/li>/);
+      const choices = res.text.match(/<fieldset class="project-tag-choices"[^>]*>[\s\S]*?<\/fieldset>/)?.[0] || '';
+      expect(choices.match(/<div class="field project-tag-choice">/g)).toHaveLength(2);
+      expect(choices).toMatch(new RegExp(`<input type="checkbox" id="project-tag-${assigned.id}" name="tagIds\\[\\]" value="${assigned.id}" checked>\\s*<label for="project-tag-${assigned.id}">Assigned tag</label>`));
+      expect(choices).toMatch(new RegExp(`<input type="checkbox" id="project-tag-${other.id}" name="tagIds\\[\\]" value="${other.id}">\\s*<label for="project-tag-${other.id}">Other tag</label>`));
+      expect(STYLESHEET).toMatch(/:where\(\.refined-page main\) \.project-tag-choices > \.project-tag-choice:has\(input:checked\)\s*\{[^}]*border-color:\s*var\(--accent\);/);
+    });
+
+    it('drops the Asset Detail band headers and keeps its tooltip and preview text in bounds', async () => {
+      const css = STYLESHEET;
+      const scope = ':where\\(\\.refined-page main\\)';
+      // The Viewer's compound band-header rule otherwise outranks the card heading.
+      expect(css).toMatch(new RegExp(`${scope} \\.settings-section\\.asset-viewer-section > h3\\s*\\{[^}]*background:\\s*none;`));
+      expect(css).toMatch(new RegExp(`${scope} \\.asset-viewer-section-body\\s*\\{[^}]*padding:\\s*0;`));
+      expect(css).toMatch(new RegExp(`${scope} \\.asset-metadata-group-title\\s*\\{[^}]*text-transform:\\s*none;`));
+      // Workflow JSON stays monospace and scrolls inside its block.
+      expect(css).not.toMatch(new RegExp(`${scope} \\.asset-workflow-json\\s*\\{[^}]*(font-family|white-space|overflow)`));
+      expect(css).toMatch(/@media \(max-width: 540px\) \{[^@]*:where\(\.refined-page main\) \.page-heading > \.asset-viewer-project\.asset-tooltip--left\[data-tooltip\]::after\s*\{[^}]*left:\s*auto;[^}]*right:\s*0;/);
+    });
   });
 
   // ─── 6. Form density ─────────────────────────────────────────────────────
@@ -850,8 +937,10 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
         .expect(302);
       const projectId = projRes.headers.location.replace('/projects/', '');
 
+      // Project Assets opts into the refined-page foundation, which is also
+      // scoped without a page-width override (guarded above).
       const assets = await request(getApp()).get(`/projects/${projectId}/assets`).expect(200);
-      expect(assets.text).toContain('<body class="">');
+      expect(assets.text).toContain('<body class="refined-page">');
 
       const calendar = await request(getApp()).get('/calendar').expect(200);
       expect(calendar.text).toContain('<body class="">');

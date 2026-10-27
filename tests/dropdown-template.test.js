@@ -292,6 +292,34 @@ describe('shared dropdown template', () => {
     expect(html).not.toMatch(/id="defaults-view-dropdown-option-leading" name="view"/);
   });
 
+  it('renders only real booleans as bare attributes and keeps loosely-equal strings as values', () => {
+    const attributes = [
+      ['data-true', true], ['data-false', false], ['data-none', null],
+      ['data-one', '1'], ['data-zero', '0'], ['data-number', 1], ['data-text', 'a"<b'],
+    ];
+    const html = renderDropdown('singleSelect', {
+      id: 'typed-attributes',
+      name: 'typed',
+      label: 'Typed',
+      options: [{ value: '1', label: 'One', attributes }],
+      attributes,
+      summaryAttributes: attributes,
+      fieldAttributes: attributes,
+      inputAttributes: attributes,
+      nativeSelect: { id: 'typed-native', attributes: { 'data-confirmed-value': '1', required: true, disabled: false } },
+    });
+    const expected = ' data-true data-one="1" data-zero="0" data-number="1" data-text="a&quot;&lt;b"';
+
+    expect(html).toContain('aria-label="Typed" data-confirmed-value="1" required>');
+    expect(html).not.toMatch(/<select id="typed-native"[^>]*disabled/);
+    for (const pattern of [
+      /<fieldset[^>]*>/, /<details[^>]*>/, /<summary[^>]*>/, /<option value="1"[^>]*>/, /<input id="typed-attributes-option-1"[^>]*>/,
+    ]) {
+      expect(html.match(pattern)?.[0]).toContain(`${expected}>`);
+    }
+    expect(html).not.toMatch(/data-false|data-none/);
+  });
+
 });
 
 it('searchable multiple uses the Projects-page shell with checkbox group semantics', () => {

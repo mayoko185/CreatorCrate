@@ -4,6 +4,8 @@
 {% set page_title = "Projects — " ~ project.title ~ " — Tags" %}
 {% set isArchived = project.archived_at or project.status == 'archived' %}
 
+{% block body_class %}refined-page{% endblock %}
+
 {% block content %}
   {% if isArchived %}
     {% call pageHeading.render("Assigned tags are shown read-only for archived projects.", "archived") %}
@@ -21,12 +23,12 @@
     {% include "partials/notice.njk" %}
   {% endif %}
 
-  <section class="project-tags-current">
+  <section class="settings-section project-tags-current">
     <h2>Current tags</h2>
     {% if assignedTags.length > 0 %}
-      <ul>
+      <ul class="tag-chip-list">
         {% for tag in assignedTags %}
-          <li>{{ tag.displayName }}</li>
+          <li class="tag-chip">{{ tag.displayName }}</li>
         {% endfor %}
       </ul>
     {% else %}
@@ -44,9 +46,9 @@
     <section class="settings-section">
       <h2>Available reusable tags</h2>
       <p class="help-text">Catalog tags can be created, renamed, or deleted in <a href="/settings/tags">Settings › Tags</a>.</p>
-      <ul>
+      <ul class="tag-chip-list">
         {% for tag in tags %}
-          <li>{{ tag.displayName }}</li>
+          <li class="tag-chip">{{ tag.displayName }}</li>
         {% endfor %}
       </ul>
     </section>
@@ -66,10 +68,10 @@
 
       <form method="post" action="/projects/{{ project.id }}/tags" class="project-form" novalidate>
         <input type="hidden" name="_csrf" value="{{ _csrf }}">
-        <fieldset{% if errorMessages.length > 0 %} aria-describedby="project-tag-errors"{% endif %}>
+        <fieldset class="project-tag-choices"{% if errorMessages.length > 0 %} aria-describedby="project-tag-errors"{% endif %}>
           <legend>Available tags</legend>
           {% for tag in tags %}
-            <div class="field">
+            <div class="field project-tag-choice">
               <input type="checkbox" id="project-tag-{{ tag.id }}" name="tagIds[]" value="{{ tag.id }}"{% if (tag.id ~ '') in selectedTagIds %} checked{% endif %}>
               <label for="project-tag-{{ tag.id }}">{{ tag.displayName }}</label>
             </div>

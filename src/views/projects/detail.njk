@@ -8,6 +8,8 @@
 {% set page_title = "Projects — " ~ project.title %}
 {% set assetVideoPreview = true %}
 
+{% block body_class %}refined-page{% endblock %}
+
 {% block content %}
   {% if project.isArchived %}
     {{ pageHeading.render("", "archived") }}

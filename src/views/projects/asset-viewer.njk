@@ -4,6 +4,8 @@
 
 {% set page_title = "Assets — " ~ project.title ~ " — " ~ asset.filename %}
 
+{% block body_class %}refined-page{% endblock %}
+
 {% block content %}
   {% call pageHeading.render("", "", "", "/projects/" ~ project.id, "Back to main project page: " ~ project.title, "asset-viewer-project", "projects") %}
     <a class="button button-secondary asset-viewer-back" href="{{ backToAssetsLink.href }}">Back to Assets</a>
@@ -44,7 +46,7 @@
     {% include "partials/notice.njk" %}
   {% endif %}
 
-  <section class="asset-preview-section" aria-labelledby="asset-preview-heading">
+  <section class="settings-section asset-preview-section" aria-labelledby="asset-preview-heading">
     <h2 id="asset-preview-heading">Preview</h2>
     <div class="asset-preview-viewer">
       {% if asset.preview.previewable and asset.preview_url %}
@@ -212,7 +214,7 @@
     <h3 id="asset-release-usage-heading">Release usage</h3>
     <div class="asset-viewer-section-body asset-release-usage-section-body">
       {% if asset.release_usage_summary.count > 0 %}
-        <p>
+        <p class="asset-release-usage-count">
           Used by {{ asset.release_usage_summary.count }} release{% if asset.release_usage_summary.count != 1 %}s{% endif %}.
         </p>
         {% if asset.release_usage.length > 0 %}
@@ -226,7 +228,7 @@
           </ul>
         {% endif %}
       {% else %}
-        <p>Not used by a release.</p>
+        <p class="asset-release-usage-count">Not used by a release.</p>
       {% endif %}
     </div>
   </section>

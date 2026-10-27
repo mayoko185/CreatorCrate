@@ -55,9 +55,74 @@ describe('asset edit dialog dismissal', () => {
     });
 
     expect(html).toContain('value="failed-draft.png" data-confirmed-value="confirmed.png"');
-    expect(html).toContain('name="destinationCategory" data-confirmed-value="3"');
+    expect(html).toMatch(/<select id="move-destination" name="destinationCategory"[^>]* data-confirmed-value="3">/);
     expect(html).toContain('data-confirmed-tag-ids="2"');
     expect(html).not.toContain('data-dialog-reset-on-close');
+  });
+});
+
+describe('asset edit dialog Move destination', () => {
+  function moveForm(overrides = {}) {
+    const html = renderAssetEditDialog({
+      asset: { id: 42, filename: 'confirmed.png', category_id: 3 },
+      canMutate: true,
+      submittedDestinationCategory: '3',
+      enabledCategories: [{ id: 3, displayName: 'Renders' }, { id: 4, displayName: 'Sketches' }],
+      ...overrides,
+    });
+    return formsFor(html, '/projects/7/assets/42/move')[0] || '';
+  }
+
+  it('backs the shared dropdown with the #move-destination native select and one submitted field', () => {
+    const form = moveForm();
+    const native = form.match(/<select id="move-destination"[^>]*>[\s\S]*?<\/select>/)?.[0] || '';
+
+    expect(native).toMatch(/^<select id="move-destination" name="destinationCategory" class="cc-dropdown-native-select" data-cc-dropdown-native-select aria-label="Destination" data-confirmed-value="3">/);
+    expect([...native.matchAll(/<option value="([^"]*)"( selected)?>([^<]*)<\/option>/g)].map((match) => [match[1], Boolean(match[2]), match[3]]))
+      .toEqual([['uncategorized', false, 'Uncategorized'], ['3', true, 'Renders'], ['4', false, 'Sketches']]);
+    expect(form.match(/name="destinationCategory"/g)).toHaveLength(1);
+    expect(form).not.toMatch(/<input[^>]*type="hidden"[^>]*name="destinationCategory"/);
+
+    const dropdown = form.match(/<details[^>]*id="move-destination-dropdown"[^>]*>[\s\S]*?<\/details>/)?.[0] || '';
+    expect(dropdown).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
+    expect(dropdown).toContain('data-cc-viewport-disclosure');
+    expect(dropdown).toMatch(/^<details[^>]* hidden/);
+    expect(dropdown).toContain('aria-label="Destination: Renders"');
+    expect(dropdown).toMatch(/<span data-cc-dropdown-summary-current[^>]*>Renders<\/span>/);
+    const radios = [...dropdown.matchAll(/<input id="[^"]*" type="radio" value="([^"]*)"( checked)?>/g)].map((match) => [match[1], Boolean(match[2])]);
+    expect(radios).toEqual([['uncategorized', false], ['3', true], ['4', false]]);
+    expect(form).toContain('<legend>Destination</legend>');
+  });
+
+  it('shows a rejected draft destination while keeping the confirmed reset value', () => {
+    const form = moveForm({ submittedDestinationCategory: '4' });
+
+    expect(form).toContain('data-confirmed-value="3"');
+    expect(form).toContain('<option value="4" selected>Sketches</option>');
+    expect(form).toContain('aria-label="Destination: Sketches"');
+  });
+
+  it('keeps category ID 1 as a quoted confirmed value beside a rejected draft', () => {
+    const form = moveForm({
+      asset: { id: 42, filename: 'first.png', category_id: 1 },
+      submittedDestinationCategory: '4',
+      enabledCategories: [{ id: 1, displayName: 'Renders' }, { id: 4, displayName: 'WIP' }],
+    });
+
+    expect(form).toMatch(/<select id="move-destination" name="destinationCategory"[^>]* data-confirmed-value="1">/);
+    expect(form).toContain('<option value="1">Renders</option>');
+    expect(form).toContain('<option value="4" selected>WIP</option>');
+  });
+
+  it('confirms Uncategorized for an asset without a category', () => {
+    const form = moveForm({
+      asset: { id: 42, filename: 'loose.png', category_id: null },
+      submittedDestinationCategory: 'uncategorized',
+    });
+
+    expect(form).toContain('data-confirmed-value="uncategorized"');
+    expect(form).toContain('<option value="uncategorized" selected>Uncategorized</option>');
+    expect(form).toContain('aria-label="Destination: Uncategorized"');
   });
 });
 

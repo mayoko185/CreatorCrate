@@ -23,7 +23,7 @@ function extractProjectTagsSection(html) {
 }
 
 function extractCurrentTagsSection(html) {
-  return html.match(/<section class="project-tags-current">([\s\S]*?)<\/section>/)?.[1] || '';
+  return html.match(/<section class="[^"]*\bproject-tags-current\b[^"]*">([\s\S]*?)<\/section>/)?.[1] || '';
 }
 
 function checkboxMarkup(html, tagId) {

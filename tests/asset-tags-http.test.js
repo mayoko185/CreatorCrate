@@ -199,6 +199,38 @@ describe('asset tags — HTTP', () => {
     expect(checkboxMarkup(response.text, third.id)).not.toContain('checked');
   });
 
+  it('presents the refined tag choices and chips without changing the submitted fields', async () => {
+    const projectId = await createProject('Refined Asset Tags');
+    const asset = createAsset(projectId, 'refined.png');
+    const assigned = createTag('Assigned Chip');
+    const other = createTag('Other Chip');
+    assignAssetTags(asset.id, [assigned.id]);
+
+    const response = await agent.get(`/projects/${projectId}/assets/${asset.id}/tags`).expect(200);
+
+    expect(response.text).toMatch(/<body class="refined-page">/);
+    expect(section(response.text, 'asset-tags-current'))
+      .toMatch(/^<section class="settings-section asset-tags-current"[^>]*>\s*<h2 id="asset-tags-current-heading">Current tags<\/h2>\s*<ul class="tag-chip-list">\s*<li class="tag-chip">Assigned Chip<\/li>/);
+    const form = response.text.match(new RegExp(`<form method="post" action="/projects/${projectId}/assets/${asset.id}/tags"[\\s\\S]*?</form>`))?.[0] || '';
+    const choices = form.match(/<fieldset class="project-tag-choices asset-tag-choices"[^>]*>[\s\S]*?<\/fieldset>/)?.[0] || '';
+    expect(choices.match(/<div class="field project-tag-choice">/g)).toHaveLength(2);
+    expect(choices).toMatch(new RegExp(`<input type="checkbox" id="asset-tag-${assigned.id}" name="tagIds\\[\\]" value="${assigned.id}" checked>\\s*<label for="asset-tag-${assigned.id}">Assigned Chip</label>`));
+    expect(choices).toMatch(new RegExp(`<input type="checkbox" id="asset-tag-${other.id}" name="tagIds\\[\\]" value="${other.id}">\\s*<label for="asset-tag-${other.id}">Other Chip</label>`));
+    expect(form.match(/name="tagIds\[\]"/g)).toHaveLength(2);
+    expect(form.match(/<input type="hidden"[^>]*>/g)).toEqual([`<input type="hidden" name="_csrf" value="${csrfToken}">`]);
+  });
+
+  it('opts Asset Detail into refined-page with the Edit Asset dialog outside <main>', async () => {
+    const projectId = await createProject('Refined Asset Detail');
+    const asset = createAsset(projectId, 'detail.png');
+
+    const response = await agent.get(`/projects/${projectId}/assets/${asset.id}`).expect(200);
+
+    expect(response.text).toMatch(/<body class="refined-page">/);
+    expect(response.text).toMatch(/<section class="settings-section asset-preview-section" aria-labelledby="asset-preview-heading">/);
+    expect(response.text.indexOf('id="asset-edit-dialog"')).toBeGreaterThan(response.text.indexOf('</main>'));
+  });
+
   it('renders an empty catalog with a Settings link and no checkbox controls', async () => {
     const projectId = await createProject('Empty Asset Catalog');
     const asset = createAsset(projectId, 'empty.png');

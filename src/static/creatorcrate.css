@@ -10712,7 +10712,8 @@
 .app-dialog--processing :is(.processing-scope-option, .processing-checkbox-label) input:is([type='checkbox'], [type='radio']),
 .release-notification-channel-choice input[type='checkbox'],
 .release-no-set-date-field input[type='checkbox'],
-.settings-social-prep-content .checkbox-label input[type='checkbox'] {
+.settings-social-prep-content .checkbox-label input[type='checkbox'],
+:where(.refined-page main) .project-tag-choice input[type='checkbox'] {
   appearance: none;
   inline-size: 1rem;
   block-size: 1rem;
@@ -10726,7 +10727,8 @@
 .app-dialog--processing :is(.processing-scope-option, .processing-checkbox-label) input:is([type='checkbox'], [type='radio']):checked,
 .release-notification-channel-choice input[type='checkbox']:checked,
 .release-no-set-date-field input[type='checkbox']:checked,
-.settings-social-prep-content .checkbox-label input[type='checkbox']:checked {
+.settings-social-prep-content .checkbox-label input[type='checkbox']:checked,
+:where(.refined-page main) .project-tag-choice input[type='checkbox']:checked {
   border-color: var(--accent);
   background: var(--accent);
   box-shadow: inset 0 0 0 0.2rem var(--surface);
@@ -11855,19 +11857,22 @@
 
 .release-notification-channel-choice input[type='checkbox'],
 .release-no-set-date-field input[type='checkbox'],
-.settings-social-prep-content .checkbox-label input[type='checkbox'] {
+.settings-social-prep-content .checkbox-label input[type='checkbox'],
+:where(.refined-page main) .project-tag-choice input[type='checkbox'] {
   border-color: var(--border-strong);
   cursor: pointer;
 }
 
 .release-notification-channel-choice input[type='checkbox']:hover,
-.release-no-set-date-field input[type='checkbox']:hover {
+.release-no-set-date-field input[type='checkbox']:hover,
+:where(.refined-page main) .project-tag-choice input[type='checkbox']:hover {
   border-color: var(--accent);
 }
 
 .release-notification-channel-choice input[type='checkbox']:focus-visible,
 .release-no-set-date-field input[type='checkbox']:focus-visible,
-.settings-social-prep-content .checkbox-label input[type='checkbox']:focus-visible {
+.settings-social-prep-content .checkbox-label input[type='checkbox']:focus-visible,
+:where(.refined-page main) .project-tag-choice input[type='checkbox']:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
@@ -14711,30 +14716,35 @@ button[aria-disabled="true"] > .project-create-submit-icon {
 }
 /* The picker row is the visible control; its native input sits inside it
    borderless, so the shared dialog input treatment must not double up.
-   These apply to date/time pickers in every dialog and to Release
-   Notifications' date-only time picker. */
+   These apply to date/time pickers in every dialog, on refined pages, and
+   to Release Notifications' date-only time picker. */
 .settings-release-notifications-content .scheduling-field .picker-input-row,
-.app-dialog .scheduling-field .picker-input-row {
+.app-dialog .scheduling-field .picker-input-row,
+:where(.refined-page main) .scheduling-field .picker-input-row {
   border-color: var(--border);
   border-radius: var(--refined-control-radius);
   transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 .settings-release-notifications-content .scheduling-field .picker-input-row:hover,
-.app-dialog .scheduling-field .picker-input-row:hover {
+.app-dialog .scheduling-field .picker-input-row:hover,
+:where(.refined-page main) .scheduling-field .picker-input-row:hover {
   border-color: var(--border-strong);
 }
 .settings-release-notifications-content .scheduling-field .picker-input-row:focus-within,
-.app-dialog .scheduling-field .picker-input-row:focus-within {
+.app-dialog .scheduling-field .picker-input-row:focus-within,
+:where(.refined-page main) .scheduling-field .picker-input-row:focus-within {
   outline: none;
   border-color: var(--accent);
   box-shadow: var(--refined-focus-shadow);
 }
 .settings-release-notifications-content .scheduling-field.field-error .picker-input-row,
-.app-dialog .scheduling-field.field-error .picker-input-row {
+.app-dialog .scheduling-field.field-error .picker-input-row,
+:where(.refined-page main) .scheduling-field.field-error .picker-input-row {
   border-color: var(--danger);
 }
 .settings-release-notifications-content .scheduling-field .picker-input-row input.picker-input,
-.app-dialog .scheduling-field .picker-input-row input.picker-input {
+.app-dialog .scheduling-field .picker-input-row input.picker-input,
+:where(.refined-page main) .scheduling-field .picker-input-row input.picker-input {
   min-height: calc(var(--refined-control-height) - 2px);
   padding: 0.375rem calc(1.75rem + 2 * var(--space-xs)) 0.375rem 0.625rem;
   border: 0;
@@ -14745,7 +14755,8 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   line-height: 1.5;
 }
 .settings-release-notifications-content .scheduling-field .picker-trigger,
-.app-dialog .scheduling-field .picker-trigger {
+.app-dialog .scheduling-field .picker-trigger,
+:where(.refined-page main) .scheduling-field .picker-trigger {
   width: 1.75rem;
   height: 1.75rem;
   border-color: transparent;
@@ -14756,7 +14767,9 @@ button[aria-disabled="true"] > .project-create-submit-icon {
 .settings-release-notifications-content .scheduling-field .picker-trigger:hover:not(:disabled),
 .settings-release-notifications-content .scheduling-field .picker-trigger[aria-expanded="true"],
 .app-dialog .scheduling-field .picker-trigger:hover:not(:disabled),
-.app-dialog .scheduling-field .picker-trigger[aria-expanded="true"] {
+.app-dialog .scheduling-field .picker-trigger[aria-expanded="true"],
+:where(.refined-page main) .scheduling-field .picker-trigger:hover:not(:disabled),
+:where(.refined-page main) .scheduling-field .picker-trigger[aria-expanded="true"] {
   background: var(--surface-hover);
   color: var(--text);
 }
@@ -15248,7 +15261,8 @@ button[aria-disabled="true"] > .project-create-submit-icon {
    destructive section takes the same layout with a danger tint. */
 :where(.settings-page main, .refined-page main) .settings-section,
 :where(.settings-page main, .refined-page main) .project-form .settings-section,
-:where(.settings-page main, .refined-page main) .destructive-section {
+:where(.settings-page main, .refined-page main) .destructive-section,
+:where(.refined-page main) .project-detail-section {
   display: flex;
   flex-direction: column;
   gap: 0.625rem;
@@ -15264,7 +15278,8 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   background: rgba(251, 113, 133, 0.06);
 }
 :where(.settings-page main, .refined-page main) :is(.settings-section, .destructive-section) > :is(h2, h3),
-:where(.settings-page main, .refined-page main) .project-form .settings-section > :is(h2, h3) {
+:where(.settings-page main, .refined-page main) .project-form .settings-section > :is(h2, h3),
+:where(.refined-page main) .project-detail-section > h2 {
   display: flex;
   align-items: center;
   gap: var(--space-sm);
@@ -15280,7 +15295,8 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   line-height: 1.3;
   text-transform: none;
 }
-:where(.settings-page main, .refined-page main) :is(.settings-section, .destructive-section) > :is(h2, h3)::before {
+:where(.settings-page main, .refined-page main) :is(.settings-section, .destructive-section) > :is(h2, h3)::before,
+:where(.refined-page main) .project-detail-section > h2::before {
   flex: none;
   width: 0.1875rem;
   height: 0.875rem;
@@ -15412,8 +15428,10 @@ button[aria-disabled="true"] > .project-create-submit-icon {
    Text buttons take the refined sizing and variants. The primary action is
    the dialogs' dark outlined submit, as on the Dashboard; disabled styling
    and the focus ring come from the shared .button rules. Icon-only filter
-   controls and the color trigger keep their own sizing. */
-:where(.settings-page main, .refined-page main) .button:not(:where(.project-filter-control, .project-option-color-trigger, .app-dialog *)) {
+   controls, icon back links, and the color trigger keep their own sizing,
+   and buttons inside information cards and asset grid and list items keep
+   the treatment they share with the Dashboard and Calendar. */
+:where(.settings-page main, .refined-page main) .button:not(:where(.project-filter-control, .project-option-color-trigger, .page-heading-lead--icon, [data-calendar-info-card] *, .asset-grid *, .asset-list *, .app-dialog *)) {
   gap: 0.375rem;
   min-height: var(--refined-control-height);
   padding: 0 0.875rem;
@@ -15422,47 +15440,47 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   font-weight: 500;
   transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), filter var(--transition-fast), box-shadow var(--transition-fast);
 }
-:where(.settings-page main, .refined-page main) .button:not(:where(.project-filter-control, .project-option-color-trigger, .app-dialog *)):active:not(:disabled):not([aria-disabled="true"]) {
+:where(.settings-page main, .refined-page main) .button:not(:where(.project-filter-control, .project-option-color-trigger, .page-heading-lead--icon, [data-calendar-info-card] *, .asset-grid *, .asset-list *, .app-dialog *)):active:not(:disabled):not([aria-disabled="true"]) {
   transform: translateY(1px);
 }
-:where(.settings-page main, .refined-page main) .button-primary:not(:where(.project-filter-control, .project-option-color-trigger, .app-dialog *)) {
+:where(.settings-page main, .refined-page main) .button-primary:not(:where(.project-filter-control, .project-option-color-trigger, .page-heading-lead--icon, [data-calendar-info-card] *, .asset-grid *, .asset-list *, .app-dialog *)) {
   gap: var(--space-sm);
   padding: 0 var(--space-md);
   border-radius: var(--radius-sm);
   font-weight: 600;
 }
-:where(.settings-page main, .refined-page main) .button-primary:not(:where(.project-filter-control, .project-option-color-trigger, .app-dialog *)):not(:disabled):not([aria-disabled="true"]) {
+:where(.settings-page main, .refined-page main) .button-primary:not(:where(.project-filter-control, .project-option-color-trigger, .page-heading-lead--icon, [data-calendar-info-card] *, .asset-grid *, .asset-list *, .app-dialog *)):not(:disabled):not([aria-disabled="true"]) {
   border: 1px solid var(--border-strong);
   background: var(--bg);
   color: var(--text);
   box-shadow: none;
 }
-:where(.settings-page main, .refined-page main) .button-primary:not(:where(.project-filter-control, .project-option-color-trigger, .app-dialog *)):hover:not(:disabled):not([aria-disabled="true"]) {
+:where(.settings-page main, .refined-page main) .button-primary:not(:where(.project-filter-control, .project-option-color-trigger, .page-heading-lead--icon, [data-calendar-info-card] *, .asset-grid *, .asset-list *, .app-dialog *)):hover:not(:disabled):not([aria-disabled="true"]) {
   border-color: var(--accent);
   background: var(--bg);
   filter: none;
 }
-:where(.settings-page main, .refined-page main) .button-secondary:not(:where(.project-filter-control, .project-option-color-trigger, .app-dialog *)):not(:disabled):not([aria-disabled="true"]) {
+:where(.settings-page main, .refined-page main) .button-secondary:not(:where(.project-filter-control, .project-option-color-trigger, .page-heading-lead--icon, [data-calendar-info-card] *, .asset-grid *, .asset-list *, .app-dialog *)):not(:disabled):not([aria-disabled="true"]) {
   border-color: var(--border-strong);
   background: transparent;
   color: var(--text);
 }
-:where(.settings-page main, .refined-page main) .button-secondary:not(:where(.project-filter-control, .project-option-color-trigger, .app-dialog *)):hover:not(:disabled):not([aria-disabled="true"]) {
+:where(.settings-page main, .refined-page main) .button-secondary:not(:where(.project-filter-control, .project-option-color-trigger, .page-heading-lead--icon, [data-calendar-info-card] *, .asset-grid *, .asset-list *, .app-dialog *)):hover:not(:disabled):not([aria-disabled="true"]) {
   border-color: var(--border-strong);
   background: var(--surface-hover);
   color: var(--text);
 }
 /* Destructive actions stay tinted so they never read as the primary. */
-:where(.settings-page main, .refined-page main) .button-danger:not(:where(.project-filter-control, .project-option-color-trigger, .app-dialog *)):not(:disabled):not([aria-disabled="true"]) {
+:where(.settings-page main, .refined-page main) .button-danger:not(:where(.project-filter-control, .project-option-color-trigger, .page-heading-lead--icon, [data-calendar-info-card] *, .asset-grid *, .asset-list *, .app-dialog *)):not(:disabled):not([aria-disabled="true"]) {
   border-color: rgba(251, 113, 133, 0.45);
   background: rgba(251, 113, 133, 0.1);
   color: var(--badge-danger-fg);
 }
-:where(.settings-page main, .refined-page main) .button-danger:not(:where(.project-filter-control, .project-option-color-trigger, .app-dialog *)):hover:not(:disabled):not([aria-disabled="true"]) {
+:where(.settings-page main, .refined-page main) .button-danger:not(:where(.project-filter-control, .project-option-color-trigger, .page-heading-lead--icon, [data-calendar-info-card] *, .asset-grid *, .asset-list *, .app-dialog *)):hover:not(:disabled):not([aria-disabled="true"]) {
   border-color: var(--danger);
   background: rgba(251, 113, 133, 0.18);
 }
-:where(.settings-page main, .refined-page main) .button-small:not(:where(.project-filter-control, .project-option-color-trigger, .app-dialog *)) {
+:where(.settings-page main, .refined-page main) .button-small:not(:where(.project-filter-control, .project-option-color-trigger, .page-heading-lead--icon, [data-calendar-info-card] *, .asset-grid *, .asset-list *, .app-dialog *)) {
   min-height: 1.875rem;
   padding: 0 0.625rem;
   font-size: 0.8125rem;
@@ -15494,11 +15512,13 @@ button[aria-disabled="true"] > .project-create-submit-icon {
 }
 
 /* ── Empty states ── */
-:where(.settings-page main, .refined-page main) .settings-section .empty-state {
+:where(.settings-page main, .refined-page main) .settings-section .empty-state,
+:where(.refined-page main) .project-detail-section .empty-state {
   padding: var(--space-lg) var(--space-md);
   font-size: 0.875rem;
 }
-:where(.settings-page main, .refined-page main) .settings-section .empty-state :is(h2, .empty-state-heading) {
+:where(.settings-page main, .refined-page main) .settings-section .empty-state :is(h2, .empty-state-heading),
+:where(.refined-page main) .project-detail-section .empty-state :is(h2, h3, .empty-state-heading) {
   font-size: 0.9375rem;
   font-weight: 600;
 }
@@ -15509,18 +15529,521 @@ button[aria-disabled="true"] > .project-create-submit-icon {
    detail list inside a section card takes the section's rhythm in place of
    its own margins and reads at the card's type size, as Backups' selected
    backup does; Settings detail lists keep their page rules. */
-:where(.refined-page main) :is(.settings-section, .destructive-section) .detail-list {
+:where(.refined-page main) :is(.settings-section, .destructive-section, .project-detail-section) .detail-list {
   margin: 0;
   font-size: 0.875rem;
 }
-:where(.refined-page main) :is(.settings-section, .destructive-section) .detail-list dt {
+:where(.refined-page main) :is(.settings-section, .destructive-section, .project-detail-section) .detail-list dt {
   font-size: 0.8125rem;
+}
+
+/* ── Standalone creation forms ──
+   New Project and New Release lay out their section cards like the refined
+   create dialogs: fields stack at the dialogs' field gap, dropdowns fill
+   their field, Status, Project type, and Tags share one row, and the
+   signature settings button keeps the dialogs' square icon geometry. */
+:where(.refined-page main) .project-form > .settings-section {
+  margin: 0;
+}
+:where(.refined-page main) .project-form :is(.project-form-section-body, .release-form-section-body) {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+/* The signature status line is empty until a signature is applied, so it
+   gives back the gap above it, as in the dialogs. */
+:where(.refined-page main) .project-form .release-form-section-body > [data-release-signature-status]:empty {
+  margin-top: calc(-1 * var(--space-md));
+}
+:where(.refined-page main) .project-form .asset-filter-multiselect-field .asset-filter-multiselect--sized,
+:where(.refined-page main) .project-form .asset-filter-multiselect-field .asset-filter-multiselect--sized summary {
+  width: 100%;
+}
+:where(.refined-page main) .project-form .asset-filter-multiselect-field .asset-filter-multiselect-panel {
+  width: 100%;
+  max-width: 100%;
+}
+/* The project search sits inside a dropdown panel, which the field rules
+   skip; it takes the dialogs' control size. */
+:where(.refined-page main) .project-form .asset-project-filter-search {
+  min-height: var(--refined-control-height);
+  padding: 0.375rem 0.625rem;
+  border-radius: var(--refined-control-radius);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+/* A stacked dropdown field spans the column up to the shared 26rem cap. */
+:where(.refined-page main) .release-form-section-body > .asset-filter-multiselect-field,
+:where(.refined-page main) .project-form .status-row .asset-filter-multiselect-field {
+  width: 100%;
+}
+:where(.refined-page main) .project-form .status-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-md);
+}
+:where(.refined-page main) .project-form .status-row :is(.field, .asset-viewer-filter-field) {
+  min-width: 0;
+  max-width: none;
+}
+/* Date and time inputs read in the page type, not the browser's
+   monospace default, as in the dialogs; the checkbox matches the dialogs. */
+:where(.refined-page main) .scheduling-field .picker-input {
+  font-family: inherit;
+}
+:where(.refined-page main) .release-no-set-date-field {
+  gap: var(--space-sm);
+  min-height: 0;
+  font-size: 0.875rem;
+}
+:where(.refined-page main) .release-signature-row .release-signature-manage {
+  flex: 0 0 var(--refined-control-height);
+  width: var(--refined-control-height);
+  min-height: var(--refined-control-height);
+  padding: 0;
+}
+:where(.refined-page main) .release-signature-manage svg {
+  width: 1rem;
+  height: 1rem;
+}
+/* On narrow screens the button ends its row, so its tooltip grows leftward
+   instead of past the page edge, as in the dialogs. */
+:where(.refined-page main) .release-signature-manage[data-tooltip]::after {
+  left: auto;
+  right: 0;
+  transform: translate(0, 0.25rem);
+}
+:where(.refined-page main) .release-signature-manage[data-tooltip]:is(:hover, :focus-visible)::after {
+  transform: translate(0, 0);
+}
+@media (max-width: 640px) {
+  :where(.refined-page main) .project-form .status-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ── Project detail ──
+   Details and Releases take the section cards above (see "Sections"); the
+   section padding is the inset, so the body drops its band-layout padding.
+   The icon actions keep their square 2.25rem + padding geometry instead of
+   the refined small text-button height, and the media frame keeps its own
+   sizing. Count cards, notes, tags, and release rows follow the Dashboard's
+   card and list type scale. */
+:where(.refined-page main) .project-detail-section-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  min-width: 0;
+  padding: 0;
+}
+:where(.refined-page main) .project-detail-action.button {
+  min-block-size: 2.25rem;
+  min-inline-size: 2.25rem;
+  padding: var(--space-sm);
+}
+:where(.refined-page main) .project-detail-media {
+  border-radius: var(--radius-lg);
+}
+:where(.refined-page main) .project-detail-summary > h2 {
+  margin: 0 0 calc(var(--space-sm) - var(--space-md));
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.3;
+}
+:where(.refined-page main) .project-detail-summary > .notes {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+:where(.refined-page main) .project-detail-health .count-card {
+  padding: var(--space-md);
+  border-radius: var(--radius-lg);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+:where(.refined-page main) .project-detail-health .count {
+  margin-bottom: 0.125rem;
+  font-size: 1.5rem;
+  line-height: 1.2;
+}
+:where(.refined-page main) .project-detail-health .count-card small {
+  display: block;
+  margin-top: 0.125rem;
+  font-size: 0.75rem;
+}
+:where(.refined-page main) .tag-chip {
+  padding: 0.1875rem 0.625rem;
+  border-color: var(--border-strong);
+  background: var(--surface-card);
+  color: var(--text);
+  font-size: 0.75rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+:where(.refined-page main) .project-detail-tags .help-text,
+:where(.refined-page main) .project-detail-info small {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+:where(.refined-page main) .project-detail-info .detail-list {
+  gap: 0.625rem var(--space-lg);
+}
+:where(.refined-page main) .project-detail-info .detail-list code {
+  font-size: 0.8125rem;
+}
+/* The project link otherwise falls back to the browser's default link blue. */
+:where(.refined-page main) .project-detail-link:is(:link, :visited) {
+  color: var(--link);
+}
+:where(.refined-page main) .project-detail-releases .workflow-actions {
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  margin: 0;
+}
+/* Release rows read like the Dashboard's: separated rows with a text-colored
+   title that takes the link color on hover, then muted metadata. */
+:where(.refined-page main) .project-detail-releases .release-list > li {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  min-width: 0;
+  padding: var(--space-md) 0;
+}
+:where(.refined-page main) .project-detail-releases .release-list > li:first-child {
+  padding-top: var(--space-xs);
+}
+:where(.refined-page main) .project-detail-releases .release-list > li:last-child {
+  padding-bottom: 0;
+}
+:where(.refined-page main) .project-detail-releases .release-list > li > a {
+  align-self: flex-start;
+  max-width: 100%;
+  color: var(--text);
+  font-size: 0.9375rem;
+  line-height: 1.35;
+}
+:where(.refined-page main) .project-detail-releases .release-list > li > a:visited {
+  color: var(--text);
+}
+:where(.refined-page main) .project-detail-releases .release-list > li > a:hover {
+  color: var(--link);
+  filter: none;
+}
+:where(.refined-page main) .project-detail-releases .release-list .meta {
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+:where(.refined-page main) .project-detail-releases .release-list .meta .status-badge {
+  vertical-align: 0.0625rem;
+}
+:where(.refined-page main) .project-detail-releases :is(.release-social-prep-summary, .release-thumbnail-strip) {
+  margin-top: 0;
+}
+:where(.refined-page main) .project-detail-releases .release-social-prep-summary {
+  padding-block: 0;
+}
+/* The Releases empty state uses an h3, which otherwise takes the global
+   uppercase mono heading. */
+:where(.refined-page main) .project-detail-section .empty-state h3 {
+  font-family: inherit;
+  letter-spacing: 0;
+  text-transform: none;
+}
+:where(.refined-page main) .project-detail-section .empty-state p:last-child {
+  margin-bottom: 0;
+}
+
+/* ── Project tag assignment ──
+   Current and catalog tags read as the detail page's tag chips. Each tag
+   choice is a bordered control like Social Preparation's platform choices:
+   the field keeps its checkbox and label pair, the label fills the rest of
+   the control so the whole chip toggles, and a checked tag takes the accent
+   border. */
+:where(.refined-page main) .project-tags-current {
+  margin-bottom: var(--space-lg);
+}
+:where(.refined-page main) .project-tags-current > .help-text {
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+:where(.refined-page main) .settings-section > .tag-chip-list {
+  gap: var(--space-sm);
+}
+:where(.refined-page main) .project-tag-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+:where(.refined-page main) .project-tag-choices > legend {
+  margin: 0 0 var(--space-sm);
+  padding: 0;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.3;
+}
+:where(.refined-page main) .project-tag-choices > .project-tag-choice {
+  flex-direction: row;
+  align-items: center;
+  gap: 0;
+  min-width: 0;
+  max-width: 100%;
+  min-height: var(--refined-control-height);
+  padding-inline-start: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--refined-control-radius);
+  background: var(--bg);
+  transition: border-color var(--transition-fast);
+}
+:where(.refined-page main) .project-tag-choices > .project-tag-choice:hover {
+  border-color: var(--border-strong);
+}
+:where(.refined-page main) .project-tag-choices > .project-tag-choice:has(input:checked) {
+  border-color: var(--accent);
+}
+:where(.refined-page main) .project-tag-choices > .project-tag-choice > label {
+  display: flex;
+  flex: 1 1 auto;
+  align-self: stretch;
+  align-items: center;
+  min-width: 0;
+  padding: 0.375rem 0.75rem 0.375rem var(--space-sm);
+  color: var(--text);
+  font-size: 0.875rem;
+  font-weight: 400;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+/* ── Project Assets and Asset Viewer chrome ──
+   Project actions takes the Project Detail section card (see "Sections");
+   its Release, File, and Processing subcards read as the card's nested
+   groups, with labels in the field-label type. The groups' icon controls,
+   their disabled styling, and the asset grid and list keep their own rules.
+   A controls row never grows past its subcard, so a long release title
+   truncates in its dropdown instead of overlapping the File group. */
+:where(.refined-page main) .asset-actions-panel .asset-action-group {
+  gap: var(--space-sm);
+  padding: 0.75rem var(--space-md) var(--space-md);
+  border-color: var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-card);
+  box-shadow: none;
+}
+:where(.refined-page main) .asset-actions-panel .asset-action-group-heading {
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.3;
+}
+:where(.refined-page main) .asset-actions-panel .asset-action-group-controls {
+  max-width: 100%;
+}
+:where(.refined-page main) .asset-actions-panel .processing-actions-archived-note {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+/* Result counts and the active category read at the toolbar's label size. */
+:where(.refined-page main) :is([data-project-assets-live-region], [data-asset-library-live-region]) .results-meta {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+/* Scan and action confirmations keep their established spacing and take the
+   notice radius and type above. The Asset Viewer's defaults and NSFW notices
+   had no styling; they take the notice treatment. */
+:where(.refined-page main) :is(.scan-success, .page-notice) {
+  border-radius: 0 var(--refined-control-radius) var(--refined-control-radius) 0;
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+:where(.refined-page main) .page-notice {
+  margin: 0 0 var(--space-lg);
+  padding: var(--space-sm) var(--space-md);
+  border-left: 4px solid var(--success);
+  background: rgba(52, 211, 153, 0.18);
+}
+:where(.refined-page main) .page-notice--error {
+  border-left-color: var(--danger);
+  background: rgba(251, 113, 133, 0.18);
+}
+/* An empty result reads as a panel, like an empty Dashboard section. */
+:where(.refined-page main) :is(.asset-browser-content, [data-asset-library-live-region]) > .empty-state {
+  margin-top: var(--space-md);
+  padding: var(--space-xl) var(--space-lg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  font-size: 0.875rem;
+}
+:where(.refined-page main) :is(.asset-browser-content, [data-asset-library-live-region]) > .empty-state .empty-state-heading {
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+:where(.refined-page main) :is(.asset-browser-content, [data-asset-library-live-region]) > .empty-state p:last-of-type {
+  margin-bottom: var(--space-md);
+}
+:where(.refined-page main) :is(.asset-browser-content, [data-asset-library-live-region]) > .empty-state p:last-child {
+  margin-bottom: 0;
+}
+/* Pagination: Project Assets' Prev/Next links match the Asset Viewer's
+   refined buttons, and the page-size control sits closer to the results. */
+:where(.refined-page main) :is([data-project-assets-live-region], [data-asset-library-live-region]) .pagination {
+  gap: var(--space-sm) var(--space-md);
+  margin-top: var(--space-lg);
+  padding: var(--space-sm) 0;
+}
+:where(.refined-page main) :is(.pagination-prev, .pagination-next) {
+  min-height: var(--refined-control-height);
+  padding: 0 0.875rem;
+  border-color: var(--border-strong);
+  border-radius: var(--refined-control-radius);
+  background: transparent;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+:where(.refined-page main) :is(.pagination-prev, .pagination-next):hover {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+:where(.refined-page main) :is([data-project-assets-live-region], [data-asset-library-live-region]) .pagination-info {
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+:where(.refined-page main) .page-size-form {
+  margin-top: var(--space-sm);
+  padding: var(--space-sm) 0 0;
+}
+
+/* ── Asset detail ──
+   Preview, Metadata, Tags, and Release usage take the section cards above
+   (see "Sections"): the Viewer's compound rules that restored the old band
+   header and body padding give way to the card's heading and inset. The
+   preview frame, media sizing, and navigation keep their own rules; the
+   frame only drops its outer margin inside the card. Metadata groups read
+   as the card's nested subcards, like Project actions' groups, and keep
+   their rows at the top when a neighbouring group is taller. Filenames,
+   extensions, and MIME types stay monospace, as does the workflow JSON. */
+:where(.refined-page main) .settings-section:is(.asset-preview-section, .asset-viewer-section) {
+  margin: var(--space-lg) 0;
+}
+:where(.refined-page main) .settings-section.asset-viewer-section > h3 {
+  background: none;
+}
+:where(.refined-page main) .asset-preview-section .asset-preview-frame {
+  margin: 0;
+}
+:where(.refined-page main) .asset-preview-section .asset-preview-viewer > .notice {
+  margin: 0 0 var(--space-sm);
+}
+/* Unavailable-preview text clears the Previous and Next links, which sit
+   over the viewer's vertical middle. */
+:where(.refined-page main) .asset-preview-section .asset-preview-viewer > .asset-preview-placeholder {
+  padding-inline: calc(2rem + var(--space-lg) + var(--space-sm));
+}
+:where(.refined-page main) .asset-viewer-section-body {
+  padding: 0;
+}
+:where(.refined-page main) .asset-metadata-group--panel {
+  padding: 0.75rem var(--space-md) var(--space-md);
+  border-color: var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-card);
+}
+:where(.refined-page main) .asset-metadata-group-title {
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1.3;
+  text-transform: none;
+}
+:where(.refined-page main) .asset-metadata-group > .asset-metadata {
+  align-content: start;
+}
+:where(.refined-page main) .asset-metadata code {
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+}
+:where(.refined-page main) .asset-workflow-json {
+  border-radius: var(--refined-control-radius);
+}
+:where(.refined-page main) .asset-metadata-group--workflow > .notice {
+  margin: 0;
+}
+:where(.refined-page main) .asset-release-usage-count {
+  margin: 0 0 var(--space-sm);
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+:where(.refined-page main) .asset-release-usage-count:last-child {
+  margin-bottom: 0;
+}
+/* Release rows read like Project Detail's: separated rows with a
+   text-colored title that takes the link color on hover, then the role. */
+:where(.refined-page main) .asset-release-usage-section .release-detail-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+:where(.refined-page main) .asset-release-usage-section .release-detail-list > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-xs) var(--space-sm);
+  padding: var(--space-sm) 0;
+  border-top: 1px solid var(--border);
+}
+:where(.refined-page main) .asset-release-usage-section .release-detail-list > li > a {
+  color: var(--text);
+  font-size: 0.9375rem;
+  line-height: 1.35;
+}
+:where(.refined-page main) .asset-release-usage-section .release-detail-list > li > a:hover {
+  color: var(--link);
+}
+:where(.refined-page main) .asset-release-usage-section .release-role {
+  margin-left: 0;
+  font-size: 0.8125rem;
+}
+/* On narrow screens the project link ends its heading row, so its tooltip
+   grows leftward instead of past the page edge. */
+@media (max-width: 540px) {
+  :where(.refined-page main) .page-heading > .asset-viewer-project.asset-tooltip--left[data-tooltip]::after {
+    left: auto;
+    right: 0;
+  }
+  :where(.refined-page main) .asset-preview-section .asset-preview-viewer > .asset-preview-placeholder {
+    padding-inline: calc(2rem + var(--space-sm) * 2);
+  }
+}
+
+/* ── Asset tag assignment ──
+   The page takes Project tag assignment's chips and tag choices above. */
+:where(.refined-page main) .asset-tags-current {
+  margin-bottom: var(--space-lg);
+}
+:where(.refined-page main) .asset-tags-current > .help-text {
+  color: var(--muted);
+  font-size: 0.875rem;
 }
 
 @media (max-width: 540px) {
   :where(.settings-page main, .refined-page main) .settings-section,
   :where(.settings-page main, .refined-page main) .project-form .settings-section,
-  :where(.settings-page main, .refined-page main) .destructive-section {
+  :where(.settings-page main, .refined-page main) .destructive-section,
+  :where(.refined-page main) .project-detail-section {
     padding: var(--space-md);
   }
 }
