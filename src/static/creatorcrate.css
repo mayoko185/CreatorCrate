@@ -15854,6 +15854,13 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   font-size: 0.75rem;
   line-height: 1.4;
 }
+/* Scan, Remove missing, and Edit end Project Assets' heading row, so their
+   tooltips grow leftward instead of past the page edge, as Release Detail's
+   Review & Publish does. */
+:where(.refined-page main:has([data-project-assets-live-region])) .page-heading-actions .project-assets-heading-action.asset-tooltip--left[data-tooltip]::after {
+  left: auto;
+  right: 0;
+}
 /* Result counts and the active category read at the toolbar's label size,
    as do Release records' and Release Detail's selected-asset counts. */
 :where(.refined-page main) :is([data-project-assets-live-region], [data-asset-library-live-region], [data-releases-live-region], [data-selected-assets]) .results-meta {
