@@ -30,7 +30,7 @@ function templatePageSizeOptions(id) {
 }
 
 const FILTER_PAGE_SIZE_OPTIONS = templatePageSizeOptions('release-asset-page-size-dropdown');
-const PAGE_SIZE_FORM_OPTIONS = templatePageSizeOptions('pageSize');
+const PAGE_SIZE_FORM_OPTIONS = templatePageSizeOptions('page-size-dropdown');
 
 function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } = {}) {
   const attributes = new Map();

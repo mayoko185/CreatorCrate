@@ -8,6 +8,7 @@
 {% import "partials/view-switcher.njk" as viewSwitcher %}
 
 {% set page_title = "Releases — " ~ release.title ~ " — Assets" %}
+{% block body_class %}refined-page{% endblock %}
 {% set assetVideoPreview = true %}
 
 {% macro releaseAssetSelectionControl(asset, readOnly) %}
@@ -23,17 +24,37 @@
   {% endif %}
 {% endmacro %}
 
+{# The shared compact dropdown, backed by the per-asset native Role select
+   that the autosubmit path posts; its radios carry no name, so the form
+   submits only _csrf and that select's role. The panel opens in the viewport
+   so grid cards and the list table's scroll region cannot clip it. #}
 {% macro releaseRoleControl(asset, roles, _csrf, assetActionUrl) %}
   {% if asset.releaseContext.selected %}
     {% set role = asset.releaseContext.role or 'attachment' %}
+    {% set roleOptions = [] %}
+    {% for option in roles %}
+      {% set _ = roleOptions.push({ value: option, label: option | title }) %}
+    {% endfor %}
     <form method="post" action="{{ assetActionUrl(asset.id, 'role') }}" class="inline-form release-asset-role-form">
       <input type="hidden" name="_csrf" value="{{ _csrf }}">
-      <label for="role-{{ asset.id }}" class="sr-only">Role for {{ asset.filename }}</label>
-      <select id="role-{{ asset.id }}" name="role" data-autosubmit>
-        {% for option in roles %}
-          <option value="{{ option }}" {% if role == option %}selected{% endif %}>{{ option | title }}</option>
-        {% endfor %}
-      </select>
+      {{ dropdown.singleSelect({
+        id: "release-asset-role-" ~ asset.id,
+        name: "role",
+        label: "Role for " ~ asset.filename,
+        visuallyHiddenLabel: true,
+        compact: true,
+        fieldClasses: "release-asset-role-field",
+        triggerAriaLabel: "Role for " ~ asset.filename ~ ": " ~ (role | title),
+        attributes: [["data-cc-viewport-disclosure", true]],
+        dispatchNativeChange: true,
+        selected: role,
+        options: roleOptions,
+        panelLabel: "Role options for " ~ asset.filename,
+        nativeSelect: {
+          id: "role-" ~ asset.id,
+          attributes: [["data-autosubmit", true]]
+        }
+      }) }}
     </form>
   {% endif %}
 {% endmacro %}
@@ -300,16 +321,28 @@
 
         {% if not readOnly %}
           <form class="page-size-form" method="get" action="/releases/{{ release.id }}/assets" data-release-assets-live-page-size-form>
-            <label for="pageSize">Assets per page:</label>
-            <select id="pageSize" name="pageSize" data-autosubmit data-release-assets-live-page-size>
-              <option value="10" {% if currentPageSize == 10 %}selected{% endif %}>10</option>
-              <option value="25" {% if currentPageSize == 25 %}selected{% endif %}>25</option>
-              <option value="50" {% if currentPageSize == 50 %}selected{% endif %}>50</option>
-              <option value="100" {% if currentPageSize == 100 %}selected{% endif %}>100</option>
-              <option value="150" {% if currentPageSize == 150 %}selected{% endif %}>150</option>
-              <option value="200" {% if currentPageSize == 200 %}selected{% endif %}>200</option>
-              <option value="all" {% if currentPageSize == 'all' %}selected{% endif %}>View All</option>
-            </select>
+            {{ dropdown.singleSelect({
+              id: "page-size-dropdown",
+              name: "pageSize",
+              label: "Assets per page",
+              compact: true,
+              dispatchNativeChange: true,
+              selected: currentPageSize ~ '',
+              options: [
+                { value: "10", label: "10" },
+                { value: "25", label: "25" },
+                { value: "50", label: "50" },
+                { value: "100", label: "100" },
+                { value: "150", label: "150" },
+                { value: "200", label: "200" },
+                { value: "all", label: "View All" }
+              ],
+              panelLabel: "Assets per page options",
+              nativeSelect: {
+                id: "pageSize",
+                attributes: [["data-autosubmit", true], ["data-release-assets-live-page-size", true]]
+              }
+            }) }}
             {% if activeFilters.search %}
               <input type="hidden" name="search" value="{{ activeFilters.search }}">
             {% endif %}

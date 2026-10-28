@@ -131,7 +131,7 @@ describe('release Social Preparation detail display', () => {
       expect(html).toContain('aria-label="Releases defaults"');
       expect(html).toContain('aria-label="Reset filters"');
       expect(html).toContain('aria-label="Release list pages"');
-      expect(html).toContain('class="table-scroll releases-table-scroll" tabindex="0" aria-label="Release list"');
+      expect(html).toContain('class="table-scroll refined-table-scroll releases-table-scroll" tabindex="0" aria-label="Release list"');
       expect(html.match(/<thead>[\s\S]*?<\/thead>/)[0]).toContain('<th>Social Posts</th>');
       expect(html.match(/<thead>[\s\S]*?<\/thead>/)[0].match(/<th\b/g)).toHaveLength(8);
       expect(row.match(/<td\b/g)).toHaveLength(8);
@@ -608,7 +608,7 @@ describe('release Social Preparation detail display', () => {
     const published = await detail();
     expect(companionAction(draft.section)).toBeUndefined();
     expect(companionAction(published.section)).toContain('Reopen publishing companion');
-    expect(published.html).toContain('<h2>Publication Summary</h2>');
+    expect(published.html).toContain('<h2>Publication summary</h2>');
     expect(published.html).toContain('2026-08-01 <small>(release published)</small>');
     expect(published.html).not.toContain('data-dialog-open="release-publish-dialog"');
   });

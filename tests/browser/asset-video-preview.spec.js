@@ -351,10 +351,11 @@ test('selection, details, role, modifier clicks, view switches, and filters neve
     await page.locator(`label[for="release-asset-select-${fixture.landscape.id}"]`).click();
 
     // Release role control.
-    const role = page.locator(`#role-${fixture.portrait.id}`);
+    const role = page.locator(`#release-asset-role-${fixture.portrait.id}`);
     const roleSaved = page.waitForResponse((candidate) => candidate.request().method() === 'POST'
       && new URL(candidate.url()).pathname.endsWith(`/assets/${fixture.portrait.id}/role`));
-    await role.selectOption('primary');
+    await role.locator('summary').click();
+    await role.locator('.asset-filter-multiselect-panel').getByText('Primary', { exact: true }).click();
     await roleSaved;
     await page.waitForLoadState('load');
     await expect(page.locator(DIALOG)).toBeHidden();

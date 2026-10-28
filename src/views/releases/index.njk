@@ -8,6 +8,8 @@
 {% import "partials/release-social-prep-summary.njk" as socialPrepSummary %}
 
 {% set page_title = "Releases" %}
+
+{% block body_class %}refined-page{% endblock %}
 {% set projectFilterHasSelection = false %}
 {% for project in projectOptions %}
   {% if project.id == selectedProjectId %}
@@ -51,8 +53,8 @@
       <div class="project-detail-section-body">
         <p class="results-meta">{{ total }} release{% if total != 1 %}s{% endif %} found</p>
         {% if releases.length > 0 %}
-          <div class="table-scroll releases-table-scroll" tabindex="0" aria-label="Release list">
-            <table class="data-table releases-table">
+          <div class="table-scroll refined-table-scroll releases-table-scroll" tabindex="0" aria-label="Release list">
+            <table class="data-table refined-table releases-table">
         <thead>
           <tr>
             <th>Release Title</th>
@@ -68,10 +70,10 @@
         <tbody>
           {% for release in releases %}
             <tr{% if release.archived_at %} class="archived-row"{% endif %}>
-              <td>
+              <td class="releases-table-text">
                 <a href="/releases/{{ release.id }}">{{ release.title }}</a>
               </td>
-              <td><a href="/projects/{{ release.project_id }}">{{ release.project_title }}</a></td>
+              <td class="releases-table-text"><a href="/projects/{{ release.project_id }}">{{ release.project_title }}</a></td>
               <td>
                 {% if release.published_date %}
                   <span class="status-badge status-badge--success">Published</span>
@@ -105,7 +107,7 @@
             {% if page > 1 %}
               <a class="button" href="{{ pageUrl({ page: page - 1 }) }}">Previous</a>
             {% endif %}
-            <span>Page {{ page }} of {{ pageCount }}</span>
+            <span class="pagination-info">Page {{ page }} of {{ pageCount }}</span>
             {% if page < pageCount %}
               <a class="button" href="{{ pageUrl({ page: page + 1 }) }}">Next</a>
             {% endif %}

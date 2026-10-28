@@ -15851,8 +15851,9 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   font-size: 0.75rem;
   line-height: 1.4;
 }
-/* Result counts and the active category read at the toolbar's label size. */
-:where(.refined-page main) :is([data-project-assets-live-region], [data-asset-library-live-region]) .results-meta {
+/* Result counts and the active category read at the toolbar's label size,
+   as do Release records' and Release Detail's selected-asset counts. */
+:where(.refined-page main) :is([data-project-assets-live-region], [data-asset-library-live-region], [data-releases-live-region], [data-selected-assets]) .results-meta {
   font-size: 0.8125rem;
   font-weight: 600;
   line-height: 1.4;
@@ -15895,8 +15896,9 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   margin-bottom: 0;
 }
 /* Pagination: Project Assets' Prev/Next links match the Asset Viewer's
-   refined buttons, and the page-size control sits closer to the results. */
-:where(.refined-page main) :is([data-project-assets-live-region], [data-asset-library-live-region]) .pagination {
+   refined buttons, and the page-size control sits closer to the results.
+   Release records' pages take the same row. */
+:where(.refined-page main) :is([data-project-assets-live-region], [data-asset-library-live-region], [data-releases-live-region]) .pagination {
   gap: var(--space-sm) var(--space-md);
   margin-top: var(--space-lg);
   padding: var(--space-sm) 0;
@@ -15914,7 +15916,7 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   border-color: var(--border-strong);
   background: var(--surface-hover);
 }
-:where(.refined-page main) :is([data-project-assets-live-region], [data-asset-library-live-region]) .pagination-info {
+:where(.refined-page main) :is([data-project-assets-live-region], [data-asset-library-live-region], [data-releases-live-region]) .pagination-info {
   color: var(--muted);
   font-size: 0.8125rem;
   font-weight: 500;
@@ -16018,8 +16020,10 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   font-size: 0.8125rem;
 }
 /* On narrow screens the project link ends its heading row, so its tooltip
-   grows leftward instead of past the page edge. */
+   grows leftward instead of past the page edge. Release Detail's project
+   link does the same, with or without Review & Publish beside it. */
 @media (max-width: 540px) {
+  :where(.refined-page main) [data-release-detail-region="heading"] .page-heading > .page-heading-lead.asset-tooltip--left[data-tooltip]::after,
   :where(.refined-page main) .page-heading > .asset-viewer-project.asset-tooltip--left[data-tooltip]::after {
     left: auto;
     right: 0;
@@ -16037,6 +16041,166 @@ button[aria-disabled="true"] > .project-create-submit-icon {
 :where(.refined-page main) .asset-tags-current > .help-text {
   color: var(--muted);
   font-size: 0.875rem;
+}
+
+/* ── Release records and Release detail ──
+   Both pages take the Project Detail section cards (see "Sections" and
+   "Project detail"), and Release records' table opts into the Dashboard
+   table treatment through refined-table. Inside the card the table scroller
+   and the pages row drop their band margins; the section gap spaces them.
+   Cells wrap as they did before, so every column fits on a wide screen;
+   release and project names keep a readable minimum width, and the table
+   scrolls on narrow screens instead of squeezing them. */
+:where(.refined-page main) .releases-results-section :is(.releases-table-scroll, .pagination) {
+  margin: 0;
+}
+:where(.refined-page main) .releases-table td {
+  white-space: normal;
+}
+:where(.refined-page main) .releases-table td.releases-table-text {
+  min-width: 10rem;
+}
+/* Review & Publish ends Release Detail's heading row, so its tooltip grows
+   leftward instead of past the page edge. */
+:where(.refined-page main) [data-release-detail-region="heading"] .page-heading-actions > .asset-tooltip--left[data-tooltip]::after {
+  left: auto;
+  right: 0;
+}
+/* Description and Notes keep their line breaks at the card's type size. */
+:where(.refined-page main) .project-detail-section-body > :is(.description, .notes) {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+/* Social Posts: the section's lines read at the card's type size, its
+   supporting text muted. Each platform reads as a nested subcard, like
+   Project actions' groups, named in the field-label type. */
+:where(.refined-page main) .release-social-prep-detail .project-detail-section-body > p {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+:where(.refined-page main) .release-social-prep-detail .project-detail-section-body > p.release-social-prep-note,
+:where(.refined-page main) .release-social-prep-detail .project-detail-section-body > article > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+:where(.refined-page main) .release-social-prep-detail .project-detail-section-body > article {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  min-width: 0;
+  padding: 0.75rem var(--space-md) var(--space-md);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-card);
+}
+:where(.refined-page main) .release-social-prep-detail .project-detail-section-body > article > h3 {
+  margin: 0;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1.3;
+  text-transform: none;
+}
+/* Publication summary: the Published badge reads at badge size, and each
+   check lines its detail up in a column beside its label. */
+:where(.refined-page main) .release-publication-summary .publication-summary-badge {
+  align-self: flex-start;
+  margin: 0;
+  padding: 0.1875rem 0.625rem;
+  border-radius: var(--refined-control-radius);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+:where(.refined-page main) .release-publication-summary .publication-summary-checks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  margin: 0;
+}
+:where(.refined-page main) .release-publication-summary .publication-summary-check {
+  display: grid;
+  grid-template-columns: 1.25rem max-content minmax(0, 1fr);
+  gap: var(--space-sm);
+  padding: 0;
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+:where(.refined-page main) .release-publication-summary .publication-summary-check-detail {
+  margin-left: 0;
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+:where(.refined-page main) .release-publication-summary .publication-summary-note {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+/* On narrow screens a check's detail moves under its label. */
+@media (max-width: 540px) {
+  :where(.refined-page main) .release-publication-summary .publication-summary-check {
+    grid-template-columns: 1.25rem minmax(0, 1fr);
+    row-gap: 0;
+  }
+  :where(.refined-page main) .release-publication-summary .publication-summary-check-detail {
+    grid-column: 2;
+  }
+}
+
+/* ── Release Manage Assets ──
+   The page takes the Project Assets treatment around its shared asset grid
+   and list: the result count at the toolbar's label size, and the refined
+   pages row (see "Pagination"). The grid and list keep their own geometry. */
+:where(.refined-page main) [data-release-assets-live-region] .results-meta {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+:where(.refined-page main) [data-release-assets-live-region] .pagination {
+  gap: var(--space-sm) var(--space-md);
+  margin-top: var(--space-lg);
+  padding: var(--space-sm) 0;
+}
+:where(.refined-page main) [data-release-assets-live-region] .pagination-info {
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+/* Save Selection ends the heading row, so its tooltip grows leftward instead
+   of past the page edge, as Release Detail's Review & Publish does. */
+:where(.refined-page main) .page-heading-actions > #release-assets-form > .asset-tooltip--left[data-tooltip]::after {
+  left: auto;
+  right: 0;
+}
+/* On narrow screens the project and Release links end their row too. */
+@media (max-width: 540px) {
+  :where(.refined-page main:has([data-release-assets-live-region])) .page-heading-navigation > .page-heading-lead.asset-tooltip--left[data-tooltip]::after {
+    left: auto;
+    right: 0;
+  }
+}
+/* Role is the shared compact dropdown. Its panel opens in the viewport, so a
+   grid card or the list table's scroll region cannot clip it; the compact
+   panel's upward anchor would otherwise stretch the placed panel to nothing. */
+:where(.refined-page main) .release-asset-role-field .asset-filter-multiselect-panel[data-cc-dropdown-overlay] {
+  bottom: auto;
+}
+/* Phone widths size panels to their trigger; a Role trigger in a narrow card
+   is shorter than its options, so the panel keeps its content width. */
+:where(.refined-page main) .release-asset-role-field .asset-filter-multiselect-panel {
+  width: max-content;
+  max-width: calc(100vw - 1rem);
+}
+/* List rows keep their density: the trigger matches the old row select. */
+:where(.refined-page main) .asset-list-table .release-asset-role-field .cc-dropdown--compact summary {
+  min-height: 1.75rem;
+  padding-block: 0;
 }
 
 @media (max-width: 540px) {

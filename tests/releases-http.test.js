@@ -772,8 +772,8 @@ describe('release HTTP workflow', () => {
     expect(releaseOneRow).toContain('<span class="status-badge status-badge--success">Published</span>');
     expect(releaseOneRow).toContain(`href="/projects/${projectId}">List Test Project</a>`);
     expect(resultsSection).toMatch(/^<section class="project-detail-section releases-results-section" aria-labelledby="releases-results-heading">\s*<h2 id="releases-results-heading">Release records<\/h2>\s*<div class="project-detail-section-body">/);
-    expect(resultsBody).toContain('class="table-scroll releases-table-scroll" tabindex="0" aria-label="Release list"');
-    expect(resultsBody).toContain('class="data-table releases-table"');
+    expect(resultsBody).toContain('class="table-scroll refined-table-scroll releases-table-scroll" tabindex="0" aria-label="Release list"');
+    expect(resultsBody).toContain('class="data-table refined-table releases-table"');
     expect(resultsBody).toContain('<nav class="pagination" aria-label="Release list pages">');
     expect(resultsSection).not.toContain('releases-filter-dialog');
   });
@@ -6706,10 +6706,10 @@ describe('release HTTP workflow', () => {
     it('shows publication summary instead of Needs attention', async () => {
       const { releaseLocation } = await setupPublishedRelease();
       const res = await agent.get(releaseLocation).expect(200);
-      expect(res.text).toMatch(/Publication Summary/);
+      expect(res.text).toMatch(/Publication summary/);
       expect(res.text).not.toMatch(/Needs attention/);
       expect(res.text).toMatch(/<div class="project-detail-summary">[\s\S]*?<div class="project-detail-meta">[\s\S]*?<nav class="project-detail-action-toolbar" aria-label="Release actions">/);
-      expect(res.text).toMatch(/<section class="project-detail-section">\s*<h2>Publication Summary<\/h2>[\s\S]*?<div class="project-detail-section-body">/);
+      expect(res.text).toMatch(/<section class="project-detail-section release-publication-summary">\s*<h2>Publication summary<\/h2>[\s\S]*?<div class="project-detail-section-body">/);
       expect(res.text).not.toContain('<section class="panel panel--summary project-detail-section">');
       expect(res.text).toMatch(/<div class="project-detail-meta">[\s\S]*?<span class="status-badge status-badge--success">Published<\/span>[\s\S]*?<\/div>[\s\S]*?<dl class="detail-list release-detail-list">/);
       expect(res.text).not.toContain('<dt>Project status</dt>');
@@ -6903,13 +6903,13 @@ describe('release HTTP workflow', () => {
       return { projectId, releaseLocation, releaseId, assetId };
     }
 
-    it('archived published detail hides Publication Summary', async () => {
+    it('archived published detail hides Publication summary', async () => {
       const { releaseLocation } = await setupArchivedPublishedRelease();
       const res = await agent.get(releaseLocation).expect(200);
       // Archived notice appears
       expect(res.text).toMatch(/archived and read-only/);
       // Published-only notices must NOT appear
-      expect(res.text).not.toMatch(/Publication Summary/);
+      expect(res.text).not.toMatch(/Publication summary/);
       expect(res.text).not.toMatch(/asset selection is locked/);
       expect(res.text).not.toMatch(/Needs attention/);
       // Historical status/date preserved
@@ -6917,13 +6917,13 @@ describe('release HTTP workflow', () => {
       expect(res.text).toMatch(/2025-06-15/);
     });
 
-    it('archived-parent published detail hides Publication Summary', async () => {
+    it('archived-parent published detail hides Publication summary', async () => {
       const { releaseLocation } = await setupArchivedParentPublishedRelease();
       const res = await agent.get(releaseLocation).expect(200);
       // Archived notice appears
       expect(res.text).toMatch(/parent project is archived/);
       // Published-only notices must NOT appear
-      expect(res.text).not.toMatch(/Publication Summary/);
+      expect(res.text).not.toMatch(/Publication summary/);
       expect(res.text).not.toMatch(/asset selection is locked/);
       expect(res.text).not.toMatch(/Needs attention/);
       // Historical status/date preserved
@@ -7044,7 +7044,7 @@ describe('release HTTP workflow', () => {
       expect(res.text).not.toMatch(/Publishable/);
       // No readiness panel
       expect(res.text).not.toMatch(/Needs attention/);
-      expect(res.text).not.toMatch(/Publication Summary/);
+      expect(res.text).not.toMatch(/Publication summary/);
       // No Publish form
       expect(res.text).not.toMatch(/\/publish/);
     });
@@ -7061,7 +7061,7 @@ describe('release HTTP workflow', () => {
       expect(res.text).not.toMatch(/Publishable/);
       // No readiness panel
       expect(res.text).not.toMatch(/Needs attention/);
-      expect(res.text).not.toMatch(/Publication Summary/);
+      expect(res.text).not.toMatch(/Publication summary/);
       // No Publish form
       expect(res.text).not.toMatch(/\/publish/);
     });
@@ -7152,7 +7152,7 @@ describe('release HTTP workflow', () => {
       expect(res.text).not.toMatch(/Publishable/);
       // No readiness panel
       expect(res.text).not.toMatch(/Needs attention/);
-      expect(res.text).not.toMatch(/Publication Summary/);
+      expect(res.text).not.toMatch(/Publication summary/);
       // No Publish form
       expect(res.text).not.toMatch(/\/publish/);
     });
@@ -7169,7 +7169,7 @@ describe('release HTTP workflow', () => {
       expect(res.text).not.toMatch(/Publishable/);
       // No readiness panel
       expect(res.text).not.toMatch(/Needs attention/);
-      expect(res.text).not.toMatch(/Publication Summary/);
+      expect(res.text).not.toMatch(/Publication summary/);
       // No Publish form
       expect(res.text).not.toMatch(/\/publish/);
     });
@@ -7194,7 +7194,7 @@ describe('release HTTP workflow', () => {
 
       const res = await agent.get(releaseLocation).expect(200);
       expect(res.text).toMatch(/archived and read-only/i);
-      expect(res.text).not.toMatch(/Publication Summary/);
+      expect(res.text).not.toMatch(/Publication summary/);
       expect(res.text).toMatch(/<div class="project-detail-summary">[\s\S]*?<section class="project-detail-info project-detail-section">[\s\S]*?<h2>Release details<\/h2>[\s\S]*?<div class="project-detail-section-body">/);
       expect(res.text).not.toContain('<nav class="project-detail-action-toolbar" aria-label="Release actions">');
     });
@@ -8177,7 +8177,7 @@ describe('release HTTP workflow', () => {
       expect(res.text).not.toMatch(/\/publish/);
       // No readiness panel
       expect(res.text).not.toMatch(/Needs attention/);
-      expect(res.text).not.toMatch(/Publication Summary/);
+      expect(res.text).not.toMatch(/Publication summary/);
       // Complete state unchanged
       expect(snapshotRelease(releaseId)).toEqual(beforeRelease);
       expect(snapshotJunction(releaseId)).toEqual(beforeJunction);
@@ -9166,8 +9166,8 @@ describe('release HTTP workflow', () => {
         const rolePosition = card.indexOf('class="release-asset-grid-role"');
         const previewPosition = card.indexOf('data-asset-viewer-preview');
         expect(card).toContain(marker);
-        expect(card).toContain(`for="role-${asset.id}"`);
-        expect(card).toContain(`<select id="role-${asset.id}" name="role" data-autosubmit>`);
+        expect(card).toContain(`<select id="role-${asset.id}" name="role" class="cc-dropdown-native-select" data-cc-dropdown-native-select aria-label="Role for ${asset.filename}" data-autosubmit>`);
+        expect(card).toContain(`id="release-asset-role-${asset.id}" data-cc-dropdown`);
         expect(card).toContain(`action="${fixture.releaseLocation}/assets/${asset.id}/role?view=grid"`);
         expect(rolePosition).toBeGreaterThan(-1);
         expect(rolePosition).toBeLessThan(previewPosition);
@@ -9231,8 +9231,52 @@ describe('release HTTP workflow', () => {
 
       expect(card).toContain('class="asset-list-cell asset-list-cell--role asset-list-card-meta asset-list-card-meta--role"');
       expect(card).toContain('class="inline-form release-asset-role-form"');
-      expect(card).toContain('name="role" data-autosubmit');
+      expect(card).toMatch(/<select id="role-\d+" name="role" class="cc-dropdown-native-select"[^>]*data-autosubmit>/);
       expect(card).not.toContain('release-asset-grid-role');
+    });
+
+    // Role and page size use the shared native-backed dropdown: each Role form
+    // posts only its own native select, so the presentation radios carry no name
+    // and every identifier is unique to its asset.
+    it('renders Role and page size as native-backed dropdowns with per-asset contracts', async () => {
+      const fixture = await setupReleaseWithAssets();
+      const secondAsset = await addSecondSelected(fixture);
+      const alpha = fixture.allAssets.find((asset) => asset.filename === 'alpha.txt');
+
+      for (const view of ['grid', 'list']) {
+        const res = await agent.get(`${fixture.releaseLocation}/assets?view=${view}&pageSize=10`).expect(200);
+        expect(res.text).toContain('<body class="refined-page">');
+
+        const forms = [...res.text.matchAll(/<form method="post" action="([^"]+)" class="inline-form release-asset-role-form">([\s\S]*?)<\/form>/g)];
+        expect(forms).toHaveLength(2);
+        for (const [asset, role] of [[alpha, 'primary'], [secondAsset, 'attachment']]) {
+          const [, action, form] = forms.find(([, formAction]) => formAction.includes(`/assets/${asset.id}/role`));
+          expect(action.startsWith(`${fixture.releaseLocation}/assets/${asset.id}/role?`)).toBe(true);
+          expect(action).toContain('pageSize=10');
+          expect([...form.matchAll(/\sname="([^"]+)"/g)].map(([, name]) => name)).toEqual(['_csrf', 'role']);
+          const native = sliceSelect(form, `role-${asset.id}`);
+          expect(optionValues(native)).toEqual(['primary', 'preview', 'attachment']);
+          expect(native).toContain(`<option value="${role}" selected>`);
+          expect(form).toContain(`<legend class="sr-only">Role for ${asset.filename}</legend>`);
+          expect(form).toContain(`aria-label="Role for ${asset.filename}: ${role[0].toUpperCase()}${role.slice(1)}"`);
+          const details = form.match(new RegExp(`<details class="[^"]*cc-dropdown--compact[^"]*" id="release-asset-role-${asset.id}"[^>]*>`))?.[0] || '';
+          for (const attribute of [' data-cc-dropdown-dispatch-native-change', ' data-cc-viewport-disclosure', ' hidden']) {
+            expect(details).toContain(attribute);
+          }
+          expect(form).toMatch(new RegExp(`<input id="release-asset-role-${asset.id}-option-\\d" type="radio" value="${role}" checked>`));
+        }
+
+        const ids = [...res.text.matchAll(/\sid="((?:release-asset-)?role-\d+[^"]*)"/g)].map(([, id]) => id);
+        expect(ids.length).toBeGreaterThan(0);
+        expect(new Set(ids).size).toBe(ids.length);
+
+        const pageSizeForm = res.text.match(/<form class="page-size-form"[\s\S]*?<\/form>/)?.[0] || '';
+        expect(pageSizeForm).toContain('<select id="pageSize" name="pageSize" class="cc-dropdown-native-select" data-cc-dropdown-native-select aria-label="Assets per page" data-autosubmit data-release-assets-live-page-size>');
+        expect(sliceSelect(pageSizeForm, 'pageSize')).toMatch(/<option value="10"\s+selected>/);
+        expect([...pageSizeForm.matchAll(/\sname="([^"]+)"/g)].map(([, name]) => name))
+          .toEqual(view === 'list' ? ['pageSize', 'view'] : ['pageSize']);
+        expect(pageSizeForm).toContain('id="page-size-dropdown" data-cc-dropdown');
+      }
     });
 
     it('gives Manage Assets list titles the shared information card with membership state', async () => {
@@ -9588,7 +9632,7 @@ describe('release HTTP workflow', () => {
       const res = await agent.get(`${releaseLocation}/assets`).expect(200);
 
       // Role select exists for mutable scope in the new per-row form
-      const roleSelectMatch = res.text.match(/<label for="role-\d+"[^>]*>Role for/);
+      const roleSelectMatch = res.text.match(/<select id="role-\d+" name="role" class="cc-dropdown-native-select" data-cc-dropdown-native-select aria-label="Role for [^"]+" data-autosubmit>/);
       expect(roleSelectMatch).not.toBeNull();
 
       expect(res.text).not.toMatch(/<noscript><button[^>]*>Set<\/button><\/noscript>/);
@@ -9660,7 +9704,7 @@ describe('release HTTP workflow', () => {
         .expect(302);
 
       const beforeDetail = await agent.get(releaseLocation).expect(200);
-      expect(beforeDetail.text).toContain('Publication Summary');
+      expect(beforeDetail.text).toContain('Publication summary');
 
       // Attempt mutation via Phase 9-2 route
       await agent
@@ -9671,7 +9715,7 @@ describe('release HTTP workflow', () => {
         .expect(422);
 
       const afterDetail = await agent.get(releaseLocation).expect(200);
-      expect(afterDetail.text).toContain('Publication Summary');
+      expect(afterDetail.text).toContain('Publication summary');
     });
 
     it('archived release preserves complete release and junction rows', async () => {
@@ -9723,7 +9767,7 @@ describe('release HTTP workflow', () => {
       // Published releases show their publication summary, not a policy panel.
       const detail = await agent.get(releaseLocation).expect(200);
       expect(detail.text).not.toContain('Publishable');
-      expect(detail.text).toContain('Publication Summary');
+      expect(detail.text).toContain('Publication summary');
     });
 
     it('missing selected assets remain historically visible', async () => {

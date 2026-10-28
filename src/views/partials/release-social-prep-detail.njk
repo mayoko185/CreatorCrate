@@ -1,5 +1,5 @@
 {% import "partials/release-social-prep-companion-action.njk" as companionControl %}
-<section id="release-social-preparation" class="project-detail-section" aria-labelledby="release-social-preparation-heading">
+<section id="release-social-preparation" class="project-detail-section release-social-prep-detail" aria-labelledby="release-social-preparation-heading">
   <h2 id="release-social-preparation-heading">Social Posts</h2>
   <div class="project-detail-section-body">
     {% if socialPreparation.companionAction %}
@@ -16,7 +16,7 @@
         {% set noticeText = "Social Preparation is currently disabled. Saved targets and recorded preparation information are retained below." %}
         {% include "partials/notice.njk" %}
       {% endif %}
-      <p>These are last recorded states, not live progress. Preparation-request counts do not confirm that a browser or adapter ran.</p>
+      <p class="release-social-prep-note">These are last recorded states, not live progress. Preparation-request counts do not confirm that a browser or adapter ran.</p>
       {% for target in socialPreparation.targets %}
         <article aria-labelledby="release-social-preparation-{{ target.platform }}">
           <h3 id="release-social-preparation-{{ target.platform }}">{{ target.platformName }}</h3>

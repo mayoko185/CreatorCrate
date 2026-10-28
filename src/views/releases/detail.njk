@@ -10,6 +10,8 @@
 {% set page_title = "Releases — " ~ release.title %}
 {% set assetVideoPreview = true %}
 
+{% block body_class %}refined-page{% endblock %}
+
 {% macro releaseAssetMetadata(asset, includeCategory=true) %}
   <div class="release-asset-card-details">
     {% set role = asset.releaseContext.role or 'attachment' %}
@@ -255,8 +257,8 @@
   {# ─── Published summary ──────────────────────────────────────────── #}
   <div class="release-detail-region" data-release-detail-region="publication">
   {% if isPublished and not isArchived %}
-    <section class="project-detail-section">
-      <h2>Publication Summary</h2>
+    <section class="project-detail-section release-publication-summary">
+      <h2>Publication summary</h2>
       <div class="project-detail-section-body">
         <p class="publication-summary-badge publication-summary-published">Published</p>
         <ul class="publication-summary-checks">

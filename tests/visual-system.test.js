@@ -718,6 +718,45 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       expect(css).not.toMatch(new RegExp(`${scope} \\.asset-workflow-json\\s*\\{[^}]*(font-family|white-space|overflow)`));
       expect(css).toMatch(/@media \(max-width: 540px\) \{[^@]*:where\(\.refined-page main\) \.page-heading > \.asset-viewer-project\.asset-tooltip--left\[data-tooltip\]::after\s*\{[^}]*left:\s*auto;[^}]*right:\s*0;/);
     });
+
+    it('opts Release records and Release Detail into refined-page with their dialogs outside <main>', async () => {
+      const app = getApp();
+      const project = app.locals.projectService.create({ title: 'Refined release project' });
+      const { id: releaseId } = db.prepare(`
+        INSERT INTO releases (project_id, title, description, notes)
+        VALUES (?, 'Refined release', 'Description', 'Notes')
+        RETURNING id
+      `).get(project.id);
+      const list = await request(app).get('/releases').expect(200);
+      const detail = await request(app).get(`/releases/${releaseId}`).expect(200);
+      expect(list.text).toMatch(/<body class="refined-page">/);
+      expect(detail.text).toMatch(/<body class="refined-page">/);
+      // The table opts into the Dashboard table treatment element by element.
+      expect(list.text).toContain('class="table-scroll refined-table-scroll releases-table-scroll"');
+      expect(list.text).toContain('class="data-table refined-table releases-table"');
+      // The New Release and Edit Release dialogs render in the overlay block,
+      // so the foundation's page rules never reach them.
+      expect(list.text.indexOf('id="release-create-dialog"')).toBeGreaterThan(list.text.indexOf('</main>'));
+      expect(detail.text.indexOf('id="release-edit-dialog"')).toBeGreaterThan(detail.text.indexOf('</main>'));
+      // The inline Grid style control stays the shared dropdown with its
+      // in-place client hook.
+      expect(detail.text).toContain('data-asset-grid-style-control="release-detail"');
+    });
+
+    it('gives Release Detail Social Posts subcards, a compact publication summary, and wrapping release names', async () => {
+      const css = STYLESHEET;
+      const scope = ':where\\(\\.refined-page main\\)';
+      // The Dashboard table's nowrap cells would push Assets off a wide screen.
+      expect(css).toMatch(new RegExp(`${scope} \\.releases-table td\\s*\\{[^}]*white-space:\\s*normal;`));
+      expect(css).toMatch(new RegExp(`${scope} \\.releases-table td\\.releases-table-text\\s*\\{[^}]*min-width:\\s*10rem;`));
+      const platform = `${scope} \\.release-social-prep-detail \\.project-detail-section-body > article`;
+      expect(css).toMatch(new RegExp(`${platform}\\s*\\{[^}]*border:\\s*1px solid var\\(--border\\);[^}]*background:\\s*var\\(--surface-card\\);`));
+      expect(css).toMatch(new RegExp(`${platform} > h3\\s*\\{[^}]*font-family:\\s*inherit;[^}]*text-transform:\\s*none;`));
+      expect(css).toMatch(new RegExp(`${scope} \\.project-detail-section-body > :is\\(\\.description, \\.notes\\)\\s*\\{[^}]*overflow-wrap:\\s*anywhere;`));
+      expect(css).toMatch(new RegExp(`${scope} \\.release-publication-summary \\.publication-summary-badge\\s*\\{[^}]*margin:\\s*0;`));
+      // Line breaks in Description and Notes are preserved.
+      expect(css).toMatch(/\.description, \.notes \{ white-space: pre-wrap; \}/);
+    });
   });
 
   // ─── 6. Form density ─────────────────────────────────────────────────────

@@ -329,7 +329,10 @@ test('Role autosubmit still works and read-only releases keep cards without cont
   await row.title.click();
   await expect(row.info).toBeVisible();
   await page.keyboard.press('Escape');
-  await row.card.locator('.asset-list-cell--role select').selectOption('preview');
+  const role = row.card.locator('.asset-list-cell--role [data-cc-dropdown]');
+  await role.locator('summary').click();
+  await role.locator('.asset-filter-multiselect-panel').getByText('Preview', { exact: true }).click();
+  await expect(row.card.locator('.asset-list-cell--role select[data-autosubmit]')).toHaveValue('preview');
   await expect.poll(() => db.prepare('SELECT role FROM release_assets WHERE release_id = ? AND asset_id = ?')
     .get(f.releaseId, Number(f.ids['02-image.png'])).role).toBe('preview');
 
