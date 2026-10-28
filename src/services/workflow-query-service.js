@@ -1445,6 +1445,15 @@ export function createWorkflowQueryService({
     }
 
     const projectId = parseStrictPositiveInt(raw.project);
+    // Optional exact-asset scope. Unlike `project`, a supplied-but-malformed
+    // asset value must not fall back to the unscoped list: it is flagged so
+    // getReleaseList returns an empty result instead of silently broadening.
+    // An explicit empty value counts as supplied (and invalid). Unsafe integers
+    // are rejected so "9007199254740993" cannot round onto a neighbouring asset.
+    const assetSupplied = raw.asset != null;
+    const parsedAssetId = assetSupplied ? parseStrictPositiveInt(raw.asset) : null;
+    const assetId = Number.isSafeInteger(parsedAssetId) ? parsedAssetId : null;
+    const assetFilterInvalid = assetSupplied && assetId === null;
     const search = typeof raw.search === 'string' ? raw.search.trim() : '';
     const schedule = ['overdue', 'today', 'upcoming', 'unscheduled'].includes(raw.schedule)
       ? raw.schedule
@@ -1460,7 +1469,12 @@ export function createWorkflowQueryService({
     let pageSize = pageSizeRaw !== null ? pageSizeRaw : 25;
     if (pageSize > 100) pageSize = 100;
 
-    return { search, projectId, schedule, includeArchived, sortBy, order, page, pageSize };
+    const filters = { search, projectId, schedule, includeArchived, sortBy, order, page, pageSize };
+    if (assetSupplied) {
+      filters.assetId = assetId;
+      filters.assetFilterInvalid = assetFilterInvalid;
+    }
+    return filters;
   }
 
   /**
@@ -1472,14 +1486,20 @@ export function createWorkflowQueryService({
    * @returns {{ releases: Array, total: number, page: number, pageSize: number, pageCount: number, today: string }}
    */
   function getReleaseList(rawFilters, options = {}) {
-    const filters = normalizeListFilters(rawFilters);
+    const { assetFilterInvalid = false, ...filters } = normalizeListFilters(rawFilters);
     const today = options.today || defaultToday();
 
     // List view always excludes archived-parent releases per Phase 6C:
     // "Archived parent projects make releases hidden from active workflow views"
-    const activeScheduleFilter = true;
+    // — except for an asset-scoped list, which mirrors the asset viewer's
+    // release usage and so must reach releases of a historical (archived)
+    // parent project. Schedule filters still force active parents in the
+    // repository regardless of this flag.
+    const activeScheduleFilter = filters.assetId == null;
 
-    const total = releaseRepository.countFiltered({
+    // A malformed asset scope matches nothing rather than broadening to the
+    // unscoped list.
+    const total = assetFilterInvalid ? 0 : releaseRepository.countFiltered({
       ...filters,
       today,
       activeScheduleFilter,
@@ -1496,7 +1516,7 @@ export function createWorkflowQueryService({
     const page = Math.min(filters.page, pageCount);
     const offset = (page - 1) * filters.pageSize;
 
-    const releases = releaseRepository.findPage({
+    const releases = assetFilterInvalid ? [] : releaseRepository.findPage({
       ...filters,
       today,
       activeScheduleFilter,
@@ -2069,6 +2089,29 @@ function normalizeAssetBrowserQuery(
   }
 
   /**
+   * Release navigation destination for the asset viewer, derived from the
+   * already-fetched release usage rows (archived releases and historical
+   * projects included) — no additional query. Returns null when the asset
+   * belongs to no release so the viewer omits the Release action; one
+   * release links straight to it; several link to the asset-scoped list.
+   * @param {number} projectId
+   * @param {number} assetId
+   * @param {Array} releaseUsage - rows from findReleaseUsageForAssetIds
+   */
+  function buildAssetReleaseNavigation(projectId, assetId, releaseUsage) {
+    const releaseIds = [...new Set(releaseUsage.map((row) => row.release_id))];
+    if (releaseIds.length === 0) return null;
+    if (releaseIds.length === 1) {
+      return { mode: 'single', releaseCount: 1, href: `/releases/${releaseIds[0]}` };
+    }
+    return {
+      mode: 'multiple',
+      releaseCount: releaseIds.length,
+      href: `/releases?asset=${assetId}&project=${projectId}&includeArchived=1`,
+    };
+  }
+
+  /**
    * Attach the render-ready presentation fields shared by the browser table
    * rows and the viewer asset model, so neither template branches on raw
    * category/nested_path/release_usage data itself.
@@ -2628,6 +2671,7 @@ function normalizeAssetBrowserQuery(
    *   previousAssetLink: { assetId: number, href: string, page: number }|null,
    *   nextAssetLink: { assetId: number, href: string, page: number }|null,
    *   backToAssetsLink: { href: string, page: number|null },
+   *   releaseNavigation: { mode: 'single'|'multiple', releaseCount: number, href: string }|null,
    * }}
    */
   function getProjectAssetViewer(projectId, assetId, rawQuery = {}) {
@@ -2690,6 +2734,7 @@ function normalizeAssetBrowserQuery(
       previousAssetLink,
       nextAssetLink,
       backToAssetsLink,
+      releaseNavigation: buildAssetReleaseNavigation(project.id, asset.id, releaseUsage),
       enabledCategories,
       canMutate,
     };

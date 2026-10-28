@@ -1491,6 +1491,128 @@ describe('workflow query service', () => {
       expect(result.releases[0].title).toBe('Alpha-Valid-Filter-Release');
     });
 
+    describe('asset scope', () => {
+      const TODAY = '2025-06-15';
+
+      it('normalizes a valid asset id and omits asset keys when absent', () => {
+        expect(service.normalizeListFilters({ asset: '7' })).toMatchObject({ assetId: 7, assetFilterInvalid: false });
+        expect(service.normalizeListFilters({})).not.toHaveProperty('assetId');
+        expect(service.normalizeListFilters({})).not.toHaveProperty('assetFilterInvalid');
+      });
+
+      it('treats an explicit empty asset filter as invalid instead of unscoped', () => {
+        const project = insertProject(db, { title: 'Asset Scope Empty' });
+        insertRelease(db, { projectId: project.id, title: 'Unrelated A' });
+        insertRelease(db, { projectId: project.id, title: 'Unrelated B' });
+
+        expect(service.normalizeListFilters({ asset: '' })).toMatchObject({ assetId: null, assetFilterInvalid: true });
+        const result = service.getReleaseList({ asset: '' }, { today: TODAY });
+        expect(result.total).toBe(0);
+        expect(result.releases).toEqual([]);
+        expect(service.getReleaseList({}, { today: TODAY }).total).toBe(2);
+      });
+
+      it('accepts positive safe integer asset ids up to Number.MAX_SAFE_INTEGER', () => {
+        expect(service.normalizeListFilters({ asset: '1' })).toMatchObject({ assetId: 1, assetFilterInvalid: false });
+        expect(service.normalizeListFilters({ asset: String(Number.MAX_SAFE_INTEGER) }))
+          .toMatchObject({ assetId: Number.MAX_SAFE_INTEGER, assetFilterInvalid: false });
+      });
+
+      it('rejects asset ids beyond Number.MAX_SAFE_INTEGER', () => {
+        for (const asset of ['9007199254740992', '9007199254740993', '99999999999999999999', 9007199254740992]) {
+          expect(service.normalizeListFilters({ asset })).toMatchObject({ assetId: null, assetFilterInvalid: true });
+        }
+      });
+
+      it('does not let an unsafe asset id retrieve releases of the rounded id', () => {
+        const project = insertProject(db, { title: 'Asset Scope Unsafe' });
+        const asset = insertAsset(db, { projectId: project.id, relativePath: 'big.txt', filename: 'big.txt' });
+        const roundedId = 9007199254740992; // Number('9007199254740993') rounds to this
+        db.prepare('UPDATE assets SET id = ? WHERE id = ?').run(roundedId, asset.id);
+        const member = insertRelease(db, { projectId: project.id, title: 'Rounded Member' });
+        linkAssetToRelease(db, { releaseId: member.id, assetId: roundedId });
+
+        const result = service.getReleaseList({ asset: '9007199254740993' }, { today: TODAY });
+        expect(result.total).toBe(0);
+        expect(result.releases).toEqual([]);
+      });
+
+      it('scopes to an asset whose id is Number.MAX_SAFE_INTEGER', () => {
+        const project = insertProject(db, { title: 'Asset Scope Max Safe' });
+        const asset = insertAsset(db, { projectId: project.id, relativePath: 'max.txt', filename: 'max.txt' });
+        db.prepare('UPDATE assets SET id = ? WHERE id = ?').run(Number.MAX_SAFE_INTEGER, asset.id);
+        const member = insertRelease(db, { projectId: project.id, title: 'Max Member' });
+        insertRelease(db, { projectId: project.id, title: 'Max Unrelated' });
+        linkAssetToRelease(db, { releaseId: member.id, assetId: Number.MAX_SAFE_INTEGER });
+
+        const result = service.getReleaseList({ asset: String(Number.MAX_SAFE_INTEGER) }, { today: TODAY });
+        expect(result.total).toBe(1);
+        expect(result.releases[0].id).toBe(member.id);
+      });
+
+      it('flags a malformed asset id and returns no releases instead of broadening', () => {
+        const project = insertProject(db, { title: 'Asset Scope Malformed' });
+        insertRelease(db, { projectId: project.id, title: 'Any' });
+
+        for (const asset of ['+2', '1junk', '0', '-1', '2.5']) {
+          expect(service.normalizeListFilters({ asset })).toMatchObject({ assetId: null, assetFilterInvalid: true });
+          const result = service.getReleaseList({ asset }, { today: TODAY });
+          expect(result.total).toBe(0);
+          expect(result.releases).toEqual([]);
+          expect(result.hasAnyReleases).toBe(true);
+        }
+      });
+
+      it('lists only member releases, including archived releases of an archived project', () => {
+        const project = insertProject(db, { title: 'Asset Scope Historical', archivedAt: '2025-05-01' });
+        const asset = insertAsset(db, { projectId: project.id, relativePath: 'a.txt', filename: 'a.txt' });
+        const live = insertRelease(db, { projectId: project.id, title: 'Live' });
+        const archived = insertRelease(db, { projectId: project.id, title: 'Archived', archivedAt: '2025-05-02' });
+        insertRelease(db, { projectId: project.id, title: 'Unrelated' });
+        linkAssetToRelease(db, { releaseId: live.id, assetId: asset.id });
+        linkAssetToRelease(db, { releaseId: archived.id, assetId: asset.id });
+
+        const withArchived = service.getReleaseList(
+          { asset: String(asset.id), project: String(project.id), includeArchived: '1' },
+          { today: TODAY },
+        );
+        expect(withArchived.total).toBe(2);
+        expect(withArchived.releases.map((r) => r.id).sort()).toEqual([live.id, archived.id].sort());
+
+        const withoutArchived = service.getReleaseList({ asset: String(asset.id) }, { today: TODAY });
+        expect(withoutArchived.releases.map((r) => r.id)).toEqual([live.id]);
+
+        // Schedule filters keep excluding archived parent projects.
+        expect(service.getReleaseList(
+          { asset: String(asset.id), schedule: 'unscheduled', includeArchived: '1' },
+          { today: TODAY },
+        ).total).toBe(0);
+      });
+
+      it('paginates the asset-scoped set with consistent totals', () => {
+        const project = insertProject(db, { title: 'Asset Scope Paging' });
+        const asset = insertAsset(db, { projectId: project.id, relativePath: 'a.txt', filename: 'a.txt' });
+        for (let i = 0; i < 5; i++) {
+          const r = insertRelease(db, { projectId: project.id, title: `Member ${i}` });
+          linkAssetToRelease(db, { releaseId: r.id, assetId: asset.id });
+          insertRelease(db, { projectId: project.id, title: `Other ${i}` });
+        }
+
+        const result = service.getReleaseList({ asset: String(asset.id), page: '3', pageSize: '2' }, { today: TODAY });
+        expect(result.total).toBe(5);
+        expect(result.pageCount).toBe(3);
+        expect(result.releases).toHaveLength(1);
+        expect(result.releases[0].title).toMatch(/^Member /);
+      });
+
+      it('keeps archived-parent releases hidden from the unscoped list', () => {
+        const archivedProject = insertProject(db, { title: 'Asset Scope Unscoped', archivedAt: '2025-05-01' });
+        insertRelease(db, { projectId: archivedProject.id, title: 'Hidden' });
+
+        expect(service.getReleaseList({ includeArchived: '1' }, { today: TODAY }).total).toBe(0);
+      });
+    });
+
     it('rejects leading-plus pageSize', () => {
       const result = service.getReleaseList({ pageSize: '+10' }, { today: '2025-06-15' });
       // Falls back to default pageSize of 25.
@@ -4243,6 +4365,81 @@ describe('workflow query service', () => {
       expect(large.asset.id).toBe(largeCurrent.id);
       expect(smallCount).toBe(ASSET_VIEWER_FIXED_STATEMENT_EXECUTIONS);
       expect(largeCount).toBe(ASSET_VIEWER_FIXED_STATEMENT_EXECUTIONS);
+    });
+
+    describe('releaseNavigation', () => {
+      it('is null when the asset belongs to no release', () => {
+        const project = insertProject(db, { title: 'Nav None' });
+        const asset = addViewerAsset(project, 'a.txt');
+        const other = addViewerAsset(project, 'b.txt');
+        const release = insertRelease(db, { projectId: project.id, title: 'Other Only' });
+        linkAssetToRelease(db, { releaseId: release.id, assetId: other.id });
+
+        expect(service.getProjectAssetViewer(project.id, asset.id).releaseNavigation).toBeNull();
+      });
+
+      it('links directly to the only related release, even when archived', () => {
+        const project = insertProject(db, { title: 'Nav Single' });
+        const asset = addViewerAsset(project, 'a.txt');
+        const release = insertRelease(db, { projectId: project.id, title: 'Only', archivedAt: '2026-01-01' });
+        linkAssetToRelease(db, { releaseId: release.id, assetId: asset.id });
+
+        expect(service.getProjectAssetViewer(project.id, asset.id).releaseNavigation).toEqual({
+          mode: 'single', releaseCount: 1, href: `/releases/${release.id}`,
+        });
+      });
+
+      it('links to the asset-scoped release list for multiple releases, counting archived ones', () => {
+        const project = insertProject(db, { title: 'Nav Multiple' });
+        const asset = addViewerAsset(project, 'a.txt');
+        const active = insertRelease(db, { projectId: project.id, title: 'Active' });
+        const archived = insertRelease(db, { projectId: project.id, title: 'Archived', archivedAt: '2026-01-01' });
+        linkAssetToRelease(db, { releaseId: active.id, assetId: asset.id });
+        linkAssetToRelease(db, { releaseId: archived.id, assetId: asset.id });
+
+        const nav = service.getProjectAssetViewer(project.id, asset.id).releaseNavigation;
+        expect(nav).toEqual({
+          mode: 'multiple',
+          releaseCount: 2,
+          href: `/releases?asset=${asset.id}&project=${project.id}&includeArchived=1`,
+        });
+
+        // The destination list shows exactly the releases the viewer counted.
+        const list = service.getReleaseList(Object.fromEntries(new URL(nav.href, 'http://localhost').searchParams), { today: '2026-07-28' });
+        expect(list.total).toBe(2);
+        expect(list.releases.map((r) => r.id).sort()).toEqual([active.id, archived.id].sort());
+      });
+
+      it('ignores cross-project junction rows', () => {
+        const project = insertProject(db, { title: 'Nav Owner' });
+        const foreign = insertProject(db, { title: 'Nav Foreign' });
+        const asset = addViewerAsset(project, 'a.txt');
+        const foreignRelease = insertRelease(db, { projectId: foreign.id, title: 'Foreign' });
+        linkAssetToRelease(db, { releaseId: foreignRelease.id, assetId: asset.id });
+
+        expect(service.getProjectAssetViewer(project.id, asset.id).releaseNavigation).toBeNull();
+      });
+
+      it('adds no statements beyond the fixed viewer composition', () => {
+        const project = insertProject(db, { title: 'Nav Query Count' });
+        const lone = addViewerAsset(project, 'a.txt');
+        const shared = addViewerAsset(project, 'b.txt');
+        for (const title of ['R1', 'R2']) {
+          const release = insertRelease(db, { projectId: project.id, title });
+          linkAssetToRelease(db, { releaseId: release.id, assetId: shared.id });
+        }
+        const counter = instrumentStatementExecution(db);
+        const instrumentedService = createWorkflowQueryService({ db });
+        instrumentedService.getProjectAssetViewer(project.id, lone.id);
+
+        counter.reset();
+        expect(instrumentedService.getProjectAssetViewer(project.id, lone.id).releaseNavigation).toBeNull();
+        const noneCount = counter.count();
+
+        counter.reset();
+        expect(instrumentedService.getProjectAssetViewer(project.id, shared.id).releaseNavigation.mode).toBe('multiple');
+        expect(counter.count()).toBe(noneCount);
+      });
     });
 
     // ─── Phase: asset actions chunk 4 — rename/move form projections ────

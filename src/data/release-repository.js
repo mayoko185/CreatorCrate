@@ -1557,6 +1557,7 @@ export function createReleaseRepository(db) {
      * Returns { conditions: string[], params: any[] }.
      * @param {Object} filters
      * @param {number|null} filters.projectId
+     * @param {number|null} [filters.assetId] - exact release_assets membership (owner-guarded)
      * @param {string|null} filters.schedule - 'overdue'|'today'|'upcoming'|'unscheduled'
      * @param {boolean} filters.includeArchived
      * @param {string} filters.today - ISO date string YYYY-MM-DD for schedule classification
@@ -1578,6 +1579,18 @@ export function createReleaseRepository(db) {
       if (filters.projectId != null) {
         conditions.push('releases.project_id = ?');
         params.push(filters.projectId);
+      }
+
+      // Exact asset membership. The asset must belong to the release's own
+      // project so corrupt cross-project junction rows never match. EXISTS
+      // keeps one row per release (no join fan-out) and composes with the
+      // other filters as an intersection.
+      if (filters.assetId != null) {
+        conditions.push(
+          'EXISTS (SELECT 1 FROM release_assets ra JOIN assets a ON a.id = ra.asset_id ' +
+          'WHERE ra.release_id = releases.id AND ra.asset_id = ? AND a.project_id = releases.project_id)'
+        );
+        params.push(filters.assetId);
       }
 
       // Schedule filters (overdue, today, upcoming, unscheduled) ALWAYS exclude
@@ -1629,6 +1642,7 @@ export function createReleaseRepository(db) {
      * Uses SQL LIMIT/OFFSET for pagination — no in-memory slicing.
      * @param {Object} filters
      * @param {number|null} filters.projectId
+     * @param {number|null} [filters.assetId]
      * @param {string|null} filters.schedule
      * @param {boolean} filters.includeArchived
      * @param {string} filters.today
@@ -1643,6 +1657,7 @@ export function createReleaseRepository(db) {
       const {
         search,
         projectId,
+        assetId = null,
         schedule,
         includeArchived = false,
         today,
@@ -1654,7 +1669,7 @@ export function createReleaseRepository(db) {
       } = filters;
 
       const { conditions, params } = this._buildFilterConditions({
-        search, projectId, schedule, includeArchived, today, activeScheduleFilter,
+        search, projectId, assetId, schedule, includeArchived, today, activeScheduleFilter,
       });
       const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
       const orderClause = buildOrderClauseWithTable('releases', sortBy, order);
@@ -1688,6 +1703,7 @@ export function createReleaseRepository(db) {
       const {
         search,
         projectId,
+        assetId = null,
         schedule,
         includeArchived = false,
         today,
@@ -1695,7 +1711,7 @@ export function createReleaseRepository(db) {
       } = filters;
 
       const { conditions, params } = this._buildFilterConditions({
-        search, projectId, schedule, includeArchived, today, activeScheduleFilter,
+        search, projectId, assetId, schedule, includeArchived, today, activeScheduleFilter,
       });
       const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
       const sql = `SELECT COUNT(*) AS c FROM releases JOIN projects ON projects.id = releases.project_id ${where}`;

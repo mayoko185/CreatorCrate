@@ -1111,6 +1111,93 @@ describe('release repository', () => {
     });
   });
 
+  describe('findPage / countFiltered — asset membership filter', () => {
+    const TODAY = '2025-06-15';
+    let asset;
+    let otherAsset;
+
+    beforeEach(() => {
+      asset = assetRepo.upsert(projectId, 'member.txt', sampleAsset(projectId, { relativePath: 'member.txt' }));
+      otherAsset = assetRepo.upsert(projectId, 'other.txt', sampleAsset(projectId, { relativePath: 'other.txt' }));
+    });
+
+    it('returns only releases containing the asset, once each, with matching counts', () => {
+      const a = releaseRepo.create({ projectId, ...sampleRelease({ title: 'A' }) });
+      const b = releaseRepo.create({ projectId, ...sampleRelease({ title: 'B' }) });
+      const unrelated = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Unrelated' }) });
+      releaseRepo.addReleaseAsset(a.id, asset.id, 'primary', 0);
+      releaseRepo.addReleaseAsset(a.id, otherAsset.id, 'attachment', 1);
+      releaseRepo.addReleaseAsset(b.id, asset.id, 'attachment', 0);
+      releaseRepo.addReleaseAsset(unrelated.id, otherAsset.id, 'primary', 0);
+
+      const rows = releaseRepo.findPage({ assetId: asset.id, sortBy: 'title', order: 'asc', today: TODAY });
+      expect(rows.map((r) => r.id)).toEqual([a.id, b.id]);
+      expect(rows.find((r) => r.id === a.id).selected_asset_count).toBe(2);
+      expect(releaseRepo.countFiltered({ assetId: asset.id, today: TODAY })).toBe(2);
+    });
+
+    it('applies the filter before pagination', () => {
+      const ids = [];
+      for (let i = 0; i < 5; i++) {
+        const r = releaseRepo.create({ projectId, ...sampleRelease({ title: `M${i}` }) });
+        releaseRepo.addReleaseAsset(r.id, asset.id, 'primary', 0);
+        ids.push(r.id);
+        releaseRepo.create({ projectId, ...sampleRelease({ title: `N${i}` }) });
+      }
+
+      const filters = { assetId: asset.id, sortBy: 'title', order: 'asc', today: TODAY };
+      const page1 = releaseRepo.findPage({ ...filters, limit: 2, offset: 0 });
+      const page3 = releaseRepo.findPage({ ...filters, limit: 2, offset: 4 });
+      expect(page1.map((r) => r.id)).toEqual(ids.slice(0, 2));
+      expect(page3.map((r) => r.id)).toEqual(ids.slice(4));
+      expect(releaseRepo.countFiltered(filters)).toBe(5);
+    });
+
+    it('intersects with project, search, and archive filters', () => {
+      const other = projectRepo.create(sampleProject({ title: 'Other Owner' }));
+      const keep = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Keep Me' }) });
+      const skip = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Skip' }) });
+      const archived = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Keep Archived' }) });
+      for (const r of [keep, skip, archived]) releaseRepo.addReleaseAsset(r.id, asset.id, 'primary', 0);
+      releaseRepo.archive(archived.id);
+
+      expect(releaseRepo.countFiltered({ assetId: asset.id, search: 'Keep', today: TODAY })).toBe(1);
+      expect(releaseRepo.countFiltered({ assetId: asset.id, search: 'Keep', includeArchived: true, today: TODAY })).toBe(2);
+      expect(releaseRepo.countFiltered({ assetId: asset.id, projectId: other.id, includeArchived: true, today: TODAY })).toBe(0);
+      expect(releaseRepo.findPage({ assetId: asset.id, includeArchived: true, today: TODAY })).toHaveLength(3);
+    });
+
+    it('ignores cross-project junction rows', () => {
+      const other = projectRepo.create(sampleProject({ title: 'Foreign Project' }));
+      const foreignRelease = releaseRepo.create({ projectId: other.id, ...sampleRelease({ title: 'Foreign' }) });
+      db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)')
+        .run(foreignRelease.id, asset.id, 'attachment', 0);
+
+      expect(releaseRepo.findPage({ assetId: asset.id, includeArchived: true, today: TODAY })).toEqual([]);
+      expect(releaseRepo.countFiltered({ assetId: asset.id, includeArchived: true, today: TODAY })).toBe(0);
+      expect(releaseRepo.countFiltered({ assetId: asset.id, projectId: other.id, includeArchived: true, today: TODAY })).toBe(0);
+    });
+
+    it('keeps archived-parent exclusion for schedule filters even when asset-scoped', () => {
+      const r = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Overdue', plannedDate: '2025-06-01' }) });
+      releaseRepo.addReleaseAsset(r.id, asset.id, 'primary', 0);
+      db.prepare("UPDATE projects SET archived_at = '2025-06-10' WHERE id = ?").run(projectId);
+
+      expect(releaseRepo.countFiltered({ assetId: asset.id, schedule: 'overdue', includeArchived: true, today: TODAY })).toBe(0);
+      expect(releaseRepo.countFiltered({ assetId: asset.id, includeArchived: true, today: TODAY })).toBe(1);
+    });
+
+    it('leaves unscoped results unchanged when assetId is omitted or null', () => {
+      const a = releaseRepo.create({ projectId, ...sampleRelease({ title: 'A' }) });
+      releaseRepo.create({ projectId, ...sampleRelease({ title: 'B' }) });
+      releaseRepo.addReleaseAsset(a.id, asset.id, 'primary', 0);
+
+      expect(releaseRepo.countFiltered({ today: TODAY })).toBe(2);
+      expect(releaseRepo.countFiltered({ assetId: null, today: TODAY })).toBe(2);
+      expect(releaseRepo.findPage({ assetId: null, today: TODAY })).toHaveLength(2);
+    });
+  });
+
   // ─── Phase 6C: Release Planning Views — schedule filters ───────────────────
 
   describe('findPage — schedule filters', () => {
