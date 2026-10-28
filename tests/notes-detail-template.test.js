@@ -590,7 +590,7 @@ describe('Notes Page detail hierarchy and layout contract', () => {
   });
 
   it('restores the small Page content heading and scopes its corrected size', () => {
-    expect(detailTemplate).toContain('{% block body_class %}notes-page-detail-page{% endblock %}');
+    expect(detailTemplate).toContain('{% block body_class %}refined-page notes-page-detail-page{% endblock %}');
     expect(detailTemplate).toContain('<section class="notes-detail-content" aria-labelledby="notes-detail-content-heading">');
     expect(detailTemplate).toContain('<div class="notes-detail-section-heading">');
     expect(detailTemplate).toContain('<p class="notes-detail-kicker notes-detail-content-heading" id="notes-detail-content-heading">{{ note.title }}</p>');

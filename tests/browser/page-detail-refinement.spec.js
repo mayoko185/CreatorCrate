@@ -52,7 +52,7 @@ test('Page detail keeps its small content heading and omits a matching Markdown 
       await page.setViewportSize(viewport);
       await page.goto(`${base}/notes/${note.id}`);
 
-      await expect(page.locator('body')).toHaveClass('notes-page-detail-page');
+      await expect(page.locator('body')).toHaveClass('refined-page notes-page-detail-page');
       await expect(page.locator('h1.app-section-title')).toHaveCount(1);
       await expect(page.locator('h1.app-section-title')).toContainText(note.title);
       await expect(page.locator('.notes-detail-kicker')).toHaveText(note.title);
@@ -116,15 +116,17 @@ test('Page detail keeps its small content heading and omits a matching Markdown 
       expect(layout.shellHeadingFontSize).toBe('13px');
       expect(layout.contentHeadingFontSize).toBe('16px');
       expect(parseFloat(layout.contentHeadingFontSize)).toBeGreaterThanOrEqual(parseFloat(layout.textFontSize));
+      // Details takes the refined section card's accent heading, and the
+      // card's padding is the inset.
       expect(layout.detailsHeading).toMatchObject({
-        padding: '8px 12px',
-        fontSize: '12px',
-        textTransform: 'uppercase',
-        borderBottomWidth: '1px',
+        padding: '0px',
+        fontSize: '14px',
+        textTransform: 'none',
+        borderBottomWidth: '0px',
       });
-      expect(layout.detailsBodyPadding).toEqual(['8px', '12px', '8px', '12px']);
+      expect(layout.detailsBodyPadding).toEqual(['0px', '0px', '0px', '0px']);
       expect(layout.listMargin).toBe('0px');
-      expect(layout.listGap).toBe(viewport.width <= 540 ? '4px' : '8px');
+      expect(layout.listGap).toBe('10px');
       for (let index = 0; index < layout.fields.length; index += 1) {
         const field = layout.fields[index];
         expect(field.left).toBeGreaterThanOrEqual(layout.details.left);
@@ -165,6 +167,118 @@ test('Page detail keeps its small content heading and omits a matching Markdown 
     await expect(page.locator('h1.app-section-title')).toHaveCSS('font-size', '13px');
     await expect(page.locator('.notes-detail-details')).toHaveClass('notes-detail-panel notes-detail-details');
     await expect(page.locator('.notes-detail-details > .project-detail-section-body')).toHaveCount(0);
+  } finally {
+    if (server) {
+      server.closeAllConnections();
+      await new Promise(resolve => server.close(resolve));
+    }
+    closeDatabase(db);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('Page and Revision Assets metadata wraps long relative paths inside its card', async ({ page }) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-page-detail-asset-wrap-'));
+  const projectsRoot = path.join(root, 'projects');
+  const appDataRoot = path.join(root, 'app');
+  fs.mkdirSync(projectsRoot);
+  fs.mkdirSync(appDataRoot);
+  const db = openDatabase(path.join(root, 'test.db'));
+  let server;
+
+  try {
+    runMigrations(db, fileURLToPath(new URL('../../migrations', import.meta.url)));
+    const { csrfPepper } = ensureAuthEnablement(appDataRoot);
+    const viteDistRoot = path.join(root, 'client');
+    await build({ build: { outDir: viteDistRoot }, logLevel: 'silent' });
+    const assetManifest = createAssetManifest({
+      distRoot: viteDistRoot,
+      manifestPath: path.join(viteDistRoot, '.vite/manifest.json'),
+    });
+    const app = createApp(
+      { appName: 'CreatorCrate', db, projectsRoot },
+      { appDataRoot, authState: { csrfPepper }, useViteAssets: true, viteDistRoot, assetManifest },
+    );
+    const book = app.locals.bookService.createBook({ title: 'Asset Wrap Book' });
+    const chapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Asset Wrap Chapter' });
+    const project = app.locals.projectService.create({ title: 'Asset Wrap project', status: 'tbd' });
+    const relativePath = `${'a'.repeat(95)}/file.txt`;
+    const asset = db.prepare(`INSERT INTO assets
+      (project_id, relative_path, filename, extension, mime_type, size_bytes, is_present, last_seen_at)
+      VALUES (?, ?, 'file.txt', 'txt', 'text/plain', 1, 1, datetime('now'))
+      RETURNING id`).get(project.id, relativePath);
+    const content = [
+      '## Authored heading',
+      '',
+      `Long authored paragraph ${'word '.repeat(60)}`,
+      '',
+      '```',
+      `const wideAuthoredCode = '${'x'.repeat(240)}';`,
+      '```',
+      '',
+      '| Column A | Column B |',
+      '| --- | --- |',
+      '| Cell one | Cell two |',
+    ].join('\n');
+    const note = app.locals.noteService.createNote({
+      chapterId: chapter.id,
+      title: 'Asset Wrap Page',
+      content,
+      projectIds: [project.id],
+      assetIds: [asset.id],
+    });
+    app.locals.noteService.updateNote(note.id, {
+      title: 'Asset Wrap Page',
+      content: `${content}\n\nUpdated.`,
+      projectIds: [project.id],
+      assetIds: [asset.id],
+    });
+    const [revision] = app.locals.noteService.listNoteRevisions(note.id);
+    expect(revision).toBeTruthy();
+    server = app.listen(0, '127.0.0.1');
+    await new Promise(resolve => server.once('listening', resolve));
+    const base = `http://127.0.0.1:${server.address().port}`;
+
+    for (const url of [`${base}/notes/${note.id}`, `${base}/notes/${note.id}/revisions/${revision.id}`]) {
+      for (const width of [1440, 768, 390]) {
+        await page.setViewportSize({ width, height: 900 });
+        await page.goto(url);
+        const pathText = page.locator('.notes-detail-asset span', { hasText: relativePath });
+        await expect(pathText).toHaveText(relativePath);
+        await expect(page.locator('.notes-detail-asset-link')).toHaveAttribute('href', /.+/);
+
+        const metrics = await page.evaluate(() => {
+          const card = document.querySelector('.notes-detail-asset');
+          const panel = document.querySelector('.notes-detail-assets');
+          const span = [...card.querySelectorAll('span')].find(node => node.textContent.includes('/file.txt'));
+          const pre = document.querySelector('.notes-content pre');
+          const paragraph = document.querySelector('.notes-content p');
+          const cardBox = card.getBoundingClientRect();
+          const panelBox = panel.getBoundingClientRect();
+          const spanBox = span.getBoundingClientRect();
+          return {
+            clientWidth: document.documentElement.clientWidth,
+            scrollWidth: document.documentElement.scrollWidth,
+            cardWidth: Math.round(cardBox.width),
+            cardRight: cardBox.right,
+            panelRight: panelBox.right,
+            spanRight: spanBox.right,
+            spanOverflow: span.scrollWidth - span.clientWidth,
+            authored: {
+              pre: [pre.scrollWidth, pre.clientWidth, pre.offsetHeight, getComputedStyle(pre).overflowX],
+              paragraph: [paragraph.offsetWidth, paragraph.offsetHeight],
+              table: document.querySelector('.notes-content table')?.offsetWidth,
+            },
+          };
+        });
+        console.log(`[asset-wrap] ${url.includes('/revisions/') ? 'revision' : 'page'} @${width}: ${JSON.stringify(metrics)}`);
+
+        expect.soft(metrics.scrollWidth).toBeLessThanOrEqual(metrics.clientWidth);
+        expect.soft(metrics.cardRight).toBeLessThanOrEqual(metrics.panelRight);
+        expect.soft(metrics.spanRight).toBeLessThanOrEqual(metrics.cardRight);
+        expect.soft(metrics.spanOverflow).toBeLessThanOrEqual(0);
+      }
+    }
   } finally {
     if (server) {
       server.closeAllConnections();

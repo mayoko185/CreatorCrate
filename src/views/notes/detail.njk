@@ -1,14 +1,19 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
 {% import "partials/book-primary-image.njk" as bookPrimaryImage %}
+{% import "partials/icons.njk" as icons %}
 
 {% set page_title = "Notes — Page — " ~ note.title %}
 
-{% block body_class %}notes-page-detail-page{% endblock %}
+{% block body_class %}refined-page notes-page-detail-page{% endblock %}
 
 {% block content %}
   {% call pageHeading.render("Page") %}
-    <a class="button button-primary" href="/notes/{{ note.id }}/edit" data-dialog-open="note-edit-dialog">Edit Page</a>
+    <a class="button button-small button-primary project-detail-action project-assets-heading-action asset-tooltip asset-tooltip--right"
+       href="/notes/{{ note.id }}/edit" data-dialog-open="note-edit-dialog"
+       aria-label="Edit Page" data-tooltip="Edit Page">
+      {{ icons.icon('edit') }}
+    </a>
   {% endcall %}
 
   <div class="notes-page-detail-layout">

@@ -2,9 +2,12 @@
 
 {% set page_title = "Error " ~ status %}
 
+{% block body_class %}refined-page error-page{% endblock %}
+
 {% block content %}
-  <div class="error-box">
+  {# 5xx reads as a failure (danger); 4xx as a request problem (warning). #}
+  <div class="error-box" data-error-severity="{{ 'server' if status >= 500 else 'client' }}">
     <p class="error-status">{{ status }}</p>
-    <p>{{ message }}</p>
+    <p class="error-message">{{ message }}</p>
   </div>
 {% endblock %}

@@ -1383,10 +1383,10 @@ describe('top-level Notes HTTP slice', () => {
 
     expectEditNoteDialog(response.text, note.id, false);
     expect(response.text).toContain('<title>CreatorCrate — Notes — Page — Detail Note</title>');
-    expect(response.text).toContain('<body class="notes-page-detail-page">');
+    expect(response.text).toContain('<body class="refined-page notes-page-detail-page">');
     expect(response.text).toContain('<h1 class="app-section-title">Notes — Page — Detail Note</h1>');
     expect(response.text.match(/<h1 class="app-section-title">/g)).toHaveLength(1);
-    expect(response.text).toContain(`<a class="button button-primary" href="/notes/${note.id}/edit" data-dialog-open="note-edit-dialog">Edit Page</a>`);
+    expect(response.text).toMatch(new RegExp(`href="/notes/${note.id}/edit" data-dialog-open="note-edit-dialog"\\s+aria-label="Edit Page" data-tooltip="Edit Page"`));
     expect(response.text).not.toContain('<nav class="notes-hierarchy" aria-label="Page hierarchy">');
     expect(response.text).not.toContain('notes-hierarchy');
     expect(response.text).toContain('<div class="notes-page-detail-layout">');
@@ -3561,7 +3561,7 @@ describe('top-level Notes HTTP slice', () => {
       expect(response.text).toContain(`<a class="notes-book-nav-book-link" href="/notes/books/${book.id}">Parent Book</a>`);
       expect(response.text).toContain('Edit Chapter');
       expect(response.text).toContain('No Pages yet');
-      expect(response.text).toContain(`<a class="button button-primary" href="/notes/new?chapterId=${chapter.id}" data-dialog-open="note-create-dialog">New Page</a>`);
+      expect(response.text).toMatch(new RegExp(`href="/notes/new\\?chapterId=${chapter.id}" data-dialog-open="note-create-dialog"\\s+aria-label="New Page"`));
       expect(response.text.match(/<main\b[\s\S]*?<\/main>/)?.[0]).not.toContain('Change order');
       expect(response.text).not.toContain('Move up');
       expect(response.text).not.toContain('Move down');
@@ -3650,9 +3650,9 @@ describe('top-level Notes HTTP slice', () => {
       expect(pageNav).toContain(`<a class="notes-page-nav-link" href="/notes/${nestedSecond.id}">Nested Second</a>`);
       expect(pageNav).not.toContain('Direct First');
       expect(pageNav).not.toContain('Direct Second');
-      expect(response.text).toContain(`<a class="button button-primary" href="/notes/new?chapterId=${chapter.id}" data-dialog-open="note-create-dialog">New Page</a>`);
-      expect(response.text).toContain(`<a class="button" href="/notes/chapters/${chapter.id}/edit" data-dialog-open="chapter-edit-dialog">Edit Chapter</a>`);
-      expect(response.text).toContain(`<a class="button button-secondary" href="/notes/chapters/${chapter.id}/notes/order" data-dialog-open="chapter-order-dialog">Change order</a>`);
+      expect(response.text).toMatch(new RegExp(`href="/notes/new\\?chapterId=${chapter.id}" data-dialog-open="note-create-dialog"\\s+aria-label="New Page"`));
+      expect(response.text).toMatch(new RegExp(`href="/notes/chapters/${chapter.id}/edit" data-dialog-open="chapter-edit-dialog"\\s+aria-label="Edit Chapter"`));
+      expect(response.text).toMatch(new RegExp(`href="/notes/chapters/${chapter.id}/notes/order" data-dialog-open="chapter-order-dialog"\\s+aria-label="Change order"`));
       expect(response.text).not.toContain('<nav class="notes-hierarchy" aria-label="Page hierarchy">');
       expect(response.text).toContain('<div class="notes-chapter-detail-content notes-surface">');
     });
@@ -3690,7 +3690,7 @@ describe('top-level Notes HTTP slice', () => {
        expect(response.text.indexOf('Second Chapter Page')).toBeLessThan(response.text.indexOf('Third Chapter Page'));
        expect(pageNav).not.toContain('Other Chapter Page');
        expect(pageNav).not.toContain('Direct Book Page');
-      expect(response.text).toContain(`<a class="button button-secondary" href="/notes/chapters/${chapter.id}/notes/order" data-dialog-open="chapter-order-dialog">Change order</a>`);
+      expect(response.text).toMatch(new RegExp(`href="/notes/chapters/${chapter.id}/notes/order" data-dialog-open="chapter-order-dialog"\\s+aria-label="Change order"`));
       expect(pageNav).not.toContain('aria-current="page"');
       expect(response.text).not.toContain('Edit Page');
       expect(response.text.match(/<main\b[\s\S]*?<\/main>/)?.[0]).not.toContain('>Page 1<');
@@ -4184,7 +4184,7 @@ describe('top-level Notes HTTP slice', () => {
       const orderedIds = [second.id, first.id];
 
       const controlsPage = await agent.get(`/notes/chapters/${chapter.id}`).expect(200);
-      expect(controlsPage.text).toContain(`<a class="button button-secondary" href="/notes/chapters/${chapter.id}/notes/order" data-dialog-open="chapter-order-dialog">Change order</a>`);
+      expect(controlsPage.text).toMatch(new RegExp(`href="/notes/chapters/${chapter.id}/notes/order" data-dialog-open="chapter-order-dialog"\\s+aria-label="Change order"`));
       expect(controlsPage.text.match(/<main\b[\s\S]*?<\/main>/)?.[0]).not.toContain(`action="/notes/chapters/${chapter.id}/notes/reorder"`);
       expect(controlsPage.text.match(/<main\b[\s\S]*?<\/main>/)?.[0]).not.toContain(`name="orderedNoteIds"`);
       expect(controlsPage.text).not.toContain('Move up');

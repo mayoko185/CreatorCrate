@@ -743,6 +743,84 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       expect(detail.text).toContain('data-asset-grid-style-control="release-detail"');
     });
 
+    it('opts the Notes shelf, Book Detail, and Chapter Detail into refined-page with their dialogs outside <main>', async () => {
+      const app = getApp();
+      const book = app.locals.bookService.createBook({ title: 'Refined notes book' });
+      const chapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Refined chapter' });
+      const page = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'First refined page' });
+      app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Second refined page' });
+      const shelf = await request(app).get('/notes').expect(200);
+      const detail = await request(app).get(`/notes/books/${book.id}`).expect(200);
+      const chapterPage = await request(app).get(`/notes/chapters/${chapter.id}`).expect(200);
+      const pageDetail = await request(app).get(`/notes/${page.id}`).expect(200);
+      for (const res of [shelf, detail, chapterPage]) expect(res.text).toMatch(/<body class="refined-page">/);
+      // Page Detail keeps its own page class beside the refined opt-in.
+      expect(pageDetail.text).toMatch(/<body class="refined-page notes-page-detail-page">/);
+      // The refined Notes dialogs render in the overlay block, so the
+      // foundation's page rules never reach them.
+      expect(shelf.text.indexOf('id="book-create-dialog"')).toBeGreaterThan(shelf.text.indexOf('</main>'));
+      for (const id of ['book-edit-dialog', 'book-defaults-dialog', 'chapter-create-dialog', 'note-create-dialog']) {
+        expect(detail.text.indexOf(`id="${id}"`)).toBeGreaterThan(detail.text.indexOf('</main>'));
+      }
+      expect(chapterPage.text.indexOf('id="chapter-edit-dialog"')).toBeGreaterThan(chapterPage.text.indexOf('</main>'));
+      // Chapter actions take Book Detail's icon heading actions and keep
+      // their names and destinations.
+      const actions = chapterPage.text.match(/<div class="page-heading-actions">[\s\S]*?<\/header>/)?.[0] || '';
+      const labels = [...actions.matchAll(/<a [^>]*href="([^"]+)"[^>]*aria-label="([^"]+)"/g)].map(([, href, label]) => `${label} ${href}`);
+      expect(labels).toEqual([
+        `New Page /notes/new?chapterId=${chapter.id}`,
+        `Edit Chapter /notes/chapters/${chapter.id}/edit`,
+        `Change order /notes/chapters/${chapter.id}/notes/order`,
+      ]);
+      expect(actions.match(/project-assets-heading-action asset-tooltip/g)).toHaveLength(3);
+    });
+
+    it('gives Notes panels the refined section card and accent heading without restyling authored previews', () => {
+      const css = STYLESHEET;
+      const scope = ':where\\(\\.refined-page main\\)';
+      expect(css).toMatch(new RegExp(`${scope} :is\\(\\.notes-detail-panel, \\.notes-chapter-detail-content\\)\\s*\\{[^}]*border-radius:\\s*var\\(--radius-lg\\);`));
+      expect(css).toMatch(new RegExp(`${scope} :is\\(\\.notes-detail-panel, \\.notes-chapter-section-heading\\) > h2::before,[^{]*\\{[^}]*background:\\s*var\\(--accent-gradient\\);`));
+      // Rendered Markdown keeps the shared .notes-content styling; only the
+      // code Copy button is named, to undo the refined button.
+      expect(css).not.toMatch(new RegExp(`${scope}[^{]*(\\.book-page-preview-content|\\.notes-content)(?![^{]*\\.notes-code-copy)[^{]*\\{`));
+    });
+
+    it('opts Page Detail and Revisions into refined-page with the edit dialog outside <main> and their actions intact', async () => {
+      const app = getApp();
+      const book = app.locals.bookService.createBook({ title: 'Refined page book' });
+      const chapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Refined page chapter' });
+      const page = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Refined page', content: 'First' });
+      app.locals.noteService.updateNote(page.id, { title: 'Refined page', content: 'Second' });
+      const revision = app.locals.noteService.listNoteRevisions(page.id)[0];
+      const pageDetail = await request(app).get(`/notes/${page.id}`).expect(200);
+      const revisionView = await request(app).get(`/notes/${page.id}/revisions/${revision.id}`).expect(200);
+      expect(pageDetail.text).toMatch(/<body class="refined-page notes-page-detail-page">/);
+      expect(revisionView.text).toMatch(/<body class="refined-page notes-page-detail-page notes-revision-page">/);
+      expect(pageDetail.text.indexOf('id="note-edit-dialog"')).toBeGreaterThan(pageDetail.text.indexOf('</main>'));
+      // Edit Page takes Chapter Detail's icon heading action and keeps its
+      // name, destination, and dialog.
+      const actions = pageDetail.text.match(/<div class="page-heading-actions">[\s\S]*?<\/header>/)?.[0] || '';
+      expect(actions).toMatch(new RegExp(`project-assets-heading-action asset-tooltip[^"]*"\\s+href="/notes/${page.id}/edit" data-dialog-open="note-edit-dialog"\\s+aria-label="Edit Page" data-tooltip="Edit Page"`));
+      // The Revision keeps its text navigation, Restore confirmation, and
+      // historical notice.
+      const revisionMain = revisionView.text.match(/<main\b[\s\S]*?<\/main>/)?.[0] || '';
+      expect(revisionMain).toContain(`href="/notes/${page.id}">Back to current Page</a>`);
+      expect(revisionMain).toContain(`action="/notes/${page.id}/revisions/${revision.id}/restore"`);
+      expect(revisionMain).toContain('data-confirm-dialog-title="Restore revision?"');
+      expect(revisionMain).toContain('notice notice--warning notes-revision-state');
+    });
+
+    it('gives Page Detail and Revisions the refined content heading and revision rows without restyling authored content', () => {
+      const css = STYLESHEET;
+      const scope = ':where\\(\\.refined-page main\\)';
+      expect(css).toMatch(new RegExp(`${scope} \\.notes-detail-content-heading::before\\s*\\{[^}]*background:\\s*var\\(--accent-gradient\\);`));
+      expect(css).toMatch(new RegExp(`${scope} \\.notes-revision-list-item \\+ \\.notes-revision-list-item\\s*\\{[^}]*border-top:`));
+      // The Page Details body keeps its band padding only off refined pages.
+      expect(css).toMatch(/\.notes-page-detail-page:not\(\.refined-page\) \.notes-detail-details > \.project-detail-section-body\s*\{/);
+      // The code Copy button keeps its Notes content weight on refined pages.
+      expect(css).toMatch(new RegExp(`${scope} \\.notes-content \\.notes-code-copy\\s*\\{[^}]*font-weight:\\s*400;`));
+    });
+
     it('gives Release Detail Social Posts subcards, a compact publication summary, and wrapping release names', async () => {
       const css = STYLESHEET;
       const scope = ':where\\(\\.refined-page main\\)';

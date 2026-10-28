@@ -2,15 +2,30 @@
 {% import "partials/page-heading.njk" as pageHeading %}
 {% import "partials/book-primary-image.njk" as bookPrimaryImage %}
 {% import "partials/dialog.njk" as dialog %}
+{% import "partials/icons.njk" as icons %}
 
 {% set page_title = "Notes — " ~ chapter.title %}
 
+{% block body_class %}refined-page{% endblock %}
+
 {% block content %}
   {% call pageHeading.render() %}
-    <a class="button button-primary" href="/notes/new?chapterId={{ chapter.id }}" data-dialog-open="note-create-dialog">New Page</a>
-    <a class="button" href="/notes/chapters/{{ chapter.id }}/edit" data-dialog-open="chapter-edit-dialog">Edit Chapter</a>
+    <a class="button button-small button-primary project-detail-action project-assets-heading-action asset-tooltip asset-tooltip--left"
+       href="/notes/new?chapterId={{ chapter.id }}" data-dialog-open="note-create-dialog"
+       aria-label="New Page" data-tooltip="New Page">
+      {{ icons.icon('plus') }}
+    </a>
+    <a class="button button-small button-secondary project-detail-action project-assets-heading-action asset-tooltip asset-tooltip--{{ 'top' if notes.length > 1 else 'right' }}"
+       href="/notes/chapters/{{ chapter.id }}/edit" data-dialog-open="chapter-edit-dialog"
+       aria-label="Edit Chapter" data-tooltip="Edit Chapter">
+      {{ icons.icon('edit') }}
+    </a>
     {% if notes.length > 1 %}
-      <a class="button button-secondary" href="/notes/chapters/{{ chapter.id }}/notes/order" data-dialog-open="chapter-order-dialog">Change order</a>
+      <a class="button button-small button-secondary project-detail-action project-assets-heading-action asset-tooltip asset-tooltip--right"
+         href="/notes/chapters/{{ chapter.id }}/notes/order" data-dialog-open="chapter-order-dialog"
+         aria-label="Change order" data-tooltip="Change order">
+        {{ icons.icon('sort') }}
+      </a>
     {% endif %}
   {% endcall %}
 

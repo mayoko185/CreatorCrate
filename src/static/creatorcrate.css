@@ -9421,7 +9421,7 @@
           flex: 0 0 auto;
         }
       }
-      .notes-page-detail-page .notes-detail-details > .project-detail-section-body {
+      .notes-page-detail-page:not(.refined-page) .notes-detail-details > .project-detail-section-body {
         padding: 0.5rem 0.75rem;
       }
       .notes-page-detail-page .notes-detail-details > .project-detail-section-body > .detail-list {
@@ -15262,7 +15262,8 @@ button[aria-disabled="true"] > .project-create-submit-icon {
 :where(.settings-page main, .refined-page main) .settings-section,
 :where(.settings-page main, .refined-page main) .project-form .settings-section,
 :where(.settings-page main, .refined-page main) .destructive-section,
-:where(.refined-page main) .project-detail-section {
+:where(.refined-page main) .project-detail-section,
+:where(.refined-page main) :is(.notes-detail-panel, .notes-chapter-detail-content) {
   display: flex;
   flex-direction: column;
   gap: 0.625rem;
@@ -15279,6 +15280,7 @@ button[aria-disabled="true"] > .project-create-submit-icon {
 }
 :where(.settings-page main, .refined-page main) :is(.settings-section, .destructive-section) > :is(h2, h3),
 :where(.settings-page main, .refined-page main) .project-form .settings-section > :is(h2, h3),
+:where(.refined-page main) :is(.notes-detail-panel, .notes-chapter-section-heading) > h2,
 :where(.refined-page main) .project-detail-section > h2 {
   display: flex;
   align-items: center;
@@ -15296,6 +15298,7 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   text-transform: none;
 }
 :where(.settings-page main, .refined-page main) :is(.settings-section, .destructive-section) > :is(h2, h3)::before,
+:where(.refined-page main) :is(.notes-detail-panel, .notes-chapter-section-heading) > h2::before,
 :where(.refined-page main) .project-detail-section > h2::before {
   flex: none;
   width: 0.1875rem;
@@ -15513,12 +15516,12 @@ button[aria-disabled="true"] > .project-create-submit-icon {
 
 /* ── Empty states ── */
 :where(.settings-page main, .refined-page main) .settings-section .empty-state,
-:where(.refined-page main) .project-detail-section .empty-state {
+:where(.refined-page main) :is(.project-detail-section, .notes-chapter-pages) .empty-state {
   padding: var(--space-lg) var(--space-md);
   font-size: 0.875rem;
 }
 :where(.settings-page main, .refined-page main) .settings-section .empty-state :is(h2, .empty-state-heading),
-:where(.refined-page main) .project-detail-section .empty-state :is(h2, h3, .empty-state-heading) {
+:where(.refined-page main) :is(.project-detail-section, .notes-chapter-pages) .empty-state :is(h2, h3, .empty-state-heading) {
   font-size: 0.9375rem;
   font-weight: 600;
 }
@@ -15529,11 +15532,11 @@ button[aria-disabled="true"] > .project-create-submit-icon {
    detail list inside a section card takes the section's rhythm in place of
    its own margins and reads at the card's type size, as Backups' selected
    backup does; Settings detail lists keep their page rules. */
-:where(.refined-page main) :is(.settings-section, .destructive-section, .project-detail-section) .detail-list {
+:where(.refined-page main) :is(.settings-section, .destructive-section, .project-detail-section, .notes-detail-panel) .detail-list {
   margin: 0;
   font-size: 0.875rem;
 }
-:where(.refined-page main) :is(.settings-section, .destructive-section, .project-detail-section) .detail-list dt {
+:where(.refined-page main) :is(.settings-section, .destructive-section, .project-detail-section, .notes-detail-panel) .detail-list dt {
   font-size: 0.8125rem;
 }
 
@@ -15746,12 +15749,12 @@ button[aria-disabled="true"] > .project-create-submit-icon {
 }
 /* The Releases empty state uses an h3, which otherwise takes the global
    uppercase mono heading. */
-:where(.refined-page main) .project-detail-section .empty-state h3 {
+:where(.refined-page main) :is(.project-detail-section, .notes-chapter-pages) .empty-state h3 {
   font-family: inherit;
   letter-spacing: 0;
   text-transform: none;
 }
-:where(.refined-page main) .project-detail-section .empty-state p:last-child {
+:where(.refined-page main) :is(.project-detail-section, .notes-chapter-pages) .empty-state p:last-child {
   margin-bottom: 0;
 }
 
@@ -15877,7 +15880,7 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   background: rgba(251, 113, 133, 0.18);
 }
 /* An empty result reads as a panel, like an empty Dashboard section. */
-:where(.refined-page main) :is(.asset-browser-content, [data-asset-library-live-region]) > .empty-state {
+:where(.refined-page main) :is(.asset-browser-content, [data-asset-library-live-region], [data-notes-books-live-region]) > .empty-state {
   margin-top: var(--space-md);
   padding: var(--space-xl) var(--space-lg);
   border: 1px solid var(--border);
@@ -15885,14 +15888,14 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   background: var(--surface);
   font-size: 0.875rem;
 }
-:where(.refined-page main) :is(.asset-browser-content, [data-asset-library-live-region]) > .empty-state .empty-state-heading {
+:where(.refined-page main) :is(.asset-browser-content, [data-asset-library-live-region], [data-notes-books-live-region]) > .empty-state .empty-state-heading {
   font-size: 0.9375rem;
   font-weight: 600;
 }
-:where(.refined-page main) :is(.asset-browser-content, [data-asset-library-live-region]) > .empty-state p:last-of-type {
+:where(.refined-page main) :is(.asset-browser-content, [data-asset-library-live-region], [data-notes-books-live-region]) > .empty-state p:last-of-type {
   margin-bottom: var(--space-md);
 }
-:where(.refined-page main) :is(.asset-browser-content, [data-asset-library-live-region]) > .empty-state p:last-child {
+:where(.refined-page main) :is(.asset-browser-content, [data-asset-library-live-region], [data-notes-books-live-region]) > .empty-state p:last-child {
   margin-bottom: 0;
 }
 /* Pagination: Project Assets' Prev/Next links match the Asset Viewer's
@@ -16203,11 +16206,292 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   padding-block: 0;
 }
 
+/* ── Notes shelf, Book detail, and Chapter detail ──
+   The Details and Page preview panels and the Chapter's Pages card take the
+   section card and accent heading above. Book, Page preview, and Chapter
+   Page titles read like Release rows: text-colored, taking the link color
+   on hover. Rendered preview content keeps the authored Markdown styling,
+   and the shared Book navigator keeps its own treatment. */
+:where(.refined-page main) .notes-book-card-title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+:where(.refined-page main) :is(.notes-book-card-title a, .notes-page-preview-title, .notes-chapter-pages .notes-page-nav-link) {
+  color: var(--text);
+  text-decoration: none;
+}
+:where(.refined-page main) :is(.notes-book-card-title a, .notes-page-preview-title, .notes-chapter-pages .notes-page-nav-link):hover {
+  color: var(--link);
+  text-decoration: underline;
+}
+:where(.refined-page main) .notes-book-card-body {
+  gap: var(--space-xs);
+}
+:where(.refined-page main) .notes-book-content-actions {
+  margin-top: var(--space-xs);
+}
+:where(.refined-page main) .notes-page-detail-content .notes-page-preview-item {
+  gap: 0.375rem;
+  border-radius: var(--radius-md);
+}
+:where(.refined-page main) .notes-page-detail-content .notes-page-preview-title {
+  justify-self: start;
+  max-width: 100%;
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+:where(.refined-page main) .notes-chapter-pages {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+:where(.refined-page main) .notes-chapter-section-heading {
+  margin: 0;
+}
+/* Chapter Pages are separated rows, like Project Detail's Release rows. */
+:where(.refined-page main) .notes-chapter-pages .notes-page-nav-list {
+  gap: 0;
+}
+:where(.refined-page main) .notes-chapter-pages .notes-page-nav-item + .notes-page-nav-item {
+  border-top: 1px solid var(--border);
+}
+:where(.refined-page main) .notes-chapter-pages .notes-page-nav-link {
+  margin-block: var(--space-xs);
+  padding: var(--space-sm);
+  font-size: 0.875rem;
+}
+
+/* ── Notes Page detail and Revisions ──
+   Details, Revision history, Revision details, Projects, and Assets take the
+   section card and accent heading above; the content card takes the same
+   inset, and the Page title above the content reads as its accent heading at
+   the body text size. The rendered .notes-content enclosure and its authored
+   Markdown keep the shared Notes styling, and the Book navigator keeps its
+   own treatment. */
+:where(.refined-page main) .notes-detail-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+  padding: var(--space-md) var(--space-lg) var(--space-lg);
+}
+:where(.refined-page main) .notes-detail-content > .notes-detail-section-heading {
+  margin: 0;
+}
+:where(.refined-page main) .notes-detail-content-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  margin: 0;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.35;
+  text-transform: none;
+  overflow-wrap: anywhere;
+}
+/* Long titles wrap beside the mark, which stays on the first line. */
+:where(.refined-page main) .notes-detail-content-heading::before {
+  flex: none;
+  width: 0.1875rem;
+  height: 0.875rem;
+  margin-top: calc((1.35em - 0.875rem) / 2);
+  border-radius: 999px;
+  background: var(--accent-gradient);
+  content: '';
+}
+:where(.refined-page main) .notes-detail-content > .help-text {
+  margin: 0;
+  font-size: 0.875rem;
+}
+/* A code block's Copy button belongs to the rendered content, so it keeps
+   the Notes content button in place of the refined button. */
+:where(.refined-page main) .notes-content .notes-code-copy {
+  gap: normal;
+  border-radius: 0.375rem;
+  font-weight: 400;
+  transition: none;
+}
+:where(.refined-page main) .notes-content .notes-code-copy:active:not(:disabled) {
+  transform: none;
+}
+/* Collapsed, Revision history closes its heading with the card's bottom
+   inset; open, the list ends with that inset and the Expand/Collapse tab
+   stays attached below the card, as in the refined Notes dialogs. */
+:where(.refined-page main) .notes-revision-history {
+  padding-bottom: 0;
+}
+:where(.refined-page main) .notes-revision-history .notes-book-contents-disclosure {
+  min-height: calc(var(--space-lg) - 0.625rem);
+}
+:where(.refined-page main) .notes-revision-history-body {
+  padding: 0 0 var(--space-lg);
+}
+:where(.refined-page main) .notes-revision-empty {
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+/* Revisions are separated rows, like Chapter Pages. */
+:where(.refined-page main) .notes-revision-list {
+  gap: 0;
+}
+:where(.refined-page main) .notes-revision-list-item {
+  padding-block: var(--space-sm);
+  line-height: 1.4;
+}
+:where(.refined-page main) .notes-revision-list-item:first-child {
+  padding-top: 0;
+}
+:where(.refined-page main) .notes-revision-list-item:last-child {
+  padding-bottom: 0;
+}
+:where(.refined-page main) .notes-revision-list-item + .notes-revision-list-item {
+  border-top: 1px solid var(--border);
+}
+:where(.refined-page main) .notes-revision-list-item a {
+  flex: none;
+  font-weight: 500;
+}
+/* Projects and Assets read like Release rows: the section gap is the
+   inset, and titles are text-colored, taking the link color on hover. */
+:where(.refined-page main) .notes-detail-panel :is(.project-list, .notes-detail-asset-list) {
+  margin: 0;
+}
+:where(.refined-page main) .notes-detail-projects .project-list > li {
+  font-size: 0.875rem;
+  line-height: 1.4;
+}
+:where(.refined-page main) :is(.notes-detail-projects .project-list a, .notes-detail-asset-link) {
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: none;
+}
+:where(.refined-page main) :is(.notes-detail-projects .project-list a, .notes-detail-asset-link):hover {
+  color: var(--link);
+  text-decoration: underline;
+}
+:where(.refined-page main) .notes-detail-asset {
+  border-radius: var(--radius-md);
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 540px) {
   :where(.settings-page main, .refined-page main) .settings-section,
   :where(.settings-page main, .refined-page main) .project-form .settings-section,
   :where(.settings-page main, .refined-page main) .destructive-section,
-  :where(.refined-page main) .project-detail-section {
+  :where(.refined-page main) .project-detail-section,
+  :where(.refined-page main) :is(.notes-detail-panel, .notes-chapter-detail-content) {
     padding: var(--space-md);
+  }
+}
+@media (max-width: 540px) {
+  :where(.refined-page main) .notes-detail-content {
+    padding: var(--space-md);
+  }
+  :where(.refined-page main) .notes-revision-history {
+    padding-bottom: 0;
+  }
+  :where(.refined-page main) .notes-revision-history .notes-book-contents-disclosure {
+    min-height: calc(var(--space-md) - 0.625rem);
+  }
+  :where(.refined-page main) .notes-revision-history-body {
+    padding-bottom: var(--space-md);
+  }
+}
+
+/* ═══ Login and error pages ═══
+   Both opt in to the refined foundation, so fields, buttons, and notices
+   take its treatment; these rules add only the page's card. Login keeps its
+   own centered, shell-less main (see .app-main--centered): one Dashboard
+   panel holds the logo, heading, notices, and form. The logo is the shell's
+   own /logo.png, scaled square. */
+:where(.login-page main) .login-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+  width: 100%;
+  max-width: 24rem;
+  min-width: 0;
+  padding: var(--space-xl);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+}
+:where(.login-page main) .login-logo {
+  display: block;
+  align-self: center;
+  width: 4.5rem;
+  height: auto;
+  aspect-ratio: 1;
+  object-fit: contain;
+}
+:where(.login-page main) .login-card > h1 {
+  margin: calc(-1 * var(--space-sm)) 0 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.3;
+  text-align: center;
+}
+:where(.login-page main) .login-card > .notice {
+  margin: 0;
+}
+:where(.login-page main) .login-card .project-form {
+  gap: var(--space-md);
+}
+:where(.login-page main) .login-card .form-actions {
+  margin: var(--space-xs) 0 0;
+}
+:where(.login-page main) .login-card .form-actions .button {
+  width: 100%;
+}
+
+/* An error is one panel: the status in the console face, colored by
+   severity (4xx warning, 5xx danger), above the message. */
+:where(.error-page main) .error-box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  max-width: 40rem;
+  min-width: 0;
+  padding: var(--space-lg) var(--space-xl);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warning);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+:where(.error-page main) .error-box[data-error-severity='server'] {
+  border-left-color: var(--danger);
+}
+:where(.error-page main) .error-box .error-status {
+  margin: 0;
+  color: var(--warning);
+  font-family: var(--mono);
+  font-size: 1.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.2;
+}
+:where(.error-page main) .error-box[data-error-severity='server'] .error-status {
+  color: var(--danger);
+}
+:where(.error-page main) .error-box .error-message {
+  margin: 0;
+  font-size: 0.9375rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 540px) {
+  :where(.login-page main) .login-card {
+    padding: var(--space-lg);
+  }
+  :where(.login-page main) .login-logo {
+    width: 3.5rem;
+  }
+  :where(.error-page main) .error-box {
+    padding: var(--space-md) var(--space-lg);
   }
 }

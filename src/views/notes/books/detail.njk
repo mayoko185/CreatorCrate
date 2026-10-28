@@ -7,6 +7,8 @@
 
 {% set page_title = "Notes — " ~ book.title %}
 
+{% block body_class %}refined-page{% endblock %}
+
 {% block content %}
   {% call pageHeading.render(leadHref='/notes', leadLabel='Back to book list', leadIcon='chevron-left') %}
     <a class="button button-small button-primary project-detail-action project-assets-heading-action asset-tooltip asset-tooltip--left"
