@@ -135,7 +135,7 @@ test('Titles hover, pin and dismiss without touching membership, Role or navigat
   page.on('pageerror', (error) => pageErrors.push(error.message));
   await page.setViewportSize({ width: 1280, height: 900 });
   const f = await createRelease('Manage Info Interactions');
-  const listPath = `/releases/${f.releaseId}/assets?view=list&pageSize=all`;
+  const listPath = `/releases/${f.releaseId}/assets?selection=all&view=list&pageSize=all`;
   await page.goto(baseURL + listPath);
 
   const header = page.locator('.asset-list-header .asset-list-cell');
@@ -246,7 +246,7 @@ test('Live filtering and pagination rebind cards once and keep off-page selectio
   page.on('pageerror', (error) => pageErrors.push(error.message));
   await page.setViewportSize({ width: 1280, height: 900 });
   const f = await createRelease('Manage Info Live');
-  await page.goto(`${baseURL}/releases/${f.releaseId}/assets?view=list&pageSize=10`);
+  await page.goto(`${baseURL}/releases/${f.releaseId}/assets?selection=all&view=list&pageSize=10`);
   const initial = sorted(SELECTED.map((name) => f.ids[name]));
 
   // Draft a selection, then filter it off the page.
@@ -315,7 +315,7 @@ test('Live filtering and pagination rebind cards once and keep off-page selectio
   await page.keyboard.press('Escape');
 
   // Save submits the draft, including the off-page selection.
-  await page.getByRole('button', { name: 'Save Selection' }).click();
+  await page.getByRole('button', { name: 'Save asset selection' }).click();
   await expect.poll(() => savedMembership(f.releaseId)).toEqual(draft);
   expect(pageErrors).toEqual([]);
 });
@@ -347,7 +347,7 @@ test('Role autosubmit still works and read-only releases keep cards without cont
       ['Asset', 'Category', 'Role', 'Order', 'Type', 'Presence', 'Size', 'Modified']);
     // The inline Grid style dropdown is presentation-only and is excluded.
     await expect(page.locator('[data-release-assets-live-region] input[name="selectedAssetIds"], [data-release-assets-live-region] select:not(.asset-grid-style-field *), [data-release-assets-live-region] form')).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Save Selection' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Save asset selection' })).toHaveCount(0);
     const locked = rowParts(page, f.ids['02-image.png']);
     await expect(locked.card.locator('.asset-list-cell--role')).toContainText('Preview');
     await locked.title.click();
@@ -361,7 +361,7 @@ test('Role autosubmit still works and read-only releases keep cards without cont
 
 test('Narrow hover cards never cover the pointer, and pinned cards scroll without changing membership', async ({ page }) => {
   const f = await createRelease('Manage Info Pointer');
-  const listPath = `/releases/${f.releaseId}/assets?view=list`;
+  const listPath = `/releases/${f.releaseId}/assets?selection=all&view=list`;
   const assetId = f.ids['06-image.png'];
   for (const [width, height] of [[320, 740], [375, 740], [390, 844], [1280, 900]]) {
     await page.setViewportSize({ width, height });
@@ -453,7 +453,7 @@ test('Manage Assets List Modified column matches the card under 12h and 24h', as
   try {
     for (const [preference, pattern] of [['12h', /^2026-10-1[456] \d{1,2}:\d{2} [AP]M$/], ['24h', /^2026-10-1[456] \d{2}:\d{2}$/]]) {
       clock.setClockFormat(preference);
-      await page.goto(baseURL + `/releases/${f.releaseId}/assets?view=list&pageSize=all`);
+      await page.goto(baseURL + `/releases/${f.releaseId}/assets?selection=all&view=list&pageSize=all`);
       const row = rowParts(page, dated);
       const cell = row.card.locator('.asset-list-cell--modified dd');
       const text = (await cell.textContent()).trim();
@@ -477,7 +477,7 @@ test('Information cards follow unsaved draft membership', async ({ page }) => {
   page.on('pageerror', (error) => pageErrors.push(error.message));
   await page.setViewportSize({ width: 1280, height: 900 });
   const f = await createRelease('Manage Info Draft');
-  const listPath = `/releases/${f.releaseId}/assets?view=list&pageSize=10`;
+  const listPath = `/releases/${f.releaseId}/assets?selection=all&view=list&pageSize=10`;
   await page.goto(baseURL + listPath);
   const initial = sorted(SELECTED.map((name) => f.ids[name]));
 
@@ -569,7 +569,7 @@ test('Information cards follow unsaved draft membership', async ({ page }) => {
   expect(savedMembership(f.releaseId)).toEqual(initial);
 
   // Save persists the draft; the cards then show plain saved state.
-  await page.getByRole('button', { name: 'Save Selection' }).click();
+  await page.getByRole('button', { name: 'Save asset selection' }).click();
   await expect.poll(() => savedMembership(f.releaseId)).toEqual(draft);
   await page.goto(baseURL + listPath);
   const addedFacts = await membershipFacts(added);
@@ -582,5 +582,79 @@ test('Information cards follow unsaved draft membership', async ({ page }) => {
   await page.goto(baseURL + listPath);
   const locked = await membershipFacts(rowParts(page, f.ids['05-image.png']));
   expect(locked).toMatchObject({ Release: 'Selected', Role: 'Attachment' });
+  expect(pageErrors).toEqual([]);
+});
+
+// Selection filters by SAVED membership while the unsaved draft survives every
+// Selection change, Back, Clear and the final Save.
+test('Selection filter defaults to saved assets and keeps hidden draft changes through Save', async ({ page }) => {
+  const pageErrors = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const f = await createRelease('Manage Selection Filter');
+  await page.goto(`${baseURL}/releases/${f.releaseId}/assets?view=list&pageSize=10`);
+  const region = page.locator('[data-release-assets-live-region]');
+  const notice = region.locator('[data-release-assets-selection-notice]');
+  const saveForm = page.locator('#release-assets-form');
+  const cards = region.locator('article.asset-list-card--release');
+  const initial = sorted(SELECTED.map((name) => f.ids[name]));
+  const saveSelection = async () => new URL(await saveForm.getAttribute('action'), baseURL).searchParams.get('selection');
+  const chooseSelection = async (label) => {
+    await page.getByRole('link', { name: 'Filter assets' }).click();
+    const dropdown = page.locator('#release-asset-selection-filter');
+    await dropdown.locator('summary').click();
+    await dropdown.locator('.asset-filter-multiselect-panel').getByText(label, { exact: true }).click();
+    await expect(region).not.toHaveAttribute('aria-busy', 'true');
+    await page.keyboard.press('Escape');
+  };
+
+  // Default: Selected assets, including the selected missing file.
+  await expect(notice).toContainText('Showing selected assets');
+  expect(sorted(await cards.evaluateAll((nodes) => nodes.map((node) => node.dataset.assetId)))).toEqual(initial);
+  await expect(region.locator('.release-asset-results-meta')).toHaveText(/4 selected assets match/);
+
+  // A saved selection stays visible after a local uncheck.
+  const removed = rowParts(page, f.ids['02-image.png']);
+  await removed.checkbox.uncheck({ force: true });
+  await expect(removed.card).toHaveCount(1);
+
+  await chooseSelection('All assets');
+  await expect.poll(() => new URL(page.url()).searchParams.get('selection')).toBe('all');
+  await expect(notice).toHaveCount(0);
+  await expect.poll(saveSelection).toBe('all');
+  const added = rowParts(page, f.ids['03-image.png']);
+  await added.checkbox.check({ force: true });
+  const draft = sorted([...initial.filter((id) => id !== f.ids['02-image.png']), f.ids['03-image.png']]);
+  expect(await draftMembership(page)).toEqual(draft);
+
+  // Selected assets hides the pending addition but keeps it in the payload.
+  await chooseSelection('Selected assets');
+  await expect.poll(() => new URL(page.url()).searchParams.get('selection')).toBe('selected');
+  await expect(notice).toBeVisible();
+  await expect(added.card).toHaveCount(0);
+  await expect(removed.checkbox).not.toBeChecked();
+  await expect.poll(saveSelection).toBeNull();
+  expect(await draftMembership(page)).toEqual(draft);
+
+  // Back restores All assets, its notice state and the pending addition.
+  await page.goBack();
+  await expect.poll(() => new URL(page.url()).searchParams.get('selection')).toBe('all');
+  await expect(notice).toHaveCount(0);
+  await expect(added.checkbox).toBeChecked();
+  await expect.poll(saveSelection).toBe('all');
+
+  // Clear returns to Selected assets without touching the draft.
+  await page.getByRole('link', { name: 'Filter assets' }).click();
+  await page.locator('[data-release-assets-reset]').click();
+  await expect.poll(() => new URL(page.url()).searchParams.has('selection')).toBe(false);
+  await page.keyboard.press('Escape');
+  await expect(notice).toBeVisible();
+  await expect(page.locator('#release-asset-selection-option-selected')).toBeChecked();
+  expect(await draftMembership(page)).toEqual(draft);
+
+  await page.getByRole('button', { name: 'Save asset selection' }).click();
+  await expect.poll(() => savedMembership(f.releaseId)).toEqual(draft);
+  expect(db.prepare('SELECT role FROM release_assets WHERE release_id = ? AND asset_id = ?')
+    .get(f.releaseId, Number(f.ids['01-image.png'])).role).toBe('primary');
   expect(pageErrors).toEqual([]);
 });

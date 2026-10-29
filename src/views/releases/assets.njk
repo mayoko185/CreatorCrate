@@ -175,10 +175,7 @@
             <input type="hidden" data-release-assets-persisted-id value="{{ assetId }}">
           {% endfor %}
         </span>
-        <button class="button button-small button-primary project-detail-action project-assets-heading-action asset-tooltip asset-tooltip--left"
-                type="submit" aria-label="Save Selection" data-tooltip="Save Selection">
-          {{ icons.icon('assets') }}
-        </button>
+        <button class="button button-small button-primary project-assets-heading-action" type="submit">Save asset selection</button>
       </form>
     {% endif %}
   {% endcall %}
@@ -239,6 +236,8 @@
     {% if activeFilters.extension %}
       {% set extensionFilterSummary = "." ~ activeFilters.extension %}
     {% endif %}
+    {% set selectedOnly = activeFilters.selection != 'all' %}
+    {% set savedSelectedCount = (persistedSelectedAssetIds or []).length %}
 
     <div class="asset-browser-layout">
       <div class="asset-browser-content">
@@ -267,8 +266,16 @@
         </div>
 
         {% if not readOnly %}
+          {# The Selection filter reflects SAVED membership; unsaved checkbox
+             changes stay in the client draft until Save. #}
+          {% if selectedOnly %}
+            <div class="notice notice--info release-asset-selection-notice" role="status" data-release-assets-selection-notice>
+              <p><strong>Showing selected assets</strong></p>
+              <p>Only saved selected assets are shown. Unselected assets are hidden. Choose &lsquo;All assets&rsquo; in Filter to view and select additional assets.</p>
+            </div>
+          {% endif %}
           <p class="results-meta release-asset-results-meta">
-            {{ totalAssets }} project asset{% if totalAssets != 1 %}s{% endif %} {% if totalAssets == 1 %}matches{% else %}match{% endif %} the current filters.
+            {{ totalAssets }} {% if selectedOnly %}selected{% else %}project{% endif %} asset{% if totalAssets != 1 %}s{% endif %} {% if totalAssets == 1 %}matches{% else %}match{% endif %} the current filters.
           </p>
         {% endif %}
 
@@ -300,6 +307,12 @@
           {% if readOnly %}
             {% set emptyHeading = "No assets selected" %}
             {% set emptyDescription = "No assets are associated with this release." %}
+          {% elif selectedOnly and savedSelectedCount == 0 %}
+            {% set emptyHeading = "No assets selected" %}
+            {% set emptyDescription = "This release has no saved asset selection. Choose 'All assets' in Filter, select assets, and save the selection." %}
+          {% elif selectedOnly %}
+            {% set emptyHeading = "No matching selected assets" %}
+            {% set emptyDescription = "No saved selected assets match the current filters. Change or clear the filters to see them." %}
           {% elif totalAssets == 0 and (activeFilters.search or activeFilters.extension or activeCategoryId != null) %}
             {% set emptyHeading = "No matching project assets" %}
             {% set emptyDescription = "No eligible project assets match the current filters." %}
@@ -359,6 +372,9 @@
             {% if activeCategoryId != null %}
               <input type="hidden" name="category" value="{{ activeCategoryId }}">
             {% endif %}
+            {% if activeFilters.selection == 'all' %}
+              <input type="hidden" name="selection" value="all">
+            {% endif %}
             {% if view == 'list' %}
               <input type="hidden" name="view" value="list">
             {% endif %}
@@ -410,6 +426,19 @@
       }) %}
     {% endfor %}
 
+    {% set selectionFilterValue = 'all' if activeFilters.selection == 'all' else 'selected' %}
+    {% set selectionFilterOptions = [{
+      id: "release-asset-selection-option-selected",
+      value: "selected",
+      label: "Selected assets",
+      attributes: [["data-release-assets-live-filter-control", true]]
+    }, {
+      id: "release-asset-selection-option-all",
+      value: "all",
+      label: "All assets",
+      attributes: [["data-release-assets-live-filter-control", true]]
+    }] %}
+
     {% set releaseCategoryFilterOptions = [{
       id: "release-asset-category-option-all",
       value: "",
@@ -434,6 +463,16 @@
               <label for="asset-search">Find project assets</label>
               <input type="search" id="asset-search" name="search" value="{{ activeFilters.search or '' }}" placeholder="Filter by filename…" autocomplete="off" data-release-assets-live-search>
             </div>
+            {{ dropdown.singleSelect({
+              id: "release-asset-selection-filter",
+              name: "selection",
+              label: "Selection",
+              fieldClasses: "app-dialog-field asset-viewer-filter-field",
+              attributes: [["data-cc-viewport-disclosure", true]],
+              options: selectionFilterOptions,
+              selected: selectionFilterValue,
+              panelLabel: "Selection options"
+            }) }}
             {{ dropdown.singleSelect({
               id: "release-asset-extension-filter",
               name: "extension",
@@ -481,9 +520,9 @@
             }) }}
           </div>
         </div>
-        {% if activeFilters.search or activeFilters.extension or activeCategoryId != null %}
+        {% if activeFilters.search or activeFilters.extension or activeCategoryId != null or activeFilters.selection == 'all' %}
           <footer class="app-dialog-footer">
-            <a class="button button-secondary" href="{{ pageUrl({ search: '', extension: '', category: '', page: 1 }) }}" data-release-assets-reset>Clear</a>
+            <a class="button button-secondary" href="{{ pageUrl({ search: '', extension: '', category: '', selection: '', page: 1 }) }}" data-release-assets-reset>Clear</a>
           </footer>
         {% endif %}
       </form>

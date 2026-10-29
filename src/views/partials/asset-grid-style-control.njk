@@ -1,11 +1,15 @@
 {# Inline Grid style control for asset grids without a Page Defaults dialog.
    Set assetGridStyleScreen to a screen listed in size-preferences.js; the
    client restores the browser-stored style and applies it to the rendered
-   grid in place. Uncropped is rendered until the client restores. #}
+   grid in place. Uncropped is rendered until the client restores. The
+   legend stays the control's accessible label; the visible caption below
+   the dropdown repeats it for sighted users only. #}
 {% import "partials/dropdown.njk" as dropdown %}
+<div class="asset-grid-style-control">
 {{ dropdown.singleSelect({
   id: "asset-grid-style-dropdown",
   label: "Grid style",
+  visuallyHiddenLabel: true,
   fieldClasses: "asset-grid-style-field",
   dispatchNativeChange: true,
   selected: "uncropped",
@@ -19,3 +23,5 @@
     attributes: [["data-asset-grid-style-control", assetGridStyleScreen]]
   }
 }) }}
+<span class="asset-grid-style-caption" aria-hidden="true">Grid style</span>
+</div>

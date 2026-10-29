@@ -80,11 +80,12 @@
   {% else %}
     {% call pageHeading.render(navItems=releaseNavItems) %}
       {% if not isPublished %}
-        <a class="button button-small button-primary project-detail-action project-assets-heading-action asset-tooltip asset-tooltip--left"
+        {# aria-label keeps the tooltip's generated text out of the link's name;
+           the tooltip is exposed as its description instead. #}
+        <a class="button button-small button-primary project-assets-heading-action asset-tooltip asset-tooltip--left"
            href="/releases/{{ release.id }}/publish" data-dialog-open="release-publish-dialog"
-           aria-label="Review &amp; Publish" data-tooltip="Review &amp; Publish">
-          {{ icons.icon('share-2') }}
-        </a>
+           aria-label="Review &amp; Publish" data-tooltip="Review &amp; Publish this release" aria-describedby="release-publish-action-tooltip">Review &amp; Publish</a>
+        <span id="release-publish-action-tooltip" hidden>Review &amp; Publish this release</span>
       {% endif %}
     {% endcall %}
 

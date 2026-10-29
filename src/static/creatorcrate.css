@@ -2450,6 +2450,30 @@
       .asset-viewer-display-controls .asset-grid-style-field .cc-dropdown[open] {
         z-index: 75;
       }
+      /* The Grid style caption sits under its dropdown, as the size labels
+         sit under their slider. */
+      .asset-grid-style-control {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: var(--space-xs);
+        min-width: 0;
+      }
+      .asset-grid-style-control > .asset-grid-style-field {
+        margin: 0;
+      }
+      .asset-grid-style-caption {
+        color: var(--muted);
+        font-size: 0.75rem;
+        text-align: center;
+      }
+      /* Narrow screens give the dropdown field the full row; the control
+         takes that row so the field and its panel keep it. */
+      @media (max-width: 540px) {
+        .asset-grid-style-control {
+          width: 100%;
+        }
+      }
       [data-releases-live-region] {
         position: relative;
         z-index: 20;
@@ -16182,13 +16206,7 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   font-size: 0.8125rem;
   font-weight: 500;
 }
-/* Save Selection ends the heading row, so its tooltip grows leftward instead
-   of past the page edge, as Release Detail's Review & Publish does. */
-:where(.refined-page main) .page-heading-actions > #release-assets-form > .asset-tooltip--left[data-tooltip]::after {
-  left: auto;
-  right: 0;
-}
-/* On narrow screens the project and Release links end their row too. */
+/* On narrow screens the project and Release links end their row. */
 @media (max-width: 540px) {
   :where(.refined-page main:has([data-release-assets-live-region])) .page-heading-navigation > .page-heading-lead.asset-tooltip--left[data-tooltip]::after {
     left: auto;

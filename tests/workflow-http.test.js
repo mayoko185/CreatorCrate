@@ -2029,7 +2029,7 @@ describe('Phase 6B HTTP workflow', () => {
     // ─── Fix 4: Archived release asset-selection UI read-only ─────────
 
     describe('archived release asset-selection UI read-only', () => {
-      it('archived release under active project has no checkboxes and no Save Selection', async () => {
+      it('archived release under active project has no checkboxes and no Save asset selection', async () => {
         const projectId = await createProjectWithFile({ title: 'Archived Release UI' });
         const { releaseId } = await createReleaseWithLinkedAsset(projectId, 'Archived UI Release');
 
@@ -2045,11 +2045,11 @@ describe('Phase 6B HTTP workflow', () => {
         expect(res.text).not.toContain('class="asset-sort-order"');
         // Should show the archived notice
         expect(res.text).toContain('This release is archived');
-        // Save Selection must be absent
-        expect(res.text).not.toContain('Save Selection');
+        // Save asset selection must be absent
+        expect(res.text).not.toContain('Save asset selection');
       });
 
-      it('archived release under active project has no Save Selection', async () => {
+      it('archived release under active project has no Save asset selection', async () => {
         const projectId = await createProjectWithFile({ title: 'Archived No Save' });
         const { releaseId } = await createReleaseWithLinkedAsset(projectId, 'Archived No Save Release');
 
@@ -2057,10 +2057,10 @@ describe('Phase 6B HTTP workflow', () => {
         await app.testAgent.post(`/releases/${releaseId}/archive`).send({ _csrf: app.testCsrfToken }).expect(302);
 
         const res = await app.testAgent.get(`/releases/${releaseId}/assets`).expect(200);
-        expect(res.text).not.toContain('Save Selection');
+        expect(res.text).not.toContain('Save asset selection');
       });
 
-      it('active release under active project has enabled checkboxes and Save Selection', async () => {
+      it('active release under active project has enabled checkboxes and Save asset selection', async () => {
         const projectId = await createProjectWithFile({ title: 'Active Release Editable' });
         const { releaseId } = await createReleaseWithLinkedAsset(projectId, 'Active Editable Release');
 
@@ -2068,12 +2068,12 @@ describe('Phase 6B HTTP workflow', () => {
         // Checkboxes present and not disabled
         expect(res.text).toContain('type="checkbox"');
         expect(res.text).not.toMatch(/type="checkbox"[^>]*disabled/);
-        // Save Selection button present and enabled
-        expect(res.text).toContain('Save Selection');
-        expect(res.text).toMatch(/<button class="button button-small button-primary project-detail-action project-assets-heading-action asset-tooltip asset-tooltip--left"\s+type="submit" aria-label="Save Selection" data-tooltip="Save Selection">[\s\S]*?<svg[^>]*aria-hidden="true"[^>]*focusable="false"/);
+        // Save asset selection button present and enabled
+        expect(res.text).toContain('Save asset selection');
+        expect(res.text).toContain('<button class="button button-small button-primary project-assets-heading-action" type="submit">Save asset selection</button>');
       });
 
-      it('archived parent project has no checkboxes and no Save Selection', async () => {
+      it('archived parent project has no checkboxes and no Save asset selection', async () => {
         const projectId = await createProjectWithFile({ title: 'Archived Parent UI' });
         const { releaseId } = await createReleaseWithLinkedAsset(projectId, 'Archived Parent Release');
 
@@ -2085,8 +2085,8 @@ describe('Phase 6B HTTP workflow', () => {
         expect(res.text).not.toContain('type="checkbox"');
         // Should show the parent-archived notice
         expect(res.text).toContain('parent project is archived');
-        // Save Selection must be absent
-        expect(res.text).not.toContain('Save Selection');
+        // Save asset selection must be absent
+        expect(res.text).not.toContain('Save asset selection');
       });
 
       it('direct POST for archived release remains rejected', async () => {

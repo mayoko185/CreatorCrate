@@ -1739,7 +1739,7 @@ export function createReleaseService({
      * Normalize and validate release candidate query parameters.
      *
      * @param {Object} raw - raw query parameters
-     * @returns {{ search: string|null, extension: string|null, page: number, pageSize: number|'all' }}
+     * @returns {{ search: string|null, extension: string|null, selection: 'selected'|'all', page: number, pageSize: number|'all' }}
      */
     normalizeCandidateQuery(raw) {
       const search = typeof raw.search === 'string' && raw.search.trim() !== ''
@@ -1763,7 +1763,11 @@ export function createReleaseService({
       let pageSize = raw.pageSize === 'all' ? 'all' : (pageSizeRaw !== null ? pageSizeRaw : 25);
       if (pageSize !== 'all' && pageSize > 200) pageSize = 200;
 
-      return { search, extension, page, pageSize };
+      // Selection: saved selected assets by default; only an explicit 'all'
+      // shows the whole eligible project collection.
+      const selection = raw.selection === 'all' ? 'all' : 'selected';
+
+      return { search, extension, selection, page, pageSize };
     },
 
     /**
@@ -1782,7 +1786,8 @@ export function createReleaseService({
      *   - assetPage — current page number
      *   - assetPageSize — page size
      *   - assetPageCount — total pages
-     *   - assetFilters — normalized filter values
+     *   - assetFilters — normalized filter values; selection is 'selected'
+     *     (saved membership, the default) or 'all'
      *   - assetExtensions — available project extension values
      *   - eligibleAssetCount — present project assets, selected or not
      *   - eligibleCandidateCount — present project assets not selected
@@ -1802,7 +1807,7 @@ export function createReleaseService({
      *   assetPageNumber: number,
      *   assetPageSize: number,
      *   assetPageCount: number,
-     *   assetFilters: { search: string|null, extension: string|null },
+     *   assetFilters: { search: string|null, extension: string|null, selection: 'selected'|'all' },
      *   assetExtensions: string[],
      *   assetPresentation: { selected: Array, candidates: Array, assets: Array },
      * }}
@@ -1862,8 +1867,12 @@ export function createReleaseService({
       // The editable page is one project-asset collection. Present assets are
       // eligible for selection; selected missing assets remain in the same
       // collection as an explicit exception so they can be retained or removed.
+      // The Selection filter narrows by SAVED membership, never the client's
+      // unsaved draft, so server-side counts and pagination stay authoritative.
       const assetFilters = this.normalizeCandidateQuery(rawQuery);
+      const selectedOnly = assetFilters.selection === 'selected';
       const filteredAssets = assets.filter((asset) => {
+        if (selectedOnly && !selectedAssetIds.has(asset.id)) return false;
         const selectedMissing = selectedAssetIds.has(asset.id) && asset.is_present !== 1;
         return selectedMissing || (asset.is_present === 1
           && matchesReleaseAssetFilters(asset, assetFilters, activeCategoryId));
@@ -1906,6 +1915,7 @@ export function createReleaseService({
          assetFilters: {
            search: assetFilters.search,
            extension: assetFilters.extension,
+           selection: assetFilters.selection,
          },
          assetExtensions,
          candidates: pageCandidates,

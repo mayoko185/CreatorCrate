@@ -66,17 +66,17 @@ function expectReleaseDetailNav(html, { projectId, releaseLocation }) {
   expect((nav.match(/<a\b/g) || [])).toHaveLength(2);
 }
 
-function expectHeadingIconAction(html, { href, label, dialogId, iconPath }) {
+// Review & Publish is a primary text action whose tooltip is its description.
+function expectReviewPublishAction(html, { href }) {
   const heading = extractPageHeading(html);
   const action = heading.match(new RegExp(
-    `<a class="button button-small button-primary project-detail-action project-assets-heading-action asset-tooltip asset-tooltip--left"\\s+href="${href}"${dialogId ? ` data-dialog-open="${dialogId}"` : ''}[^>]* aria-label="${label}" data-tooltip="${label}">([\\s\\S]*?)<\\/a>`
+    `<a class="button button-small button-primary project-assets-heading-action asset-tooltip asset-tooltip--left"\\s+href="${href}" data-dialog-open="release-publish-dialog"\\s+aria-label="Review &amp; Publish" data-tooltip="Review &amp; Publish this release" aria-describedby="release-publish-action-tooltip">([\\s\\S]*?)<\\/a>\\s*<span id="release-publish-action-tooltip" hidden>Review &amp; Publish this release</span>`
   ));
 
   expect(action).not.toBeNull();
   expect(action[0]).not.toContain('title=');
-  expect(action[1]).toMatch(/<svg[^>]*aria-hidden="true"[^>]*focusable="false"/);
-  expect(action[1]).toContain(iconPath);
-  expect(action[1].replace(/<[^>]+>/g, '').trim()).toBe('');
+  expect(action[1]).not.toContain('<svg');
+  expect(action[1].trim()).toBe('Review &amp; Publish');
 }
 
 function extractReleasesResultsSection(html) {
@@ -2903,12 +2903,7 @@ describe('release HTTP workflow', () => {
     expect(res.text).toContain(`<dd><a href="/projects/${projectId}">Detail Test Project</a></dd>`);
     expect(res.text).not.toMatch(/>Back to Project<\/a>/);
     expect(res.text).toContain(`<nav class="project-detail-action-toolbar" aria-label="Release actions">`);
-    expectHeadingIconAction(res.text, {
-      href: `${location}/publish`,
-      label: 'Review &amp; Publish',
-      dialogId: 'release-publish-dialog',
-      iconPath: '<circle cx="18" cy="5" r="3"/>',
-    });
+    expectReviewPublishAction(res.text, { href: `${location}/publish` });
     expect(res.text).not.toContain('Readiness');
     expect(res.text).not.toContain('panel--readiness');
 
@@ -3018,12 +3013,7 @@ describe('release HTTP workflow', () => {
     expect(actionsMatch).not.toBeNull();
     expectProjectReturnLead(res.text, { href: `/projects/${projectId}`, title: 'Heading Action Project' });
     expectReleaseDetailNav(res.text, { projectId, releaseLocation });
-    expectHeadingIconAction(res.text, {
-      href: `/releases/${releaseId}/publish`,
-      label: 'Review &amp; Publish',
-      dialogId: 'release-publish-dialog',
-      iconPath: '<circle cx="18" cy="5" r="3"/>',
-    });
+    expectReviewPublishAction(res.text, { href: `/releases/${releaseId}/publish` });
     expect(actionsMatch[0]).toContain('href="/releases/' + releaseId + '/assets" aria-label="Manage Assets" data-tooltip="Manage Assets"');
     expect(actionsMatch[0]).toContain('href="/releases/' + releaseId + '?edit=1" data-release-edit-id="' + releaseId + '" aria-label="Edit release" data-tooltip="Edit release"');
     expect(res.text).not.toContain('data-dialog-open="release-edit-dialog"');
@@ -3117,16 +3107,11 @@ describe('release HTTP workflow', () => {
         .toEqual({ modified_at: '2026-08-01T13:05:42.000Z', last_seen_at: '2026-08-01 13:05:42' });
     });
 
-    it('keeps the Review & Publish trigger as a primary icon action with a fallback href and dialog contract', async () => {
+    it('keeps the Review & Publish trigger as a primary text action with a fallback href and dialog contract', async () => {
       const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
 
       const res = await agent.get(releaseLocation).expect(200);
-      expectHeadingIconAction(res.text, {
-        href: `${releaseLocation}/publish`,
-        label: 'Review &amp; Publish',
-        dialogId: 'release-publish-dialog',
-        iconPath: '<circle cx="18" cy="5" r="3"/>',
-      });
+      expectReviewPublishAction(res.text, { href: `${releaseLocation}/publish` });
       expect(res.text).toContain('<dialog id="release-publish-dialog" class="app-dialog project-form-dialog app-dialog--refined"');
       expect(res.text).toContain('<div class="app-dialog-body project-edit-dialog-body">');
       expect(res.text).toContain('<form id="release-publish-form" method="post" action="' + releaseLocation + '/publish" class="app-dialog-form project-form project-edit-dialog-form"');
@@ -4680,9 +4665,10 @@ describe('release HTTP workflow', () => {
       .expect(302);
 
     // Duplicate draft membership triggers 422 without changing the persisted
-    // baseline. The rendered selection must still reflect the submission.
+    // baseline. The rendered selection must still reflect the submission, in
+    // the All assets filter context the save was submitted from.
     const res = await agent
-      .post(createRes.headers.location + '/assets')
+      .post(createRes.headers.location + '/assets?selection=all')
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds[]=${draftAssetId}`)
       .send(`selectedAssetIds[]=${draftAssetId}`)
@@ -4699,6 +4685,8 @@ describe('release HTTP workflow', () => {
     expect(persistedCheckbox).not.toContain('checked');
     expect(res.text).toContain(`data-release-assets-persisted-id value="${persistedAssetId}"`);
     expect(res.text).not.toContain(`data-release-assets-persisted-id value="${draftAssetId}"`);
+    expect(res.text).toContain(`<form id="release-assets-form" method="post" action="/releases/${releaseId}/assets?selection=all"`);
+    expect(res.text).not.toContain('data-release-assets-selection-notice');
 
     // Validation does not mutate the persisted membership.
     const rows = getReleaseAssets(db, releaseId);
@@ -5758,7 +5746,7 @@ describe('release HTTP workflow', () => {
     const afterRows = getReleaseAssets(db, releaseId);
     expect(afterRows).toEqual(beforeRows);
 
-    // GET the assets page — no bulk-selection checkboxes, no Save Selection
+    // GET the assets page — no bulk-selection checkboxes, no Save asset selection
     const assetsPage = await agent
       .get(`${createRes.headers.location}/assets`)
       .expect(200);
@@ -5770,8 +5758,8 @@ describe('release HTTP workflow', () => {
       checkboxCount++;
     }
     expect(checkboxCount).toBe(0);
-    // Save Selection button must not be present
-    expect(assetsPage.text).not.toMatch(/type="submit"[^>]*>Save Selection/);
+    // Save asset selection button must not be present
+    expect(assetsPage.text).not.toMatch(/type="submit"[^>]*>Save asset selection/);
   });
 
   it('archived parent rejection preserves persisted rows', async () => {
@@ -5841,7 +5829,7 @@ describe('release HTTP workflow', () => {
     const afterRows = getReleaseAssets(db, releaseId);
     expect(afterRows).toEqual(beforeRows);
 
-    // GET the assets page — no bulk-selection checkboxes, no Save Selection
+    // GET the assets page — no bulk-selection checkboxes, no Save asset selection
     const assetsPage = await agent
       .get(`${createRes.headers.location}/assets`)
       .expect(200);
@@ -5853,8 +5841,8 @@ describe('release HTTP workflow', () => {
       checkboxCount++;
     }
     expect(checkboxCount).toBe(0);
-    // Save Selection button must not be present
-    expect(assetsPage.text).not.toMatch(/type="submit"[^>]*>Save Selection/);
+    // Save asset selection button must not be present
+    expect(assetsPage.text).not.toMatch(/type="submit"[^>]*>Save asset selection/);
   });
 
   it('replacement removes only intentionally deselected rows', async () => {
@@ -6162,12 +6150,7 @@ describe('release HTTP workflow', () => {
       setProjectStatusForReleaseTest(db, releaseLocation, 'planned');
 
       const detail = await agent.get(releaseLocation).expect(200);
-      expectHeadingIconAction(detail.text, {
-        href: `${releaseLocation}/publish`,
-        label: 'Review &amp; Publish',
-        dialogId: 'release-publish-dialog',
-        iconPath: '<circle cx="18" cy="5" r="3"/>',
-      });
+      expectReviewPublishAction(detail.text, { href: `${releaseLocation}/publish` });
     });
 
     it('asset selection page hides Save and disables inputs when parent project is archived', async () => {
@@ -6207,8 +6190,8 @@ describe('release HTTP workflow', () => {
         .expect(200);
       // Read-only notice must be present.
       expect(assets.text).toMatch(/read-only/i);
-      // Save Selection button must not be rendered.
-      expect(assets.text).not.toMatch(/type="submit"[^>]*>Save Selection/);
+      // Save asset selection button must not be rendered.
+      expect(assets.text).not.toMatch(/type="submit"[^>]*>Save asset selection/);
       // The unified picker is omitted entirely in read-only scope.
       expect(assets.text).not.toContain('class="release-assets-form"');
       expect(assets.text).not.toContain('class="asset-select-checkbox"');
@@ -6241,7 +6224,7 @@ describe('release HTTP workflow', () => {
       const releaseLocation = createRes.headers.location;
 
       const assets = await agent
-        .get(`${releaseLocation}/assets`)
+        .get(`${releaseLocation}/assets?selection=all`)
         .expect(200);
       // Each picker checkbox must NOT contain disabled.
       const checkboxRe = /<input[^>]*id="release-asset-select-\d+"[^>]*class="asset-select-checkbox"[^>]*>/g;
@@ -6252,12 +6235,12 @@ describe('release HTTP workflow', () => {
         expect(match[0]).not.toContain('disabled');
       }
       expect(count).toBeGreaterThan(0);
-      // Save Selection button must exist and not be disabled.
+      // Save asset selection button must exist and not be disabled.
       const saveForm = assets.text.match(/<form id="release-assets-form"[^>]*>[\s\S]*?<\/form>/);
       expect(saveForm).not.toBeNull();
       expect(saveForm[0]).toContain('method="post"');
-      expect(saveForm[0]).toContain(`action="${releaseLocation}/assets"`);
-      const saveMatch = saveForm[0].match(/<button[^>]*aria-label="Save Selection"[^>]*>/);
+      expect(saveForm[0]).toContain(`action="${releaseLocation}/assets?selection=all"`);
+      const saveMatch = saveForm[0].match(/<button[^>]*>Save asset selection<\/button>/);
       expect(saveMatch).not.toBeNull();
       expect(saveMatch[0]).toContain('type="submit"');
       expect(saveMatch[0]).not.toContain('disabled');
@@ -6988,10 +6971,10 @@ describe('release HTTP workflow', () => {
       });
     });
 
-    it('published asset page is read-only (no Save Selection button)', async () => {
+    it('published asset page is read-only (no Save asset selection button)', async () => {
       const { releaseLocation } = await setupPublishedRelease();
       const res = await agent.get(releaseLocation + '/assets').expect(200);
-      expect(res.text).not.toMatch(/Save Selection/);
+      expect(res.text).not.toMatch(/Save asset selection/);
       expect(res.text).toMatch(/locked and read-only/);
     });
 
@@ -7565,14 +7548,13 @@ describe('release HTTP workflow', () => {
         expect(releaseNav.indexOf(`href="/projects/${projectId}"`)).toBeLessThan(releaseNav.indexOf(`href="${releaseLocation}"`));
         expect(headingActions).not.toContain('class="inline-form release-assets-form"');
         expect(headingActions).toContain('name="_csrf"');
-        expect(headingActions).toContain('class="button button-small button-primary project-detail-action project-assets-heading-action asset-tooltip asset-tooltip--left"');
-        expect(headingActions).toContain('type="submit" aria-label="Save Selection" data-tooltip="Save Selection"');
-        expect(headingActions).toContain('<path d="M3 17l4-4 3 3 4-5 7 7"/>');
+        expect(headingActions).toContain('<button class="button button-small button-primary project-assets-heading-action" type="submit">Save asset selection</button>');
+        expect(headingActions).not.toContain('<svg');
         expect(res.text).toMatch(/<input type="checkbox" form="release-assets-form"[^>]*name="selectedAssetIds"[^>]*value="\d+"/);
-        expect((res.text.match(/aria-label="Save Selection"/g) || [])).toHaveLength(1);
+        expect((res.text.match(/>Save asset selection</g) || [])).toHaveLength(1);
         expect(res.text).not.toContain('Back to Release');
         expect(releaseAssetsContent).not.toContain('id="release-assets-form"');
-        expect(releaseAssetsContent).not.toContain('aria-label="Save Selection"');
+        expect(releaseAssetsContent).not.toContain('Save asset selection');
         expect(releaseAssetsContent).not.toContain('href="' + releaseLocation + '">Back</a>');
         expect(res.text).not.toContain('role-guidance');
         expect(res.text).not.toContain('asset-roles-heading');
@@ -7626,7 +7608,7 @@ describe('release HTTP workflow', () => {
 
           expect(recordLookupCounter.counts).toEqual({ release: 1, project: 1 });
           expect(res.text).toContain('read-only');
-          expect(res.text).not.toContain('Save Selection');
+          expect(res.text).not.toContain('Save asset selection');
         },
       );
 
@@ -8591,7 +8573,7 @@ describe('release HTTP workflow', () => {
 
     // The inline Grid style dropdown is a presentation-only control; read-only
     // assertions about edit controls apply to everything else in the section.
-    const GRID_STYLE_CONTROL = /<fieldset class="field asset-filter-multiselect-field asset-grid-style-field">[\s\S]*?<\/fieldset>/g;
+    const GRID_STYLE_CONTROL = /<div class="asset-grid-style-control">\s*<fieldset class="field asset-filter-multiselect-field asset-grid-style-field">[\s\S]*?<\/fieldset>\s*<span class="asset-grid-style-caption" aria-hidden="true">Grid style<\/span>\s*<\/div>/g;
     function withoutGridStyleControl(section, screen) {
       const controls = section.match(GRID_STYLE_CONTROL) || [];
       expect(controls).toHaveLength(1);
@@ -8692,7 +8674,11 @@ describe('release HTTP workflow', () => {
         expect(controls).not.toBeNull();
         const field = controls[0].slice(controls[0].indexOf('<fieldset'));
         expect(controls[0].indexOf('<nav class="view-switcher"')).toBeGreaterThan(-1);
-        expect(field).toContain('<legend>Grid style</legend>');
+        // The legend names the control for assistive technology; the visible
+        // caption follows the dropdown and is hidden from it.
+        expect(field).toContain('<legend class="sr-only">Grid style</legend>');
+        expect(controls[0]).toContain('<div class="asset-grid-style-control">');
+        expect(section).toMatch(/<\/fieldset>\s*<span class="asset-grid-style-caption" aria-hidden="true">Grid style<\/span>\s*<\/div>/);
         expect(field).toMatch(new RegExp(`<select id="asset-grid-style" class="cc-dropdown-native-select" data-cc-dropdown-native-select aria-label="Grid style" data-asset-grid-style-control="${screen}">`));
         expect([...field.matchAll(/<option value="([^"]+)"( selected)?>([^<]+)<\/option>/g)].map(([, value, selected, label]) => [value, Boolean(selected), label]))
           .toEqual([['uncropped', true, 'Uncropped'], ['cropped', false, 'Cropped']]);
@@ -8833,7 +8819,7 @@ describe('release HTTP workflow', () => {
         .find((asset) => asset.filename === 'clip.webm');
       expect(video).toMatchObject({ extension: 'webm', mime_type: 'video/webm' });
 
-      const candidates = await agent.get(`${fixture.releaseLocation}/assets`).expect(200);
+      const candidates = await agent.get(`${fixture.releaseLocation}/assets?selection=all`).expect(200);
       const candidateCard = assetCard(candidates.text, video.id);
       expect(candidateCard).toContain('data-asset-selectable-card');
       expect(candidateCard).toContain('data-asset-video-placeholder');
@@ -9024,7 +9010,7 @@ describe('release HTTP workflow', () => {
       expect(res.text).not.toContain('<h2>Release Assets</h2>');
       expect(section).toContain('class="asset-grid"');
       expect(section).not.toContain('class="release-assets-form"');
-      expect(section).not.toContain('>Save Selection</button>');
+      expect(section).not.toContain('>Save asset selection</button>');
       expect(section).not.toContain('Available Assets');
       expect(section).not.toContain('Bulk Selection');
       expect(section).not.toContain('candidate-grid');
@@ -9033,7 +9019,7 @@ describe('release HTTP workflow', () => {
 
     it('renders selected and unselected membership options in the same collection', async () => {
       const fixture = await setupReleaseWithAssets();
-      const res = await agent.get(`${fixture.releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${fixture.releaseLocation}/assets?selection=all`).expect(200);
 
       const section = selectedSection(res.text);
       const alpha = fixture.allAssets.find((asset) => asset.filename === 'alpha.txt');
@@ -9069,7 +9055,7 @@ describe('release HTTP workflow', () => {
         sizeBytes: 10,
         modifiedAt: null,
       });
-      const res = await agent.get(`${fixture.releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${fixture.releaseLocation}/assets?selection=all`).expect(200);
       const section = selectedSection(res.text);
       const ids = [...section.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
 
@@ -9092,7 +9078,7 @@ describe('release HTTP workflow', () => {
         .expect(302);
 
       const res = await agent
-        .get(`${fixture.releaseLocation}/assets?search=gamma&pageSize=1`)
+        .get(`${fixture.releaseLocation}/assets?selection=all&search=gamma&pageSize=1`)
         .expect(200);
       const candidateSection = getCandidateSection(res.text);
 
@@ -9109,7 +9095,7 @@ describe('release HTTP workflow', () => {
     it('bounds candidate options by page size and preserves filter state in pagination', async () => {
       const { releaseLocation } = await setupReleaseWithAssets();
       const res = await agent
-        .get(`${releaseLocation}/assets?extension=txt&pageSize=1`)
+        .get(`${releaseLocation}/assets?selection=all&extension=txt&pageSize=1`)
         .expect(200);
 
       expect(res.text).toContain('Page 1 of 3');
@@ -9159,8 +9145,8 @@ describe('release HTTP workflow', () => {
       const res = await agent.get(`${releaseLocation}/assets`).expect(200);
       // Must show locked notice
       expect(res.text).toContain('locked and read-only');
-      // Save Selection button must not be present
-      expect(res.text).not.toMatch(/type="submit"[^>]*>Save Selection/);
+      // Save asset selection button must not be present
+      expect(res.text).not.toMatch(/type="submit"[^>]*>Save asset selection/);
       expect(res.text).toContain('<span class="release-asset-grid-role-label">Role</span>');
       expect(res.text).toContain('Primary');
       expect(res.text).not.toContain('release-asset-role-form');
@@ -9178,8 +9164,8 @@ describe('release HTTP workflow', () => {
       const res = await agent.get(`${releaseLocation}/assets`).expect(200);
       // Must show archived notice
       expect(res.text).toContain('archived');
-      // Save Selection button must not be present
-      expect(res.text).not.toMatch(/type="submit"[^>]*>Save Selection/);
+      // Save asset selection button must not be present
+      expect(res.text).not.toMatch(/type="submit"[^>]*>Save asset selection/);
     });
 
     it('archived parent project asset page remains read-only', async () => {
@@ -9194,13 +9180,13 @@ describe('release HTTP workflow', () => {
       const res = await agent.get(`${releaseLocation}/assets`).expect(200);
       // Must show archived notice
       expect(res.text).toContain('archived');
-      // Save Selection button must not be present
-      expect(res.text).not.toMatch(/type="submit"[^>]*>Save Selection/);
+      // Save asset selection button must not be present
+      expect(res.text).not.toMatch(/type="submit"[^>]*>Save asset selection/);
     });
 
     it('no N+1 asset query path — single page load is fast', async () => {
       const { releaseLocation } = await setupReleaseWithAssets();
-      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets?selection=all`).expect(200);
       expect(res.text).toContain('data-release-assets-live-region');
       expect(res.text).toContain('4 project assets match the current filters.');
       expect(res.text).not.toContain('Available Assets');
@@ -9221,7 +9207,7 @@ describe('release HTTP workflow', () => {
     it('supports explicit grid view and preserves candidate query state in the switcher', async () => {
       const { releaseLocation } = await setupReleaseWithAssets();
       const res = await agent
-        .get(`${releaseLocation}/assets?view=grid&search=beta&pageSize=1`)
+        .get(`${releaseLocation}/assets?selection=all&view=grid&search=beta&pageSize=1`)
         .expect(200);
       const section = selectedSection(res.text);
       const listUrl = switcherUrl(section, 'List');
@@ -9446,7 +9432,7 @@ describe('release HTTP workflow', () => {
       const infoFor = (section, assetId) => section
         .match(new RegExp(`<div id="release-manage-asset-list-info-${assetId}"[\\s\\S]*?</dl>`))?.[0] || '';
 
-      const res = await agent.get(`${fixture.releaseLocation}/assets?view=list`).expect(200);
+      const res = await agent.get(`${fixture.releaseLocation}/assets?selection=all&view=list`).expect(200);
       const section = selectedSection(res.text);
       expect(section).toContain('data-asset-list-columns="select asset category role order type presence size modified"');
       expect(section).not.toContain('asset-list-cell--actions');
@@ -9483,13 +9469,13 @@ describe('release HTTP workflow', () => {
       expect(unselectedInfo).not.toContain('data-release-asset-stored-fact');
 
       // Grid keeps its own cards.
-      const grid = selectedSection((await agent.get(`${fixture.releaseLocation}/assets`).expect(200)).text);
+      const grid = selectedSection((await agent.get(`${fixture.releaseLocation}/assets?selection=all`).expect(200)).text);
       expect(grid).not.toContain('data-calendar-info-trigger');
 
       // Read-only: no Select column or controls, but titles keep their cards.
       db.prepare('UPDATE releases SET archived_at = CURRENT_TIMESTAMP WHERE id = ?').run(fixture.releaseId);
       const archived = withoutGridStyleControl(
-        selectedSection((await agent.get(`${fixture.releaseLocation}/assets?view=list`).expect(200)).text),
+        selectedSection((await agent.get(`${fixture.releaseLocation}/assets?selection=all&view=list`).expect(200)).text),
         'release-assets',
       );
       expect(archived).toContain('data-asset-list-columns="asset category role order type presence size modified"');
@@ -9588,6 +9574,17 @@ describe('release HTTP workflow', () => {
       expect(section).not.toContain('/move-down"');
       expect(section).not.toContain('release-asset-card-controls');
       expect(res.text).not.toContain('class="release-assets-form"');
+
+      // An explicit All assets request cannot turn read-only membership into
+      // an editable project collection.
+      const all = await agent.get(`${fixture.releaseLocation}/assets?selection=all`).expect(200);
+      const allSection = selectedSection(all.text);
+      const unselected = fixture.allAssets.find((asset) => asset.filename === 'gamma.txt');
+      expect(allSection).not.toContain(`data-asset-id="${unselected.id}"`);
+      expect(allSection).not.toContain('data-release-assets-selection-notice');
+      expect(allSection).not.toContain('class="asset-select-checkbox"');
+      expect(all.text).not.toContain('release-assets-filter-dialog');
+      expect(all.text).not.toContain('id="release-assets-form"');
     }
 
     it('keeps published selected cards informative without mutation controls', async () => {
@@ -9620,7 +9617,14 @@ describe('release HTTP workflow', () => {
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
+      // The default Selected assets view explains the empty saved selection
+      // while the Save form stays usable.
+      const selectedView = await agent.get(`${releaseLocation}/assets`).expect(200);
+      expect(selectedSection(selectedView.text)).toContain('No assets selected');
+      expect(selectedSection(selectedView.text)).toContain('data-release-assets-selection-notice');
+      expect(selectedView.text).toContain('<form id="release-assets-form"');
+
+      const res = await agent.get(`${releaseLocation}/assets?selection=all`).expect(200);
       const section = selectedSection(res.text);
       expect(section).not.toContain('No assets selected');
       expect(section).toContain('class="asset-grid"');
@@ -9631,6 +9635,114 @@ describe('release HTTP workflow', () => {
       expect(section).not.toContain('Bulk Selection');
       expect(section).not.toContain('candidate-grid');
       expect(hasNestedForms(section)).toBe(false);
+    });
+
+    describe('Selection filter', () => {
+      const decode = (href) => new URL(href.replace(/&amp;/g, '&'), 'http://localhost');
+      const selectionRadio = (html, value) => html.match(
+        new RegExp(`<input id="release-asset-selection-option-${value}" name="selection" type="radio" value="${value}"[^>]*>`),
+      )?.[0];
+      const clearHref = (html) => html.match(/<a class="button button-secondary" href="([^"]*)" data-release-assets-reset>Clear<\/a>/)?.[1];
+
+      it('defaults absent and invalid selection to saved selected assets with the notice', async () => {
+        const fixture = await setupReleaseWithAssets();
+        const alpha = fixture.allAssets.find((asset) => asset.filename === 'alpha.txt');
+        const beta = fixture.allAssets.find((asset) => asset.filename === 'beta.png');
+
+        for (const query of ['', '?selection=bogus', '?selection=selected']) {
+          const res = await agent.get(`${fixture.releaseLocation}/assets${query}`).expect(200);
+          const section = selectedSection(res.text);
+          expect(assetCard(section, alpha.id), query).toContain('checked');
+          expect(section, query).not.toContain(`data-asset-id="${beta.id}"`);
+          expect(section, query).toContain('1 selected asset matches the current filters.');
+          // The notice sits in the replaceable region, below the toolbar and above the count.
+          const notice = section.indexOf('data-release-assets-selection-notice');
+          expect(notice, query).toBeGreaterThan(section.indexOf('asset-viewer-display-controls'));
+          expect(notice, query).toBeLessThan(section.indexOf('release-asset-results-meta'));
+          expect(section, query).toContain('Showing selected assets');
+          expect(section, query).toContain('Only saved selected assets are shown.');
+          expect(selectionRadio(res.text, 'selected'), query).toContain('checked');
+          expect(selectionRadio(res.text, 'all'), query).not.toContain('checked');
+          expect(res.text, query).toContain(`<form id="release-assets-form" method="post" action="${fixture.releaseLocation}/assets"`);
+          expect(clearHref(res.text), query).toBeUndefined();
+          expect(section, query).not.toContain('name="selection"');
+        }
+      });
+
+      it('shows the eligible collection for explicit all and carries it through generated URLs', async () => {
+        const fixture = await setupReleaseWithAssets();
+        const res = await agent.get(`${fixture.releaseLocation}/assets?selection=all&search=a&pageSize=1&page=2`).expect(200);
+        const section = selectedSection(res.text);
+
+        expect(section).not.toContain('data-release-assets-selection-notice');
+        expect(section).toContain('4 project assets match the current filters.');
+        expect(selectionRadio(res.text, 'all')).toContain('checked');
+        expect(selectionRadio(res.text, 'selected')).not.toContain('checked');
+
+        for (const label of ['Grid', 'List']) {
+          expect(switcherUrl(section, label).searchParams.get('selection')).toBe('all');
+        }
+        for (const rel of ['prev', 'next']) {
+          const href = section.match(new RegExp(`class="pagination-${rel}" href="([^"]*)"`))[1];
+          expect(decode(href).searchParams.get('selection')).toBe('all');
+        }
+        expect(section).toContain('<input type="hidden" name="selection" value="all">');
+        expect(res.text).toContain(
+          `<form id="release-assets-form" method="post" action="${fixture.releaseLocation}/assets?search=a&amp;selection=all&amp;page=2&amp;pageSize=1"`,
+        );
+
+        // Clear resets search and Selection to the default and returns to page 1,
+        // keeping the page size.
+        const clear = decode(clearHref(res.text));
+        expect(clear.pathname).toBe(`${fixture.releaseLocation}/assets`);
+        expect([...clear.searchParams.keys()]).toEqual(['pageSize']);
+      });
+
+      it('distinguishes no saved selection from no matching selected assets and keeps selected missing assets', async () => {
+        const fixture = await setupReleaseWithAssets();
+        const alpha = fixture.allAssets.find((asset) => asset.filename === 'alpha.txt');
+
+        const noMatch = selectedSection((await agent.get(`${fixture.releaseLocation}/assets?search=beta`).expect(200)).text);
+        expect(noMatch).toContain('No matching selected assets');
+        expect(noMatch).not.toContain('No assets selected');
+        expect(noMatch).toContain('0 selected assets match the current filters.');
+
+        db.prepare('UPDATE assets SET is_present = 0 WHERE id = ?').run(alpha.id);
+        const missing = selectedSection((await agent.get(`${fixture.releaseLocation}/assets?search=beta`).expect(200)).text);
+        expect(assetCard(missing, alpha.id)).toContain(`id="release-asset-select-${alpha.id}"`);
+
+        await agent
+          .post(`${fixture.releaseLocation}/assets`)
+          .send('_csrf=' + encodeURIComponent(csrfToken))
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(302);
+        const empty = selectedSection((await agent.get(`${fixture.releaseLocation}/assets`).expect(200)).text);
+        expect(empty).toContain('No assets selected');
+        expect(empty).toContain('Choose &#39;All assets&#39; in Filter');
+        expect(empty).not.toContain('No matching selected assets');
+      });
+
+      it('saves complete membership submitted from the Selected assets view', async () => {
+        const fixture = await setupReleaseWithAssets();
+        const alpha = fixture.allAssets.find((asset) => asset.filename === 'alpha.txt');
+        const gamma = fixture.allAssets.find((asset) => asset.filename === 'gamma.txt');
+
+        // A pending addition hidden by Selected assets is still submitted.
+        await agent
+          .post(`${fixture.releaseLocation}/assets`)
+          .send('_csrf=' + encodeURIComponent(csrfToken))
+          .send(`selectedAssetIds[]=${alpha.id}`)
+          .send(`selectedAssetIds[]=${gamma.id}`)
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(302);
+        const rows = getReleaseAssets(db, fixture.releaseId);
+        expect(rows.map((row) => [row.asset_id, row.role])).toEqual([[alpha.id, 'primary'], [gamma.id, 'attachment']]);
+
+        const res = await agent.get(`${fixture.releaseLocation}/assets`).expect(200);
+        const section = selectedSection(res.text);
+        expect(section).toContain('2 selected assets match the current filters.');
+        expect(section).toContain(`data-asset-id="${gamma.id}"`);
+      });
     });
   });
 
@@ -9731,7 +9843,7 @@ describe('release HTTP workflow', () => {
 
     it('asset selection controls have accessible membership labels', async () => {
       const { releaseLocation } = await setupBasicRelease();
-      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets?selection=all`).expect(200);
       expect(res.text).toContain('class="asset-select-checkbox"');
       expect(res.text).toContain('aria-label="Select ');
     });
@@ -10101,7 +10213,7 @@ describe('release HTTP workflow', () => {
       const releaseLocation = createRes.headers.location;
 
       // Before add: 2 eligible project assets.
-      let res = await agent.get(`${releaseLocation}/assets`).expect(200);
+      let res = await agent.get(`${releaseLocation}/assets?selection=all`).expect(200);
       expect(res.text).toContain('2 project assets match the current filters.');
 
       // Add one asset
@@ -10113,7 +10225,7 @@ describe('release HTTP workflow', () => {
         .expect(302);
 
       // Membership changes, but the project asset collection does not.
-      res = await agent.get(`${releaseLocation}/assets`).expect(200);
+      res = await agent.get(`${releaseLocation}/assets?selection=all`).expect(200);
       expect(res.text).toContain('2 project assets match the current filters.');
     });
 
@@ -10163,7 +10275,7 @@ describe('release HTTP workflow', () => {
         .expect(302);
 
       // Before remove: 2 project assets, both selected.
-      let res = await agent.get(`${releaseLocation}/assets`).expect(200);
+      let res = await agent.get(`${releaseLocation}/assets?selection=all`).expect(200);
       expect(res.text).toContain('2 project assets match the current filters.');
 
       // Remove one asset
@@ -10175,7 +10287,7 @@ describe('release HTTP workflow', () => {
 
       // Removing membership does not remove the project asset from the
       // collection.
-      res = await agent.get(`${releaseLocation}/assets`).expect(200);
+      res = await agent.get(`${releaseLocation}/assets?selection=all`).expect(200);
       expect(res.text).toContain('2 project assets match the current filters.');
     });
   });
@@ -10450,6 +10562,7 @@ describe('release HTTP workflow', () => {
         .query({
           search: '  txt  ',
           extension: ' TXT ',
+          selection: 'all',
           page: '2',
           pageSize: '2',
           unknown: 'discard-me',
@@ -10459,7 +10572,8 @@ describe('release HTTP workflow', () => {
 
       const redirectUrl = new URL(res.headers.location, 'http://localhost');
       expect(redirectUrl.pathname).toBe(`/releases/${releaseId}/assets`);
-      expect([...redirectUrl.searchParams.keys()].sort()).toEqual(['extension', 'page', 'pageSize', 'search']);
+      expect([...redirectUrl.searchParams.keys()].sort()).toEqual(['extension', 'page', 'pageSize', 'search', 'selection']);
+      expect(redirectUrl.searchParams.get('selection')).toBe('all');
       expect(redirectUrl.searchParams.get('search')).toBe('txt');
       expect(redirectUrl.searchParams.get('extension')).toBe('txt');
       expect(redirectUrl.searchParams.get('page')).toBe('2');
@@ -11393,7 +11507,7 @@ describe('release HTTP workflow', () => {
 
       it('renders Release Assets filters in the established external live dialog', async () => {
         const { releaseLocation } = await setupReleaseWithAssets();
-        const res = await agent.get(`${releaseLocation}/assets?pageSize=1`).expect(200);
+        const res = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=1`).expect(200);
         const region = releaseAssetsLiveRegion(res.text);
         const filterDialog = res.text.match(/<dialog id="release-assets-filter-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
 
@@ -11421,7 +11535,7 @@ describe('release HTTP workflow', () => {
         expect(res.text.indexOf('page-heading-navigation--text')).toBeGreaterThan(-1);
         expect(res.text.indexOf('page-heading-navigation--text')).toBeLessThan(res.text.indexOf(region));
 
-        const filtered = await agent.get(`${releaseLocation}/assets?search=alpha`).expect(200);
+        const filtered = await agent.get(`${releaseLocation}/assets?selection=all&search=alpha`).expect(200);
         const filteredDialog = filtered.text.match(/<dialog id="release-assets-filter-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
         expect(filteredDialog).toContain('data-release-assets-reset>Clear</a>');
         expect(releaseAssetsLiveRegion(filtered.text)).not.toContain('data-release-assets-reset');
@@ -11443,7 +11557,7 @@ describe('release HTTP workflow', () => {
 
       it('keeps all canonical while filtering and clearing, with real totals and no slicing', async () => {
         const { releaseLocation, allAssets } = await setupReleaseWithAssets();
-        const res = await agent.get(`${releaseLocation}/assets?search=a&page=99&pageSize=all`).expect(200);
+        const res = await agent.get(`${releaseLocation}/assets?selection=all&search=a&page=99&pageSize=all`).expect(200);
         const region = releaseAssetsLiveRegion(res.text);
         const filterDialog = res.text.match(/<dialog id="release-assets-filter-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
         const clearHref = filterDialog.match(/href="([^"]*)"[^>]*data-release-assets-reset/)?.[1]
@@ -11459,9 +11573,9 @@ describe('release HTTP workflow', () => {
       it('renders controls, then one filtered count, then grid, list, or empty results', async () => {
         const { releaseLocation } = await setupReleaseWithAssets();
         const responses = [
-          { response: await agent.get(`${releaseLocation}/assets`).expect(200), resultMarker: '<ul class="asset-grid"' },
-          { response: await agent.get(`${releaseLocation}/assets?view=list`).expect(200), resultMarker: '<ul class="asset-list' },
-          { response: await agent.get(`${releaseLocation}/assets?search=no-match`).expect(200), resultMarker: '<div class="empty-state"' },
+          { response: await agent.get(`${releaseLocation}/assets?selection=all`).expect(200), resultMarker: '<ul class="asset-grid"' },
+          { response: await agent.get(`${releaseLocation}/assets?selection=all&view=list`).expect(200), resultMarker: '<ul class="asset-list' },
+          { response: await agent.get(`${releaseLocation}/assets?selection=all&search=no-match`).expect(200), resultMarker: '<div class="empty-state"' },
         ];
 
         for (const { response, resultMarker } of responses) {
@@ -11479,19 +11593,19 @@ describe('release HTTP workflow', () => {
 
       it('Next link pathname and query on page 1', async () => {
         const { releaseLocation, releaseId } = await setupReleaseWithAssets();
-        const res = await agent.get(`${releaseLocation}/assets?pageSize=1`).expect(200);
+        const res = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=1`).expect(200);
 
         const url = parseLinkByText(res.text, 'Next');
         expect(url).not.toBeNull();
         expect(url.pathname).toBe(`/releases/${releaseId}/assets`);
         expect(url.searchParams.get('page')).toBe('2');
         expect(url.searchParams.get('pageSize')).toBe('1');
-        expect([...url.searchParams.keys()].sort()).toEqual(['page', 'pageSize']);
+        expect([...url.searchParams.keys()].sort()).toEqual(['page', 'pageSize', 'selection']);
       });
 
       it('Previous link on page 2 omits page=1', async () => {
         const { releaseLocation, releaseId } = await setupReleaseWithAssets();
-        const res = await agent.get(`${releaseLocation}/assets?pageSize=1&page=2`).expect(200);
+        const res = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=1&page=2`).expect(200);
 
         const url = parseLinkByText(res.text, 'Previous');
         expect(url).not.toBeNull();
@@ -11499,24 +11613,24 @@ describe('release HTTP workflow', () => {
         expect(url.searchParams.get('pageSize')).toBe('1');
         // page=1 is omitted
         expect(url.searchParams.has('page')).toBe(false);
-        expect([...url.searchParams.keys()].sort()).toEqual(['pageSize']);
+        expect([...url.searchParams.keys()].sort()).toEqual(['pageSize', 'selection']);
       });
 
       it('Next link on page 2 preserves page=2', async () => {
         const { releaseLocation, releaseId } = await setupReleaseWithAssets();
-        const res = await agent.get(`${releaseLocation}/assets?pageSize=1&page=2`).expect(200);
+        const res = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=1&page=2`).expect(200);
 
         const url = parseLinkByText(res.text, 'Next');
         expect(url).not.toBeNull();
         expect(url.pathname).toBe(`/releases/${releaseId}/assets`);
         expect(url.searchParams.get('page')).toBe('3');
         expect(url.searchParams.get('pageSize')).toBe('1');
-        expect([...url.searchParams.keys()].sort()).toEqual(['page', 'pageSize']);
+        expect([...url.searchParams.keys()].sort()).toEqual(['page', 'pageSize', 'selection']);
       });
 
       it('page 1 is omitted from pagination URLs', async () => {
         const { releaseLocation, releaseId } = await setupReleaseWithAssets();
-        const res = await agent.get(`${releaseLocation}/assets?pageSize=1`).expect(200);
+        const res = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=1`).expect(200);
 
         const url = parseLinkByText(res.text, 'Next');
         expect(url).not.toBeNull();
@@ -11530,7 +11644,7 @@ describe('release HTTP workflow', () => {
       it('search and extension filters are preserved in pagination URLs', async () => {
         const { releaseLocation, releaseId } = await setupReleaseWithAssets();
         // extension=txt matches 3 files (alpha, beta, gamma), pageSize=1 → 3 pages
-        const res = await agent.get(`${releaseLocation}/assets?extension=txt&pageSize=1`).expect(200);
+        const res = await agent.get(`${releaseLocation}/assets?selection=all&extension=txt&pageSize=1`).expect(200);
 
         const url = parseLinkByText(res.text, 'Next');
         expect(url).not.toBeNull();
@@ -11538,12 +11652,12 @@ describe('release HTTP workflow', () => {
         expect(url.searchParams.get('extension')).toBe('txt');
         expect(url.searchParams.get('page')).toBe('2');
         expect(url.searchParams.get('pageSize')).toBe('1');
-        expect([...url.searchParams.keys()].sort()).toEqual(['extension', 'page', 'pageSize']);
+        expect([...url.searchParams.keys()].sort()).toEqual(['extension', 'page', 'pageSize', 'selection']);
       });
 
       it('unknown parameters are stripped from generated URLs', async () => {
         const { releaseLocation, releaseId } = await setupReleaseWithAssets();
-        const res = await agent.get(`${releaseLocation}/assets?unknown=param&junk=value&pageSize=1`).expect(200);
+        const res = await agent.get(`${releaseLocation}/assets?selection=all&unknown=param&junk=value&pageSize=1`).expect(200);
 
         const url = parseLinkByText(res.text, 'Next');
         expect(url).not.toBeNull();
@@ -11554,13 +11668,13 @@ describe('release HTTP workflow', () => {
         // Must still have pageSize and page
         expect(url.searchParams.get('pageSize')).toBe('1');
         expect(url.searchParams.get('page')).toBe('2');
-        expect([...url.searchParams.keys()].sort()).toEqual(['page', 'pageSize']);
+        expect([...url.searchParams.keys()].sort()).toEqual(['page', 'pageSize', 'selection']);
       });
 
       it('page beyond final page clamps and renders canonical links', async () => {
         const { releaseLocation, releaseId } = await setupReleaseWithAssets();
         // 4 files, pageSize=1 → 4 pages. Request page=999 → clamped to page 4.
-        const res = await agent.get(`${releaseLocation}/assets?pageSize=1&page=999`).expect(200);
+        const res = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=1&page=999`).expect(200);
 
         // Displayed page is the clamped page
         expect(res.text).toContain('Page 4 of 4');
@@ -11571,7 +11685,7 @@ describe('release HTTP workflow', () => {
         expect(prevUrl.pathname).toBe(`/releases/${releaseId}/assets`);
         expect(prevUrl.searchParams.get('page')).toBe('3');
         expect(prevUrl.searchParams.get('pageSize')).toBe('1');
-        expect([...prevUrl.searchParams.keys()].sort()).toEqual(['page', 'pageSize']);
+        expect([...prevUrl.searchParams.keys()].sort()).toEqual(['page', 'pageSize', 'selection']);
 
         // No Next link on the final page
         const nextUrl = parseLinkByText(res.text, 'Next');
@@ -11686,7 +11800,7 @@ describe('release HTTP workflow', () => {
 
     it('renders All categories and the project category options with all assets visible', async () => {
       const fixture = await setupCategoryFilterRelease();
-      const res = await agent.get(`${fixture.releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${fixture.releaseLocation}/assets?selection=all`).expect(200);
 
       const categoryDisclosure = filterDisclosureHtml(res.text, 'release-asset-category-filter-options');
       const extensionDisclosure = filterDisclosureHtml(res.text, 'release-asset-extension-filter-options');
@@ -11736,7 +11850,7 @@ describe('release HTTP workflow', () => {
     it('preserves the active category while filtering release assets', async () => {
       const fixture = await setupCategoryFilterRelease();
       const res = await agent
-        .get(`${fixture.releaseLocation}/assets?category=${fixture.sourceCategory.id}`)
+        .get(`${fixture.releaseLocation}/assets?selection=all&category=${fixture.sourceCategory.id}`)
         .expect(200);
 
       expect(selectedFilterValueAllowEmpty(res.text, 'release-asset-category-filter-options', 'category'))
@@ -11751,7 +11865,7 @@ describe('release HTTP workflow', () => {
       expect(bulkSection).not.toContain(fixture.otherAsset.filename);
       expect(res.text).toContain(`action="/releases/${fixture.releaseId}/assets"`);
       expect(bulkSection).toContain('name="selectedAssetIds"');
-      expect(res.text).toContain('Save Selection');
+      expect(res.text).toContain('Save asset selection');
     });
 
     it('keeps selected assets from other categories through a filtered save', async () => {
@@ -11790,7 +11904,7 @@ describe('release HTTP workflow', () => {
         .run(fixture.sourceCategory.id, candidateAsset.id);
 
       const res = await agent
-        .get(`${fixture.releaseLocation}/assets?category=${fixture.sourceCategory.id}`)
+        .get(`${fixture.releaseLocation}/assets?selection=all&category=${fixture.sourceCategory.id}`)
         .expect(200);
 
       const candidateSection = getCandidateSection(res.text);
@@ -11822,7 +11936,7 @@ describe('release HTTP workflow', () => {
     it('renders an empty category result without breaking the selection form', async () => {
       const fixture = await setupCategoryFilterRelease();
       const res = await agent
-        .get(`${fixture.releaseLocation}/assets?category=${fixture.emptyCategory.id}`)
+        .get(`${fixture.releaseLocation}/assets?selection=all&category=${fixture.emptyCategory.id}`)
         .expect(200);
 
       expect(selectedFilterValueAllowEmpty(res.text, 'release-asset-category-filter-options', 'category'))
@@ -11835,7 +11949,7 @@ describe('release HTTP workflow', () => {
       );
       expect(getBulkSelectionSection(res.text)).toBe('');
       expect(res.text).toContain('id="release-assets-form"');
-      expect(res.text).toContain('Save Selection');
+      expect(res.text).toContain('Save asset selection');
     });
 
     it('uses shared disclosures for filtered category and extension state while preserving view context', async () => {
@@ -11931,7 +12045,7 @@ describe('release HTTP workflow', () => {
 
     it('renders present project assets with direct membership controls', async () => {
       const { releaseLocation, byFilename } = await setupVariedAssets();
-      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets?selection=all`).expect(200);
       const candidateSection = getCandidateSection(res.text);
       const imageTile = getCandidateTile(res.text, 'alpha.png');
       const fallbackTile = getCandidateTile(res.text, 'alpha.txt');
@@ -11959,7 +12073,7 @@ describe('release HTTP workflow', () => {
 
     it('renders exact candidate asset IDs and sequence', async () => {
       const { releaseLocation, byFilename } = await setupVariedAssets();
-      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets?selection=all`).expect(200);
 
       const candidateSection = getCandidateSection(res.text);
 
@@ -12011,7 +12125,7 @@ describe('release HTTP workflow', () => {
       const higherId = insertAsset('DUP.txt').id;
       expect(higherId).toBeGreaterThan(lowerId);
 
-      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets?selection=all`).expect(200);
       const candidateSection = getCandidateSection(res.text);
 
       // Extract display filenames and IDs
@@ -12067,7 +12181,7 @@ describe('release HTTP workflow', () => {
 
     it('same-project present unselected assets appear in the collection', async () => {
       const { releaseLocation, byFilename } = await setupVariedAssets();
-      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets?selection=all`).expect(200);
 
       const candidateSection = getCandidateSection(res.text);
       expect(candidateSection).toContain(byFilename('alpha.png').filename);
@@ -12076,7 +12190,7 @@ describe('release HTTP workflow', () => {
 
     it('asset total matches rendered count', async () => {
       const { releaseLocation } = await setupVariedAssets();
-      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets?selection=all`).expect(200);
 
       const candidateSection = getCandidateSection(res.text);
 
@@ -12141,7 +12255,7 @@ describe('release HTTP workflow', () => {
     it('no filter — rendered row count equals page size', async () => {
       const { releaseLocation } = await setupCountTestAssets();
       // pageSize=4 should show 4 rows, total=10, pageCount=3
-      const res = await agent.get(`${releaseLocation}/assets?pageSize=4`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=4`).expect(200);
 
       const rowCount = getCandidateTiles(res.text).length;
       expect(rowCount).toBe(4);
@@ -12159,7 +12273,7 @@ describe('release HTTP workflow', () => {
 
     it('filename search — correct count and single page', async () => {
       const { releaseLocation } = await setupCountTestAssets();
-      const res = await agent.get(`${releaseLocation}/assets?search=alpha`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets?selection=all&search=alpha`).expect(200);
 
       const rowCount = getCandidateTiles(res.text).length;
 
@@ -12170,7 +12284,7 @@ describe('release HTTP workflow', () => {
 
     it('extension filter — correct count and page count', async () => {
       const { releaseLocation } = await setupCountTestAssets();
-      const res = await agent.get(`${releaseLocation}/assets?extension=txt&pageSize=2`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets?selection=all&extension=txt&pageSize=2`).expect(200);
 
       const rowCount = getCandidateTiles(res.text).length;
 
@@ -12182,7 +12296,7 @@ describe('release HTTP workflow', () => {
 
     it('combined search + extension — correct counts', async () => {
       const { releaseLocation } = await setupCountTestAssets();
-      const res = await agent.get(`${releaseLocation}/assets?search=alpha&extension=png`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets?selection=all&search=alpha&extension=png`).expect(200);
 
       const rowCount = getCandidateTiles(res.text).length;
 
@@ -12193,7 +12307,7 @@ describe('release HTTP workflow', () => {
 
     it('page beyond final page falls back to last page', async () => {
       const { releaseLocation, releaseId } = await setupCountTestAssets();
-      const res = await agent.get(`${releaseLocation}/assets?pageSize=4&page=999`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=4&page=999`).expect(200);
 
       expect(res.text).toContain('Page 3 of 3');
 
@@ -12204,7 +12318,7 @@ describe('release HTTP workflow', () => {
       expect(prevUrl.pathname).toBe(`/releases/${releaseId}/assets`);
       expect(prevUrl.searchParams.get('page')).toBe('2');
       expect(prevUrl.searchParams.get('pageSize')).toBe('4');
-      expect([...prevUrl.searchParams.keys()].sort()).toEqual(['page', 'pageSize']);
+      expect([...prevUrl.searchParams.keys()].sort()).toEqual(['page', 'pageSize', 'selection']);
 
       // No Next link on the final page
       const nextMatch = res.text.match(/href="([^"]*)"[^>]*>Next</);
@@ -12284,7 +12398,7 @@ describe('release HTTP workflow', () => {
       ).run(releaseId, assetsB[0].id, 'attachment', 99);
 
       // Fetch candidate page
-      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets?selection=all`).expect(200);
 
       const candidateSection = getCandidateSection(res.text);
 
@@ -12334,7 +12448,7 @@ describe('release HTTP workflow', () => {
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
+      const res = await agent.get(`${releaseLocation}/assets?selection=all`).expect(200);
 
       // Selected section should show the selected asset
       const releaseAssetSection = getCandidateSection(res.text);
@@ -12442,8 +12556,8 @@ describe('release HTTP workflow', () => {
       const moveDownForms = res.text.match(/action="[^"]*\/move-down"/g);
       expect(moveDownForms).toBeNull();
 
-      // The legacy Save Selection button must also be absent
-      expect(res.text).not.toContain('Save Selection');
+      // The legacy Save asset selection button must also be absent
+      expect(res.text).not.toContain('Save asset selection');
 
       // No bulk-selection form (POST to /releases/:id/assets)
       const bulkFormAction = res.text.match(/method="post"[^>]*action="\/releases\/\d+\/assets"/g);

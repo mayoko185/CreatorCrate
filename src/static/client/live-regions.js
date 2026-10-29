@@ -1608,6 +1608,19 @@ function updateReleaseAssetsAuthoritativeMembership(state, parsed, nextRegion) {
   if (!nextForm || !nextRegion) return;
   state.releaseAssetsSelection.authoritativeSelected = releaseAssetsPersistedMembership(nextForm)
     || releaseAssetsRenderedMembership(nextRegion, nextForm);
+  state.releaseAssetsSelection.pendingFormAction = nextForm.getAttribute?.('action') || null;
+}
+
+// The Save form lives outside the replaced region, so only its action follows
+// the installed response's normalized filter context; the node and its hidden
+// membership inputs are kept. Applied once the region is installed so a failed
+// install never leaves the form pointing at results that were not shown.
+function syncReleaseAssetsSelectionFormAction(state) {
+  const selectionState = state.releaseAssetsSelection;
+  const action = selectionState?.pendingFormAction;
+  if (!selectionState || !action) return;
+  selectionState.pendingFormAction = null;
+  state.document?.querySelector?.(RELEASE_ASSETS_SELECTION_FORM_SELECTOR)?.setAttribute?.('action', action);
 }
 
 function enhanceReleaseAssetsLiveRegion(region) {
@@ -1654,9 +1667,11 @@ const releaseAssetsLiveEngine = createLiveRegionEngine({
     updateReleaseAssetsAuthoritativeMembership(state, parsed, nextRegion);
   },
   onRegionReplaced(state, region) {
+    syncReleaseAssetsSelectionFormAction(state);
     reconcileReleaseAssetsSelection(state, region);
   },
   onLoadError(state) {
+    if (state.releaseAssetsSelection) state.releaseAssetsSelection.pendingFormAction = null;
     const region = releaseAssetsLiveEngine.getRegion(state.document);
     region?.removeAttribute?.('aria-busy');
     releaseAssetsLiveEngine.status(

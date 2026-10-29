@@ -113,6 +113,7 @@ const CASES = [
   { state: 'draft', width: 768, publish: true },
   { state: 'scheduled', width: 768, publish: true },
   { state: 'draft', width: 390, publish: true },
+  { state: 'draft', width: 320, publish: true },
   { state: 'published', width: 390, publish: false },
   { state: 'archived', width: 390, publish: false },
   { state: 'published', width: 768, publish: false },
@@ -154,6 +155,10 @@ for (const { state, width, publish } of CASES) {
     expect(projectBox.x).toBeCloseTo(headingBox.x, 0);
     expect(assetsBox.x).toBeGreaterThan(projectBox.x);
     if (publish) {
+      await expect(action).toHaveText('Review & Publish');
+      await expect(action).toHaveAttribute('data-tooltip', 'Review & Publish this release');
+      await expect(action).toHaveAccessibleName('Review & Publish');
+      await expect(action).toHaveAccessibleDescription('Review & Publish this release');
       await expectTooltipInside(page, action, () => action.hover());
       // Keyboard focus shows the same tooltip in the same place.
       await page.mouse.move(0, 0);

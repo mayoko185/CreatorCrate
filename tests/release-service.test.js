@@ -1261,13 +1261,13 @@ describe('release service', () => {
       return assetRepo.upsert(projectId, filename, data);
     }
 
-    it('keeps the existing all-assets behavior and returns categories with no filter', () => {
+    it('keeps the existing all-assets behavior and returns categories with explicit all selection', () => {
       const source = addCategory(projectId, 'Source', 'source');
       const categorized = addAsset('source.txt', source.id);
       const uncategorized = addAsset('uncategorized.txt');
       const release = service.createRelease(projectId, validInput());
 
-      const page = service.getReleaseAssetManagementPage(release.id, {});
+      const page = service.getReleaseAssetManagementPage(release.id, { selection: 'all' });
 
       expect(page.assets.map((asset) => asset.id)).toEqual([categorized.id, uncategorized.id]);
       expect(page.categories.map((category) => category.id)).toEqual([source.id]);
@@ -1295,8 +1295,8 @@ describe('release service', () => {
         { assetId: first.id, role: 'attachment', sortOrder: 0 },
       ]);
 
-      const firstPage = service.getReleaseAssetManagementPage(firstRelease.id, { categoryId: String(source.id) });
-      const secondPage = service.getReleaseAssetManagementPage(secondRelease.id, { category: source.id });
+      const firstPage = service.getReleaseAssetManagementPage(firstRelease.id, { categoryId: String(source.id), selection: 'all' });
+      const secondPage = service.getReleaseAssetManagementPage(secondRelease.id, { category: source.id, selection: 'all' });
 
       expect(firstPage.activeCategoryId).toBe(source.id);
       expect(firstPage.assets.map((asset) => asset.id)).toEqual([first.id, second.id, unselectedSource.id, otherAsset.id]);
@@ -1370,7 +1370,7 @@ describe('release service', () => {
       const release = service.createRelease(projectId, validInput());
       service.selectAssets(release.id, [{ assetId: assets[0].id, role: 'primary', sortOrder: 0 }]);
 
-      const page = service.getReleaseAssetManagementPage(release.id, { page: '99', pageSize: 'all' });
+      const page = service.getReleaseAssetManagementPage(release.id, { page: '99', pageSize: 'all', selection: 'all' });
 
       expect(page.assetPage).toHaveLength(30);
       expect(page.assetPageNumber).toBe(1);
@@ -1398,13 +1398,13 @@ describe('release service', () => {
       }
       const release = service.createRelease(projectId, validInput());
 
-      const finite = service.getReleaseAssetManagementPage(release.id, { page: '2', pageSize: '10' });
+      const finite = service.getReleaseAssetManagementPage(release.id, { page: '2', pageSize: '10', selection: 'all' });
       expect(finite.assetPage).toHaveLength(10);
       expect(finite.assetPageNumber).toBe(2);
       expect(finite.assetPageSize).toBe(10);
       expect(finite.assetPageCount).toBe(3);
 
-      const malformed = service.getReleaseAssetManagementPage(release.id, { pageSize: '1junk' });
+      const malformed = service.getReleaseAssetManagementPage(release.id, { pageSize: '1junk', selection: 'all' });
       expect(malformed.assetPage).toHaveLength(25);
       expect(malformed.assetPageSize).toBe(25);
       expect(malformed.assetPageCount).toBe(2);
@@ -1433,6 +1433,100 @@ describe('release service', () => {
         .toThrow(AssetCategoryNotFoundError);
       expect(() => service.getReleaseAssetManagementPage(release.id, { categoryId: foreignCategory.id }))
         .toThrow(AssetCategoryNotFoundError);
+    });
+
+    describe('selection filter', () => {
+      it('defaults absent or invalid selection to saved selected assets and honors explicit all', () => {
+        const a = addAsset('a.txt');
+        const b = addAsset('b.txt');
+        const c = addAsset('c.txt');
+        const release = service.createRelease(projectId, validInput());
+        service.selectAssets(release.id, [
+          { assetId: c.id, role: 'primary', sortOrder: 0 },
+          { assetId: a.id, role: 'preview', sortOrder: 1 },
+        ]);
+
+        for (const query of [{}, { selection: 'bogus' }, { selection: ['all'] }, { selection: 'selected' }]) {
+          const page = service.getReleaseAssetManagementPage(release.id, query);
+          expect(page.assetFilters.selection).toBe('selected');
+          expect(page.assetPage.map((asset) => asset.id)).toEqual([a.id, c.id]);
+          expect(page.assetTotal).toBe(2);
+          expect(page.candidateTotal).toBe(0);
+        }
+
+        const all = service.getReleaseAssetManagementPage(release.id, { selection: 'all' });
+        expect(all.assetFilters.selection).toBe('all');
+        expect(all.assetPage.map((asset) => asset.id)).toEqual([a.id, b.id, c.id]);
+        expect(all.assetTotal).toBe(3);
+        // Release membership, roles and order are loaded completely either way.
+        expect(all.releaseAssets.map((asset) => [asset.asset_id, asset.role, asset.sort_order]))
+          .toEqual([[c.id, 'primary', 0], [a.id, 'preview', 1]]);
+      });
+
+      it('intersects saved membership with search, extension and category before pagination', () => {
+        const addAsset = (filename, categoryId = null) => assetRepo.upsert(projectId, filename, {
+          ...sampleAsset(projectId, { relativePath: filename, filename, extension: filename.split('.').pop() }),
+          categoryId,
+        });
+        const source = addCategory(projectId, 'Source', 'source');
+        const assets = [];
+        for (let index = 0; index < 12; index++) {
+          assets.push(addAsset(`shot-${String(index).padStart(2, '0')}.png`, index % 2 === 0 ? source.id : null));
+        }
+        const doc = addAsset('shot-doc.txt', source.id);
+        addAsset('other.png', source.id);
+        const release = service.createRelease(projectId, validInput());
+        // Saved: even (Source) shots 0..10 plus the doc; odd shots unselected.
+        service.selectAssets(release.id, [
+          ...assets.filter((_, index) => index % 2 === 0).map((asset) => ({ assetId: asset.id })),
+          { assetId: doc.id },
+        ], { membershipOnly: true });
+
+        const page2 = service.getReleaseAssetManagementPage(release.id, {
+          search: 'shot', extension: 'png', category: String(source.id), pageSize: '4', page: '2',
+        });
+        expect(page2.assetTotal).toBe(6);
+        expect(page2.assetPageCount).toBe(2);
+        expect(page2.assetPageNumber).toBe(2);
+        expect(page2.assetPage.map((asset) => asset.filename)).toEqual(['shot-08.png', 'shot-10.png']);
+
+        const allMode = service.getReleaseAssetManagementPage(release.id, {
+          search: 'shot', extension: 'png', selection: 'all', pageSize: '4',
+        });
+        expect(allMode.assetTotal).toBe(12);
+        expect(allMode.assetPageCount).toBe(3);
+
+        // Extension options and category counts stay whole-project.
+        expect(page2.assetExtensions).toEqual(allMode.assetExtensions);
+        expect(page2.categoryNavigation).toEqual(allMode.categoryNavigation);
+      });
+
+      it('keeps selected missing assets visible despite filters and excludes unselected missing assets', () => {
+        const present = addAsset('present.png');
+        const missing = addAsset('missing.png');
+        const unselectedMissing = addAsset('gone.png');
+        const release = service.createRelease(projectId, validInput());
+        service.selectAssets(release.id, [{ assetId: present.id }, { assetId: missing.id }], { membershipOnly: true });
+        db.prepare('UPDATE assets SET is_present = 0 WHERE id IN (?, ?)').run(missing.id, unselectedMissing.id);
+
+        const selected = service.getReleaseAssetManagementPage(release.id, { search: 'present' });
+        expect(selected.assetPage.map((asset) => asset.id)).toEqual([missing.id, present.id]);
+
+        const all = service.getReleaseAssetManagementPage(release.id, { search: 'nothing-matches', selection: 'all' });
+        expect(all.assetPage.map((asset) => asset.id)).toEqual([missing.id]);
+      });
+
+      it('returns an empty selected page with complete metadata when nothing is saved', () => {
+        addAsset('a.txt');
+        const release = service.createRelease(projectId, validInput());
+
+        const page = service.getReleaseAssetManagementPage(release.id, {});
+        expect(page.assetPage).toEqual([]);
+        expect(page.assetTotal).toBe(0);
+        expect(page.assetPageCount).toBe(1);
+        expect(page.releaseAssets).toEqual([]);
+        expect(page.eligibleAssetCount).toBe(1);
+      });
     });
   });
 

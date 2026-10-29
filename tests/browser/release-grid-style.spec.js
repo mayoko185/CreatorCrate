@@ -154,6 +154,29 @@ const controlFitsViewport = (page) => page.evaluate(() => {
   return box.left >= 0 && box.right <= document.documentElement.clientWidth;
 });
 
+// The visible "Grid style" caption sits under its dropdown, horizontally
+// within it, and the toolbar never scrolls the page sideways. On narrow
+// screens the dropdown still takes the toolbar's full row.
+async function expectCaptionBelowDropdown(page) {
+  if (page.viewportSize().width <= 540) {
+    const [fieldBox, toolbarBox] = await Promise.all([
+      page.locator('.asset-grid-style-field').boundingBox(),
+      page.locator('.asset-viewer-display-controls').boundingBox(),
+    ]);
+    expect(Math.abs(fieldBox.width - toolbarBox.width)).toBeLessThanOrEqual(1);
+  }
+  const caption = page.locator('.asset-viewer-display-controls .asset-grid-style-caption');
+  await expect(caption).toBeVisible();
+  await expect(caption).toHaveText('Grid style');
+  const [captionBox, summaryBox] = await Promise.all([
+    caption.boundingBox(), page.locator('#asset-grid-style-dropdown > summary').boundingBox(),
+  ]);
+  expect(captionBox.y).toBeGreaterThanOrEqual(summaryBox.y + summaryBox.height - 1);
+  expect(captionBox.x).toBeGreaterThanOrEqual(summaryBox.x - 1);
+  expect(captionBox.x + captionBox.width).toBeLessThanOrEqual(summaryBox.x + summaryBox.width + 1);
+  expect(await noHorizontalOverflow(page)).toBe(true);
+}
+
 test('Release Detail: Grid style dropdown crops in place and persists across reload and views', async ({ page }) => {
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
@@ -171,6 +194,7 @@ test('Release Detail: Grid style dropdown crops in place and persists across rel
   // Default: Uncropped with the intrinsic wide preview, no storage writes.
   await expect(page.locator('#asset-grid-style-dropdown')).toBeVisible();
   await expect(page.locator('.asset-viewer-display-controls legend')).toContainText('Grid style');
+  await expectCaptionBelowDropdown(page);
   await expect(control).toHaveValue('uncropped');
   await expect(grid).toHaveAttribute('data-grid-style', 'uncropped');
   await expect(card.locator('[data-preview-image]')).toBeVisible();
@@ -251,7 +275,7 @@ test('Release Manage Assets: style changes in place and survives live filtering,
   await countStyleWrites(page);
   await page.setViewportSize({ width: 1280, height: 900 });
   const f = await createRelease('Manage Grid Style');
-  const managePath = `/releases/${f.releaseId}/assets?pageSize=10`;
+  const managePath = `/releases/${f.releaseId}/assets?selection=all&pageSize=10`;
   await page.goto(baseURL + managePath);
 
   const region = page.locator('[data-release-assets-live-region]');
@@ -426,6 +450,7 @@ test('Release Manage Assets: both Grid style options stay clickable above the mo
   await expect(summary).toHaveText('Uncropped');
   await expect(grid).toHaveAttribute('data-grid-style', 'uncropped');
   await expectWide(imageLink(page, f.ids['01-image.png']));
+  await expectCaptionBelowDropdown(page);
 
   // Ordinary clicks (no force): open, choose Cropped.
   await dropdown.locator('summary').click();
@@ -459,6 +484,7 @@ test('Release Manage Assets: both Grid style options stay clickable above the mo
 
   // Another narrow width keeps both options reachable.
   await page.setViewportSize({ width: 320, height: 640 });
+  await expectCaptionBelowDropdown(page);
   await dropdown.locator('summary').click();
   expect(await optionIsHitTarget('Cropped')).toBe(true);
   expect(await optionIsHitTarget('Uncropped')).toBe(true);

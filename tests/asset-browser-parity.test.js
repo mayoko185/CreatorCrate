@@ -146,12 +146,12 @@ describe('intentional asset-browser parity: releases vs projects', () => {
 
     const [projectGrid, releaseGrid, projectList, releaseList, projectCategory, projectPaged, releasePaged] = await Promise.all([
       agent.get(`/projects/${projectId}/assets`).expect(200),
-      agent.get(`${releaseLocation}/assets`).expect(200),
+      agent.get(`${releaseLocation}/assets?selection=all`).expect(200),
       agent.get(`/projects/${projectId}/assets?view=list`).expect(200),
-      agent.get(`${releaseLocation}/assets?view=list`).expect(200),
+      agent.get(`${releaseLocation}/assets?selection=all&view=list`).expect(200),
       agent.get(`/projects/${projectId}/assets?category=${category.id}`).expect(200),
       agent.get(`/projects/${projectId}/assets?pageSize=1`).expect(200),
-      agent.get(`${releaseLocation}/assets?pageSize=1`).expect(200),
+      agent.get(`${releaseLocation}/assets?selection=all&pageSize=1`).expect(200),
     ]);
     pages = {
       projectGrid: projectGrid.text,

@@ -1634,6 +1634,8 @@ function buildReleaseAssetPageQuery(viewModel, rawQuery = {}) {
   if (filters.search) query.search = filters.search;
   if (filters.extension) query.extension = filters.extension;
   if (viewModel.activeCategoryId !== null) query.category = String(viewModel.activeCategoryId);
+  // 'selected' is the default Selection and stays implicit.
+  if (filters.selection === 'all') query.selection = 'all';
   if (page > 1) query.page = String(page);
   if (pageSize !== 25) query.pageSize = String(pageSize);
   if (rawQuery && (rawQuery.view === 'grid' || rawQuery.view === 'list')) query.view = rawQuery.view;
@@ -2042,7 +2044,8 @@ function buildAssetPageUrl(releaseId, baseQuery) {
 /**
  * Build a redirect URL for the asset-management GET page that preserves
  * normalized candidate filter and explicit view state. Only allow-listed
- * parameters are included: search, extension, page, pageSize, view.
+ * parameters are included: search, extension, category, selection, page,
+ * pageSize, view.
  *
  * page is omitted when it is 1 (the default).
  * Unknown parameters and invalid values are stripped.
