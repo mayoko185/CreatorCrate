@@ -58,6 +58,7 @@ const RELEASES_LIVE_REGION_SELECTOR = '[data-releases-live-region]';
 const RELEASES_FILTER_SELECTOR = '[data-releases-filter]';
 const RELEASES_LIVE_STATUS_SELECTOR = '[data-releases-live-status]';
 const RELEASES_LIVE_STATE_ATTRIBUTE = 'data-releases-live-state';
+const RELEASES_DEFAULTS_FORM_SELECTOR = '#releases-defaults-form';
 const CALENDAR_LIVE_REGION_SELECTOR = '[data-calendar-live-region]';
 const CALENDAR_FILTER_SELECTOR = '#calendar-filters';
 const CALENDAR_RESET_SELECTOR = '[data-calendar-reset]';
@@ -1140,6 +1141,15 @@ function enhanceReleasesLiveRegion(region) {
   enhanceDropdowns(liveRegionDocument(region));
 }
 
+// The Defaults form lives outside the live region, but its action carries the
+// list's asset scope; adopt the response's action so a save after Reset or
+// Back/Forward cannot restore a scope the list no longer has.
+function reconcileReleasesDefaultsAction(state, parsed) {
+  const currentForm = state.document?.querySelector?.(RELEASES_DEFAULTS_FORM_SELECTOR);
+  const action = parsed?.querySelector?.(RELEASES_DEFAULTS_FORM_SELECTOR)?.getAttribute?.('action');
+  if (currentForm && action) currentForm.setAttribute?.('action', action);
+}
+
 const releasesLiveEngine = createLiveRegionEngine({
   regionSelector: RELEASES_LIVE_REGION_SELECTOR,
   formSelector: RELEASES_FILTER_SELECTOR,
@@ -1167,6 +1177,7 @@ const releasesLiveEngine = createLiveRegionEngine({
   },
   onResponseParsed(state, parsed) {
     reconcileExternalFilterForm(state, parsed, RELEASES_FILTER_SELECTOR);
+    reconcileReleasesDefaultsAction(state, parsed);
   },
   onLoadComplete(state, generation) {
     if (state.releasesDefaultsRefreshGeneration !== generation) return;

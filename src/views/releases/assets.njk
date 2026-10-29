@@ -153,8 +153,15 @@
   {% set isArchived = projectArchived or releaseArchived %}
   {% set readOnly = isArchived or isPublished %}
   {% set projectLeadHref = "/projects/" ~ project.id if project and project.id else "" %}
-  {% set projectLeadLabel = "Back to main project page: " ~ project.title if project else "" %}
-  {% call pageHeading.render("", "", "", projectLeadHref, projectLeadLabel, "", "projects", "/releases/" ~ release.id, "Back to Release", "", "releases") %}
+  {% set releaseAssetsNavItems = [
+    { key: "release", href: "/releases/" ~ release.id, label: "Release", tooltip: "Go to release details" }
+  ] %}
+  {% if projectLeadHref %}
+    {% set releaseAssetsNavItems = [
+      { key: "project", href: projectLeadHref, label: "Project", tooltip: "Go to project details" }
+    ].concat(releaseAssetsNavItems) %}
+  {% endif %}
+  {% call pageHeading.render(navItems=releaseAssetsNavItems) %}
     {% if not readOnly %}
       <form id="release-assets-form" method="post" action="{{ pageUrl({}) }}" class="inline-form" data-asset-selection-form>
         <input type="hidden" name="_csrf" value="{{ _csrf }}">

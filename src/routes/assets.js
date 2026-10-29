@@ -2729,6 +2729,7 @@ export async function buildAssetViewerRenderModel(
     previousAssetLink: data.previousAssetLink,
     nextAssetLink: data.nextAssetLink,
     backToAssetsLink: data.backToAssetsLink,
+    releaseNavigation: data.releaseNavigation,
     enabledCategories: data.enabledCategories,
     canMutate: data.canMutate,
     canManageTags: !isProjectArchived(data.project),

@@ -51,7 +51,7 @@
     <section class="project-detail-section releases-results-section" aria-labelledby="releases-results-heading">
       <h2 id="releases-results-heading">Release records</h2>
       <div class="project-detail-section-body">
-        <p class="results-meta">{{ total }} release{% if total != 1 %}s{% endif %} found</p>
+        <p class="results-meta">{{ total }} release{% if total != 1 %}s{% endif %} found{% if assetScope %} containing asset <strong>{{ assetScope.filename }}</strong>{% endif %}</p>
         {% if releases.length > 0 %}
           <div class="table-scroll refined-table-scroll releases-table-scroll" tabindex="0" aria-label="Release list">
             <table class="data-table refined-table releases-table">
@@ -113,7 +113,7 @@
             {% endif %}
           </nav>
         {% else %}
-          {% set releaseFiltersActive = query.project or query.search or query.schedule or query.includeArchived == '1' %}
+          {% set releaseFiltersActive = query.asset or query.project or query.search or query.schedule or query.includeArchived == '1' %}
           {% if releaseFiltersActive and hasAnyReleases %}
             {% set emptyHeading = "No releases match the current filters" %}
             {% set emptyDescription = "Reset the filters to return to the full release list." %}
@@ -146,7 +146,15 @@
   {% call dialog.render('releases-filter-dialog', 'Filter', dialogClass='app-dialog--utility') %}
     <form id="list-releases-filter" class="app-dialog-form project-form" method="get" action="{{ basePath }}" data-releases-filter>
       <div class="app-dialog-body">
+        {% if assetScope %}
+          <p class="app-dialog-description" data-releases-asset-scope>
+            Showing only releases that include asset <strong>{{ assetScope.filename }}</strong>{% if assetScope.projectTitle %} from {{ assetScope.projectTitle }}{% endif %}. Reset filters to show all releases.
+          </p>
+        {% endif %}
         <div class="page-defaults-grid">
+          {% if assetScope %}
+            <input type="hidden" name="asset" value="{{ assetScope.id }}">
+          {% endif %}
           {% if query.pageSize != 25 %}
             <input type="hidden" name="pageSize" value="{{ query.pageSize }}">
           {% endif %}
@@ -231,7 +239,7 @@
   {% endcall %}
 
   {% call dialog.render('releases-defaults-dialog', 'Releases defaults', releasesDefaultsDialogOpen, 'releases-defaults-description', 'releases-defaults-form', 'app-dialog--utility') %}
-    <form id="releases-defaults-form" method="post" action="/releases/defaults" class="app-dialog-form project-form"
+    <form id="releases-defaults-form" method="post" action="{{ releasesDefaultsAction or '/releases/defaults' }}" class="app-dialog-form project-form"
           data-dialog-form data-dialog-async="false" data-releases-defaults-autosave novalidate>
       <p id="releases-defaults-description" class="app-dialog-description">
         Choose the sort order used when Releases opens without explicit options.

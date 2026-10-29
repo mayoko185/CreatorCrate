@@ -95,6 +95,12 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
   });
 
   router.post('/defaults', (req, res, next) => {
+    let assetScope;
+    try {
+      assetScope = resolveReleaseListAssetScope(req, req.query);
+    } catch (err) {
+      return next(err);
+    }
     handlePageDefaultsPost(req, res, next, {
       db,
       pageDefaultsService: getReleasePageDefaultsService(req, RELEASES_PAGE_DEFAULTS),
@@ -116,11 +122,10 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
         });
       },
       onSuccess: ({ validatedValues }) => {
-        const params = new URLSearchParams({
-          sort: validatedValues.sort,
-          order: validatedValues.order,
-          notice: 'releases_defaults_saved',
-        });
+        const params = buildReleasesDefaultsScopeParams(req.query, assetScope);
+        params.set('sort', validatedValues.sort);
+        params.set('order', validatedValues.order);
+        params.set('notice', 'releases_defaults_saved');
         res.redirect(`/releases?${params.toString()}`);
       },
     });
@@ -1215,6 +1220,7 @@ function handleReleaseList(
     const pageDefaultsService = getReleasePageDefaultsService(req, RELEASES_PAGE_DEFAULTS);
     const rawQuery = listQuery && typeof listQuery === 'object' ? listQuery : {};
     const normalizedRawQuery = omitLegacyStatusField(rawQuery);
+    const assetScope = resolveReleaseListAssetScope(req, normalizedRawQuery, projectService);
     const presentation = resolveReleasePresentation(normalizedRawQuery, pageDefaultsService, RELEASES_PAGE_DEFAULTS);
     const effectiveQuery = {
       ...normalizedRawQuery,
@@ -1262,6 +1268,8 @@ function handleReleaseList(
       query,
       projectOptions,
       selectedProjectId: normalizedFilters.projectId,
+      assetScope,
+      releasesDefaultsAction: buildReleasesDefaultsAction(urlQuery),
       sortOptions: SORT_OPTIONS,
       basePath,
       releasesLiveFiltering: true,
@@ -1317,6 +1325,65 @@ function getReleasePageDefaultsService(req, pageDefaultsKey) {
   return service;
 }
 
+function getReleaseListAssetRepository(req) {
+  const repository = req.app?.locals?.assetScanner?.repository;
+  if (!repository) {
+    throw new Error('Releases asset scope requires app.locals.assetScanner.repository.');
+  }
+  return repository;
+}
+
+function createBadRequest(message) {
+  const err = new Error(message);
+  err.status = 400;
+  return err;
+}
+
+// A supplied asset scope is never dropped or broadened: a malformed, empty,
+// unsafe or repeated value is a client error and a vanished asset is 404, so
+// the list cannot silently fall back to every release.
+function resolveReleaseListAssetScope(req, rawQuery, projectService = null) {
+  if (!rawQuery || !Object.hasOwn(rawQuery, 'asset')) return null;
+  const raw = rawQuery.asset;
+  if (typeof raw !== 'string' || !/^[1-9]\d*$/.test(raw)) {
+    throw createBadRequest('Invalid asset filter.');
+  }
+  const assetId = Number(raw);
+  if (!Number.isSafeInteger(assetId)) throw createBadRequest('Invalid asset filter.');
+
+  const asset = getReleaseListAssetRepository(req).findById(assetId);
+  if (!asset) throw createNotFound();
+  const project = projectService ? projectService.findById(asset.project_id) : null;
+  return {
+    id: asset.id,
+    filename: asset.filename,
+    projectId: asset.project_id,
+    projectTitle: project?.title || null,
+  };
+}
+
+// An asset-scoped list keeps its scope (and the filters that accompany it)
+// through a defaults save; the save itself replaces sort/order and starts
+// from the first page. Unscoped saves keep returning to the defaults-only URL.
+function buildReleasesDefaultsAction(urlQuery) {
+  if (!urlQuery.asset) return '/releases/defaults';
+  const scopeQuery = { ...urlQuery };
+  delete scopeQuery.sort;
+  delete scopeQuery.order;
+  delete scopeQuery.page;
+  return `/releases/defaults?${new URLSearchParams(scopeQuery).toString()}`;
+}
+
+function buildReleasesDefaultsScopeParams(rawQuery, assetScope) {
+  const params = new URLSearchParams();
+  if (!assetScope) return params;
+  params.set('asset', String(assetScope.id));
+  for (const key of ['search', 'project', 'schedule', 'includeArchived', 'pageSize']) {
+    if (typeof rawQuery[key] === 'string') params.set(key, rawQuery[key]);
+  }
+  return params;
+}
+
 function resolveReleasePresentation(rawQuery, pageDefaultsService, pageDefaultsKey) {
   const query = rawQuery && typeof rawQuery === 'object' ? rawQuery : {};
   const presentation = {};
@@ -1353,6 +1420,7 @@ function buildReleaseManagementUrlQuery(
 ) {
   const query = {};
 
+  if (normalizedFilters.assetId != null) query.asset = String(normalizedFilters.assetId);
   if (normalizedFilters.search) query.search = normalizedFilters.search;
   if (normalizedFilters.projectId !== null) query.project = String(normalizedFilters.projectId);
   if (normalizedFilters.schedule !== null) query.schedule = normalizedFilters.schedule;
@@ -1366,6 +1434,7 @@ function buildReleaseManagementUrlQuery(
 
 function buildReleaseManagementRenderQuery(normalizedFilters, presentation, currentPage = normalizedFilters.page) {
   return {
+    asset: normalizedFilters.assetId == null ? undefined : String(normalizedFilters.assetId),
     search: normalizedFilters.search || undefined,
     project: normalizedFilters.projectId === null ? undefined : String(normalizedFilters.projectId),
     schedule: normalizedFilters.schedule || undefined,
@@ -1379,6 +1448,7 @@ function buildReleaseManagementRenderQuery(normalizedFilters, presentation, curr
 
 function buildReleaseManagementClearOverrides() {
   return {
+    asset: null,
     search: null,
     project: null,
     schedule: null,

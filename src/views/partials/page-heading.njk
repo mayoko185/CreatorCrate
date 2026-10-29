@@ -17,14 +17,28 @@
   Renders nothing when there is no lead item, badge, or caller content —
   callers should not end up with an empty wrapper.
 
+  Opt-in text navigation: pass `navItems`, a list of { key, href, label,
+  tooltip, class } objects, to render "← Label" text buttons together in the
+  left navigation group instead of the lead/adjacent-lead items. Each tooltip
+  is shown on hover/focus and exposed as the link's accessible description;
+  aria-label keeps the tooltip's generated text out of the link's name.
+  Callers that do not pass `navItems` keep their existing output.
+
   Text parameters are escaped by Nunjucks autoescaping. Action markup is only
   accepted through the Nunjucks caller block; do not pass arbitrary HTML strings.
 #}
 {% import "partials/icons.njk" as icons %}
-{% macro render(description='', badgeStatus='', badgeText='', leadHref='', leadLabel='', leadClass='', leadIcon='', adjacentLeadHref='', adjacentLeadLabel='', adjacentLeadClass='', adjacentLeadIcon='') %}
-{% if leadHref and leadLabel or adjacentLeadHref and adjacentLeadLabel or badgeStatus or badgeText or caller is defined %}
+{% macro render(description='', badgeStatus='', badgeText='', leadHref='', leadLabel='', leadClass='', leadIcon='', adjacentLeadHref='', adjacentLeadLabel='', adjacentLeadClass='', adjacentLeadIcon='', navItems=none) %}
+{% if navItems and navItems.length or leadHref and leadLabel or adjacentLeadHref and adjacentLeadLabel or badgeStatus or badgeText or caller is defined %}
 <header class="page-heading">
-  {% if leadHref and leadLabel %}
+  {% if navItems and navItems.length %}
+    <nav class="page-heading-navigation page-heading-navigation--text" aria-label="Page navigation">
+      {% for item in navItems %}
+        <a class="button button-secondary page-heading-lead page-heading-lead--text asset-tooltip asset-tooltip--left{% if item.class %} {{ item.class }}{% endif %}" href="{{ item.href }}" aria-label="{{ item.label }}" data-tooltip="{{ item.tooltip }}" aria-describedby="page-heading-nav-{{ item.key }}-tooltip"><span aria-hidden="true">←</span> {{ item.label }}</a>
+        <span id="page-heading-nav-{{ item.key }}-tooltip" hidden>{{ item.tooltip }}</span>
+      {% endfor %}
+    </nav>
+  {% elif leadHref and leadLabel %}
     {% if adjacentLeadHref and adjacentLeadLabel %}<nav class="page-heading-navigation" aria-label="Page navigation">{% endif %}
       <a class="button button-secondary page-heading-lead{% if leadIcon %} page-heading-lead--icon asset-tooltip asset-tooltip--left{% endif %}{% if leadClass %} {{ leadClass }}{% endif %}" href="{{ leadHref }}"{% if leadIcon %} aria-label="{{ leadLabel }}" data-tooltip="{{ leadLabel }}"{% endif %}>{% if leadIcon %}{{ icons.icon(leadIcon) }}{% else %}{{ leadLabel }}{% endif %}</a>
       {% if adjacentLeadHref and adjacentLeadLabel %}

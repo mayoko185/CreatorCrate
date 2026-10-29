@@ -229,21 +229,52 @@ describe('asset browser HTTP workflow', () => {
     return match ? decodeHtmlHref(match[1]) : null;
   }
 
-  function expectProjectReturnLead(html, { href, title, extraClass = '' }) {
+  function headingNav(html) {
     const heading = html.match(/<header class="page-heading">[\s\S]*?<\/header>/)?.[0] || '';
+    return heading.match(/<nav class="page-heading-navigation page-heading-navigation--text" aria-label="Page navigation">[\s\S]*?<\/nav>/)?.[0] || '';
+  }
+
+  // A "← Label" text button in the heading's left navigation group; its
+  // hover/focus tooltip is also the link's accessible description.
+  function expectHeadingNavLink(html, { key, href, label, tooltip, extraClass = '' }) {
     const classSuffix = extraClass ? ` ${extraClass}` : '';
-    const label = `Back to main project page: ${title}`;
-    const lead = heading.match(new RegExp(
-      `<a class="button button-secondary page-heading-lead page-heading-lead--icon asset-tooltip asset-tooltip--left${classSuffix}" href="${href}" aria-label="${label}" data-tooltip="${label}">([\\s\\S]*?)<\\/a>`
+    const nav = headingNav(html);
+    const link = nav.match(new RegExp(
+      `<a class="button button-secondary page-heading-lead page-heading-lead--text asset-tooltip asset-tooltip--left${classSuffix}" href="${href.replace(/[?]/g, '\\?')}" aria-label="${label}" data-tooltip="${tooltip}" aria-describedby="page-heading-nav-${key}-tooltip">([\\s\\S]*?)<\\/a>`
     ));
 
-    expect(lead).not.toBeNull();
-    expect(lead[0]).not.toContain('title=');
-    expect(lead[1]).toMatch(/<svg[^>]*aria-hidden="true"[^>]*focusable="false"/);
-    expect(lead[1]).toContain('<path d="M3 7l9-4 9 4-9 4-9-4z"/>');
-    expect(lead[1]).toContain('<path d="M3 7v10l9 4 9-4V7"/>');
-    expect(lead[1].replace(/<[^>]+>/g, '').trim()).toBe('');
+    expect(link).not.toBeNull();
+    expect(link[1]).toBe(`<span aria-hidden="true">←</span> ${label}`);
+    expect(link[0]).not.toContain('title=');
+    expect(nav).toContain(`<span id="page-heading-nav-${key}-tooltip" hidden>${tooltip}</span>`);
+    return nav;
+  }
+
+  function expectProjectReturnLead(html, { href, title, extraClass = '' }) {
+    const heading = html.match(/<header class="page-heading">[\s\S]*?<\/header>/)?.[0] || '';
+    expectHeadingNavLink(html, { key: 'project', href, label: 'Project', tooltip: 'Go to project details', extraClass });
+    expect(heading).not.toContain('page-heading-lead--icon');
+    expect(heading).not.toContain(`Back to main project page: ${title}`);
     expect(heading).not.toContain(`Project: ${title}`);
+  }
+
+  function expectViewerNav(html, { projectId, assetsHref, releaseHref = null }) {
+    expectProjectReturnLead(html, { href: `/projects/${projectId}`, title: '', extraClass: 'asset-viewer-project' });
+    const nav = expectHeadingNavLink(html, { key: 'assets', href: assetsHref, label: 'Assets', tooltip: 'Go to project assets', extraClass: 'asset-viewer-back' });
+    const links = nav.match(/<a\b[^>]*>/g) || [];
+    if (releaseHref) {
+      expectHeadingNavLink(html, { key: 'release', href: releaseHref, label: 'Release', tooltip: 'Go to release details', extraClass: 'asset-viewer-release' });
+      expect(links).toHaveLength(3);
+      expect(links[2]).toContain('asset-viewer-release');
+    } else {
+      expect(links).toHaveLength(2);
+      expect(html).not.toContain('asset-viewer-release');
+      expect(html).not.toContain('Go to release details');
+    }
+    expect(links[0]).toContain('asset-viewer-project');
+    expect(links[1]).toContain('asset-viewer-back');
+    expect(html).not.toContain('Back to Assets');
+    expect(html).not.toContain('Back to main project page');
   }
 
   function assetCardHtml(html, assetId) {
@@ -404,6 +435,8 @@ describe('asset browser HTTP workflow', () => {
 
     expect(res2.text).toContain('Assets — Browser Title Test');
     expectProjectReturnLead(res2.text, { href: `/projects/${id}`, title: 'Browser Title Test' });
+    expect(headingNav(res2.text).match(/<a\b/g) || []).toHaveLength(1);
+    expect(res2.text).not.toContain('Go to release details');
     expect(res2.text).toContain(`action="/projects/${id}/scan/manual"`);
     expect(renderedAsset).toContain('project-asset.png');
     expect(res2.text).not.toContain('other-project-asset.png');
@@ -3418,6 +3451,64 @@ describe('asset browser HTTP workflow', () => {
     expectAnchorHref(res2.text, 'asset-viewer-project', `/projects/${id}`);
     expectAnchorHref(res2.text, 'asset-viewer-back', `/projects/${id}/assets`);
     expectNoAnchor(res2.text, 'asset-viewer-edit');
+  });
+
+  describe('asset viewer subpage navigation', () => {
+    it('groups Project and Assets, preserving the asset browser context, with no Release link for an unused asset', async () => {
+      const { id, assets } = await setupOrderedImageAssets('Viewer Nav Unused');
+
+      const res = await agent
+        .get(`/projects/${id}/assets/${assets.bravo.id}?pageSize=1&view=list`)
+        .expect(200);
+
+      expectViewerNav(res.text, {
+        projectId: id,
+        assetsHref: `/projects/${id}/assets?page=2&amp;pageSize=1&amp;view=list`,
+      });
+      expect(anchorHref(res.text, 'asset-preview-nav--previous')).toContain(`/projects/${id}/assets/${assets.alpha.id}?`);
+      expect(anchorHref(res.text, 'asset-preview-nav--next')).toContain(`/projects/${id}/assets/${assets.charlie.id}?`);
+      expect(res.text).toContain('<nav class="project-detail-action-toolbar asset-viewer-action-toolbar" aria-label="Asset actions">');
+    });
+
+    it('links Release directly to the only release using the asset', async () => {
+      const res = await createProject('Viewer Nav Single');
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      const asset = writeIndexedAsset(id, getProjectDir('Viewer Nav Single'), 'single.png', await makePng());
+      const releaseId = await createReleaseUsingAsset(id, asset.id, 'Single Nav Release');
+
+      const res2 = await agent.get(`/projects/${id}/assets/${asset.id}`).expect(200);
+
+      expectViewerNav(res2.text, { projectId: id, assetsHref: `/projects/${id}/assets`, releaseHref: `/releases/${releaseId}` });
+    });
+
+    it('links Release to the asset-scoped Releases listing when several releases use the asset', async () => {
+      const res = await createProject('Viewer Nav Multiple');
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      const asset = writeIndexedAsset(id, getProjectDir('Viewer Nav Multiple'), 'shared.png', await makePng());
+      await createReleaseUsingAsset(id, asset.id, 'Multiple Nav Release A');
+      await createReleaseUsingAsset(id, asset.id, 'Multiple Nav Release B');
+
+      const res2 = await agent.get(`/projects/${id}/assets/${asset.id}`).expect(200);
+
+      expectViewerNav(res2.text, {
+        projectId: id,
+        assetsHref: `/projects/${id}/assets`,
+        releaseHref: `/releases?asset=${asset.id}&amp;project=${id}&amp;includeArchived=1`,
+      });
+    });
+
+    it('keeps Release navigation for an archived project', async () => {
+      const res = await createProject('Viewer Nav Archived');
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      const asset = writeIndexedAsset(id, getProjectDir('Viewer Nav Archived'), 'archived-nav.png', await makePng());
+      const releaseId = await createReleaseUsingAsset(id, asset.id, 'Archived Nav Release');
+      await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
+
+      const res2 = await agent.get(`/projects/${id}/assets/${asset.id}`).expect(200);
+
+      expectViewerNav(res2.text, { projectId: id, assetsHref: `/projects/${id}/assets`, releaseHref: `/releases/${releaseId}` });
+      expectNoAnchor(res2.text, 'asset-viewer-edit');
+    });
   });
 
   it('rejects malformed viewer project and asset IDs', async () => {

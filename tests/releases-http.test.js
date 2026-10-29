@@ -33,20 +33,37 @@ function extractPageHeading(html) {
   return html.match(/<header class="page-heading">[\s\S]*?<\/header>/)?.[0] || '';
 }
 
-function expectProjectReturnLead(html, { href, title }) {
-  const heading = extractPageHeading(html);
-  const label = `Back to main project page: ${title}`;
-  const lead = heading.match(new RegExp(
-    `<a class="button button-secondary page-heading-lead page-heading-lead--icon asset-tooltip asset-tooltip--left" href="${href}" aria-label="${label}" data-tooltip="${label}">([\\s\\S]*?)<\\/a>`
+// A "← Label" text button in the page heading's left navigation group, with
+// its hover/focus tooltip exposed as the link's accessible description.
+function expectHeadingNavLink(html, { key, href, label, tooltip }) {
+  const nav = extractPageHeading(html).match(/<nav class="page-heading-navigation page-heading-navigation--text" aria-label="Page navigation">[\s\S]*?<\/nav>/)?.[0] || '';
+  const link = nav.match(new RegExp(
+    `<a class="button button-secondary page-heading-lead page-heading-lead--text asset-tooltip asset-tooltip--left" href="${href}" aria-label="${label}" data-tooltip="${tooltip}" aria-describedby="page-heading-nav-${key}-tooltip">([\\s\\S]*?)<\\/a>`
   ));
 
-  expect(lead).not.toBeNull();
-  expect(lead[0]).not.toContain('title=');
-  expect(lead[1]).toMatch(/<svg[^>]*aria-hidden="true"[^>]*focusable="false"/);
-  expect(lead[1]).toContain('<path d="M3 7l9-4 9 4-9 4-9-4z"/>');
-  expect(lead[1]).toContain('<path d="M3 7v10l9 4 9-4V7"/>');
-  expect(lead[1].replace(/<[^>]+>/g, '').trim()).toBe('');
+  expect(link).not.toBeNull();
+  expect(link[1]).toBe(`<span aria-hidden="true">←</span> ${label}`);
+  expect(link[0]).not.toContain('title=');
+  expect(nav).toContain(`<span id="page-heading-nav-${key}-tooltip" hidden>${tooltip}</span>`);
+  return nav;
+}
+
+function expectProjectReturnLead(html, { href, title }) {
+  const heading = extractPageHeading(html);
+  expectHeadingNavLink(html, { key: 'project', href, label: 'Project', tooltip: 'Go to project details' });
+  expect(heading).not.toContain('page-heading-lead--icon');
+  expect(heading).not.toContain(`Back to main project page: ${title}`);
   expect(heading).not.toContain(`Project: ${title}`);
+}
+
+// Release Detail's left navigation: ← Project then ← Assets, where Assets is
+// the project's asset page, never the release's Manage Assets page.
+function expectReleaseDetailNav(html, { projectId, releaseLocation }) {
+  expectProjectReturnLead(html, { href: `/projects/${projectId}`, title: '' });
+  const nav = expectHeadingNavLink(html, { key: 'assets', href: `/projects/${projectId}/assets`, label: 'Assets', tooltip: 'Go to project assets' });
+  expect(nav.indexOf(`href="/projects/${projectId}"`)).toBeLessThan(nav.indexOf(`href="/projects/${projectId}/assets"`));
+  expect(nav).not.toContain(`${releaseLocation}/assets`);
+  expect((nav.match(/<a\b/g) || [])).toHaveLength(2);
 }
 
 function expectHeadingIconAction(html, { href, label, dialogId, iconPath }) {
@@ -2135,6 +2152,141 @@ describe('release HTTP workflow', () => {
     });
   });
 
+  describe('/releases asset scope', () => {
+    let projectId;
+    let otherProjectId;
+    let assetId;
+
+    function createRelease(ownerId, title) {
+      return releaseRepository.create({ projectId: ownerId, title, description: '', notes: '' });
+    }
+
+    function releaseTitles(html) {
+      return [...extractReleasesResultsBody(html).matchAll(/<a href="\/releases\/\d+">([^<]+)<\/a>/g)]
+        .map(([, title]) => title);
+    }
+
+    function filterDialog(html) {
+      return html.match(/<dialog id="releases-filter-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+    }
+
+    beforeEach(() => {
+      projectId = insertProjectDirect(db, { title: 'Scope Owner' });
+      otherProjectId = insertProjectDirect(db, { title: 'Scope Other' });
+      assetId = insertAssetDirect(db, projectId, 'scoped-cover.png').id;
+      const otherAssetId = insertAssetDirect(db, projectId, 'unrelated.png').id;
+      for (const title of ['Alpha Member', 'Beta Member']) {
+        releaseRepository.addReleaseAsset(createRelease(projectId, title).id, assetId, 'primary', 0);
+      }
+      const archived = createRelease(projectId, 'Archived Member');
+      releaseRepository.addReleaseAsset(archived.id, assetId, 'primary', 0);
+      releaseRepository.archive(archived.id);
+      releaseRepository.addReleaseAsset(createRelease(projectId, 'Unrelated').id, otherAssetId, 'primary', 0);
+      createRelease(otherProjectId, 'Other Project Release');
+    });
+
+    it('lists only releases containing the asset and shows a read-only scope', async () => {
+      const res = await agent.get(`/releases?asset=${assetId}&sort=title&order=asc`).expect(200);
+
+      expect(releaseTitles(res.text)).toEqual(['Alpha Member', 'Beta Member']);
+      expect(res.text).toContain('2 releases found containing asset <strong>scoped-cover.png</strong>');
+      const dialog = filterDialog(res.text);
+      expect(dialog).toContain('data-releases-asset-scope');
+      expect(dialog).toContain('include asset <strong>scoped-cover.png</strong> from Scope Owner.');
+      expect(dialog).toContain(`<input type="hidden" name="asset" value="${assetId}">`);
+      expect(dialog).not.toMatch(/<input(?![^>]*type="hidden")[^>]*name="asset"/);
+    });
+
+    it('rejects malformed, empty, unsafe, and repeated asset values instead of broadening', async () => {
+      for (const value of ['', 'abc', '0', '-1', '01', '1.5', ' 1', '9007199254740993']) {
+        const res = await agent.get(`/releases?asset=${encodeURIComponent(value)}`).expect(400);
+        expect(res.text).not.toContain('Other Project Release');
+      }
+      await agent.get(`/releases?asset=${assetId}&asset=${assetId}`).expect(400);
+      await agent.get(`/releases?asset[]=${assetId}`).expect(400);
+    });
+
+    it('returns 404 for a well-formed asset ID that does not exist', async () => {
+      await agent.get('/releases?asset=999999').expect(404);
+    });
+
+    it('intersects the asset scope with project, search, and archived filters', async () => {
+      const narrowed = await agent.get(`/releases?asset=${assetId}&project=${projectId}&search=Beta`).expect(200);
+      expect(releaseTitles(narrowed.text)).toEqual(['Beta Member']);
+
+      const incompatible = await agent.get(`/releases?asset=${assetId}&project=${otherProjectId}`).expect(200);
+      expect(releaseTitles(incompatible.text)).toEqual([]);
+      expect(incompatible.text).toContain('No releases match the current filters');
+      expect(incompatible.text).toContain('data-releases-reset');
+
+      const archived = await agent
+        .get(`/releases?asset=${assetId}&project=${projectId}&includeArchived=1&sort=title&order=asc`)
+        .expect(200);
+      expect(releaseTitles(archived.text)).toEqual(['Alpha Member', 'Archived Member', 'Beta Member']);
+    });
+
+    it('keeps releases of an archived parent project reachable through the asset scope', async () => {
+      db.prepare("UPDATE projects SET status = 'archived', archived_at = datetime('now') WHERE id = ?").run(projectId);
+
+      const scoped = await agent.get(`/releases?asset=${assetId}&project=${projectId}&includeArchived=1`).expect(200);
+      expect(releaseTitles(scoped.text).sort()).toEqual(['Alpha Member', 'Archived Member', 'Beta Member']);
+      const scheduled = await agent.get(`/releases?asset=${assetId}&includeArchived=1&schedule=unscheduled`).expect(200);
+      expect(releaseTitles(scheduled.text)).toEqual([]);
+
+      const unscoped = await agent.get('/releases?includeArchived=1').expect(200);
+      expect(releaseTitles(unscoped.text)).toEqual(['Other Project Release']);
+    });
+
+    it('preserves the scope through pagination and saved-default redirects, and Reset clears it', async () => {
+      for (let i = 0; i < 3; i++) {
+        releaseRepository.addReleaseAsset(createRelease(projectId, `Paged ${i}`).id, assetId, 'primary', 0);
+      }
+      const first = await agent.get(`/releases?asset=${assetId}&pageSize=2&sort=title&order=asc`).expect(200);
+      expect(first.text).toContain('5 releases found');
+      const nextHref = first.text.match(/<a class="button" href="([^"]+)">Next<\/a>/)?.[1]?.replace(/&amp;/g, '&');
+      expect(new URL(nextHref, 'http://x').searchParams.get('asset')).toBe(String(assetId));
+      const second = await agent.get(nextHref).expect(200);
+      expect(releaseTitles(second.text)).toEqual(['Paged 0', 'Paged 1']);
+
+      const resetAction = filterDialog(first.text)
+        .match(/<form class="releases-filter-reset app-dialog-footer" method="get" action="([^"]+)">/)?.[1];
+      expect(resetAction).toBe('/releases?pageSize=2');
+
+      app.locals.pageDefaultsService.saveDefault('releases', 'sort', 'title');
+      const redirected = await agent.get(`/releases?asset=${assetId}&includeArchived=1`).expect(302);
+      expect(new URL(redirected.headers.location, 'http://x').searchParams.get('asset')).toBe(String(assetId));
+    });
+
+    it('keeps the scope through a Defaults save without making it a saved default', async () => {
+      const page = await agent.get(`/releases?asset=${assetId}&project=${projectId}&includeArchived=1&page=1`).expect(200);
+      const action = page.text.match(/<form id="releases-defaults-form" method="post" action="([^"]+)"/)?.[1]
+        ?.replace(/&amp;/g, '&');
+      expect(action).toBe(`/releases/defaults?asset=${assetId}&project=${projectId}&includeArchived=1`);
+
+      const saved = await agent
+        .post(action)
+        .type('form')
+        .send({ _csrf: csrfToken, sort: 'title', order: 'desc' })
+        .expect(302);
+      expect(saved.headers.location).toBe(
+        `/releases?asset=${assetId}&project=${projectId}&includeArchived=1&sort=title&order=desc&notice=releases_defaults_saved`,
+      );
+      expect(releaseTitles((await agent.get(saved.headers.location).expect(200)).text))
+        .toEqual(['Beta Member', 'Archived Member', 'Alpha Member']);
+
+      const bare = await agent.get('/releases').expect(302);
+      expect(bare.headers.location).toBe('/releases?sort=title&order=desc');
+      const unscoped = await agent.get(bare.headers.location).expect(200);
+      expect(unscoped.text).toContain('action="/releases/defaults"');
+      expect(filterDialog(unscoped.text)).not.toContain('name="asset"');
+
+      await agent.post('/releases/defaults?asset=abc').type('form')
+        .send({ _csrf: csrfToken, sort: 'planned', order: 'asc' }).expect(400);
+      expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
+        .get(PAGE_DEFAULT_DEFINITIONS.releases.sort.key).value).toBe('title');
+    });
+  });
+
   it('new-release form ignores status defaults and query parameters', async () => {
     const projRes = await agent
       .post('/projects')
@@ -2747,6 +2899,7 @@ describe('release HTTP workflow', () => {
     expect(res.text).toContain('Edit');
     expect(res.text).toContain(`aria-label="Manage Assets" data-tooltip="Manage Assets"`);
     expectProjectReturnLead(res.text, { href: `/projects/${projectId}`, title: 'Detail Test Project' });
+    expectReleaseDetailNav(res.text, { projectId, releaseLocation: location });
     expect(res.text).toContain(`<dd><a href="/projects/${projectId}">Detail Test Project</a></dd>`);
     expect(res.text).not.toMatch(/>Back to Project<\/a>/);
     expect(res.text).toContain(`<nav class="project-detail-action-toolbar" aria-label="Release actions">`);
@@ -2864,6 +3017,7 @@ describe('release HTTP workflow', () => {
     expect(headingMatch).not.toBeNull();
     expect(actionsMatch).not.toBeNull();
     expectProjectReturnLead(res.text, { href: `/projects/${projectId}`, title: 'Heading Action Project' });
+    expectReleaseDetailNav(res.text, { projectId, releaseLocation });
     expectHeadingIconAction(res.text, {
       href: `/releases/${releaseId}/publish`,
       label: 'Review &amp; Publish',
@@ -2877,7 +3031,7 @@ describe('release HTTP workflow', () => {
   });
 
   it('release detail hides Manage Assets from icon actions when the release is published or archived', async () => {
-    const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
+    const { projectId: publishedProjectId, releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
     await agent
       .post(`${releaseLocation}/publish`)
       .send('_csrf=' + encodeURIComponent(csrfToken))
@@ -2889,6 +3043,7 @@ describe('release HTTP workflow', () => {
     const publishedActions = published.text.match(/<nav class="project-detail-action-toolbar" aria-label="Release actions">[\s\S]*?<\/nav>/)?.[0] || '';
     expect(publishedActions).not.toContain('Manage Assets');
     expect(publishedActions).toContain('?edit=1');
+    expectReleaseDetailNav(published.text, { projectId: publishedProjectId, releaseLocation });
 
     const projRes = await agent
       .post('/projects')
@@ -2913,6 +3068,7 @@ describe('release HTTP workflow', () => {
     const archived = await agent.get(createRes.headers.location).expect(200);
     const archivedHeading = archived.text.match(/<header class="page-heading">[\s\S]*?<\/header>/)?.[0] || '';
     expect(archivedHeading).not.toContain('Manage Assets');
+    expectReleaseDetailNav(archived.text, { projectId, releaseLocation: createRes.headers.location });
   });
 
   it('shared card hover and focus styles apply to release detail and release asset cards', async () => {
@@ -3970,6 +4126,7 @@ describe('release HTTP workflow', () => {
     const detail = await agent.get(createRes.headers.location).expect(200);
     expect(detail.text).toContain('Archived');
     expectProjectReturnLead(detail.text, { href: `/projects/${projectId}`, title: 'Archive Test Project' });
+    expectReleaseDetailNav(detail.text, { projectId, releaseLocation: createRes.headers.location });
   });
 
   it('cannot archive already archived release', async () => {
@@ -4038,8 +4195,9 @@ describe('release HTTP workflow', () => {
       .get(`${createRes.headers.location}/assets`)
       .expect(200);
     expect(res.text).toContain('Asset Selection Release');
-    expect(res.text).toContain('Back to Release');
     expectProjectReturnLead(res.text, { href: `/projects/${projectId}`, title: 'Asset Selection Project' });
+    expectHeadingNavLink(res.text, { key: 'release', href: createRes.headers.location, label: 'Release', tooltip: 'Go to release details' });
+    expect(res.text).not.toContain('Back to Release');
     expect(res.text).not.toContain('Project status:');
     expect(res.text).toContain('<span class="status-badge status-badge--active">Ready</span>');
   });
@@ -7399,10 +7557,12 @@ describe('release HTTP workflow', () => {
         const releaseAssetsContent = res.text.slice(res.text.indexOf('<section data-release-assets-live-region>'));
         const headingActions = heading.match(/<div class="page-heading-actions">[\s\S]*?<\/div>/)?.[0] || '';
         expectProjectReturnLead(res.text, { href: `/projects/${projectId}`, title: 'Readiness Test Project' });
+        const releaseNav = expectHeadingNavLink(res.text, { key: 'release', href: releaseLocation, label: 'Release', tooltip: 'Go to release details' });
+        expect((releaseNav.match(/<a\b/g) || [])).toHaveLength(2);
         expect(heading).toMatch(new RegExp(
-          '<nav class="page-heading-navigation" aria-label="Page navigation">[\\s\\S]*?href="/projects/' + projectId + '"[\\s\\S]*?href="' + releaseLocation + '" aria-label="Back to Release" data-tooltip="Back to Release">[\\s\\S]*?<\\/nav>[\\s\\S]*?<div class="page-heading-actions">\\s*<form id="release-assets-form" method="post" action="' + releaseLocation + '/assets" class="inline-form" data-asset-selection-form>',
+          '<nav class="page-heading-navigation page-heading-navigation--text" aria-label="Page navigation">[\\s\\S]*?<\\/nav>[\\s\\S]*?<div class="page-heading-actions">\\s*<form id="release-assets-form" method="post" action="' + releaseLocation + '/assets" class="inline-form" data-asset-selection-form>',
         ));
-        expect(heading.indexOf(`/projects/${projectId}`)).toBeLessThan(heading.indexOf(releaseLocation + '" aria-label="Back to Release"'));
+        expect(releaseNav.indexOf(`href="/projects/${projectId}"`)).toBeLessThan(releaseNav.indexOf(`href="${releaseLocation}"`));
         expect(headingActions).not.toContain('class="inline-form release-assets-form"');
         expect(headingActions).toContain('name="_csrf"');
         expect(headingActions).toContain('class="button button-small button-primary project-detail-action project-assets-heading-action asset-tooltip asset-tooltip--left"');
@@ -7410,7 +7570,7 @@ describe('release HTTP workflow', () => {
         expect(headingActions).toContain('<path d="M3 17l4-4 3 3 4-5 7 7"/>');
         expect(res.text).toMatch(/<input type="checkbox" form="release-assets-form"[^>]*name="selectedAssetIds"[^>]*value="\d+"/);
         expect((res.text.match(/aria-label="Save Selection"/g) || [])).toHaveLength(1);
-        expect((res.text.match(/aria-label="Back to Release"/g) || [])).toHaveLength(1);
+        expect(res.text).not.toContain('Back to Release');
         expect(releaseAssetsContent).not.toContain('id="release-assets-form"');
         expect(releaseAssetsContent).not.toContain('aria-label="Save Selection"');
         expect(releaseAssetsContent).not.toContain('href="' + releaseLocation + '">Back</a>');
@@ -11258,7 +11418,8 @@ describe('release HTTP workflow', () => {
         expect(region).toContain('data-release-assets-live-page-size');
         expect(region).toContain('<noscript><button class="button button-small" type="submit">Apply</button></noscript>');
         expect(region.replace(/<noscript>[\s\S]*?<\/noscript>/g, '')).not.toContain('>Apply</button>');
-        expect(res.text.indexOf('Back to Release')).toBeLessThan(res.text.indexOf(region));
+        expect(res.text.indexOf('page-heading-navigation--text')).toBeGreaterThan(-1);
+        expect(res.text.indexOf('page-heading-navigation--text')).toBeLessThan(res.text.indexOf(region));
 
         const filtered = await agent.get(`${releaseLocation}/assets?search=alpha`).expect(200);
         const filteredDialog = filtered.text.match(/<dialog id="release-assets-filter-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';

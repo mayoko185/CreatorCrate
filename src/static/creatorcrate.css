@@ -16195,6 +16195,31 @@ button[aria-disabled="true"] > .project-create-submit-icon {
     right: 0;
   }
 }
+/* Subpage "← Project / ← Assets / ← Release" text navigation starts its row on
+   narrow screens too, wrapping as needed, so each tooltip keeps its left-edge
+   placement inside the viewport. */
+@media (max-width: 540px) {
+  :where(.refined-page main) .page-heading > .page-heading-navigation--text {
+    align-self: flex-start;
+  }
+  :where(.refined-page main) .page-heading-navigation--text > .page-heading-lead--text.asset-tooltip--left[data-tooltip]::after {
+    left: 0;
+    right: auto;
+  }
+  /* The Asset Viewer's Release link ends its row, or starts a wrapped one,
+     so its tooltip grows leftward from the navigation group's right edge,
+     which stays inside the viewport in both cases. */
+  :where(.refined-page main) .page-heading-navigation--text:has(> .asset-viewer-release) {
+    position: relative;
+  }
+  :where(.refined-page main) .page-heading-navigation--text > .asset-viewer-release.asset-tooltip {
+    position: static;
+  }
+  :where(.refined-page main) .page-heading-navigation--text > .page-heading-lead--text.asset-viewer-release.asset-tooltip--left[data-tooltip]::after {
+    left: auto;
+    right: 0;
+  }
+}
 /* Role is the shared compact dropdown. Its panel opens in the viewport, so a
    grid card or the list table's scroll region cannot clip it; the compact
    panel's upward anchor would otherwise stretch the placed panel to nothing. */

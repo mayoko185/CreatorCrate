@@ -65,7 +65,10 @@
   {% set isPublished = release and release.published_date %}
   {% set isArchived = projectArchived or releaseArchived %}
   {% set projectLeadHref = "/projects/" ~ project.id if project and project.id else "" %}
-  {% set projectLeadLabel = "Back to main project page: " ~ project.title if project else "" %}
+  {% set releaseNavItems = [
+    { key: "project", href: projectLeadHref, label: "Project", tooltip: "Go to project details" },
+    { key: "assets", href: projectLeadHref ~ "/assets", label: "Assets", tooltip: "Go to project assets" }
+  ] if projectLeadHref else none %}
   {# Regions marked data-release-detail-region depend on editable release
      fields; release-detail-refresh.js replaces each one from a fresh render
      of this page (identified by data-release-detail) after an Edit Release
@@ -73,9 +76,9 @@
      a refresh always finds the same set. #}
   <div class="release-detail-region" data-release-detail-region="heading" data-release-detail="{{ release.id }}">
   {% if isArchived %}
-    {{ pageHeading.render("", "archived", "Archived", projectLeadHref, projectLeadLabel, "", "projects") }}
+    {{ pageHeading.render("", "archived", "Archived", navItems=releaseNavItems) }}
   {% else %}
-    {% call pageHeading.render("", "", "", projectLeadHref, projectLeadLabel, "", "projects") %}
+    {% call pageHeading.render(navItems=releaseNavItems) %}
       {% if not isPublished %}
         <a class="button button-small button-primary project-detail-action project-assets-heading-action asset-tooltip asset-tooltip--left"
            href="/releases/{{ release.id }}/publish" data-dialog-open="release-publish-dialog"

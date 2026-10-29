@@ -255,12 +255,20 @@ function makeForm(action = '/releases', {
   orderValue = 'asc',
   includeArchived = false,
   pageSize = '25',
+  assetValue = null,
 } = {}) {
   const form = makeNode({
     tagName: 'form',
     attrs: { action, method: 'get', 'data-releases-filter': '' },
   });
   form.submit = vi.fn();
+  if (assetValue !== null) {
+    form.appendChild(makeNode({
+      tagName: 'input',
+      attrs: { name: 'asset', type: 'hidden' },
+      value: String(assetValue),
+    }));
+  }
   const project = makeReleaseDropdown(form, 'project', projectValue, { searchable: true });
   const schedule = makeReleaseDropdown(form, 'schedule', scheduleValue);
   const sort = makeReleaseDropdown(form, 'sort', sortValue);
@@ -328,7 +336,11 @@ function makePage(action = '/releases', options = {}) {
   resetForm.appendChild(reset);
   dialog.appendChild(resetForm);
   document.appendChild(dialog);
-  return { document, region, status, dialog, resetForm, reset, pagination, next, ...formParts };
+  const defaultsForm = options.defaultsAction
+    ? makeNode({ tagName: 'form', attrs: { id: 'releases-defaults-form', method: 'post', action: options.defaultsAction } })
+    : null;
+  if (defaultsForm) document.appendChild(defaultsForm);
+  return { document, region, status, dialog, resetForm, reset, pagination, next, defaultsForm, ...formParts };
 }
 
 function makeReleaseAssetsPage({
@@ -631,6 +643,61 @@ describe('Releases live filtering enhancement', () => {
     expect(next.sort.value).toBe('title');
     expect(next.order.value).toBe('desc');
     expect(initial.dialog.open).toBe(true);
+  });
+
+  it('keeps the asset scope and Defaults action in sync through filtering, Reset, and Back', async () => {
+    const scopedOptions = { assetValue: '42', resetUrl: '/releases' };
+    const initial = makePage('/releases', { ...scopedOptions, defaultsAction: '/releases/defaults?asset=42&project=7' });
+    const filtered = makePage('/releases', {
+      ...scopedOptions, scheduleValue: 'today', defaultsAction: '/releases/defaults?asset=42&project=7&schedule=today',
+    });
+    const reset = makePage('/releases', { projectValue: '', defaultsAction: '/releases/defaults' });
+    const unscoped = makePage('/releases', { projectValue: '', scheduleValue: 'upcoming', defaultsAction: '/releases/defaults' });
+    const restored = makePage('/releases', { ...scopedOptions, scheduleValue: 'today', defaultsAction: '/releases/defaults?asset=42&project=7&schedule=today' });
+    const pages = new Map([
+      ['filtered', filtered.document],
+      ['reset', reset.document],
+      ['unscoped', unscoped.document],
+      ['restored', restored.document],
+    ]);
+    const windowObject = makeWindow(initial.document, pages);
+    windowObject.fetch
+      .mockResolvedValueOnce(responseFor('filtered', 'http://creatorcrate.test/releases?asset=42&project=7&schedule=today'))
+      .mockResolvedValueOnce(responseFor('reset', 'http://creatorcrate.test/releases'))
+      .mockResolvedValueOnce(responseFor('unscoped', 'http://creatorcrate.test/releases?schedule=upcoming'));
+    enhanceReleasesLiveFiltering(initial.document);
+
+    initial.schedule.value = 'today';
+    initial.form.dispatch('change', { target: initial.schedule });
+    await flush();
+    let requested = new URL(windowObject.fetch.mock.calls[0][0]);
+    expect(requested.searchParams.getAll('asset')).toEqual(['42']);
+    expect(requested.searchParams.get('schedule')).toBe('today');
+    expect(initial.form.querySelector('input[name="asset"]')?.value).toBe('42');
+    expect(initial.defaultsForm.getAttribute('action')).toBe('/releases/defaults?asset=42&project=7&schedule=today');
+
+    initial.reset.dispatch('click');
+    await flush();
+    expect(windowObject.fetch.mock.calls[1][0]).toBe('http://creatorcrate.test/releases');
+    expect(initial.form.querySelector('input[name="asset"]')).toBeNull();
+    expect(initial.defaultsForm.getAttribute('action')).toBe('/releases/defaults');
+
+    reset.schedule.value = 'upcoming';
+    initial.form.dispatch('change', { target: reset.schedule });
+    await flush();
+    requested = new URL(windowObject.fetch.mock.calls[2][0]);
+    expect(requested.searchParams.has('asset')).toBe(false);
+    expect(initial.defaultsForm.getAttribute('action')).toBe('/releases/defaults');
+
+    windowObject.location.href = 'http://creatorcrate.test/releases?asset=42&project=7&schedule=today';
+    windowObject.location.pathname = '/releases';
+    windowObject.fetch.mockResolvedValueOnce(responseFor('restored', windowObject.location.href));
+    windowObject.dispatch('popstate');
+    await flush();
+    expect(windowObject.fetch.mock.calls[3][0]).toBe(windowObject.location.href);
+    expect(initial.form.querySelector('input[name="asset"]')?.value).toBe('42');
+    expect(initial.defaultsForm.getAttribute('action')).toBe('/releases/defaults?asset=42&project=7&schedule=today');
+    expect(initial.form.submit).not.toHaveBeenCalled();
   });
 
   it('keeps newer Releases filter intent authoritative over an older defaults completion', () => {

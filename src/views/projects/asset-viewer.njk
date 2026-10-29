@@ -7,9 +7,16 @@
 {% block body_class %}refined-page{% endblock %}
 
 {% block content %}
-  {% call pageHeading.render("", "", "", "/projects/" ~ project.id, "Back to main project page: " ~ project.title, "asset-viewer-project", "projects") %}
-    <a class="button button-secondary asset-viewer-back" href="{{ backToAssetsLink.href }}">Back to Assets</a>
-  {% endcall %}
+  {% set viewerNavItems = [
+    { key: "project", href: "/projects/" ~ project.id, label: "Project", tooltip: "Go to project details", class: "asset-viewer-project" },
+    { key: "assets", href: backToAssetsLink.href, label: "Assets", tooltip: "Go to project assets", class: "asset-viewer-back" }
+  ] %}
+  {% if releaseNavigation and releaseNavigation.href %}
+    {% set viewerNavItems = viewerNavItems.concat([
+      { key: "release", href: releaseNavigation.href, label: "Release", tooltip: "Go to release details", class: "asset-viewer-release" }
+    ]) %}
+  {% endif %}
+  {{ pageHeading.render(navItems=viewerNavItems) }}
 
   {% if canMutate or canManageTags or canSetAsPrimaryImage or canRemovePrimaryImage or openLocallyUri %}
     <nav class="project-detail-action-toolbar asset-viewer-action-toolbar" aria-label="Asset actions">

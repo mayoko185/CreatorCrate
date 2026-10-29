@@ -352,10 +352,13 @@
 
 {% block content %}
   {% set assetsHeadingDescription = "Browse scanned files, category, and release usage." %}
+  {% set assetsNavItems = [
+    { key: "project", href: "/projects/" ~ project.id, label: "Project", tooltip: "Go to project details" }
+  ] %}
   {% if isArchived %}
-    {{ pageHeading.render(assetsHeadingDescription, "archived", "", "/projects/" ~ project.id, "Back to main project page: " ~ project.title, "", "projects") }}
+    {{ pageHeading.render(assetsHeadingDescription, "archived", navItems=assetsNavItems) }}
   {% else %}
-    {% call pageHeading.render(assetsHeadingDescription, "", "", "/projects/" ~ project.id, "Back to main project page: " ~ project.title, "", "projects") %}
+    {% call pageHeading.render(assetsHeadingDescription, navItems=assetsNavItems) %}
     {% if not isArchived %}
       <form method="post" action="/projects/{{ project.id }}/scan/manual" class="inline-form">
         <input type="hidden" name="_csrf" value="{{ _csrf }}">
