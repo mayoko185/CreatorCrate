@@ -139,12 +139,12 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 375, height: 740 
 
     await withDashboardApp(async ({ origin, projectId, undatedId, scheduledId }) => {
       const cases = [
-        // Edit opens the shared Edit Release dialog in place.
+        // Edit opens the shared Edit Release / Edit Project dialog in place.
         [`dashboard-release-info-needs-date-${undatedId}`, 'Edit release', '/'],
         [`dashboard-release-info-needs-date-${undatedId}`, 'Open release', `/releases/${undatedId}`],
         [`dashboard-project-info-needs-date-${undatedId}`, 'Open project', `/projects/${projectId}`],
         [`dashboard-release-info-scheduled-${scheduledId}`, 'Open release', `/releases/${scheduledId}`],
-        [`dashboard-project-info-table-${projectId}`, 'Edit project', `/projects/${projectId}?edit=1`],
+        [`dashboard-project-info-table-${projectId}`, 'Edit project', '/'],
         [`dashboard-project-info-table-${projectId}`, 'Open project', `/projects/${projectId}`],
       ];
       for (const [cardId, actionName, expectedPath] of cases) {
@@ -153,6 +153,12 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 375, height: 740 
         if (actionName === 'Edit release') {
           await expect(page.locator('#release-edit-dialog')).toBeVisible();
           await expect(page.locator('#release-edit-form')).toHaveAttribute('action', `/releases/${undatedId}`);
+          expect(currentPath(page)).toBe('/');
+        }
+        if (actionName === 'Edit project') {
+          await expect(page.locator('#project-edit-dialog')).toBeVisible();
+          await expect(page.locator('#project-edit-form')).toHaveAttribute('action', `/projects/${projectId}`);
+          await expect(titleParts(page, `dashboard-project-info-table-${projectId}`).card).toBeHidden();
           expect(currentPath(page)).toBe('/');
         }
       }

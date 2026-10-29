@@ -1055,6 +1055,8 @@ const projectsLiveEngine = createLiveRegionEngine({
   onCreate(state, region) {
     state.projectsDefaultsRefreshGeneration = null;
     state.projectsDefaultsRefreshError = null;
+    state.projectsDefaultsRefreshFailureMessage = null;
+    state.projectsDefaultsRefreshSuccess = null;
     state.nsfwController = null;
     state.nsfwGeneration = 0;
     state.nsfwSubmitting = false;
@@ -1073,6 +1075,8 @@ const projectsLiveEngine = createLiveRegionEngine({
     if (state.projectsDefaultsRefreshGeneration !== null) {
       state.projectsDefaultsRefreshGeneration = null;
       state.projectsDefaultsRefreshError = null;
+      state.projectsDefaultsRefreshFailureMessage = null;
+      state.projectsDefaultsRefreshSuccess = null;
     }
     if (state.nsfwRefreshGeneration !== null) {
       state.nsfwNeedsRefresh = true;
@@ -1096,8 +1100,12 @@ const projectsLiveEngine = createLiveRegionEngine({
   },
   onLoadComplete(state, generation, region) {
     if (state.projectsDefaultsRefreshGeneration === generation) {
+      const notifyRefreshed = state.projectsDefaultsRefreshSuccess;
       state.projectsDefaultsRefreshGeneration = null;
       state.projectsDefaultsRefreshError = null;
+      state.projectsDefaultsRefreshFailureMessage = null;
+      state.projectsDefaultsRefreshSuccess = null;
+      notifyRefreshed?.();
     }
     if (state.nsfwRefreshGeneration !== generation) return;
     state.nsfwRefreshGeneration = null;
@@ -1109,15 +1117,17 @@ const projectsLiveEngine = createLiveRegionEngine({
   onLoadError(state, generation) {
     if (state.projectsDefaultsRefreshGeneration === generation) {
       const notifyRefreshError = state.projectsDefaultsRefreshError;
+      // An empty message keeps the region quiet for callers that report the
+      // outcome themselves.
+      const failureMessage = state.projectsDefaultsRefreshFailureMessage
+        ?? 'Defaults were saved, but Projects could not refresh. Refresh the page to see the saved defaults.';
       state.projectsDefaultsRefreshGeneration = null;
       state.projectsDefaultsRefreshError = null;
+      state.projectsDefaultsRefreshFailureMessage = null;
+      state.projectsDefaultsRefreshSuccess = null;
       const region = projectsLiveEngine.getRegion(state.document);
       region?.removeAttribute?.('aria-busy');
-      projectsLiveEngine.status(
-        region,
-        'Defaults were saved, but Projects could not refresh. Refresh the page to see the saved defaults.',
-        'error',
-      );
+      projectsLiveEngine.status(region, failureMessage, 'error');
       notifyRefreshError?.();
       return true;
     }
@@ -2204,7 +2214,7 @@ export function refreshProjectsLiveRegion(
   scope = globalThis.document,
   destination,
   authorityGeneration,
-  { onError = null } = {},
+  { onError = null, onSuccess = null, failureMessage = null } = {},
 ) {
   const document = liveRegionDocument(scope);
   const region = projectsLiveEngine.getRegion(document);
@@ -2212,9 +2222,14 @@ export function refreshProjectsLiveRegion(
   if (!document || !region || !state || !projectsLiveEngine.capabilities(state.window)) return 'unavailable';
   if (state.generation !== authorityGeneration) return 'superseded';
 
+  // A null destination keeps the Projects view as shown, taking over a
+  // pending filter navigation rather than reverting it.
+  const current = destination === null && state.controller && state.requestedUrl
+    ? state.requestedUrl.href
+    : destination ?? state.window.location?.href;
   let url;
   try {
-    url = new URL(destination, state.window.location?.href || '/projects');
+    url = new URL(current, state.window.location?.href || '/projects');
   } catch {
     return 'unavailable';
   }
@@ -2225,6 +2240,9 @@ export function refreshProjectsLiveRegion(
   projectsLiveEngine.invalidate(state);
   state.projectsDefaultsRefreshGeneration = state.generation;
   state.projectsDefaultsRefreshError = typeof onError === 'function' ? onError : null;
+  state.projectsDefaultsRefreshFailureMessage = typeof failureMessage === 'string' ? failureMessage : null;
+  // Fires only once this refresh's region is installed.
+  state.projectsDefaultsRefreshSuccess = typeof onSuccess === 'function' ? onSuccess : null;
   projectsLiveEngine.load(
     state,
     url,

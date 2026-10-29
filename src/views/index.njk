@@ -2,6 +2,7 @@
 {% import "partials/page-heading.njk" as pageHeading %}
 {% import "partials/icons.njk" as icons %}
 {% import "partials/project-create-dialog.njk" as projectCreateDialog %}
+{% import "partials/project-edit-dialog.njk" as projectEditDialog %}
 {% import "partials/release-create-dialog.njk" as releaseCreateDialog %}
 {% import "partials/release-signatures-dialog.njk" as releaseSignaturesDialog %}
 {% import "partials/release-edit-dialog.njk" as releaseEditDialog %}
@@ -195,6 +196,9 @@
 
 {% block overlay %}
   {{ projectCreateDialog.render(projectCreateForm, '/', _csrf, projectCreateDialogOpen) }}
+  {# One Edit Project dialog for every Dashboard project information card;
+     project-edit-dialog.js loads the chosen project into it. #}
+  {% if projectEditForm %}{{ projectEditDialog.render(none, projectEditForm, _csrf, false, '', 'edit-project-') }}{% endif %}
   {{ releaseCreateDialog.render(releaseCreateForm, _csrf, releaseSignatureConfiguration, platformChoices, releaseCreateDialogOpen, clockFormat, '/', 'release-create-field-') }}
   {# One Edit Release dialog for every Dashboard release; release-edit-dialog.js
      loads the chosen release into it, so it renders without a release. #}

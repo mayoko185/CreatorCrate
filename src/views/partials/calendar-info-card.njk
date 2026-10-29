@@ -56,12 +56,13 @@
 {#
   Project variant: the same card shell with the project's own facts only.
   Callers render it for non-archived projects, so the edit action is valid.
+  Edit (data-project-edit-id) opens the host's Edit Project dialog in place.
 #}
 {% macro project(project, detailId, clockFormat) %}
   {% call shell(detailId, project.title, project.primaryImage, project.nsfwBlur) %}
     <div class="calendar-release-info-actions">
       <a class="button button-small button-secondary" href="/projects/{{ project.id }}">Open project</a>
-      <a class="button button-small button-secondary" href="/projects/{{ project.id }}/edit">Edit project</a>
+      <a class="button button-small button-secondary" href="/projects/{{ project.id }}/edit" data-project-edit-id="{{ project.id }}">Edit project</a>
     </div>
     <h3 class="asset-viewer-grid-card-info-heading">{{ project.title }}</h3>
     <dl class="asset-viewer-grid-card-info-list">

@@ -127,7 +127,7 @@ describe('project tags — HTTP', () => {
     expect(detail.text).not.toContain('Manage tags');
     expect(detail.text).not.toContain(`href="/projects/${projectId}/tags"`);
     expect(toolbar).toContain(`href="/projects/${projectId}/edit"`);
-    expect(toolbar).toContain('data-dialog-open="project-edit-dialog"');
+    expect(toolbar).toContain(`data-project-edit-id="${projectId}"`);
     expect(toolbar).toContain(`href="/projects/${projectId}/assets"`);
     expect(toolbar).toContain('aria-label="View Assets"');
     expect(detail.text).not.toContain(`href="/projects/${projectId}/asset-categories"`);

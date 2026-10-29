@@ -1,6 +1,6 @@
 import { NSFW_TAG_NAME } from '../services/nsfw-filter-settings-service.js';
 import { isProjectArchived } from '../services/project-state.js';
-import { buildNewProjectFormModel } from './project-create-form.js';
+import { buildNewProjectFormModel, buildProjectEditDialogFormModel } from './project-create-form.js';
 import {
   buildCreateReleaseFormModel,
   getReleasePlatformChoices,
@@ -303,12 +303,18 @@ export function renderDashboardPage(req, res, next, {
     const projectTable = dashboard.projectTable;
     const projectRows = projectTable.rows.map(presentProject);
 
+    const dashboardProjectCreateForm = projectCreateForm || buildNewProjectFormModel({
+      tagService: tagService || req.app?.locals?.tagService,
+      pageDefaultsService: effectivePageDefaultsService,
+    });
+
     res.status(status).render('index.njk', {
       appName,
       nsfwFilterEnabled,
       projectCreateDialogOpen: Boolean(projectCreateDialogOpen),
-      projectCreateForm: projectCreateForm || buildNewProjectFormModel({
-        tagService: tagService || req.app?.locals?.tagService,
+      projectCreateForm: dashboardProjectCreateForm,
+      projectEditForm: buildProjectEditDialogFormModel({
+        tags: dashboardProjectCreateForm.tags,
         pageDefaultsService: effectivePageDefaultsService,
       }),
       releaseCreateDialogOpen: Boolean(releaseCreateDialogOpen),

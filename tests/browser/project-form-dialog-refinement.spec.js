@@ -362,7 +362,7 @@ test('Create project button is an outlined button with a cyan plus square, scope
     // Edit Project's Save changes shares the outlined treatment, without the plus.
     const project = app.locals.projectService.create({ title: 'Untouched', status: 'ready' });
     await page.goto(`${origin}/projects/${project.id}`);
-    await page.locator('[data-dialog-open="project-edit-dialog"]').first().click();
+    await page.locator('[data-project-edit-id]').first().click();
     const editDialog = page.locator('#project-edit-dialog');
     await expect(editDialog).toBeVisible();
     await expect(editDialog.getByRole('button', { name: 'Save changes', exact: true })).toHaveCount(1);
@@ -391,6 +391,10 @@ test('Create project button is an outlined button with a cyan plus square, scope
     await dialog.locator('#project-tags-form label', { hasText: 'Gamma' }).click();
     await dialog.locator('#project-tags-form summary').click();
     await button.click();
+    // Creation stays on the Dashboard and links to the new project.
+    await expect(dialog).toBeHidden();
+    await expect(page).toHaveURL(origin + '/');
+    await page.locator('[data-dialog-feedback]').getByRole('link', { name: 'View Project' }).click();
     await expect(page).toHaveURL(/\/projects\/\d+$/);
     await expect(page.getByRole('heading', { name: 'Trial Button Project' })).toBeVisible();
     await expect(page.locator('main')).toContainText('Gamma');

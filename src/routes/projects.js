@@ -14,7 +14,7 @@ import {
   buildProjectOptionPresentation,
   presentProjectOptions,
 } from '../services/project-option-presenter.js';
-import { buildNewProjectFormModel, createFormValues } from './project-create-form.js';
+import { buildNewProjectFormModel, buildProjectEditDialogFormModel, createFormValues } from './project-create-form.js';
 import { isProjectArchived } from '../services/project-state.js';
 import { isSafeRedirectTarget } from '../middleware/auth.js';
 import { renderDashboardPage } from './dashboard-render.js';
@@ -206,8 +206,30 @@ export function createProjectsRouter({ appName, db, projectService, workflowQuer
       validateSubmittedTagsExist(req, parsedTags);
       const input = parseProjectInput(req.body);
       const project = projectService.create(input, { tagIds: parsedTags.tagIds });
+      if (isEnhancedProjectCreateRequest(req)) {
+        // The New Project dialog stays on its host page; the next open starts
+        // from the page's fresh New Project defaults again.
+        res.status(201).json({
+          status: 'success',
+          message: `Project “${project.title}” created.`,
+          project: { id: project.id, title: project.title, url: `/projects/${project.id}` },
+          values: buildProjectCreateResetValues(req),
+        });
+        return;
+      }
       res.redirect(`/projects/${project.id}`);
     } catch (err) {
+      if (isEnhancedProjectCreateRequest(req)) {
+        const validation = err instanceof ProjectValidationError;
+        res.status(validation ? 422 : 500).json({
+          status: 'error',
+          message: validation
+            ? (err.errors?.general || 'Fix the highlighted fields and try again.')
+            : 'Project creation failed. Please try again.',
+          errors: validation ? err.errors : {},
+        });
+        return;
+      }
       if (err instanceof ProjectValidationError) {
         renderProjectCreateError(req, res, next, {
           appName,
@@ -249,21 +271,34 @@ export function createProjectsRouter({ appName, db, projectService, workflowQuer
   });
 
   router.get('/:id/edit', (req, res, next) => {
+    // The Edit Project dialog asks with Accept: application/json for the
+    // authoritative edit model; other requests keep the deep-link redirect.
+    const json = isEnhancedProjectEditRequest(req);
+    if (json) {
+      res.vary('Accept');
+      res.set('Cache-Control', 'no-store');
+    }
     const id = parseId(req.params.id);
     if (id === null) {
-      return next(createNotFound());
+      return json ? sendProjectNotFoundJson(res) : next(createNotFound());
     }
 
     const project = projectService.findById(id);
     if (!project) {
-      return next(createNotFound());
+      return json ? sendProjectNotFoundJson(res) : next(createNotFound());
     }
 
     // Archived projects are immutable. The edit form would render but POST
     // would still reject archived_at, so block access to the form itself
     // and route the user back to the detail page (read-only workspace).
     if (isProjectArchived(project)) {
-      return res.redirect(`/projects/${project.id}`);
+      return json
+        ? sendProjectEditJsonError(res, 409, 'PROJECT_ARCHIVED', 'Archived projects are read-only.')
+        : res.redirect(`/projects/${project.id}`);
+    }
+
+    if (json) {
+      return res.json({ status: 'success', ...buildProjectEditModel(req, project) });
     }
 
     const returnLocation = readProjectEditReturnLocation(req.query.returnTo, project.id);
@@ -278,6 +313,7 @@ export function createProjectsRouter({ appName, db, projectService, workflowQuer
 
     const parsedTags = parseProjectFormTagIds(req.body?.tagIds);
     const projectEditReturnTo = readProjectEditReturnLocation(req.body?.returnTo, id);
+    const json = isEnhancedProjectEditRequest(req);
 
     try {
       if (!parsedTags.valid) {
@@ -287,10 +323,22 @@ export function createProjectsRouter({ appName, db, projectService, workflowQuer
       const input = parseProjectInput(req.body);
       const project = projectService.update(id, input, { tagIds: parsedTags.tagIds });
       if (!project) {
-        return next(createNotFound());
+        return json ? sendProjectNotFoundJson(res) : next(createNotFound());
+      }
+      if (json) {
+        // The Edit Project dialog stays on its host page and adopts the saved
+        // model as its baseline; the host refreshes its own project content.
+        return res.json({
+          status: 'success',
+          message: 'Project updated.',
+          ...buildProjectEditModel(req, project),
+        });
       }
       res.redirect(projectEditReturnTo || `/projects/${project.id}`);
     } catch (err) {
+      if (json) {
+        return sendProjectUpdateJsonError(res, err);
+      }
       if (err instanceof ProjectNotFoundError) {
         return next(createNotFound());
       }
@@ -656,7 +704,89 @@ function renderProjectsPage(req, res, {
       tagService: getTagService(req),
       pageDefaultsService,
     }),
+    projectEditForm: buildProjectEditDialogFormModel({
+      tagService: getTagService(req),
+      pageDefaultsService,
+    }),
   });
+}
+
+function isEnhancedProjectCreateRequest(req) {
+  return String(req.get?.('Accept') || '').toLowerCase().includes('application/json');
+}
+
+// Every user-editable New Project control, so a dialog reopened after a
+// successful create starts blank with the saved New Project defaults.
+function buildProjectCreateResetValues(req) {
+  const { values } = buildNewProjectFormModel({
+    tagService: getTagService(req),
+    pageDefaultsService: getPageDefaultsService(req),
+  });
+  return {
+    title: '',
+    description: '',
+    notes: '',
+    patreonUrl: '',
+    status: values.status,
+    projectType: values.projectType,
+    'tagIds[]': [],
+  };
+}
+
+function isEnhancedProjectEditRequest(req) {
+  return String(req.get?.('Accept') || '').toLowerCase().includes('application/json');
+}
+
+/**
+ * Authoritative state for populating an Edit Project dialog on any host.
+ * values holds every editable field (tags included), since a save sends the
+ * whole form; tagOptions lists every tag, so a tag assigned elsewhere after
+ * the host rendered stays selectable and is never dropped by a save.
+ */
+function buildProjectEditModel(req, project) {
+  const values = projectToFormValues(project);
+  return {
+    project: { id: project.id, title: project.title, url: `/projects/${project.id}` },
+    values: {
+      title: values.title ?? '',
+      description: values.description ?? '',
+      notes: values.notes ?? '',
+      patreonUrl: values.patreonUrl,
+      status: values.status ?? '',
+      projectType: values.projectType ?? '',
+      'tagIds[]': loadAssignedTagIds(req, project.id),
+    },
+    tagOptions: loadAvailableTags(req).map((tag) => ({ value: String(tag.id), label: tag.displayName })),
+    actions: {
+      update: `/projects/${project.id}`,
+      archive: `/projects/${project.id}/archive`,
+      delete: `/projects/${project.id}/delete`,
+    },
+  };
+}
+
+function sendProjectEditJsonError(res, status, code, message, extra = {}) {
+  return res.status(status).json({ status: 'error', code, message, ...extra });
+}
+
+function sendProjectNotFoundJson(res) {
+  return sendProjectEditJsonError(res, 404, 'PROJECT_NOT_FOUND', 'Project not found.');
+}
+
+// Validation (including the archived-project refusal) keeps its field and
+// general messages; an ownership refusal keeps its path-free message and
+// status; anything else is reported without backend detail. Every failure
+// leaves the project as it was (the service compensates folder renames).
+function sendProjectUpdateJsonError(res, err) {
+  if (err instanceof ProjectNotFoundError) return sendProjectNotFoundJson(res);
+  if (err instanceof ProjectValidationError) {
+    return sendProjectEditJsonError(res, 422, 'PROJECT_INVALID',
+      err.errors?.general || 'Fix the highlighted fields and try again.', { errors: err.errors || {} });
+  }
+  if (err instanceof ProjectOwnershipError) {
+    return sendProjectEditJsonError(res, err.status || 409, 'PROJECT_OWNERSHIP', err.message, { errors: {} });
+  }
+  return sendProjectEditJsonError(res, 500, 'PROJECT_UPDATE_FAILED', 'Project update failed. Please try again.', { errors: {} });
 }
 
 function isEnhancedProjectsNsfwRequest(req) {

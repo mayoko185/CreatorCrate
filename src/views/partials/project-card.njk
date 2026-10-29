@@ -6,8 +6,8 @@
   information-card shell, so enhanceDashboardTitleInfoCards binds it to the
   shared hover/pin lifecycle. The card holds the row's Open and Edit actions;
   row-background clicks follow its Open action (data-project-card-link)
-  through enhanceProjectCards. Edit is a data-dialog-invocation link, so the
-  hosted Edit Project dialog returns to the current Projects location.
+  through enhanceProjectCards. Edit (data-project-edit-id) opens the page's
+  Edit Project dialog in place; its href is the direct-link fallback.
 #}
 {% import "partials/dashboard-title-info.njk" as titleInfo %}
 {% import "partials/calendar-info-card.njk" as infoCard %}
@@ -138,7 +138,7 @@
     <div class="calendar-release-info-actions">
       <a class="button button-small button-secondary" data-project-card-link href="/projects/{{ project.id }}">Open project</a>
       {% if not project.isArchived %}
-        <a class="button button-small button-secondary" href="/projects/{{ project.id }}/edit" data-dialog-invocation>Edit project</a>
+        <a class="button button-small button-secondary" href="/projects/{{ project.id }}/edit" data-project-edit-id="{{ project.id }}">Edit project</a>
       {% endif %}
     </div>
     <h3 class="asset-viewer-grid-card-info-heading">{{ project.title }}</h3>

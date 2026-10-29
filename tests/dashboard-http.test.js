@@ -69,7 +69,8 @@ function extractAttentionRegion(html) {
 }
 
 function findDuplicateIds(html) {
-  const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
+  // \s, not \b: data-*-id attributes (one project in several cards) are not ids.
+  const ids = [...html.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1]);
   return [...new Set(ids.filter((id, index) => ids.indexOf(id) !== index))];
 }
 
@@ -761,7 +762,7 @@ describe('dashboard HTTP composition', () => {
       for (const card of [tableCard, rowCard]) {
         expect(card).toContain('data-calendar-info-card popover="manual"');
         expect(card).toContain(`href="/projects/${projectId}">Open project</a>`);
-        expect(card).toContain(`href="/projects/${projectId}/edit">Edit project</a>`);
+        expect(card).toContain(`href="/projects/${projectId}/edit" data-project-edit-id="${projectId}">Edit project</a>`);
         expect(card).not.toContain('Open release');
         expect(card).toContain('Editorial Review');
         expect(card).toContain('<dt>Type</dt>');
@@ -885,7 +886,7 @@ describe('dashboard HTTP composition', () => {
       expect(footer).toContain('Create project');
       expect(footer).not.toContain('Cancel');
       expect(dialog).toContain('<form id="project-create-form" method="post" action="/projects"');
-      expect(dialog).toContain('data-dialog-form data-dialog-async="false"');
+      expect(dialog).toContain('data-dialog-form data-dialog-async="true"');
       expect(dialog).toContain('name="returnTo" value="/"');
       expect(dialog).toMatch(/name="status"[^>]*value="ready"[^>]*checked/);
       expect(standalone.text).toMatch(/name="status"[^>]*value="ready"[^>]*checked/);

@@ -13957,11 +13957,11 @@
   padding: 0;
 }
 /* Description and Notes sit side by side under a full-width Title. */
-.app-dialog--refined .project-edit-dialog-section-body:has(> .field > #description) {
+.app-dialog--refined .project-edit-dialog-section-body:is(:has(> .field > #description), .project-form-details-body) {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
-.app-dialog--refined .project-edit-dialog-section-body:has(> .field > #description) > .field:has(> #title) {
+.app-dialog--refined .project-edit-dialog-section-body:is(:has(> .field > #description), .project-form-details-body) > .field:has(> :is(#title, input[name="title"])) {
   grid-column: 1 / -1;
 }
 .app-dialog--refined.project-form-dialog .status-row {
@@ -13969,7 +13969,7 @@
   gap: var(--space-md);
 }
 /* Status, Project type, and Tags close the merged Project details section. */
-.app-dialog--refined .project-edit-dialog-section-body:has(> .field > #description) > .status-row {
+.app-dialog--refined .project-edit-dialog-section-body:is(:has(> .field > #description), .project-form-details-body) > .status-row {
   grid-column: 1 / -1;
 }
 
@@ -14016,7 +14016,8 @@
 }
 /* Three times the three-row height (3 lines at 0.875rem/1.5, padding, and
    border); the 4.75rem minimum still lets people resize them back down. */
-.app-dialog--refined.project-form-dialog .field > textarea:is(#description, #notes) {
+.app-dialog--refined.project-form-dialog .field > textarea:is(#description, #notes),
+.app-dialog--refined .project-form-details-body > .field > textarea:is([name="description"], [name="notes"]) {
   height: calc(3 * (3 * 1.5 * 0.875rem + 0.75rem + 2px));
 }
 .app-dialog .field input::placeholder,
@@ -15226,7 +15227,7 @@ button[aria-disabled="true"] > .project-create-submit-icon {
 }
 
 @media (max-width: 640px) {
-  .app-dialog--refined .project-edit-dialog-section-body:has(> .field > #description),
+  .app-dialog--refined .project-edit-dialog-section-body:is(:has(> .field > #description), .project-form-details-body),
   .app-dialog--refined.project-form-dialog .status-row,
   .app-dialog--refined .release-details-section-body,
   .app-dialog--refined .release-distribution-row {

@@ -5,6 +5,10 @@ import { enhanceReleaseSignatureManagers } from './client/release-signature-mana
 import { enhanceReleaseSignatures } from './client/release-signatures.js';
 import { enhanceReleaseScheduleDefaults } from './client/release-schedule-defaults.js';
 import { enhanceReleaseEditDialog } from './client/release-edit-dialog.js';
+import { enhanceProjectCreateDialog } from './client/project-create-dialog.js';
+import { enhanceProjectEditDialog } from './client/project-edit-dialog.js';
+import { enhanceProjectDetailRefresh } from './client/project-detail-refresh.js';
+import { enhanceProjectEditHostRefresh } from './client/project-edit-host-refresh.js';
 import { enhanceReleaseDetailRefresh } from './client/release-detail-refresh.js';
 import {
   enhancePreview,
@@ -308,6 +312,10 @@ if (typeof document !== 'undefined') {
     enhanceAssetEditDialog(document);
     enhanceReleaseScheduleDefaults(document);
     enhanceReleaseEditDialog(document);
+    enhanceProjectCreateDialog(document);
+    enhanceProjectEditDialog(document);
+    enhanceProjectDetailRefresh(document);
+    enhanceProjectEditHostRefresh(document);
     enhanceReleaseDetailRefresh(document);
     enhanceNoteDialogUnsavedChanges(document);
     enhanceBookHierarchyReorder(document);

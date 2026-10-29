@@ -6,6 +6,7 @@
 {% import "partials/dialog.njk" as dialog %}
 {% import "partials/dropdown.njk" as dropdown %}
 {% import "partials/project-create-dialog.njk" as projectCreateDialog %}
+{% import "partials/project-edit-dialog.njk" as projectEditDialog %}
 
 {% set page_title = "Projects" %}
 
@@ -148,6 +149,9 @@
 
 {% block overlay %}
   {{ projectCreateDialog.render(projectCreateForm, '/projects', _csrf, projectCreateDialogOpen) }}
+  {# One Edit Project dialog for every List information card;
+     project-edit-dialog.js loads the chosen project into it. #}
+  {% if projectEditForm %}{{ projectEditDialog.render(none, projectEditForm, _csrf, false, '', 'edit-project-') }}{% endif %}
 
   {% call dialog.render('projects-filter-dialog', 'Filter', dialogClass='app-dialog--utility') %}
     <form id="project-filters" class="app-dialog-form project-form" method="get" action="/projects">

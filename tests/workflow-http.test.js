@@ -353,7 +353,7 @@ describe('Phase 6B HTTP workflow', () => {
       const res = await app.testAgent.get(`/projects/${projectId}`).expect(200);
 
       expect(res.text).toContain(`href="/projects/${projectId}/edit"`);
-      expect(res.text).toContain('data-dialog-open="project-edit-dialog"');
+      expect(res.text).toContain(`data-project-edit-id="${projectId}"`);
       // The icon-only workspace edit action retains its accessible label.
       expect(res.text).toMatch(/<a[^>]*aria-label="Edit project"[^>]*>/);
 

@@ -1,0 +1,79 @@
+{% import "partials/dialog.njk" as dialog %}
+
+{# The one Edit Project dialog, saved through the shared async binder
+   (POST /projects/:id with Accept: application/json). Every open loads the
+   authoritative edit model (GET /projects/:id/edit) first, so any host can
+   offer it for any project through data-project-edit-id actions. project
+   names the record the rendered values belong to; open renders it open with
+   those values (Project Detail's ?edit=1 deep link and a refused HTML save).
+   Hosts that also render New Project pass fieldIdPrefix ('edit-project-';
+   'project-edit-' would collide with the dialog's own description id) so
+   ids, labels and ARIA references stay unique. #}
+{% macro render(project, projectEditForm, csrfToken, open=false, returnTo='', fieldIdPrefix='') %}
+  {% set values = projectEditForm.values %}
+  {% set errors = projectEditForm.errors %}
+  {% set statuses = projectEditForm.statuses %}
+  {% set projectTypes = projectEditForm.projectTypes %}
+  {% set tags = projectEditForm.tags %}
+  {% set selectedTagIds = projectEditForm.selectedTagIds %}
+  {% set projectFieldIdPrefix = fieldIdPrefix %}
+  {% call dialog.render('project-edit-dialog', 'Edit Project', open, 'project-edit-description', 'project-edit-form', 'project-form-dialog app-dialog--refined') %}
+    <p id="project-edit-description" class="app-dialog-description">
+      Edit project details, status, and links.
+    </p>
+
+    <div class="app-dialog-body project-edit-dialog-body">
+      <form id="project-edit-form" method="post" action="{{ '/projects/' ~ project.id if project and project.id else '' }}" class="app-dialog-form project-form project-edit-dialog-form"
+            data-dialog-form data-dialog-async="true"{% if project and project.id %} data-project-edit-loaded-id="{{ project.id }}"{% endif %} data-dialog-reset-on-close{% if projectEditForm.resetValues %} data-dialog-reset-values="{{ projectEditForm.resetValues | dump }}"{% endif %}
+            data-dialog-pending-message="Saving project…" data-dialog-success-message="Project updated."
+            data-dialog-error-message="Project could not be saved."
+            data-dialog-network-error-message="Could not confirm whether the project was saved. Your changes are kept. Reload the page to check the project before saving again." novalidate>
+        <input type="hidden" name="_csrf" value="{{ csrfToken }}">
+        {% if returnTo %}
+          <input type="hidden" name="returnTo" value="{{ returnTo }}" data-dialog-return-location>
+        {% endif %}
+
+        <div class="error-summary" role="alert" data-dialog-error{% if not errors.general %} hidden{% endif %}><p data-dialog-error-text>{{ errors.general }}</p></div>
+
+        {% set projectFormDialog = true %}
+        {% include "partials/project-form-fields.njk" %}
+      </form>
+
+      <section class="settings-section project-edit-dialog-section project-actions project-edit-dialog-actions" aria-labelledby="{{ fieldIdPrefix }}project-actions-heading">
+        <h3 id="{{ fieldIdPrefix }}project-actions-heading">Project actions</h3>
+        <div class="project-edit-dialog-section-body project-edit-dialog-actions-body">
+
+          {# Archive and Delete keep their own HTML forms and confirmations;
+             only their target follows the loaded project. #}
+          <details class="notes-workspace-disclosure notes-workspace-disclosure--archive" data-project-edit-action="archive">
+            <summary>Archive project</summary>
+            <div class="notes-workspace-disclosure-content">
+              <p class="notes-workspace-warning">Archive keeps this project and its data, but makes it archived and read-only.</p>
+              <form method="post" action="{{ '/projects/' ~ project.id ~ '/archive' if project and project.id else '' }}">
+                <input type="hidden" name="_csrf" value="{{ csrfToken }}">
+                <button class="button button-small button-secondary" type="submit" data-confirm="Archive this project? This cannot be undone.">Archive project</button>
+              </form>
+            </div>
+          </details>
+
+          <details class="notes-workspace-disclosure notes-workspace-disclosure--delete" data-project-edit-action="delete">
+            <summary>Delete project</summary>
+            <div class="notes-workspace-disclosure-content">
+              <p class="notes-workspace-warning">Permanently delete this project and its owned data. This cannot be undone.</p>
+              <form method="post" action="{{ '/projects/' ~ project.id ~ '/delete' if project and project.id else '' }}">
+                <input type="hidden" name="_csrf" value="{{ csrfToken }}">
+                <button class="button button-small button-danger" type="submit" data-confirm="Delete this project permanently? This cannot be undone." data-confirm-dialog-title="Delete project" data-confirm-dialog-confirm-label="Delete project">Delete project</button>
+              </form>
+            </div>
+          </details>
+        </div>
+      </section>
+    </div>
+
+    <div class="app-dialog-status" data-dialog-status role="status" aria-live="polite"></div>
+
+    <footer class="app-dialog-footer">
+      <button class="button button-primary" type="submit" form="project-edit-form" data-dialog-submit>Save changes</button>
+    </footer>
+  {% endcall %}
+{% endmacro %}

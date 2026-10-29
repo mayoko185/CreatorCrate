@@ -169,7 +169,7 @@ test('Projects List rows navigate from the background and offer Edit only for no
   });
 });
 
-test('Projects List Edit opens the hosted Edit Project dialog and Cancel, errors and Save keep the list context', async ({ page }) => {
+test('Projects List Edit opens Edit Project in place and Cancel, errors and Save keep the list context', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await withProjectsApp(async ({ origin, activeId }) => {
     const listPath = '/projects?view=list&status=ready&sort=title&order=asc';
@@ -180,31 +180,48 @@ test('Projects List Edit opens the hosted Edit Project dialog and Cancel, errors
       await card.getByRole('link', { name: 'Edit project' }).click();
       const dialog = page.locator('#project-edit-dialog');
       await expect(dialog).toBeVisible();
-      expect(new URL(page.url()).searchParams.get('returnTo')).toBe(listPath);
+      await expect(dialog.locator('#edit-project-title')).toBeVisible();
+      await expect(card).toBeHidden();
+      expect(currentPath(page)).toBe(listPath);
       return dialog;
     };
     await page.goto(origin + listPath);
     await page.locator(TITLE_BOUND).first().waitFor({ state: 'attached' });
+    await page.evaluate(() => { window.__projectsListMarker = true; });
 
-    // Cancel closes the dialog and returns to the exact list location.
+    // Close leaves the list as it was and returns focus to the title.
     let dialog = await openEdit();
     await dialog.getByRole('button', { name: 'Close Edit Project' }).click();
-    await expect.poll(() => currentPath(page)).toBe(listPath);
-    await page.locator(TITLE_BOUND).first().waitFor({ state: 'attached' });
+    await expect(dialog).toBeHidden();
+    await expect(listParts(page, activeId).title).toBeFocused();
+    expect(currentPath(page)).toBe(listPath);
 
-    // Validation errors stay in the dialog with the list return preserved.
+    // Validation errors stay in the dialog with the draft kept; New Project's
+    // same-named field is untouched.
     dialog = await openEdit();
-    await dialog.locator('#title').fill('');
+    await dialog.locator('#edit-project-title').fill('');
+    await dialog.locator('#edit-project-description').fill('Draft kept');
     await dialog.getByRole('button', { name: 'Save changes' }).click();
-    await expect(page.locator('#project-edit-dialog')).toBeVisible();
-    await expect(page.locator('#project-edit-dialog #title')).toHaveAttribute('aria-invalid', 'true');
-    await expect(page.locator('#project-edit-dialog input[name="returnTo"]')).toHaveValue(listPath);
+    await expect(dialog.locator('#edit-project-title')).toHaveAttribute('aria-invalid', 'true');
+    await expect(dialog.locator('#edit-project-description')).toHaveValue('Draft kept');
+    await expect(page.locator('#project-create-dialog #title')).not.toHaveAttribute('aria-invalid', 'true');
+    expect(currentPath(page)).toBe(listPath);
 
-    // Save persists and lands back on the same list, showing the edit.
-    await page.locator('#project-edit-dialog #title').fill('Renamed From The List');
-    await page.locator('#project-edit-dialog').getByRole('button', { name: 'Save changes' }).click();
-    await expect.poll(() => currentPath(page)).toBe(listPath);
+    // Save stays on the same list and refreshes it in place.
+    await dialog.locator('#edit-project-title').fill('Renamed From The List');
+    await dialog.getByRole('button', { name: 'Save changes' }).click();
+    await expect(dialog).toBeHidden();
     await expect(listParts(page, activeId).title).toHaveText('Renamed From The List');
+    await expect(page.locator('[data-dialog-feedback]')).toContainText('Project updated.');
+    expect(currentPath(page)).toBe(listPath);
+    expect(await page.evaluate(() => window.__projectsListMarker)).toBe(true);
+
+    // Reopening loads the saved values.
+    dialog = await openEdit();
+    await expect(dialog.locator('#edit-project-title')).toHaveValue('Renamed From The List');
+    await expect(dialog.locator('#edit-project-description')).toHaveValue('Draft kept');
+    await page.keyboard.press('Escape');
+    await expect(dialog).toBeHidden();
   });
 });
 

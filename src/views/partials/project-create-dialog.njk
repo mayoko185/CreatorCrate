@@ -15,15 +15,14 @@
 
     <div class="app-dialog-body project-edit-dialog-body">
       <form id="project-create-form" method="post" action="/projects" class="app-dialog-form project-form project-edit-dialog-form"
-            data-dialog-form data-dialog-async="false" data-dialog-reset-on-close{% if projectCreateForm.resetValues %} data-dialog-reset-values="{{ projectCreateForm.resetValues | dump }}"{% endif %} novalidate>
+            data-dialog-form data-dialog-async="true" data-dialog-reset-on-close{% if projectCreateForm.resetValues %} data-dialog-reset-values="{{ projectCreateForm.resetValues | dump }}"{% endif %}
+            data-dialog-pending-message="Creating project…"
+            data-dialog-error-message="Project could not be created."
+            data-dialog-network-error-message="Could not confirm whether the project was created. Check Projects before creating it again." novalidate>
         <input type="hidden" name="_csrf" value="{{ csrfToken }}">
         <input type="hidden" name="returnTo" value="{{ projectCreateForm.invocationReturnTo or returnTo }}"{% if projectCreateForm.invocationReturnTo %} data-dialog-return-location{% endif %}>
 
-        {% if errors.general %}
-          <div class="error-summary" role="alert">
-            <p>{{ errors.general }}</p>
-          </div>
-        {% endif %}
+        <div class="error-summary" role="alert" data-dialog-error{% if not errors.general %} hidden{% endif %}><p data-dialog-error-text>{{ errors.general }}</p></div>
 
         {% set projectFormDialog = true %}
         {% include "partials/project-form-fields.njk" %}

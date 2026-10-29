@@ -2608,22 +2608,111 @@ validate that value for its exact entity and allowed host path before carrying
 it through the host redirect and native form. A validated hidden
 `data-dialog-return-location` field lets `appDialogRequestClose()` navigate
 only after the existing close guard accepts a terminal cancellation; ordinary
-dialog close lifecycles do not navigate. Project Assets -> Edit Project,
-Projects List information card -> Edit Project (the route owner also accepts
-the canonical `/projects` path, any query),
-Books -> Edit Book, and Project Assets -> selected-assets
-New Release adopt this contract. Projects-list New Project and Releases-list
-New Release also retain exact list context through create validation/error
-rerenders; their route owners accept only canonical `/projects` and `/releases`
-paths and keep their established post-create detail destinations. The Dashboard
-hosts both create dialogs with a fixed `returnTo=/`; each route owner accepts
-exactly `/` to rerender the Dashboard (`422`) with only its own dialog open,
-and any other value falls back to its established host or standalone form.
-Because both dialogs share field names, the Dashboard renders the New Release
-fields with a `fieldIdPrefix`, which prefixes every field id and the label,
-ARIA and picker references to it; other release hosts keep unprefixed ids. The edit flows may also use the validated
-destination after a successful mutation; selected-assets Release creation
-deliberately retains its canonical `/releases/:id/assets` success destination.
+dialog close lifecycles do not navigate. Books -> Edit Book and Project
+Assets -> selected-assets New Release adopt this contract. Project dialogs no
+longer use it for ordinary in-page invocation (see Project dialogs below);
+`returnTo` survives for them only on direct links and native form posts.
+Projects-list New Project and Releases-list New Release also retain exact list
+context through native (HTML) create validation/error rerenders; their route
+owners accept only canonical `/projects` and `/releases` paths, and a native
+create keeps its established post-create detail destination. The Dashboard
+hosts both create dialogs with a fixed `returnTo=/`; for a native post each
+route owner accepts exactly `/` to rerender the Dashboard (`422`) with only its
+own dialog open, and any other value falls back to its established host or
+standalone form. Because both dialogs share field names, the Dashboard renders
+the New Release fields with a `fieldIdPrefix`, which prefixes every field id
+and the label, ARIA and picker references to it; other release hosts keep
+unprefixed ids. The edit flows may also use the validated destination after a
+successful mutation; selected-assets Release creation deliberately retains its
+canonical `/releases/:id/assets` success destination.
+
+**Project dialogs.** New Project and Edit Project submit through the shared
+async dialog binder ([`app-dialogs.js`](src/static/client/app-dialogs.js))
+with `Accept: application/json`; without that header the routes keep their
+native redirect and rerender behaviour. Both keep a refused submission's
+values and field errors inside the dialog, and neither dialog can be closed
+while its request is pending. A lost or unreadable response is reported as
+unconfirmed and is never resubmitted.
+
+- **New Project** opens in place on the Dashboard and Projects
+  ([`project-create-dialog.js`](src/static/client/project-create-dialog.js)).
+  `POST /projects` answers `201` with the created project's id, title and URL
+  plus fresh reset values built from the saved New Project defaults, `422`
+  with field `errors`, or `500` without backend detail. On success the
+  dialog closes, the page stays where it was, and the binder's feedback
+  message gains an explicit View Project link; nothing navigates
+  automatically. The host then refreshes its own content with a GET: the
+  Dashboard through `refreshDashboard()`, Projects through its live region
+  at the current URL (filters, view and scroll kept). A failed refresh is
+  reported (the Dashboard appends a note to the feedback, Projects shows it in
+  its live-region status); the create is not repeated. The standalone
+  `GET /projects/new` form and a native `POST /projects`, which redirects to
+  `/projects/:id`, remain supported.
+- **Edit Project** is one dialog per host
+  ([`project-edit-dialog.njk`](src/views/partials/project-edit-dialog.njk),
+  [`project-edit-dialog.js`](src/static/client/project-edit-dialog.js)).
+  Project Detail renders it for its own project; Projects (project cards and
+  List information cards), Project Assets (not for archived projects) and the
+  Dashboard information cards render it without a project, with
+  `fieldIdPrefix` `edit-project-`. Edit actions name their project with
+  `data-project-edit-id`, which one delegated document listener intercepts for
+  unmodified primary clicks, and keep the canonical `/projects/:id/edit`
+  `href`. Each open hides the form, disables submission, and loads
+  `GET /projects/:id/edit` as JSON (`Vary: Accept`, `no-store`): `200` with
+  every editable value (assigned tags included), the current tag options and
+  the update/archive/delete action URLs, `404` `PROJECT_NOT_FOUND` or `409`
+  `PROJECT_ARCHIVED`. Only a response for the requested project hydrates the
+  dialog: tag options are re-rendered, the form and the Archive/Delete forms
+  are retargeted, and the complete model becomes the baseline through
+  `setAppDialogBaseline()`, so every save sends every field. A load superseded
+  by dismissal or a later open is dropped, and no open is accepted while a
+  save is pending. `POST /projects/:id` answers `200` with the same model
+  rebuilt from the saved record, `422` `PROJECT_INVALID` with field `errors`,
+  `PROJECT_OWNERSHIP` with the refusal's own status, `404`, or `500`
+  `PROJECT_UPDATE_FAILED`. After an acknowledged save the dialog closes
+  without navigating and dispatches `project-edit-saved` on the document.
+
+Hosts refresh from `project-edit-saved` with GET requests only, so a
+confirmed save is never repeated, and leave unrelated filters, selections,
+drafts and page state alone:
+
+- **Project Detail**
+  ([`project-detail-refresh.js`](src/static/client/project-detail-refresh.js))
+  fetches its page again without the one-shot `edit`/`returnTo`/`notice`
+  markers and replaces the `data-project-detail-region` regions only when
+  every one is matched, plus the heading and document title. The Releases
+  section, dialogs and feedback notice are untouched; scroll and focus are
+  kept.
+- **Projects**
+  ([`project-edit-host-refresh.js`](src/static/client/project-edit-host-refresh.js))
+  refreshes its live region at the current URL, so filters, view, page and
+  scroll stay as shown. Focus lost with a replaced List title moves to the
+  same project's title, or to the main content when the save moved the
+  project out of the filtered results.
+- **Project Assets** (same module) acts only on a save of its own project. It
+  applies the saved title in place and re-reads only the Open locally link
+  from a GET of the current URL, since a save can rename the project folder;
+  the link is disabled until that answer arrives and the asset regions,
+  selection and pending order are never replaced.
+- **Dashboard** reuses its edit-saved recovery: a GET refresh of
+  `[data-dashboard]` (described with Dashboard scheduling below), reporting a failed
+  refresh as a saved project on a possibly stale page.
+
+Projects, Project Assets and Project Detail report a failed refresh as a saved
+project on a possibly stale page and offer Retry refresh, which only repeats
+the GET.
+
+Direct links keep working. A `/projects/:id/edit` page request (a modified
+click, a copied link or an old bookmark) is redirected to Project Detail's
+`/projects/:id?edit=1` deep link, carrying a `returnTo` only when its path is
+`/projects` or that project's `/projects/:id/assets`. That deep link renders the dialog open
+with the project's values; with a validated `returnTo` it renders a
+`data-dialog-return-location` field, so a successful save navigates back to
+the invoking page and a terminal cancellation follows the contract above. This
+navigation belongs to direct-link compatibility only: an Edit action clicked
+inside a host opens that host's dialog in place and never carries `returnTo`.
+A native `POST /projects/:id` still redirects to the validated `returnTo` or
+Project Detail.
 
 New Release forms omit Published date. The `POST /releases` route passes
 `publishedDate: null` to both creation service paths, so submitted form data

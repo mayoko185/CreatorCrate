@@ -3694,7 +3694,13 @@ describe('asset browser HTTP workflow', () => {
       const removeMissingIndex = headingActions.indexOf('aria-label="Remove missing assets"');
       const editIndex = headingActions.indexOf('aria-label="Edit project"');
 
-      expect(headingActions).toContain(`href="/projects/${id}/edit"`);
+      expect(headingActions).toContain(`href="/projects/${id}/edit" data-project-edit-id="${id}"`);
+      expect(headingActions).not.toContain('data-dialog-invocation');
+      // Edit Project opens in place on Project Assets, with prefixed field ids.
+      const editDialog = res.text.match(/<dialog id="project-edit-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+      expect(editDialog).toContain('data-dialog-async="true"');
+      expect(editDialog).toContain('id="edit-project-title"');
+      expect(editDialog).not.toContain('name="returnTo"');
       expect(actions).toContain('creatorcrate-open://');
       expect(actions).toContain(
         `href="creatorcrate-open://open?v=2&amp;path=${encodeURIComponent(`D:\\example\\${row.project_dir}`)}&amp;select=0"`
@@ -3835,6 +3841,7 @@ describe('asset browser HTTP workflow', () => {
 
       const actions = projectAssetsDisplayActions(res.text);
       expect(actions).not.toContain('aria-label="Edit project"');
+      expect(res.text).not.toContain('id="project-edit-dialog"');
       expect(actions).toContain('aria-label="Open locally"');
       expect(extractPageHeadingActions(res.text)).not.toContain('Open locally');
     });

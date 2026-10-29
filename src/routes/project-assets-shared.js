@@ -8,6 +8,7 @@ import {
 } from '../services/project-asset-category-capabilities.js';
 
 import { buildPageDefaultsDialogModel } from './page-defaults.js';
+import { buildProjectEditDialogFormModel } from './project-create-form.js';
 
 import { buildCanonicalAssetBrowserQuery, buildAssetBrowserQueryString } from '../services/workflow-query-service.js';
 
@@ -748,6 +749,12 @@ export function buildBrowserRenderModel(
 
   return {
     project,
+    // Edit Project opens in place on Project Assets (archived projects are
+    // read-only and offer no Edit action).
+    projectEditForm: isProjectArchived(project) ? null : buildProjectEditDialogFormModel({
+      tagService: req?.app?.locals?.tagService,
+      pageDefaultsService,
+    }),
     openLocallyUri: buildOpenLocallyUri({
       windowsRoot: req ? getOpenLocallySettingsService(req).getWindowsProjectsPath() : null,
       projectDir: project.project_dir,

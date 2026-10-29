@@ -54,3 +54,22 @@ export function buildNewProjectFormModel({
     },
   };
 }
+
+/**
+ * Option lists for a host's Edit Project dialog, rendered without a project:
+ * every open loads that project's values and current tags from
+ * GET /projects/:id/edit. The lists match Project Detail's edit form.
+ */
+export function buildProjectEditDialogFormModel({ tagService, pageDefaultsService, tags = null } = {}) {
+  // tags: a tag list the host already loaded (for New Project), reused as is.
+  if ((!tags && !tagService) || !pageDefaultsService) return null;
+  return {
+    values: {},
+    errors: {},
+    statuses: pageDefaultsService.getOptionCatalogue('new_project', 'status'),
+    projectTypes: pageDefaultsService.getOptionCatalogue('projects', 'projectType')
+      .filter(({ value }) => value !== 'all'),
+    tags: tags || loadAvailableTags(tagService),
+    selectedTagIds: [],
+  };
+}

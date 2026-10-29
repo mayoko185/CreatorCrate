@@ -1,25 +1,29 @@
 {% import "partials/dropdown.njk" as dropdown %}
+{# Hosts that render New Project and Edit Project together pass
+   projectFieldIdPrefix so ids, labels and ARIA references stay unique; other
+   hosts keep the unprefixed ids. #}
+{% set idPrefix = projectFieldIdPrefix or '' %}
 
 <section class="settings-section project-form-section{% if projectFormDialog %} project-edit-dialog-section{% endif %}">
   <h3>{{ 'Project details' if projectFormDialog else 'Basic information' }}</h3>
-  <div class="project-form-section-body{% if projectFormDialog %} project-edit-dialog-section-body{% endif %}">
+  <div class="project-form-section-body{% if projectFormDialog %} project-edit-dialog-section-body project-form-details-body{% endif %}">
 
-  <div class="field {% if errors.title %}field-error{% endif %}">
-    <label for="title">Title <span class="required" aria-label="required">*</span></label>
-    <input type="text" id="title" name="title" value="{{ values.title or '' }}" maxlength="200" required{% if errors.title %} aria-describedby="title-error" aria-invalid="true"{% endif %}>
-    {% if errors.title %}<span class="field-error-message" id="title-error">{{ errors.title }}</span>{% endif %}
+  <div class="field {% if errors.title %}field-error{% endif %}" data-dialog-field="title">
+    <label for="{{ idPrefix }}title">Title <span class="required" aria-label="required">*</span></label>
+    <input type="text" id="{{ idPrefix }}title" name="title" value="{{ values.title or '' }}" maxlength="200" required{% if errors.title %} aria-describedby="{{ idPrefix }}title-error" aria-invalid="true"{% endif %}>
+    {% if errors.title %}<span class="field-error-message" id="{{ idPrefix }}title-error">{{ errors.title }}</span>{% endif %}
   </div>
 
-  <div class="field {% if errors.description %}field-error{% endif %}">
-    <label for="description">Description</label>
-    <textarea id="description" name="description" rows="{{ 3 if projectFormDialog else 6 }}" maxlength="4000"{% if errors.description %} aria-describedby="description-error" aria-invalid="true"{% endif %}>{{ values.description or '' }}</textarea>
-    {% if errors.description %}<span class="field-error-message" id="description-error">{{ errors.description }}</span>{% endif %}
+  <div class="field {% if errors.description %}field-error{% endif %}" data-dialog-field="description">
+    <label for="{{ idPrefix }}description">Description</label>
+    <textarea id="{{ idPrefix }}description" name="description" rows="{{ 3 if projectFormDialog else 6 }}" maxlength="4000"{% if errors.description %} aria-describedby="{{ idPrefix }}description-error" aria-invalid="true"{% endif %}>{{ values.description or '' }}</textarea>
+    {% if errors.description %}<span class="field-error-message" id="{{ idPrefix }}description-error">{{ errors.description }}</span>{% endif %}
   </div>
 
-  <div class="field {% if errors.notes %}field-error{% endif %}">
-    <label for="notes">Notes</label>
-    <textarea id="notes" name="notes" rows="{{ 3 if projectFormDialog else 4 }}" maxlength="10000"{% if errors.notes %} aria-describedby="notes-error" aria-invalid="true"{% endif %}>{{ values.notes or '' }}</textarea>
-    {% if errors.notes %}<span class="field-error-message" id="notes-error">{{ errors.notes }}</span>{% endif %}
+  <div class="field {% if errors.notes %}field-error{% endif %}" data-dialog-field="notes">
+    <label for="{{ idPrefix }}notes">Notes</label>
+    <textarea id="{{ idPrefix }}notes" name="notes" rows="{{ 3 if projectFormDialog else 4 }}" maxlength="10000"{% if errors.notes %} aria-describedby="{{ idPrefix }}notes-error" aria-invalid="true"{% endif %}>{{ values.notes or '' }}</textarea>
+    {% if errors.notes %}<span class="field-error-message" id="{{ idPrefix }}notes-error">{{ errors.notes }}</span>{% endif %}
   </div>
 {# Dialogs keep these controls in the same "Project details" section. #}
 {% if not projectFormDialog %}
@@ -69,9 +73,9 @@
   {% endfor %}
 
   <div class="field-row status-row">
-    <div class="field status-field">
+    <div class="field status-field" data-dialog-field="status" data-dialog-error-ref="{{ idPrefix }}status-error">
       {{ dropdown.singleSelect({
-        id: "project-status-form",
+        id: idPrefix ~ "project-status-form",
         name: "status",
         label: "Status",
         required: true,
@@ -80,23 +84,23 @@
         summary: statusSummary,
         triggerAriaLabel: "Status: " ~ statusSummary,
         summaryAttributes: [
-          ["aria-describedby", "status-error" if errors.status else none],
+          ["aria-describedby", idPrefix ~ "status-error" if errors.status else none],
           ["aria-invalid", "true" if errors.status else none]
         ],
         inputAttributes: [
           ["required", true],
-          ["aria-describedby", "status-error" if errors.status else none],
+          ["aria-describedby", idPrefix ~ "status-error" if errors.status else none],
           ["aria-invalid", "true" if errors.status else none]
         ],
         fieldClasses: "status-field asset-viewer-filter-field" ~ (" field-error" if errors.status else ""),
         panelLabel: "Status options"
       }) }}
-      {% if errors.status %}<span class="field-error-message" id="status-error">{{ errors.status }}</span>{% endif %}
+      {% if errors.status %}<span class="field-error-message" id="{{ idPrefix }}status-error">{{ errors.status }}</span>{% endif %}
     </div>
 
-    <div class="field status-field">
+    <div class="field status-field" data-dialog-field="projectType" data-dialog-error-ref="{{ idPrefix }}projectType-error">
       {{ dropdown.singleSelect({
-        id: "project-type-form",
+        id: idPrefix ~ "project-type-form",
         name: "projectType",
         label: "Project type",
         required: true,
@@ -105,23 +109,23 @@
         summary: projectTypeSummary,
         triggerAriaLabel: "Project type: " ~ projectTypeSummary,
         summaryAttributes: [
-          ["aria-describedby", "projectType-error" if errors.projectType else none],
+          ["aria-describedby", idPrefix ~ "projectType-error" if errors.projectType else none],
           ["aria-invalid", "true" if errors.projectType else none]
         ],
         inputAttributes: [
           ["required", true],
-          ["aria-describedby", "projectType-error" if errors.projectType else none],
+          ["aria-describedby", idPrefix ~ "projectType-error" if errors.projectType else none],
           ["aria-invalid", "true" if errors.projectType else none]
         ],
         fieldClasses: "status-field asset-viewer-filter-field" ~ (" field-error" if errors.projectType else ""),
         panelLabel: "Project type options"
       }) }}
-      {% if errors.projectType %}<span class="field-error-message" id="projectType-error">{{ errors.projectType }}</span>{% endif %}
+      {% if errors.projectType %}<span class="field-error-message" id="{{ idPrefix }}projectType-error">{{ errors.projectType }}</span>{% endif %}
     </div>
 
-    <div class="field status-field">
+    <div class="field status-field" data-dialog-field="tagIds" data-dialog-error-ref="{{ idPrefix }}tagIds-error">
       {{ dropdown.multiSelect({
-        id: "project-tags-form",
+        id: idPrefix ~ "project-tags-form",
         name: "tagIds[]",
         label: "Tags",
         options: tagOptions,
@@ -131,11 +135,11 @@
         summary: tagSummary,
         triggerAriaLabel: "Tags: " ~ tagSummary,
         summaryAttributes: [
-          ["aria-describedby", "tagIds-error" if errors.tagIds else none],
+          ["aria-describedby", idPrefix ~ "tagIds-error" if errors.tagIds else none],
           ["aria-invalid", "true" if errors.tagIds else none]
         ],
         inputAttributes: [
-          ["aria-describedby", "tagIds-error" if errors.tagIds else none],
+          ["aria-describedby", idPrefix ~ "tagIds-error" if errors.tagIds else none],
           ["aria-invalid", "true" if errors.tagIds else none]
         ],
         emptyState: {
@@ -146,7 +150,7 @@
         fieldClasses: "status-field asset-viewer-filter-field" ~ (" field-error" if errors.tagIds else ""),
         panelLabel: "Tag options"
       }) }}
-      {% if errors.tagIds %}<span class="field-error-message" id="tagIds-error">{{ errors.tagIds }}</span>{% endif %}
+      {% if errors.tagIds %}<span class="field-error-message" id="{{ idPrefix }}tagIds-error">{{ errors.tagIds }}</span>{% endif %}
       <span class="help-text">Add new tags in <a href="/settings/tags">Settings › Tags</a>.</span>
     </div>
   </div>
@@ -157,11 +161,11 @@
   <h3>{{ 'Project link' if projectFormDialog else 'Links' }}</h3>
   <div class="project-form-section-body{% if projectFormDialog %} project-edit-dialog-section-body{% endif %}">
 
-  <div class="field {% if errors.patreonUrl %}field-error{% endif %}">
-    <label for="patreonUrl"{% if projectFormDialog %} class="sr-only"{% endif %}>Project link</label>
-    <input type="url" id="patreonUrl" name="patreonUrl" value="{{ values.patreonUrl or '' }}" aria-describedby="patreonUrl-help{% if errors.patreonUrl %} patreonUrl-error{% endif %}"{% if errors.patreonUrl %} aria-invalid="true"{% endif %}>
-    <span class="help-text" id="patreonUrl-help">Optional absolute HTTP or HTTPS URL for this project.</span>
-    {% if errors.patreonUrl %}<span class="field-error-message" id="patreonUrl-error">{{ errors.patreonUrl }}</span>{% endif %}
+  <div class="field {% if errors.patreonUrl %}field-error{% endif %}" data-dialog-field="patreonUrl">
+    <label for="{{ idPrefix }}patreonUrl"{% if projectFormDialog %} class="sr-only"{% endif %}>Project link</label>
+    <input type="url" id="{{ idPrefix }}patreonUrl" name="patreonUrl" value="{{ values.patreonUrl or '' }}" aria-describedby="{{ idPrefix }}patreonUrl-help{% if errors.patreonUrl %} {{ idPrefix }}patreonUrl-error{% endif %}"{% if errors.patreonUrl %} aria-invalid="true"{% endif %}>
+    <span class="help-text" id="{{ idPrefix }}patreonUrl-help">Optional absolute HTTP or HTTPS URL for this project.</span>
+    {% if errors.patreonUrl %}<span class="field-error-message" id="{{ idPrefix }}patreonUrl-error">{{ errors.patreonUrl }}</span>{% endif %}
   </div>
   </div>
 </section>

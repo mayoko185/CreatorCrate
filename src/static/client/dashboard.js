@@ -12,6 +12,7 @@ import { createLiveRegionEngine } from './live-regions.js';
 import { DATE_PICKER_SELECT_EVENT, enhanceDatePickers } from './pickers.js';
 import { enhancePreviewMedia } from './preview.js';
 import { RELEASE_EDIT_SAVED_EVENT } from './release-edit-dialog.js';
+import { PROJECT_EDIT_SAVED_EVENT } from './project-edit-dialog.js';
 
 const STATUS_FILTERS_SELECTOR = '[data-dashboard-status-filters]';
 const STATUS_FILTER_SELECTOR = '[data-dashboard-status-filter]';
@@ -1298,7 +1299,8 @@ function reconciledMessage(followUp, region) {
 function blockedMessage(followUp, outcome) {
   const problem = refreshProblem(outcome);
   if (followUp.kind === 'edited') {
-    return `The release was saved, but ${problem}, so counts and lists may be out of date. ${RECOVERY_MESSAGES.paused}`;
+    const record = followUp.record === 'project' ? 'project' : 'release';
+    return `The ${record} was saved, but ${problem}, so counts and lists may be out of date. ${RECOVERY_MESSAGES.paused}`;
   }
   if (followUp.kind === 'saved') {
     const change = followUp.mutation.action === 'undo' ? 'Undo was saved' : 'The schedule change was saved';
@@ -1458,18 +1460,18 @@ function createScheduleRecovery(doc, ui) {
     async refreshFailed({ mutation, ...outcome }) {
       block({ kind: 'saved', mutation, releaseId: mutation.releaseId }, outcome);
     },
-    // A saved Edit Release refreshes the dashboard with a GET only. A
-    // superseded refresh is left to the refresh that replaced it, which
-    // already reflects the saved release and reports its own outcome. A
+    // A saved Edit Release or Edit Project refreshes the dashboard with a
+    // GET only. A superseded refresh is left to the refresh that replaced it,
+    // which already reflects the saved record and reports its own outcome. A
     // refresh that settles the dashboard also settles a pending recovery,
     // including one this refresh interrupted.
-    async editSaved(detail) {
+    async editSaved(detail, record = 'release') {
       const releaseId = detail?.releaseId ?? null;
       const outcome = await refreshDashboard(doc, { releaseId });
       if (outcome.status === 'refreshed') {
         if (pending) settle(pending.followUp);
       } else if (outcome.status !== 'superseded') {
-        block({ kind: 'edited', releaseId }, outcome);
+        block({ kind: 'edited', record, releaseId }, outcome);
       }
     },
     async reconcile(detail) {
@@ -1525,6 +1527,7 @@ export function enhanceDashboardScheduling(scope = globalThis.document, { reques
     if (!isEnhancementBound(doc.documentElement, EDIT_SAVED_BOUND_KEY)) {
       markEnhancementBound(doc.documentElement, EDIT_SAVED_BOUND_KEY);
       doc.addEventListener(RELEASE_EDIT_SAVED_EVENT, (event) => { void recovery.editSaved(event.detail); });
+      doc.addEventListener(PROJECT_EDIT_SAVED_EVENT, (event) => { void recovery.editSaved(event.detail, 'project'); });
     }
   }
   return handle;

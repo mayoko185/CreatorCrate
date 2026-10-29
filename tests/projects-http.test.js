@@ -15,6 +15,7 @@ import { createProjectImageSettingsService } from '../src/services/project-image
 import { projectImagePolicyFingerprint } from '../src/services/project-image-policy.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
+import { ProjectOwnershipError } from '../src/services/project-directory-ownership.js';
 import {
   formatProjectDirName,
   resolveProjectDir,
@@ -156,7 +157,7 @@ function extractProjectSettingsSection(html, heading) {
 }
 
 function extractProjectDetailSection(html, className) {
-  const opening = html.match(new RegExp(`<section class="[^"]*\\b${className}\\b[^"]*">`));
+  const opening = html.match(new RegExp(`<section class="[^"]*\\b${className}\\b[^"]*"[^>]*>`));
   return opening ? extractHtmlElement(html, opening.index) : '';
 }
 
@@ -217,9 +218,9 @@ function expectProjectFormStructure(html, { statusError = false, tagError = fals
   expect(statusItem).not.toBe('');
   expect(projectTypeItem).not.toBe('');
   expect(tagsItem).not.toBe('');
-  expect(statusItem).toMatch(/^<div class="field status-field">/);
-  expect(projectTypeItem).toMatch(/^<div class="field status-field">/);
-  expect(tagsItem).toMatch(/^<div class="field status-field">/);
+  expect(statusItem).toMatch(/^<div class="field status-field" data-dialog-field="status" data-dialog-error-ref="status-error">/);
+  expect(projectTypeItem).toMatch(/^<div class="field status-field" data-dialog-field="projectType" data-dialog-error-ref="projectType-error">/);
+  expect(tagsItem).toMatch(/^<div class="field status-field" data-dialog-field="tagIds" data-dialog-error-ref="tagIds-error">/);
   expect(statusItem).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
   expect(projectTypeItem).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
   expect(projectTypeItem).toContain('id="project-type-form-trigger" aria-controls="project-type-form-options"');
@@ -1446,7 +1447,11 @@ describe('project HTTP workflow', () => {
     expect(availableInfo).toContain(`<div id="projects-list-info-${availableId}" class="asset-viewer-grid-card-info calendar-release-info calendar-release-info--glass calendar-release-info--with-media" data-calendar-info-card popover="manual"`);
     expect(availableInfo).toMatch(/<img class="calendar-release-info-image"\s+data-preview-image src="\/projects\/\d+\/assets\/\d+\/preview\?v=[0-9a-f]+"/);
     expect(availableInfo).toContain(`<a class="button button-small button-secondary" data-project-card-link href="/projects/${availableId}">Open project</a>`);
-    expect(availableInfo).toContain(`<a class="button button-small button-secondary" href="/projects/${availableId}/edit" data-dialog-invocation>Edit project</a>`);
+    // Edit opens the page's Edit Project dialog in place; the href is only
+    // the direct-link fallback.
+    expect(availableInfo).toContain(`<a class="button button-small button-secondary" href="/projects/${availableId}/edit" data-project-edit-id="${availableId}">Edit project</a>`);
+    expect(availableInfo).not.toContain('data-dialog-invocation');
+    expect(list.text.match(/<dialog id="project-edit-dialog"/g)).toHaveLength(1);
     expect(availableInfo).toContain('<h3 class="asset-viewer-grid-card-info-heading">Available Primary Image</h3>');
     expect([...availableInfo.matchAll(/<dt>([^<]+)<\/dt>/g)].map((match) => match[1]))
       .toEqual(['Status', 'Type', 'Assets', 'Created', 'Updated']);
@@ -2000,7 +2005,7 @@ describe('project HTTP workflow', () => {
     expect(dialog).not.toBe('');
     expect(dialog).not.toMatch(/<dialog\b[^>]*\bopen(?:\s|>|=)/);
     expect(dialog).toContain('<form id="project-create-form" method="post" action="/projects"');
-    expect(dialog).toContain('data-dialog-form data-dialog-async="false"');
+    expect(dialog).toContain('data-dialog-form data-dialog-async="true"');
     expect(dialog).toContain('name="returnTo" value="/projects"');
     expect(dialog).toMatch(/name="status"[^>]*value="ready"[^>]*checked/);
     expect(standalone.text).toMatch(/name="status"[^>]*value="ready"[^>]*checked/);
@@ -2096,6 +2101,330 @@ describe('project HTTP workflow', () => {
     });
     const assigned = app.locals.projectTagService.listProjectTags(id).map((tag) => tag.id);
     expect(assigned).toEqual([alpha.id, beta.id]);
+  });
+
+  describe('New Project dialog JSON submission', () => {
+    function postDialogCreate(fields) {
+      const body = new URLSearchParams({ _csrf: csrfToken, returnTo: '/projects?search=keep', ...fields });
+      for (const tagId of fields.tagIds || []) body.append('tagIds[]', String(tagId));
+      body.delete('tagIds');
+      return agent
+        .post('/projects')
+        .set('Accept', 'application/json')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send(body.toString());
+    }
+
+    function countProjects(title) {
+      return db.prepare('SELECT COUNT(*) AS count FROM projects WHERE title = ?').get(title).count;
+    }
+
+    it('creates the project once with its tags and answers with a View Project target and fresh defaults', async () => {
+      saveNewProjectDefault('status', 'ready');
+      const alpha = app.locals.tagService.createTag({ name: 'Dialog Create Alpha' });
+      const create = vi.spyOn(app.locals.projectService, 'create');
+
+      try {
+        const res = await postDialogCreate({
+          title: 'Dialog Created Project',
+          status: 'planned',
+          projectType: 'comic',
+          patreonUrl: 'https://example.com/dialog',
+          tagIds: [alpha.id],
+        }).expect(201);
+
+        expect(res.headers['content-type']).toMatch(/application\/json/);
+        expect(res.headers.location).toBeUndefined();
+        expect(create).toHaveBeenCalledTimes(1);
+        const row = db.prepare('SELECT id, status, project_type FROM projects WHERE title = ?').get('Dialog Created Project');
+        expect(row).toMatchObject({ status: 'planned', project_type: 'comic' });
+        expect(app.locals.projectTagService.listProjectTags(row.id).map((tag) => tag.id)).toEqual([alpha.id]);
+        expect(res.body).toEqual({
+          status: 'success',
+          message: 'Project “Dialog Created Project” created.',
+          project: { id: row.id, title: 'Dialog Created Project', url: `/projects/${row.id}` },
+          values: {
+            title: '',
+            description: '',
+            notes: '',
+            patreonUrl: '',
+            status: 'ready',
+            projectType: expect.any(String),
+            'tagIds[]': [],
+          },
+        });
+        expect(countProjects('Dialog Created Project')).toBe(1);
+      } finally {
+        create.mockRestore();
+      }
+    });
+
+    it('returns field errors as JSON without creating the project or rendering a page', async () => {
+      const res = await postDialogCreate({ title: 'Dialog Invalid Link', status: 'tbd', patreonUrl: 'not-a-url' }).expect(422);
+
+      expect(res.headers['content-type']).toMatch(/application\/json/);
+      expect(res.body.status).toBe('error');
+      expect(res.body.errors.patreonUrl).toBe('Project link must be a valid absolute HTTP or HTTPS URL.');
+      expect(res.body.project).toBeUndefined();
+      expect(countProjects('Dialog Invalid Link')).toBe(0);
+    });
+
+    it('returns a stale tag as a Tags field error', async () => {
+      const stale = app.locals.tagService.createTag({ name: 'Dialog Stale Tag' });
+      app.locals.tagService.deleteTag(stale.id);
+
+      const res = await postDialogCreate({ title: 'Dialog Stale Tag Project', status: 'tbd', tagIds: [stale.id] }).expect(422);
+
+      expect(res.body.errors.tagIds).toBe('One or more selected tags no longer exists. Refresh and try again.');
+      expect(countProjects('Dialog Stale Tag Project')).toBe(0);
+    });
+
+    it('reports a service failure as a non-success JSON error with a safe message', async () => {
+      const create = vi.spyOn(app.locals.projectService, 'create').mockImplementation(() => {
+        throw new Error('EACCES: permission denied, mkdir \\\\nas\\projects\\secret');
+      });
+
+      try {
+        const res = await postDialogCreate({ title: 'Dialog Service Failure', status: 'tbd' }).expect(500);
+
+        expect(res.body).toEqual({ status: 'error', message: 'Project creation failed. Please try again.', errors: {} });
+        expect(JSON.stringify(res.body)).not.toContain('EACCES');
+        expect(create).toHaveBeenCalledTimes(1);
+      } finally {
+        create.mockRestore();
+      }
+      expect(countProjects('Dialog Service Failure')).toBe(0);
+    });
+  });
+
+  describe('Edit Project dialog JSON model and submission', () => {
+    function postDialogEdit(id, fields) {
+      const body = new URLSearchParams({ _csrf: csrfToken, ...fields });
+      for (const tagId of fields.tagIds || []) body.append('tagIds[]', String(tagId));
+      body.delete('tagIds');
+      return agent
+        .post(`/projects/${id}`)
+        .set('Accept', 'application/json')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send(body.toString());
+    }
+
+    const projectRow = (id) => db.prepare(
+      'SELECT title, description, notes, status, project_type, patreon_url, project_dir FROM projects WHERE id = ?',
+    ).get(id);
+    const projectTagIds = (id) => app.locals.projectTagService.listProjectTags(id).map((tag) => tag.id);
+
+    it('serves the authoritative edit model as uncached JSON while HTML keeps the deep-link redirect', async () => {
+      const alpha = app.locals.tagService.createTag({ name: 'Edit Model Alpha' });
+      const beta = app.locals.tagService.createTag({ name: 'Edit Model Beta' });
+      const id = await createProject({ title: 'Edit Model Project' });
+      await postDialogEdit(id, {
+        title: 'Edit Model Project', notes: 'Model notes', status: 'tbd', tagIds: [beta.id],
+      }).expect(200);
+
+      const res = await agent.get(`/projects/${id}/edit`).set('Accept', 'application/json').expect(200);
+
+      expect(res.headers['cache-control']).toBe('no-store');
+      expect(res.headers.vary).toMatch(/Accept/);
+      expect(res.body).toMatchObject({
+        status: 'success',
+        project: { id, title: 'Edit Model Project', url: `/projects/${id}` },
+        values: {
+          title: 'Edit Model Project',
+          description: '',
+          notes: 'Model notes',
+          patreonUrl: '',
+          status: 'tbd',
+          projectType: expect.any(String),
+          'tagIds[]': [String(beta.id)],
+        },
+        actions: {
+          update: `/projects/${id}`,
+          archive: `/projects/${id}/archive`,
+          delete: `/projects/${id}/delete`,
+        },
+      });
+      expect(res.body.tagOptions).toEqual(expect.arrayContaining([
+        { value: String(alpha.id), label: 'Edit Model Alpha' },
+        { value: String(beta.id), label: 'Edit Model Beta' },
+      ]));
+      await agent.get(`/projects/${id}/edit`).expect(302).expect('Location', `/projects/${id}?edit=1`);
+    });
+
+    it('refuses the edit model for archived and missing projects as JSON', async () => {
+      const id = await createProject({ title: 'Edit Model Archived' });
+      await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
+
+      const archived = await agent.get(`/projects/${id}/edit`).set('Accept', 'application/json').expect(409);
+      expect(archived.body).toEqual({ status: 'error', code: 'PROJECT_ARCHIVED', message: 'Archived projects are read-only.' });
+      const missing = await agent.get('/projects/9999/edit').set('Accept', 'application/json').expect(404);
+      expect(missing.body.code).toBe('PROJECT_NOT_FOUND');
+    });
+
+    it('saves metadata, status, tags and the folder rename once and answers with the saved model', async () => {
+      const alpha = app.locals.tagService.createTag({ name: 'Edit Save Alpha' });
+      const beta = app.locals.tagService.createTag({ name: 'Edit Save Beta' });
+      const id = await createProject({ title: 'Edit Save Original' });
+      const oldDir = resolveProjectDir(projectsRoot, projectRow(id).project_dir);
+      const update = vi.spyOn(app.locals.projectService, 'update');
+
+      let res;
+      try {
+        res = await postDialogEdit(id, {
+          title: 'Edit Save Renamed',
+          description: 'Saved description',
+          notes: 'Saved notes',
+          status: 'ready',
+          patreonUrl: 'https://example.com/edit-save',
+          tagIds: [alpha.id, beta.id],
+        }).expect(200);
+        expect(update).toHaveBeenCalledTimes(1);
+      } finally {
+        update.mockRestore();
+      }
+
+      expect(res.headers['content-type']).toMatch(/application\/json/);
+      expect(res.headers.location).toBeUndefined();
+      const row = projectRow(id);
+      expect(row).toMatchObject({
+        title: 'Edit Save Renamed',
+        description: 'Saved description',
+        notes: 'Saved notes',
+        status: 'ready',
+        patreon_url: 'https://example.com/edit-save',
+        project_dir: formatProjectDirName(id, 'edit-save-renamed'),
+      });
+      expect(projectTagIds(id).sort()).toEqual([alpha.id, beta.id].sort());
+      expect(fs.existsSync(oldDir)).toBe(false);
+      expect(fs.existsSync(resolveProjectDir(projectsRoot, row.project_dir))).toBe(true);
+      expect(res.body).toMatchObject({
+        status: 'success',
+        message: 'Project updated.',
+        project: { id, title: 'Edit Save Renamed', url: `/projects/${id}` },
+        values: {
+          title: 'Edit Save Renamed',
+          description: 'Saved description',
+          notes: 'Saved notes',
+          patreonUrl: 'https://example.com/edit-save',
+          status: 'ready',
+        },
+        actions: { update: `/projects/${id}` },
+      });
+      expect([...res.body.values['tagIds[]']].sort()).toEqual([String(alpha.id), String(beta.id)].sort());
+    });
+
+    it('returns field errors and stale tags as JSON without changing the project', async () => {
+      const id = await createProject({ title: 'Edit Invalid Original' });
+      const before = projectRow(id);
+
+      const invalid = await postDialogEdit(id, { title: '', status: 'tbd', patreonUrl: 'not-a-url' }).expect(422);
+      expect(invalid.headers['content-type']).toMatch(/application\/json/);
+      expect(invalid.body.status).toBe('error');
+      expect(invalid.body.errors.title).toEqual(expect.any(String));
+      expect(invalid.body.errors.patreonUrl).toBe('Project link must be a valid absolute HTTP or HTTPS URL.');
+      expect(invalid.body.values).toBeUndefined();
+
+      const stale = app.locals.tagService.createTag({ name: 'Edit Stale Tag' });
+      app.locals.tagService.deleteTag(stale.id);
+      const staleRes = await postDialogEdit(id, { title: 'Edit Invalid Renamed', status: 'tbd', tagIds: [stale.id] }).expect(422);
+      expect(staleRes.body.errors.tagIds).toBe('One or more selected tags no longer exists. Refresh and try again.');
+      expect(projectRow(id)).toEqual(before);
+    });
+
+    it('keeps archived projects read-only and reports missing projects as JSON', async () => {
+      const id = await createProject({ title: 'Edit Archived Guard' });
+      await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
+      const before = projectRow(id);
+
+      const res = await postDialogEdit(id, { title: 'Edit Archived Changed', status: 'tbd' }).expect(422);
+      expect(res.body).toMatchObject({ status: 'error', message: 'Archived projects cannot be edited.' });
+      expect(projectRow(id)).toEqual(before);
+
+      const missing = await postDialogEdit(9999, { title: 'Missing', status: 'tbd' }).expect(404);
+      expect(missing.body.code).toBe('PROJECT_NOT_FOUND');
+    });
+
+    it('reports an ownership refusal with its path-free message and status', async () => {
+      const id = await createProject({ title: 'Edit Ownership Refused' });
+      const update = vi.spyOn(app.locals.projectService, 'update').mockImplementation(() => {
+        throw new ProjectOwnershipError('MARKER_MISSING');
+      });
+
+      try {
+        const res = await postDialogEdit(id, { title: 'Edit Ownership Renamed', status: 'tbd' }).expect(409);
+        expect(res.body).toMatchObject({ status: 'error', code: 'PROJECT_OWNERSHIP', errors: {} });
+        expect(res.body.message).toBe(new ProjectOwnershipError('MARKER_MISSING').message);
+      } finally {
+        update.mockRestore();
+      }
+    });
+
+    it('compensates a failed folder rename and reports it without backend detail', async () => {
+      const original = app.locals.tagService.createTag({ name: 'Edit Rollback Original' });
+      const replacement = app.locals.tagService.createTag({ name: 'Edit Rollback Replacement' });
+      const id = await createProject({ title: 'Edit Rollback Original' });
+      await postDialogEdit(id, { title: 'Edit Rollback Original', status: 'tbd', tagIds: [original.id] }).expect(200);
+      const before = projectRow(id);
+      const originalDir = resolveProjectDir(projectsRoot, before.project_dir);
+      const setDir = vi.spyOn(app.locals.projectService.repository, 'setProjectDir').mockImplementation(() => {
+        throw new Error(`private filesystem detail: ${projectsRoot}`);
+      });
+
+      let res;
+      try {
+        res = await postDialogEdit(id, { title: 'Edit Rollback Renamed', status: 'ready', tagIds: [replacement.id] }).expect(500);
+      } finally {
+        setDir.mockRestore();
+      }
+
+      expect(res.body).toEqual({
+        status: 'error',
+        code: 'PROJECT_UPDATE_FAILED',
+        message: 'Project update failed. Please try again.',
+        errors: {},
+      });
+      expect(JSON.stringify(res.body)).not.toContain('private filesystem detail');
+      expect(projectRow(id)).toEqual(before);
+      expect(projectTagIds(id)).toEqual([original.id]);
+      expect(fs.existsSync(originalDir)).toBe(true);
+    });
+
+    it('renders Project Detail with the async Edit Project dialog, its trigger and refresh markers', async () => {
+      const id = await createProject({ title: 'Edit Detail Markup' });
+
+      const closed = (await agent.get(`/projects/${id}`).expect(200)).text;
+      const dialog = closed.match(/<dialog id="project-edit-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+      expect(dialog).not.toMatch(/<dialog\b[^>]*\bopen(?:\s|>|=)/);
+      expect(dialog).toContain(`action="/projects/${id}"`);
+      expect(dialog).toContain('data-dialog-async="true"');
+      expect(dialog).toContain(`data-project-edit-loaded-id="${id}"`);
+      expect(dialog).toContain('id="title"');
+      expect(extractProjectDetailActionToolbar(closed)).toContain(`data-project-edit-id="${id}"`);
+      expect(closed).toContain(`data-project-detail="${id}" data-project-detail-region="hero"`);
+      expect(closed).toMatch(/<div class="notice notice--success app-dialog-feedback" data-dialog-feedback role="status" hidden>/);
+
+      const deepLink = (await agent.get(`/projects/${id}?edit=1&returnTo=${encodeURIComponent('/projects?view=list')}`).expect(200)).text;
+      const openDialog = deepLink.match(/<dialog id="project-edit-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+      expect(openDialog).toMatch(/<dialog\b[^>]*\bopen(?:\s|>|=)/);
+      expect(openDialog).toContain('name="returnTo" value="/projects?view=list" data-dialog-return-location');
+    });
+
+    it('hosts Edit Project beside New Project on Projects and the Dashboard without duplicate ids', async () => {
+      await createProject({ title: 'Edit Host Markup' });
+
+      for (const path of ['/projects?view=list', '/']) {
+        const html = (await agent.get(path).expect(200)).text;
+        const dialog = html.match(/<dialog id="project-edit-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+        expect(dialog).not.toMatch(/<dialog\b[^>]*\bopen(?:\s|>|=)/);
+        expect(dialog).toContain('data-dialog-async="true"');
+        expect(dialog).not.toContain('data-project-edit-loaded-id');
+        expect(dialog).not.toContain('name="returnTo"');
+        expect(dialog).toContain('<label for="edit-project-title">');
+        expect(html).toContain('id="project-create-dialog"');
+        const ids = [...html.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1]);
+        expect(ids.filter((id, index) => ids.indexOf(id) !== index)).toEqual([]);
+      }
+    });
   });
 
   it('rejects a malformed submitted tag ID before creating a project', async () => {
@@ -2343,7 +2672,7 @@ describe('project HTTP workflow', () => {
     expect(res.text).not.toContain(`href="${location}/asset-categories"`);
     expect(toolbar).toContain('<nav class="project-detail-action-toolbar" aria-label="Project actions">');
     expect(toolbar).toContain(`href="${location}/edit"`);
-    expect(toolbar).toContain('data-dialog-open="project-edit-dialog"');
+    expect(toolbar).toContain(`data-project-edit-id="${location.split('/').pop()}"`);
     expect(toolbar).toContain('aria-label="Edit project"');
     expect(toolbar).toContain(`href="${location}/assets"`);
     expect(toolbar).toContain('aria-label="View Assets"');
@@ -2356,7 +2685,7 @@ describe('project HTTP workflow', () => {
     expect(dialog).not.toContain('Update project metadata and planning fields.');
     expect(dialog).toContain(`<form id="project-edit-form" method="post" action="${location}" class="app-dialog-form project-form project-edit-dialog-form"`);
     expect(dialog).toContain('project-edit-dialog-form');
-    expect(dialog).toContain('data-dialog-form data-dialog-async="false"');
+    expect(dialog).toContain('data-dialog-form data-dialog-async="true"');
     const dialogHeader = dialog.match(/<header class="app-dialog-header">[\s\S]*?<\/header>/)?.[0] || '';
     const dialogClose = dialogHeader.match(/<button\b[\s\S]*?<\/button>/)?.[0] || '';
     expect(dialogClose).toMatch(/class="app-dialog-close[^"]*" type="button"/);

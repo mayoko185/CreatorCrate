@@ -5,6 +5,7 @@
 {% import "partials/asset-information.njk" as assetInformation %}
 {% import "partials/view-switcher.njk" as viewSwitcher %}
 {% import "partials/dialog.njk" as dialog %}
+{% import "partials/project-edit-dialog.njk" as projectEditDialog %}
 {% import "partials/dropdown.njk" as dropdown %}
 {% import "partials/processing-actions.njk" as processingActions %}
 {% import "partials/processing-recovery-details.njk" as recoveryDetails %}
@@ -376,7 +377,7 @@
         </a>
       {% endif %}
       <a class="button button-small button-secondary project-detail-action project-assets-heading-action asset-tooltip asset-tooltip--left"
-         href="/projects/{{ project.id }}/edit" data-dialog-invocation aria-label="Edit project" data-tooltip="Edit project">
+         href="/projects/{{ project.id }}/edit" data-project-edit-id="{{ project.id }}" data-project-assets-project-title="{{ project.title }}" aria-label="Edit project" data-tooltip="Edit project">
         {{ icons.icon('edit') }}
       </a>
       {% endif %}
@@ -549,7 +550,7 @@
           </a>
           {% if openLocallyUri %}
             <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
-               href="{{ openLocallyUri }}" aria-label="Open locally" data-tooltip="Open locally">
+               href="{{ openLocallyUri }}" aria-label="Open locally" data-tooltip="Open locally" data-project-assets-open-locally>
               {{ icons.icon('open-locally') }}
             </a>
           {% endif %}
@@ -979,6 +980,9 @@
 
 {% endblock %}
 {% block overlay %}
+  {# Edit Project opens in place; project-assets-project-sync.js applies a
+     saved title to this page without touching the asset regions. #}
+  {% if projectEditForm %}{{ projectEditDialog.render(none, projectEditForm, _csrf, false, '', 'edit-project-') }}{% endif %}
   {% set categoryFilterSummary = "All categories (" ~ categoryNavigation.totalCount ~ ")" %}
   {% if filters.category == 'all' and filters.presence == 'missing' %}
     {% set categoryFilterSummary = "Missing (" ~ categoryNavigation.missingCount ~ ")" %}
@@ -1164,7 +1168,7 @@
   {{ recoveryDetails.render(project, _csrf, isArchived) }}
   {% call dialog.render('project-asset-category-management-dialog', 'Manage Categories', categoryManagementDialogOpen, 'project-asset-category-management-description', '', 'app-dialog--refined') %}
     <p id="project-asset-category-management-description" class="app-dialog-description">
-      Manage categories and asset browser defaults for {{ project.title }}. Changes here apply only to this project.
+      Manage categories and asset browser defaults for <span data-project-assets-title>{{ project.title }}</span>. Changes here apply only to this project.
     </p>
     {% include "partials/project-asset-category-management.njk" %}
   {% endcall %}
