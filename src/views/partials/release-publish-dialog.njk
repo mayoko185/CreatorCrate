@@ -9,11 +9,9 @@
     </p>
 
     <div class="app-dialog-body project-edit-dialog-body">
-      <form id="release-publish-form" method="post" action="/releases/{{ release.id }}/publish" class="app-dialog-form project-form project-edit-dialog-form" data-dialog-form data-dialog-async="false" data-dialog-reset-on-close{% if publishDialogForm.resetValues %} data-dialog-reset-values="{{ publishDialogForm.resetValues | dump }}"{% endif %} novalidate>
+      <form id="release-publish-form" method="post" action="/releases/{{ release.id }}/publish" class="app-dialog-form project-form project-edit-dialog-form" data-dialog-form data-dialog-async="true" data-dialog-reset-on-close{% if publishDialogForm.resetValues %} data-dialog-reset-values="{{ publishDialogForm.resetValues | dump }}"{% endif %} data-dialog-pending-message="Publishing release…" data-dialog-error-message="The release was not published." data-dialog-network-error-message="Could not confirm whether the release was published." novalidate>
         <input type="hidden" name="_csrf" value="{{ csrfToken }}">
-        {% if errors.general %}
-          <div class="error-summary" role="alert"><p>{{ errors.general }}</p></div>
-        {% endif %}
+        <div class="error-summary" role="alert" data-dialog-error{% if not errors.general %} hidden{% endif %}><p data-dialog-error-text>{{ errors.general }}</p></div>
       <section class="settings-section project-edit-dialog-section release-publish-summary-section" aria-labelledby="release-publish-summary-heading">
         <h3 id="release-publish-summary-heading">Release details</h3>
         <div class="project-edit-dialog-section-body">
@@ -26,7 +24,7 @@
             <dd data-release-publish-current-project-status="{{ publishProjectStatus.current if publishProjectStatus else '' }}">{% set status = project.status if project else release.project_status %}{% set projectStatusOption = publishProjectStatus.currentOption if publishProjectStatus else none %}{% include "partials/status-badge.njk" %}{% set projectStatusOption = none %}</dd>
           </dl>
           {% if publishProjectStatus %}
-            <div class="field status-field">
+            <div class="field status-field" data-dialog-field="projectStatus" data-dialog-error-ref="release-publish-project-status-error">
               {{ dropdown.singleSelect({
                 id: "release-publish-project-status",
                 name: "projectStatus",
@@ -135,7 +133,7 @@
         <section class="settings-section project-edit-dialog-section" data-release-dialog-compact-section aria-labelledby="release-publish-publication-heading">
           <h3 id="release-publish-publication-heading">Publication</h3>
           <div class="project-edit-dialog-section-body">
-            <div class="field scheduling-field {% if errors.publishedDate %}field-error{% endif %}" data-date-picker-field>
+            <div class="field scheduling-field {% if errors.publishedDate %}field-error{% endif %}" data-dialog-field="publishedDate" data-date-picker-field>
               <label for="release-publish-date">Publication date <span class="required" aria-label="required">*</span></label>
               <div class="picker-control"><div class="picker-input-row">
                 <input class="picker-input" type="date" id="release-publish-date" name="publishedDate" value="{{ publishDialogForm.prefillDate }}" required aria-describedby="release-publish-date-help{% if errors.publishedDate %} release-publish-date-error{% endif %}"{% if errors.publishedDate %} aria-invalid="true"{% endif %} data-date-picker-input>

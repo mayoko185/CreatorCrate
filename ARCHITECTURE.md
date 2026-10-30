@@ -470,7 +470,10 @@ markers dropped) and replaces only the regions marked
 Social Posts, description/notes, publication summary and the closed Review &
 Publish dialog — leaving the Edit action, Edit and Signatures dialogs and the
 selected assets in place; a failed refresh reports a saved release on a
-possibly stale page and offers Retry refresh, which only refetches.
+possibly stale page and offers Retry refresh, which only refetches. An archived
+render (`data-release-detail-archived`) has no Manage Assets or Edit controls, so
+adopting it withdraws everything marked `data-release-detail-editing`, after any
+open Edit or Signatures dialog closes.
 
 **Returning from the Posting Helper.** The companion action dispatches its
 settled event with `launchAttempted: true` only when the helper URI was handed
@@ -498,8 +501,51 @@ after the last check: the binder keeps the draft and the controller shows the
 same conflict notice from `currentReleaseLink`. The guard and server check
 apply to every Edit Release entry point (Release Detail action and `?edit=1`
 deep link, Dashboard, Calendar info card) because they share this dialog;
-return-refresh stale detection exists only on Release Detail, where the
-companion is launched.
+the client-side Release link check runs only on Release Detail. Elsewhere the
+server `409` protects a draft from a link the helper saved.
+
+### Review & Publish dialog
+
+`release-publish-dialog.js` publishes through the shared async dialog binder
+(`POST /releases/:id/publish` with `Accept: application/json`) using the same
+`publishRelease` service as a plain form post, which keeps its redirect and HTML
+`422`. JSON outcomes: `200` with the publication state; `422 VALIDATION_FAILED`
+with `errors` and `values`; `409 RELEASE_ALREADY_PUBLISHED`; `422
+RELEASE_ARCHIVED` or `PROJECT_ARCHIVED`; `404 RELEASE_NOT_FOUND`; `500
+SERVER_ERROR`, which is sent only when nothing committed and carries no internal
+detail. An outcome the client cannot read pauses Publish, because the release may
+have been published: only a GET of the publication state (`GET
+/releases/:id/publish` as JSON) settles it, and the POST is never repeated
+automatically. The dialog dispatches `release-publish-settled` on the document:
+`published` once confirmed, or `stale` when dismissed in a state the page can no
+longer trust, with `archived: true` when the server reported an archived release
+or project. Release Detail answers both with its GET-only region refresh, and
+withdraws Review & Publish while that refresh has failed. An archived refusal
+stays on the page as an error notice whether or not the refresh succeeds.
+
+A page that does not render the dialog calls `openReleasePublishDialog(document,
+releaseId, { mount, opener })`. The same GET returns the closed dialog as
+`dialogHtml` while the release is publishable, so the page hosts the same dialog
+and controller; it handles `release-publish-settled` for its own refresh. Only
+the newest load may populate the mount, and none does while another dialog is open.
+
+The Dashboard hosts it this way from its Overdue and Today Publish actions. A
+settled publication refreshes the Dashboard through its GET-only refresh, whose
+existing recovery offers Retry refresh, and the Publish action stays withdrawn
+until that succeeds. A publication that initialized Social Preparation brings
+Release Detail's server-rendered companion control to the Dashboard and launches
+it once, where it stays for an explicit retry.
+
+Once that control has handed the helper URI to the browser, the Dashboard arms
+Release Detail's return listeners. Each return withdraws the retained controls,
+then sends one Dashboard refresh and one `GET /releases/:id` per control. That
+render replaces the control or, when it offers none, removes it; nothing is
+clicked or launched. Returns during a pass fold into one more pass, and a control
+with a request in flight is checked after it settles. A successful pass is
+silent. A failed Dashboard refresh keeps the last known status and uses the
+Dashboard's Retry refresh recovery. A failed `GET /releases/:id` concerns only its
+control: publishing and scheduling stay available, and that control stays withdrawn
+with a Check again action that sends the same GET, until a render confirms it.
 
 ---
 
@@ -2623,8 +2669,45 @@ standalone form. Because both dialogs share field names, the Dashboard renders
 the New Release fields with a `fieldIdPrefix`, which prefixes every field id
 and the label, ARIA and picker references to it; other release hosts keep
 unprefixed ids. The edit flows may also use the validated destination after a
-successful mutation; selected-assets Release creation deliberately retains its
-canonical `/releases/:id/assets` success destination.
+successful mutation; a native selected-assets Release creation deliberately
+retains its canonical `/releases/:id/assets` success destination.
+
+**New Release dialog.** The ordinary Dashboard and Releases New Release dialog
+([`release-create-dialog.js`](src/static/client/release-create-dialog.js))
+submits through the shared async dialog binder with `Accept: application/json`,
+like New Project below; the Releases handoff dialog keeps its native submission.
+`POST /releases` answers `201` with the created release's id, project, title
+and URL plus fresh reset values, `422` `VALIDATION_FAILED` with field `errors`
+(no values echoed: the dialog keeps the whole draft), or `500` `SERVER_ERROR`
+without backend detail. On success the dialog closes in place and the feedback
+gains a View Release link. Reopening after a create starts from the same reset
+as a dismissal: browser-local schedule, no project, no platforms, and an empty
+Description (the default signature still applies once per page load). The
+host refreshes with a GET only: the Dashboard through its scheduling recovery
+(`dashboard-release-created`, with its Retry refresh banner), Releases through
+its live region at the current URL; the Releases heading and feedback sit
+outside that region, and a failed Releases refresh offers Retry refresh in the
+feedback. The create is never repeated. The standalone `GET /releases/new` form
+and native posts keep their redirect and rerender behaviour.
+
+Project Assets hosts the same dialog for its selected assets, fixed to the page's
+project. Each open copies the ids a native submission of `bulk-select-form` would
+send (checked and enabled, in document order, so a pending reorder counts) into
+hidden fields, and each close removes them. `POST /releases` with
+`releaseCreateFlow=selected-assets` and `Accept: application/json` runs
+`createReleaseWithSelectedAssets`, which alone decides ownership, presence and
+atomicity, and answers as above; a refused selection is `422` with its reason as
+the message, and success adds `manageAssetsUrl`. The dialog closes in place and
+the pinned feedback offers View Release and Manage Release Assets. The asset region
+is not replaced, so selections, pending order, filters and scroll stay;
+`project-assets-release-sync.js` re-reads the server's render of the page with a
+GET and adopts only the Add to release options and each shown asset's release
+sections. Add to release is unavailable until that answer arrives, and a failed
+GET keeps the confirmation and offers Retry refresh, which repeats only the GET.
+A filter or view load in flight at the create is read again once it lands; any
+later load is itself the fresh render.
+`POST /projects/:id/assets/create-release` and `/releases?new=assets` remain as
+the native handoff for a click that arrives before the page has enhanced.
 
 **Project dialogs.** New Project and Edit Project submit through the shared
 async dialog binder ([`app-dialogs.js`](src/static/client/app-dialogs.js))
@@ -3298,11 +3381,14 @@ Release link draft discards it without a prompt.
 ### Deferred social-preparation work
 
 After a successful Release publication initializes at least one configured
-Social Preparation target, the existing publication route redirects once to the
-Release detail page with `prep=1`. That exact marker invokes the same release-level
-publishing-companion action that remains available for explicit use: client
-initialization removes only `prep` with `history.replaceState` and submits the
-action once. The Social Preparation service projects the safe mode from current
+Social Preparation target, a plain form post to the publication route redirects
+once to the Release detail page with `prep=1`. That exact marker invokes the same
+release-level publishing-companion action that remains available for explicit
+use: client initialization removes only `prep` with `history.replaceState` and
+submits the action once. The Review & Publish dialog asks for JSON and stays on
+Release Detail: `socialPreparation.available` in the response submits that same
+action once, after the first in-place refresh is adopted (never after a Retry
+refresh, where the explicit action is on the page instead). The Social Preparation service projects the safe mode from current
 session/platform state: active/non-reissuable attempts suppress reopening;
 issued unredeemed intents use exact-session reissue; and failed/cancelled or
 otherwise server-retryable work uses normal server-authoritative activation.

@@ -12755,6 +12755,15 @@
   flex-wrap: wrap;
   gap: var(--space-sm);
 }
+.dashboard-publish-companions[hidden] {
+  display: none;
+}
+.dashboard-publish-companion {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm);
+}
 /* Zero-specificity resets so component rules below always win. */
 :where(.dashboard) :where(h2, h3, p) {
   margin: 0;
@@ -16545,4 +16554,11 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   :where(.error-page main) .error-box {
     padding: var(--space-md) var(--space-lg);
   }
+}
+
+/* A New Release confirmation stays in view on a scrolled Project Assets page. */
+.app-dialog-feedback--pinned {
+  position: sticky;
+  top: 0.5rem;
+  z-index: 5;
 }

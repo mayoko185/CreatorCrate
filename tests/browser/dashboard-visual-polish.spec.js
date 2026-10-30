@@ -195,9 +195,9 @@ test('Overdue and Today Publish actions match the Publish dialog submit', async 
     await expect(overdue).toHaveCSS('outline-style', 'solid');
     await expect(overdue).toHaveCSS('outline-width', '2px');
 
-    // Existing behavior: the link opens the release's Review & Publish dialog.
+    // The link opens the release's Review & Publish dialog over the Dashboard.
     await overdue.click();
-    await expect(page).toHaveURL(/\/releases\/\d+\?publish=1$/);
+    await expect(page).toHaveURL(`${origin}/`);
     const submit = page.locator('#release-publish-dialog [data-dialog-submit]');
     await expect(submit).toBeVisible();
     expect(await submit.evaluate(readStyles, PUBLISH_STYLE_PROPS)).toEqual(rest);

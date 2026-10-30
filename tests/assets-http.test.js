@@ -5776,6 +5776,30 @@ describe('asset browser HTTP workflow', () => {
       expect(res2.text).not.toContain('data-select-all');
       expect(res2.text).not.toContain('data-release-select');
       expect(res2.text).not.toContain('data-selected-count');
+      expect(res2.text).not.toContain('id="release-create-dialog"');
+    });
+
+    it('hosts the New Release dialog in place for the page\'s own project', async () => {
+      const res = await createProject('Selection New Release');
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      const projectDir = getProjectDir('Selection New Release');
+      writeIndexedAsset(id, projectDir, 'a.png', await makePng());
+      await createProject('Selection Other Project');
+
+      const page = await agent.get(`/projects/${id}/assets`).expect(200);
+      const panel = assetActionsPanelHtml(page.text);
+      expect(panel).toContain('data-dialog-open="release-create-dialog"');
+      expect(panel).not.toContain('data-dialog-invocation');
+      const dialog = page.text.match(/<dialog id="release-create-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+      expect(dialog).toContain('data-dialog-async="true"');
+      expect(dialog).toContain('data-release-create-selection-form="bulk-select-form"');
+      expect(dialog).toContain('name="releaseCreateFlow" value="selected-assets"');
+      expect(dialog.match(/name="projectId"/g)).toHaveLength(1);
+      expect(dialog).toMatch(new RegExp(`name="projectId"[^>]*value="${id}"[^>]*checked|value="${id}"[^>]*name="projectId"[^>]*checked`));
+      expect(dialog).toContain('value="Selection New Release"');
+      expect(dialog).not.toContain('Selection Other Project');
+      expect(dialog).not.toContain('data-dialog-return-location');
+      expect(page.text).toContain('id="release-signatures-dialog"');
     });
   });
 

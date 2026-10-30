@@ -38,6 +38,8 @@
   <div class="notice notice--success app-dialog-feedback" data-dialog-feedback role="status" hidden>
     <p data-dialog-feedback-text></p>
   </div>
+  {# Publishing companion actions for releases published from this page. #}
+  <div class="dashboard-publish-companions" data-dashboard-publish-companions hidden></div>
 
   <div class="dashboard" data-dashboard data-today="{{ dashboard.today }}">
     <section class="dashboard-attention" aria-labelledby="dashboard-attention-heading">
@@ -204,4 +206,7 @@
      loads the chosen release into it, so it renders without a release. #}
   {{ releaseEditDialog.render({ id: '', published_date: none }, { values: {}, errors: {} }, _csrf, releaseSignatureConfiguration, platformChoices, clockFormat, 'release-edit-field-') }}
   {{ releaseSignaturesDialog.render(releaseSignatureConfiguration, _csrf) }}
+  {# One Review & Publish dialog at a time; dashboard.js loads the chosen
+     release's current dialog from GET /releases/:id/publish into this mount. #}
+  <div data-dashboard-publish-mount></div>
 {% endblock %}

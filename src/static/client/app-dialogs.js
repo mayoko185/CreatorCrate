@@ -131,6 +131,18 @@ const PROJECT_ASSET_CATEGORY_MANAGEMENT_BODY_SELECTOR = '.project-asset-category
 const PROJECT_ASSET_CATEGORY_MANAGEMENT_ADD_FORM_SELECTOR = '#project-category-management-add-form';
 const PROJECT_ASSET_CATEGORY_MANAGEMENT_RENAME_FORM_SELECTOR = '.category-name-form';
 const PROJECT_ASSET_CATEGORY_MANAGEMENT_DELETE_FORM_SELECTOR = '[data-category-management-delete-form]';
+// A host marks what surrounds an open dialog once a newer server render has
+// superseded it. Nothing that dialog holds may be submitted from then on, and
+// no later response can lift that: only the host's replacement of it does.
+export const DIALOG_HOST_STALE_ATTRIBUTE = 'data-release-detail-stale';
+
+export function dialogHostIsStale(dialog) {
+  return Boolean(dialog?.closest?.(`[${DIALOG_HOST_STALE_ATTRIBUTE}]`));
+}
+
+function appDialogSubmitLocked(state) {
+  return dialogHostIsStale(state.dialog) || state.submitLocked?.() === true;
+}
 
 function appDialogDocument(scope) {
   if (!scope) return null;
@@ -928,7 +940,8 @@ export function enhanceProjectAssetCategoryManagement(scope = globalThis.documen
 
 // Submit controls may sit outside the form (a dialog footer button associated
 // through its form attribute); all of them stay disabled while a save is
-// pending, and each returns to its own prior disabled state afterwards.
+// pending, and each returns to its own prior disabled state afterwards, unless
+// submitting was locked in the meantime.
 function appDialogDisableSubmitControls(state) {
   const form = state.form;
   const formId = form?.id || form?.getAttribute?.('id');
@@ -941,10 +954,13 @@ function appDialogDisableSubmitControls(state) {
     control.disabled = true;
     control.setAttribute?.('disabled', '');
   });
-  return () => controls.forEach((control, index) => {
-    control.disabled = previous[index];
-    if (!previous[index]) control.removeAttribute?.('disabled');
-  });
+  return () => {
+    const locked = appDialogSubmitLocked(state);
+    controls.forEach((control, index) => {
+      control.disabled = previous[index] || locked;
+      if (!control.disabled) control.removeAttribute?.('disabled');
+    });
+  };
 }
 
 function appDialogBindForm(state) {
@@ -968,7 +984,7 @@ function appDialogBindForm(state) {
       || typeof windowObject.URLSearchParams !== 'function') return;
 
     event.preventDefault?.();
-    if (state.submitting) return;
+    if (state.submitting || appDialogSubmitLocked(state)) return;
     state.submitting = true;
     appDialogClearErrors(state);
     appDialogStatus(state, appDialogPendingMessage(state));
@@ -1012,11 +1028,22 @@ function appDialogBindForm(state) {
         restoreSubmitControls();
         appDialogShowErrors(state, {}, `${appDialogSaveErrorMessage(state)} Your selections were kept.`);
         appDialogStatus(state, appDialogNetworkFailureMessage(state), true);
+        // The outcome is unknown; a host whose request may have committed reports that.
+        state.onUnconfirmedSubmit?.();
       });
   });
 }
 
+// How many app dialogs each document has opened. A load that started before the
+// latest open has lost its turn, even when that dialog has since been dismissed.
+const appDialogOpenCounts = new WeakMap();
+
+export function appDialogOpenCount(document) {
+  return appDialogOpenCounts.get(document) ?? 0;
+}
+
 function appDialogOpen(state, opener = null, openerAllowsFallback = true) {
+  appDialogOpenCounts.set(state.document, appDialogOpenCount(state.document) + 1);
   // An accepted close whose native close event is still queued must finish
   // (reset, onClose, focus) before the next lifecycle begins; its late event
   // then arrives stale and is ignored by the close listener. Reopening
@@ -1195,10 +1222,12 @@ export function enhanceAppDialogs(scope = globalThis.document) {
       pendingReturnLocation: null,
       beforeClose: null,
       preserveValuesOnError: false,
+      submitLocked: null,
       onOpen: null,
       onClose: null,
       onSuccessfulSubmit: null,
       onFailedSubmit: null,
+      onUnconfirmedSubmit: null,
     };
     dialog.__creatorCrateAppDialogState = state;
     appDialogBind(state);

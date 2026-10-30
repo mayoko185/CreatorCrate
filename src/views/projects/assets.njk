@@ -6,6 +6,8 @@
 {% import "partials/view-switcher.njk" as viewSwitcher %}
 {% import "partials/dialog.njk" as dialog %}
 {% import "partials/project-edit-dialog.njk" as projectEditDialog %}
+{% import "partials/release-create-dialog.njk" as releaseCreateDialog %}
+{% import "partials/release-signatures-dialog.njk" as releaseSignaturesDialog %}
 {% import "partials/dropdown.njk" as dropdown %}
 {% import "partials/processing-actions.njk" as processingActions %}
 {% import "partials/processing-recovery-details.njk" as recoveryDetails %}
@@ -268,7 +270,7 @@
           <span class="asset-viewer-grid-card-info-empty">No inherited tags</span>
         {% endif %}
       </div>
-      <div class="asset-viewer-grid-card-info-section">
+      <div class="asset-viewer-grid-card-info-section" data-asset-release-section>
         <span class="asset-viewer-grid-card-info-section-label">Releases</span>
         {% if releases.length > 0 %}
           <ul class="asset-list-info-releases" aria-label="Associated releases">
@@ -647,7 +649,7 @@
                                     data-bulk-submit aria-label="Add to release" data-tooltip="Add to release">{{ icons.icon('releases') }}</button>
                             <button type="submit" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top"
                                     formaction="/projects/{{ project.id }}/assets/create-release"
-                                    data-dialog-invocation
+                                    data-dialog-open="release-create-dialog"
                                     aria-label="New release" data-tooltip="New release">{{ icons.icon('plus') }}</button>
                           </div>
                         </section>
@@ -738,7 +740,7 @@
                               data-bulk-submit aria-label="Add to release" data-tooltip="Add to release">{{ icons.icon('releases') }}</button>
                       <button type="submit" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top"
                               formaction="/projects/{{ project.id }}/assets/create-release"
-                              data-dialog-invocation
+                              data-dialog-open="release-create-dialog"
                               aria-label="New release" data-tooltip="New release">{{ icons.icon('plus') }}</button>
                     </div>
                   </section>
@@ -983,6 +985,12 @@
   {# Edit Project opens in place; project-assets-project-sync.js applies a
      saved title to this page without touching the asset regions. #}
   {% if projectEditForm %}{{ projectEditDialog.render(none, projectEditForm, _csrf, false, '', 'edit-project-') }}{% endif %}
+  {# New Release from the selection opens in place; the dialog reads the live
+     selection when it opens, and a save leaves the asset regions untouched. #}
+  {% if releaseCreateForm %}
+    {{ releaseCreateDialog.render(releaseCreateForm, _csrf, releaseSignatureConfiguration, platformChoices, false, clockFormat, '/projects/' ~ project.id ~ '/assets', 'release-create-field-') }}
+    {{ releaseSignaturesDialog.render(releaseSignatureConfiguration, _csrf) }}
+  {% endif %}
   {% set categoryFilterSummary = "All categories (" ~ categoryNavigation.totalCount ~ ")" %}
   {% if filters.category == 'all' and filters.presence == 'missing' %}
     {% set categoryFilterSummary = "Missing (" ~ categoryNavigation.missingCount ~ ")" %}

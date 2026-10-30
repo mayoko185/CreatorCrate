@@ -283,7 +283,9 @@ test('server-opened New Release dialog rerender keeps the checked draft', async 
     const form = page.locator('#release-create-form');
     const controls = scheduleControls(form);
     const selectedProject = page.locator('#release-create-dialog input[name="projectId"]:checked');
-    const submit = () => dialog.locator('[data-dialog-submit]').click();
+    // The enhanced dialog validates in place; a native post still reaches the
+    // server-opened rerender this test covers.
+    const submit = () => Promise.all([page.waitForEvent('load'), form.evaluate((element) => element.submit())]);
     await page.locator('[data-dialog-open="release-create-dialog"]').first().click();
     await chooseProject(form, project.id);
     await controls.date.fill('2027-02-14');

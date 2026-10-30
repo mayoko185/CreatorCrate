@@ -1,0 +1,3 @@
+{# The closed Review & Publish dialog alone, for pages that host it on demand. #}
+{% import "partials/release-publish-dialog.njk" as releasePublishDialog %}
+{{ releasePublishDialog.render(release, project, releaseAssets, publishDialogForm, socialPrepPublish, _csrf, false, publishProjectStatus) }}

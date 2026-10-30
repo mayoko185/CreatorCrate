@@ -554,6 +554,9 @@ describe('dashboard HTTP composition', () => {
       expect(late).toContain('Any time');
       expect(late).toContain(`href="/releases/${lateId}/publish" aria-label="Publish Late Release">Publish</a>`);
       expect(extractReleaseRow(res.text, todayId)).toContain(`href="/releases/${todayId}/publish"`);
+      expect(extractReleaseRow(res.text, todayId)).toContain(`data-dashboard-publish="${todayId}"`);
+      expect(res.text.match(/data-dashboard-publish-mount/g)).toHaveLength(1);
+      expect(res.text).not.toContain('id="release-publish-dialog"');
       for (const row of [late, extractReleaseRow(res.text, todayId)]) {
         expect(row).toContain('class="button button-small button-primary dashboard-release-row-action dashboard-release-row-action--publish"');
       }
@@ -949,7 +952,7 @@ describe('dashboard HTTP composition', () => {
       // Both dialogs live in the overlay, outside the region a scheduling refresh replaces.
       expect(res.text.indexOf('<dialog id="release-create-dialog"')).toBeGreaterThan(res.text.indexOf('</main>'));
       expect(dialog).toContain('<form id="release-create-form" method="post" action="/releases"');
-      expect(dialog).toContain('data-dialog-form data-dialog-async="false" data-dialog-reset-on-close');
+      expect(dialog).toContain('data-dialog-form data-dialog-async="true" data-dialog-reset-on-close');
       expect(dialog).toContain('data-release-create-fresh="true" data-release-schedule-defaults="fresh"');
       expect(dialog).toContain('<input type="hidden" name="returnTo" value="/">');
       expect(dialog).not.toContain('data-dialog-return-location');

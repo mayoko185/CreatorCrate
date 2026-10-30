@@ -1179,11 +1179,15 @@ const releasesLiveEngine = createLiveRegionEngine({
   onCreate(state) {
     state.releasesDefaultsRefreshGeneration = null;
     state.releasesDefaultsRefreshError = null;
+    state.releasesDefaultsRefreshFailureMessage = null;
+    state.releasesDefaultsRefreshSuccess = null;
   },
   onInvalidate(state) {
     if (state.releasesDefaultsRefreshGeneration === null) return;
     state.releasesDefaultsRefreshGeneration = null;
     state.releasesDefaultsRefreshError = null;
+    state.releasesDefaultsRefreshFailureMessage = null;
+    state.releasesDefaultsRefreshSuccess = null;
   },
   onResponseParsed(state, parsed) {
     reconcileExternalFilterForm(state, parsed, RELEASES_FILTER_SELECTOR);
@@ -1191,21 +1195,27 @@ const releasesLiveEngine = createLiveRegionEngine({
   },
   onLoadComplete(state, generation) {
     if (state.releasesDefaultsRefreshGeneration !== generation) return;
+    const notifyRefreshed = state.releasesDefaultsRefreshSuccess;
     state.releasesDefaultsRefreshGeneration = null;
     state.releasesDefaultsRefreshError = null;
+    state.releasesDefaultsRefreshFailureMessage = null;
+    state.releasesDefaultsRefreshSuccess = null;
+    notifyRefreshed?.();
   },
   onLoadError(state, generation) {
     if (state.releasesDefaultsRefreshGeneration !== generation) return false;
     const notifyRefreshError = state.releasesDefaultsRefreshError;
+    // An empty message keeps the region quiet for callers that report the
+    // outcome themselves.
+    const failureMessage = state.releasesDefaultsRefreshFailureMessage
+      ?? 'Defaults were saved, but Releases could not refresh. Refresh the page to see the saved defaults.';
     state.releasesDefaultsRefreshGeneration = null;
     state.releasesDefaultsRefreshError = null;
+    state.releasesDefaultsRefreshFailureMessage = null;
+    state.releasesDefaultsRefreshSuccess = null;
     const region = releasesLiveEngine.getRegion(state.document);
     region?.removeAttribute?.('aria-busy');
-    releasesLiveEngine.status(
-      region,
-      'Defaults were saved, but Releases could not refresh. Refresh the page to see the saved defaults.',
-      'error',
-    );
+    releasesLiveEngine.status(region, failureMessage, 'error');
     notifyRefreshError?.();
     return true;
   },
@@ -1707,6 +1717,7 @@ const PROJECT_ASSETS_LIVE_STATE_ATTRIBUTE = 'data-project-assets-live-state';
 const PROJECT_ASSETS_NSFW_FORM_SELECTOR = '[data-project-assets-nsfw-filter]';
 const PROJECT_ASSETS_NSFW_TOGGLE_SELECTOR = '[data-project-assets-nsfw-toggle]';
 const PROJECT_ASSETS_LIVE_DEBOUNCE_MS = 350;
+export const PROJECT_ASSETS_REGION_LOADED_EVENT = 'project-assets-region-loaded';
 
 function projectAssetsNsfwForm(region) {
   return region?.querySelector?.(PROJECT_ASSETS_NSFW_FORM_SELECTOR) || null;
@@ -2037,6 +2048,8 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
     updateProjectAssetsNsfwControls(nextRegion, renderedEnabled, true);
   },
   onLoadComplete(state, generation, region) {
+    const Event = state.window?.Event || globalThis.Event;
+    if (typeof Event === 'function') state.document.dispatchEvent?.(new Event(PROJECT_ASSETS_REGION_LOADED_EVENT));
     if (state.projectAssetCategoriesNeedSync && state.projectAssetCategoriesPage) {
       syncProjectAssetCategoryConsumers(state.document, state.projectAssetCategoriesPage);
       state.projectAssetCategoriesPage = null;
@@ -2127,6 +2140,10 @@ export function refreshProjectAssetsLiveRegion(scope = globalThis.document) {
   projectAssetsLiveEngine.invalidate(state);
   projectAssetsLiveEngine.load(state, url, 'none', form);
   return true;
+}
+
+export function isProjectAssetsLoadInFlight(scope = globalThis.document) {
+  return Boolean(liveRegionDocument(scope)?.__creatorCrateProjectAssetsLiveFiltering?.controller);
 }
 
 export function beginProjectAssetsDefaultsLiveRefresh(scope = globalThis.document) {
@@ -2275,7 +2292,7 @@ export function refreshReleasesLiveRegion(
   scope = globalThis.document,
   destination,
   authorityGeneration,
-  { onError = null } = {},
+  { onError = null, onSuccess = null, failureMessage = null } = {},
 ) {
   const document = liveRegionDocument(scope);
   const region = releasesLiveEngine.getRegion(document);
@@ -2283,9 +2300,14 @@ export function refreshReleasesLiveRegion(
   if (!document || !region || !state || !releasesLiveEngine.capabilities(state.window)) return 'unavailable';
   if (state.generation !== authorityGeneration) return 'superseded';
 
+  // A null destination keeps the Releases view as shown, taking over a
+  // pending filter navigation rather than reverting it.
+  const current = destination === null && state.controller && state.requestedUrl
+    ? state.requestedUrl.href
+    : destination ?? state.window.location?.href;
   let url;
   try {
-    url = new URL(destination, state.window.location?.href || '/releases');
+    url = new URL(current, state.window.location?.href || '/releases');
   } catch {
     return 'unavailable';
   }
@@ -2296,6 +2318,9 @@ export function refreshReleasesLiveRegion(
   releasesLiveEngine.invalidate(state);
   state.releasesDefaultsRefreshGeneration = state.generation;
   state.releasesDefaultsRefreshError = typeof onError === 'function' ? onError : null;
+  state.releasesDefaultsRefreshFailureMessage = typeof failureMessage === 'string' ? failureMessage : null;
+  // Fires only once this refresh's region is installed.
+  state.releasesDefaultsRefreshSuccess = typeof onSuccess === 'function' ? onSuccess : null;
   releasesLiveEngine.load(
     state,
     url,

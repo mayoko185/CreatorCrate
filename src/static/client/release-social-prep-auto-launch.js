@@ -210,3 +210,14 @@ export function enhanceReleaseSocialPrepAutoLaunch(scope = globalThis.document, 
   return companionElements(scope)
     .reduce((count, element) => count + enhanceCompanionElement(element, scope, options), 0);
 }
+
+/**
+ * Submits the release-level companion action, as the ?prep=1 marker does on a
+ * page load, for a publication that stayed on the page.
+ */
+export function launchReleaseSocialPrepCompanion(document) {
+  const action = document?.querySelector?.(`${COMPANION_SELECTOR}:not([data-target-platform]) ${ACTION_SELECTOR}`);
+  if (!action || action.disabled) return false;
+  action.click();
+  return true;
+}

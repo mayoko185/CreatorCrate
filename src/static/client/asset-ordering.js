@@ -916,7 +916,7 @@ export function updateAssetSelectionState(form, scope = form) {
   const releaseSelect = form.querySelector('[data-release-select]');
   const submitButton = form.querySelector('[data-bulk-submit]');
   if (submitButton) {
-    const hasReleaseTarget = Boolean(releaseSelect && releaseSelect.value);
+    const hasReleaseTarget = Boolean(releaseSelect && !releaseSelect.disabled && releaseSelect.value);
     submitButton.disabled = !(selectedCount > 0 && hasReleaseTarget);
   }
 

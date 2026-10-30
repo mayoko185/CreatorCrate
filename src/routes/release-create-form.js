@@ -85,9 +85,13 @@ export function buildCreateReleaseFormModel({
   selectedAssetsRecoveryUrl = null,
   invocationReturnTo = '',
   isFreshCreate = true,
+  fixedProject = null,
+  selectedAssetsFormId = '',
 }) {
   const formValues = buildNewReleaseFormValues(values, { isFreshCreate });
-  const context = buildReleaseFormProjectContext(formValues.projectId, projectService);
+  const context = fixedProject
+    ? { projects: [fixedProject], selectedProjectId: fixedProject.id }
+    : buildReleaseFormProjectContext(formValues.projectId, projectService);
 
   return {
     appName,
@@ -109,6 +113,7 @@ export function buildCreateReleaseFormModel({
     selectedAssetsReturnTo,
     selectedAssetsInvalid,
     selectedAssetsRecoveryUrl,
+    selectedAssetsFormId,
     invocationReturnTo,
     isFreshCreate,
     noSetReleaseDate: formValues.noSetReleaseDate,
@@ -118,6 +123,18 @@ export function buildCreateReleaseFormModel({
     scheduleDefaulted: isFreshCreate && !formValues.noSetReleaseDate
       && !hasOwnField(values, 'plannedDate') && !hasOwnField(values, 'plannedTime'),
   };
+}
+
+// The New Release dialog Project Assets hosts for its live asset selection: the
+// project is the page's own, and the selected ids are read from the named
+// selection form each time the dialog opens.
+export function buildProjectAssetsReleaseCreateFormModel(project, selectedAssetsFormId) {
+  return buildCreateReleaseFormModel({
+    fixedProject: project,
+    selectedAssetsFlow: true,
+    selectedAssetsFormId,
+    values: { projectId: String(project.id), title: project.title },
+  });
 }
 
 export function readSubmittedSocialPlatforms(value) {

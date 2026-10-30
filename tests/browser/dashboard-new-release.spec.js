@@ -30,7 +30,7 @@ async function withDashboardApp(run) {
     `).run(target.id).lastInsertRowid);
     server = app.listen(0, '127.0.0.1');
     await new Promise(resolve => server.once('listening', resolve));
-    await run({ db, origin: `http://127.0.0.1:${server.address().port}`, projectId: target.id, signature, undated });
+    await run({ app, db, origin: `http://127.0.0.1:${server.address().port}`, projectId: target.id, signature, undated });
   } finally {
     if (server) await new Promise(resolve => server.close(resolve));
     closeDatabase(db);
@@ -100,12 +100,12 @@ function refreshNow(page) {
   });
 }
 
-test('Dashboard New Release opens the established dialog, rerenders validation in place, and creates one release', async ({ page }) => {
+test('Dashboard New Release opens the established dialog, validates in place, and creates one release without leaving', async ({ page }) => {
   test.setTimeout(120_000);
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
 
-  await withDashboardApp(async ({ db, origin, projectId, signature }) => {
+  await withDashboardApp(async ({ app, db, origin, projectId, signature }) => {
     await openDashboard(page, origin);
     let navigations = 0;
     page.on('framenavigated', (frame) => { if (frame === page.mainFrame()) navigations += 1; });
@@ -170,40 +170,85 @@ test('Dashboard New Release opens the established dialog, rerenders validation i
     await expectDialogOpenState(signaturesDialog, false);
     await expectDialogOpenState(dialog, true);
 
-    // Missing title: the Dashboard comes back with only this dialog open.
-    await Promise.all([
-      page.waitForURL((url) => url.pathname === '/releases'),
-      dialog.getByRole('button', { name: 'Create release' }).click(),
-    ]);
-    await page.locator(SCHEDULE_BOUND).first().waitFor({ state: 'attached' });
-    await expect(page.locator('h1')).toHaveText('Dashboard');
+    // Missing title: the dialog stays open on the Dashboard, the draft intact.
+    const posts = [];
+    page.on('request', (request) => {
+      if (request.method() === 'POST' && new URL(request.url()).pathname === '/releases') posts.push(request.url());
+    });
+    await page.evaluate(() => { window.__dashboardNewReleaseDocument = true; });
+    await dialog.getByRole('button', { name: 'Create release' }).click();
+    await expect(page.locator('#release-create-field-title-error')).toBeVisible();
     await expectDialogOpenState(dialog, true);
     await expectDialogOpenState(projectDialog, false);
-    await expect(page.locator('#release-create-field-title-error')).toBeVisible();
+    await expect(dialog.locator('[data-dialog-error]')).toBeVisible();
     await expect(form.getByLabel('Title')).toHaveAttribute('aria-invalid', 'true');
     await expect(form.getByLabel('Title')).toHaveAttribute('aria-describedby', 'release-create-field-title-error');
+    await expect(form.getByLabel('Title')).toBeFocused();
     await expect(form.locator(`input[name="projectId"][value="${projectId}"]`)).toBeChecked();
+    await expect(form.locator('#release-create-project summary')).toContainText('Second Dashboard Project');
     await expect(form.locator('input[name="selectedPlatforms"][value="bluesky"]')).toBeChecked();
     await expect(form.locator('textarea[name="description"]')).toHaveValue('Signed from the Dashboard');
     await expect(form.getByLabel('Notes')).toHaveValue('Dashboard draft notes');
     await expect(noDate).toBeChecked();
-    await expect(form.locator('input[name="returnTo"]')).toHaveValue('/');
+    await expect(date).toBeDisabled();
+    await expect(page.locator('[data-dialog-feedback]')).toBeHidden();
     await noDate.uncheck();
     await expect(date).toHaveValue('2027-03-04');
     await expect(time).toHaveValue('08:15');
+    await noDate.check();
     expect(db.prepare('SELECT COUNT(*) AS count FROM releases').get().count).toBe(1);
     expect(await duplicateIds(page)).toEqual([]);
 
-    // Corrected input creates exactly one release and opens its detail page.
+    // The enhanced dropdowns keep working after the refused submit.
+    await chooseInDropdown(form, 'release-platforms', 'input[name="selectedPlatforms"][value="x"]');
+    await expect(form.locator('#release-platforms summary')).toContainText('2 platforms selected');
+
+    // Corrected input creates exactly one undated release and stays here.
     await form.getByLabel('Title').fill('Created From Dashboard');
-    await Promise.all([
-      page.waitForURL(/\/releases\/\d+$/),
-      dialog.getByRole('button', { name: 'Create release' }).click(),
-    ]);
-    const created = db.prepare('SELECT id, project_id, planned_date, planned_time FROM releases WHERE title = ?').all('Created From Dashboard');
+    await dialog.getByRole('button', { name: 'Create release' }).click();
+    await expectDialogOpenState(dialog, false);
+    const feedback = page.locator('[data-dialog-feedback]');
+    await expect(feedback).toContainText('Release “Created From Dashboard” created.');
+    const created = db.prepare('SELECT id, project_id, planned_date, planned_time, description FROM releases WHERE title = ?').all('Created From Dashboard');
     expect(created).toHaveLength(1);
-    expect(created[0]).toMatchObject({ project_id: projectId, planned_date: '2027-03-04', planned_time: '08:15' });
-    expect(new URL(page.url()).pathname).toBe(`/releases/${created[0].id}`);
+    expect(created[0]).toMatchObject({
+      project_id: projectId, planned_date: null, planned_time: null, description: 'Signed from the Dashboard',
+    });
+    expect(app.locals.socialPrepRepository.listPlatformsByReleaseId(created[0].id)
+      .filter((row) => row.is_selected === 1).map((row) => row.platform).sort()).toEqual(['bluesky', 'x']);
+    const view = feedback.getByRole('link', { name: 'View Release' });
+    await expect(view).toHaveAttribute('href', `/releases/${created[0].id}`);
+    // The refreshed Dashboard lists it as waiting for a date.
+    await expect(page.locator(`[data-dashboard-needs-date-item][data-release-id="${created[0].id}"]`)).toHaveCount(1);
+    await expect(page.locator('[data-dashboard-sync]')).toBeHidden();
+    await expect(newRelease).toBeFocused();
+    expect(posts).toHaveLength(2);
+    expect(navigations).toBe(0);
+    expect(new URL(page.url()).pathname).toBe('/');
+    expect(await page.evaluate(() => window.__dashboardNewReleaseDocument)).toBe(true);
+
+    // Reopening starts from fresh defaults, not the created release.
+    await newRelease.click();
+    await expectDialogOpenState(dialog, true);
+    await expect(form.getByLabel('Title')).toHaveValue('');
+    await expect(form.getByLabel('Notes')).toHaveValue('');
+    await expect(form.locator('textarea[name="description"]')).toHaveValue('');
+    await expect(form.locator('input[name="projectId"]:checked')).toHaveCount(0);
+    await expect(form.locator('#release-create-project summary')).toContainText('Select a project');
+    await expect(form.locator('input[name="selectedPlatforms"]:checked')).toHaveCount(0);
+    await expect(form.locator('#release-platforms summary')).toContainText('No platforms selected');
+    await expect(noDate).not.toBeChecked();
+    await expect(date).toBeEnabled();
+    await expect(date).not.toHaveValue('');
+    await expect(form.locator('[aria-invalid="true"]')).toHaveCount(0);
+    await expect(dialog.locator('[data-dialog-error]')).toBeHidden();
+    await page.keyboard.press('Escape');
+    await expectDialogOpenState(dialog, false);
+    expect(navigations).toBe(0);
+
+    // View Release opens the created release.
+    await Promise.all([page.waitForURL(`${origin}/releases/${created[0].id}`), view.click()]);
+    await expect(page.locator('h1')).toContainText('Created From Dashboard');
     expect(pageErrors).toEqual([]);
   });
 });
@@ -290,4 +335,53 @@ test('Dashboard creation dialogs cancel cleanly, stay independent, and survive s
     await expectDialogOpenState(projectDialog, false);
     expect(pageErrors).toEqual([]);
   });
+});
+
+test('a Dashboard refresh failure after a confirmed create recovers with GET only', async ({ page }) => {
+  const pageErrors = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+
+  await withDashboardApp(async ({ db, origin, projectId }) => {
+    await openDashboard(page, origin);
+    const posts = [];
+    page.on('request', (request) => {
+      if (request.method() === 'POST' && new URL(request.url()).pathname === '/releases') posts.push(request.url());
+    });
+    const dialog = page.locator('#release-create-dialog');
+    const form = page.locator('#release-create-form');
+    await page.locator('.page-heading [data-dialog-open="release-create-dialog"]').click();
+    await chooseInDropdown(form, 'release-create-project', `input[name="projectId"][value="${projectId}"]`);
+    await form.getByLabel('Title').fill('Dashboard Refresh Failure');
+    await form.getByLabel('No set release date').check();
+
+    let refreshGets = 0;
+    await page.route((url) => url.pathname === '/', (route) => {
+      if (route.request().resourceType() === 'document') return route.continue();
+      refreshGets += 1;
+      return refreshGets === 1
+        ? route.fulfill({ status: 500, contentType: 'text/html', body: 'refresh failed' })
+        : route.continue();
+    });
+    await dialog.getByRole('button', { name: 'Create release' }).click();
+    await expectDialogOpenState(dialog, false);
+
+    const created = db.prepare('SELECT id FROM releases WHERE title = ?').all('Dashboard Refresh Failure');
+    expect(created).toHaveLength(1);
+    const feedback = page.locator('[data-dialog-feedback]');
+    await expect(feedback.getByRole('link', { name: 'View Release' })).toHaveAttribute('href', `/releases/${created[0].id}`);
+    const sync = page.locator('[data-dashboard-sync]');
+    await expect(sync).toBeVisible();
+    await expect(sync).toContainText('The release was created, but');
+    await expect(page.locator(`[data-dashboard-needs-date-item][data-release-id="${created[0].id}"]`)).toHaveCount(0);
+
+    await sync.getByRole('button', { name: 'Retry refresh' }).click();
+    await expect(page.locator(`[data-dashboard-needs-date-item][data-release-id="${created[0].id}"]`)).toHaveCount(1);
+    await expect(sync.getByRole('button', { name: 'Retry refresh' })).toBeHidden();
+    await expect(feedback.getByRole('link', { name: 'View Release' })).toBeVisible();
+    expect(refreshGets).toBe(2);
+    expect(posts).toHaveLength(1);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM releases WHERE title = ?').get('Dashboard Refresh Failure').count).toBe(1);
+    expect(new URL(page.url()).pathname).toBe('/');
+  });
+  expect(pageErrors).toEqual([]);
 });

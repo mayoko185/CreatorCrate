@@ -1441,6 +1441,114 @@ describe('release HTTP workflow', () => {
   });
 
   describe('New Release dialog', () => {
+    // The ordinary dialog posts with Accept: application/json and stays on
+    // its host page; the server stays authoritative for every field.
+    function postReleaseJson(fields) {
+      return agent.post('/releases')
+        .set('Accept', 'application/json')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send({ _csrf: csrfToken, returnTo: '/releases?sort=title', selectedPlatformsPresent: '1', ...fields });
+    }
+
+    function releaseCount() {
+      return db.prepare('SELECT COUNT(*) AS count FROM releases').get().count;
+    }
+
+    it('creates exactly one release as JSON with a View Release URL and fresh defaults', async () => {
+      app.locals.socialPrepSettingsService.setPlatforms(['x', 'bluesky']);
+      const projectId = await createTestProject('Dialog JSON Project');
+      const res = await postReleaseJson({
+        projectId: String(projectId), title: 'Dialog Created', description: 'Body', notes: 'Notes',
+        plannedDate: '2027-05-06', plannedTime: '09:30', patreonUrl: 'https://example.com/post',
+        selectedPlatforms: ['x', 'bluesky'],
+      }).expect(201);
+
+      expect(res.headers.location).toBeUndefined();
+      expect(res.headers['content-type']).toMatch(/application\/json/);
+      const rows = db.prepare('SELECT id, project_id, title, planned_date, planned_time, patreon_url FROM releases').all();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        project_id: projectId, title: 'Dialog Created', planned_date: '2027-05-06', planned_time: '09:30',
+        patreon_url: 'https://example.com/post',
+      });
+      expect(res.body).toEqual({
+        status: 'success',
+        message: 'Release “Dialog Created” created.',
+        release: { id: rows[0].id, projectId, title: 'Dialog Created', url: `/releases/${rows[0].id}` },
+        values: { projectId: '', title: '', notes: '', selectedPlatforms: [], patreonUrl: '' },
+      });
+      expect(app.locals.socialPrepRepository.listPlatformsByReleaseId(rows[0].id)
+        .filter((row) => row.is_selected === 1).map((row) => row.platform).sort()).toEqual(['bluesky', 'x']);
+    });
+
+    it('creates an unscheduled release when No set release date wins over stale schedule fields', async () => {
+      const projectId = await createTestProject('Dialog Undated Project');
+      const res = await postReleaseJson({
+        projectId: String(projectId), title: 'Dialog Undated', noSetReleaseDate: '1',
+        retainedPlannedDate: '2027-01-02', retainedPlannedTime: '10:00', plannedDate: 'not-a-date',
+      }).expect(201);
+
+      const row = db.prepare('SELECT planned_date, planned_time FROM releases WHERE id = ?').get(res.body.release.id);
+      expect(row).toEqual({ planned_date: null, planned_time: null });
+    });
+
+    it('refuses invalid input with field errors, keeps nothing and echoes no values', async () => {
+      const projectId = await createTestProject('Dialog Invalid Project');
+      const res = await postReleaseJson({
+        projectId: String(projectId), title: '', plannedDate: '2027-02-31', patreonUrl: 'ftp://example.com',
+      }).expect(422);
+
+      expect(res.headers.location).toBeUndefined();
+      expect(res.body.status).toBe('error');
+      expect(res.body.code).toBe('VALIDATION_FAILED');
+      expect(res.body.message).toBe('Fix the highlighted fields and try again.');
+      expect(Object.keys(res.body.errors)).toEqual(expect.arrayContaining(['title']));
+      expect(res.body.values).toBeUndefined();
+      expect(releaseCount()).toBe(0);
+    });
+
+    it('refuses a missing, archived or nonexistent project on the server', async () => {
+      const archived = await createTestProject('Dialog Archived Project');
+      db.prepare("UPDATE projects SET archived_at = datetime('now') WHERE id = ?").run(archived);
+
+      for (const projectId of ['', String(archived), '999999']) {
+        const res = await postReleaseJson({ projectId, title: 'Refused' }).expect(422);
+        expect(res.body.errors.projectId).toEqual(expect.any(String));
+      }
+      expect(releaseCount()).toBe(0);
+    });
+
+    it('reports a failed write without internal details or a success payload', async () => {
+      const projectId = await createTestProject('Dialog Failure Project');
+      db.exec(`CREATE TRIGGER reject_release_insert BEFORE INSERT ON releases
+        BEGIN SELECT RAISE(ABORT, 'internal sqlite detail'); END;`);
+      const res = await postReleaseJson({ projectId: String(projectId), title: 'Never Saved' }).expect(500);
+
+      expect(res.body).toEqual({
+        status: 'error', code: 'SERVER_ERROR', message: 'Release creation failed. Please try again.', errors: {},
+      });
+      expect(res.text).not.toContain('internal sqlite detail');
+      db.exec('DROP TRIGGER reject_release_insert');
+      expect(releaseCount()).toBe(0);
+    });
+
+    it('keeps the standalone form redirect and rerender for HTML posts', async () => {
+      const projectId = await createTestProject('Standalone Project');
+      const created = await agent.post('/releases')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send({ _csrf: csrfToken, projectId: String(projectId), title: 'Standalone Release' })
+        .expect(302);
+      expect(created.headers.location).toMatch(/^\/releases\/\d+$/);
+
+      const refused = await agent.post('/releases')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send({ _csrf: csrfToken, projectId: String(projectId), title: '' })
+        .expect(422);
+      expect(refused.headers['content-type']).toMatch(/text\/html/);
+      expect(refused.text).toContain('<form id="release-form"');
+      expect(releaseCount()).toBe(1);
+    });
+
     it('keeps a saved unconfigured platform available only in its Edit dialog', async () => {
       app.locals.socialPrepSettingsService.setPlatforms(['x', 'bluesky']);
       const projectId = await createTestProject('Legacy Platform Project');
@@ -1591,7 +1699,7 @@ describe('release HTTP workflow', () => {
       expect(editDialog).not.toContain('data-release-create-fresh');
     });
 
-    it('renders a progressive-enhancement trigger and native create form on /releases', async () => {
+    it('renders the heading trigger and the async create dialog on /releases', async () => {
       const res = await agent.get('/releases').expect(200);
       const dialog = res.text.match(/<dialog id="release-create-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
 
@@ -1604,7 +1712,11 @@ describe('release HTTP workflow', () => {
       expect(dialog).not.toMatch(/<button[^>]*>\s*Cancel\s*<\/button>/);
       expect(dialog.match(/data-dialog-close/g)).toHaveLength(1);
       expect(dialog).toContain('<form id="release-create-form" method="post" action="/releases"');
-      expect(dialog).toContain('data-dialog-form data-dialog-async="false"');
+      expect(dialog).toContain('data-dialog-form data-dialog-async="true"');
+      expect(dialog).toContain('data-dialog-pending-message="Creating release…"');
+      expect(dialog).toContain('data-dialog-network-error-message="Could not confirm whether the release was created. Check Releases before creating it again."');
+      expect(dialog).toContain('<div class="error-summary" role="alert" data-dialog-error hidden><p data-dialog-error-text></p></div>');
+      expect(dialog).toContain('<div class="release-details-project" data-dialog-field="projectId" data-dialog-error-ref="projectId-error">');
       expect(dialog).toContain('data-release-create-fresh="true"');
       expect(dialog).not.toContain('name="publishedDate"');
       expect(dialog).toContain('<input type="hidden" name="returnTo" value="/releases">');
@@ -1809,7 +1921,7 @@ describe('release HTTP workflow', () => {
       expect(fallbackRes.text).toContain('data-release-create-fresh="true"');
       // Project moves into Release details, so its legend becomes the visible label.
       expect(dialog).not.toContain('<h3>Project</h3>');
-      expect(dialog).toMatch(/<h3>Release details<\/h3>\s*<div class="[^"]*release-details-section-body">\s*<div class="release-details-project">[\s\S]*?<legend>Project <span class="required" aria-label="required">\*<\/span><\/legend>/);
+      expect(dialog).toMatch(/<h3>Release details<\/h3>\s*<div class="[^"]*release-details-section-body">\s*<div class="release-details-project"[^>]*>[\s\S]*?<legend>Project <span class="required" aria-label="required">\*<\/span><\/legend>/);
       expect(dialog).not.toContain('<legend class="sr-only">Project ');
       expect(dialog).toMatch(/<textarea id="description"[^>]*rows="6"/);
       expect(dialog).toMatch(/<textarea id="notes"[^>]*rows="6"/);
@@ -2449,6 +2561,101 @@ describe('release HTTP workflow', () => {
         { asset_id: first.id, role: 'attachment', sort_order: 1 },
       ]);
       expect(releaseRepository.findByProjectId(projectId, { includeArchived: true })).toHaveLength(1);
+    });
+
+    describe('in-place JSON creation from Project Assets', () => {
+      const postSelected = (fields) => {
+        let request = agent.post('/releases').set('Accept', 'application/json')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .send('_csrf=' + encodeURIComponent(csrfToken))
+          .send('releaseCreateFlow=selected-assets');
+        fields.forEach((field) => { request = request.send(field); });
+        return request;
+      };
+
+      it('creates and associates in submitted order and returns authoritative links', async () => {
+        const projectId = await createTestProject('Selected JSON Project');
+        const first = insertAssetDirect(db, projectId, 'first.png');
+        const second = insertAssetDirect(db, projectId, 'second.png');
+
+        const res = await postSelected([
+          `projectId=${projectId}`, 'title=JSON+Selected',
+          `selectedAssetIds=${second.id}`, `selectedAssetIds=${first.id}`, `selectedAssetIds=${second.id}`,
+        ]).expect(201);
+
+        const releaseId = res.body.release.id;
+        expect(res.body).toMatchObject({
+          status: 'success',
+          message: 'Release “JSON Selected” created with 2 assets.',
+          release: { projectId, url: `/releases/${releaseId}`, manageAssetsUrl: `/releases/${releaseId}/assets` },
+          values: { projectId: String(projectId), title: 'Selected JSON Project', notes: '', patreonUrl: '', selectedPlatforms: [] },
+        });
+        expect(getReleaseAssets(db, releaseId).map(({ asset_id }) => asset_id)).toEqual([second.id, first.id]);
+      });
+
+      it('refuses every invalid selection or project as JSON without creating anything', async () => {
+        const projectId = await createTestProject('Selected JSON Validation');
+        const present = insertAssetDirect(db, projectId, 'present.png');
+        const missing = insertAssetDirect(db, projectId, 'missing.png', 0);
+        const foreign = insertAssetDirect(db, await createTestProject('Selected JSON Foreign'), 'foreign.png');
+        const archivedProjectId = await createTestProject('Selected JSON Archived');
+        const archivedAsset = insertAssetDirect(db, archivedProjectId, 'archived.png');
+        await agent.post(`/projects/${archivedProjectId}/archive`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
+        const releaseTotal = () => db.prepare('SELECT COUNT(*) AS count FROM releases').get().count;
+        const before = releaseTotal();
+
+        const cases = [
+          [[`projectId=${projectId}`, 'title=Empty'], 'At least one asset must be selected.'],
+          [[`projectId=${projectId}`, 'title=Bad', 'selectedAssetIds=abc'], 'Asset IDs must be positive integers.'],
+          [[`projectId=${projectId}`, 'title=Missing', `selectedAssetIds=${missing.id}`], `Asset ${missing.id} is currently missing`],
+          [[`projectId=${projectId}`, 'title=Foreign', `selectedAssetIds=${foreign.id}`], `Asset ${foreign.id} does not belong`],
+          [[`projectId=${projectId}`, 'title=Gone', 'selectedAssetIds=999999'], 'Update the selection on Project Assets'],
+        ];
+        for (const [fields, expected] of cases) {
+          const res = await postSelected(fields).expect(422);
+          expect(res.body).toMatchObject({ status: 'error', code: 'VALIDATION_FAILED' });
+          expect(res.body.message).toContain(expected);
+        }
+
+        const invalidField = await postSelected([`projectId=${projectId}`, 'title=', `selectedAssetIds=${present.id}`]).expect(422);
+        expect(invalidField.body.errors.title).toBeTruthy();
+        const archived = await postSelected([`projectId=${archivedProjectId}`, 'title=Archived', `selectedAssetIds=${archivedAsset.id}`]).expect(422);
+        expect(archived.body.errors.projectId).toBe('Cannot create release for archived project.');
+        const noProject = await postSelected(['title=None', `selectedAssetIds=${present.id}`]).expect(422);
+        expect(noProject.body.errors.projectId).toBeTruthy();
+
+        expect(releaseTotal()).toBe(before);
+      });
+
+      it('answers an unexpected failure without backend detail', async () => {
+        const projectId = await createTestProject('Selected JSON Failure');
+        const asset = insertAssetDirect(db, projectId, 'asset.png');
+        const stubbedApp = createApp(
+          { appName: 'CreatorCrate', db, projectsRoot },
+          {
+            releaseService: {
+              ...createReleaseService({ db }),
+              createReleaseWithSelectedAssets() {
+                throw new Error('SQLITE_BUSY secret path');
+              },
+            },
+            appDataRoot,
+            authState: { csrfPepper: ensureAuthEnablement(appDataRoot).csrfPepper },
+          },
+        );
+        const { agent: stubbedAgent, csrfToken: stubbedCsrfToken } = await getDisabledModeCsrf(stubbedApp, appDataRoot);
+        const res = await stubbedAgent.post('/releases').set('Accept', 'application/json')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .send('_csrf=' + encodeURIComponent(stubbedCsrfToken))
+          .send('releaseCreateFlow=selected-assets')
+          .send(`projectId=${projectId}`)
+          .send('title=Boom')
+          .send(`selectedAssetIds=${asset.id}`)
+          .expect(500);
+        expect(res.body).toEqual({
+          status: 'error', code: 'SERVER_ERROR', message: 'Release creation failed. Please try again.', errors: {},
+        });
+      });
     });
 
     it('returns controlled validation for empty, malformed, stale, missing, and cross-project selections', async () => {
@@ -3122,7 +3329,7 @@ describe('release HTTP workflow', () => {
       expect(res.text).toContain('Selected release assets for publication');
       expect(res.text).toContain('<div class="table-scroll" tabindex="0" aria-label="Selected release assets for publication">');
       expect(res.text).toContain('<table class="data-table">');
-      expect(res.text).toMatch(/<div class="field scheduling-field\s*" data-date-picker-field>\s*<label for="release-publish-date">/);
+      expect(res.text).toMatch(/<div class="field scheduling-field\s*" data-dialog-field="publishedDate" data-date-picker-field>\s*<label for="release-publish-date">/);
       expect(res.text).toMatch(/<input[^>]*class="picker-input"[^>]*type="date"[^>]*id="release-publish-date"[^>]*name="publishedDate"[^>]*data-date-picker-input/);
       expect(res.text).toMatch(/<button[^>]*class="picker-trigger date-picker-trigger"[^>]*aria-controls="release-publish-date-calendar"[^>]*aria-label="Open calendar for publication date"/);
       expect(res.text).toMatch(/<div[^>]*id="release-publish-date-calendar"[^>]*data-date-picker-panel[^>]*data-date-picker-for="release-publish-date"[^>]*>/);
@@ -3167,7 +3374,7 @@ describe('release HTTP workflow', () => {
       expect(res.text).toContain('<div class="app-dialog-body project-edit-dialog-body">');
       expect(res.text).toContain('<section class="settings-section project-edit-dialog-section" data-release-dialog-compact-section aria-labelledby="release-publish-assets-heading">');
       expect(res.text).toContain('<section class="settings-section project-edit-dialog-section" data-release-dialog-compact-section aria-labelledby="release-publish-publication-heading">');
-      expect(res.text).toMatch(/<div class="field scheduling-field field-error" data-date-picker-field>/);
+      expect(res.text).toMatch(/<div class="field scheduling-field field-error" data-dialog-field="publishedDate" data-date-picker-field>/);
       expect(res.text).toMatch(/<input[^>]*id="release-publish-date"[^>]*name="publishedDate"[^>]*value="not-a-date"[^>]*aria-describedby="release-publish-date-help release-publish-date-error"[^>]*aria-invalid="true"[^>]*data-date-picker-input/);
       const publishForm = res.text.match(/<form id="release-publish-form"[^>]*>/)?.[0] || '';
       const resetValues = JSON.parse(publishForm.match(/data-dialog-reset-values="([^"]+)"/)?.[1].replaceAll('&quot;', '"'));

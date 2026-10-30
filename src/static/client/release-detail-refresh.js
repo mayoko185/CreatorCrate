@@ -1,5 +1,5 @@
 import { isEnhancementBound, markEnhancementBound, liveRegionWindow } from './dom.js';
-import { enhanceAppDialogs } from './app-dialogs.js';
+import { DIALOG_HOST_STALE_ATTRIBUTE, enhanceAppDialogs } from './app-dialogs.js';
 import { enhanceDropdowns } from './dropdowns.js';
 import { closePickersWithin, enhanceDatePickers } from './pickers.js';
 import {
@@ -10,16 +10,24 @@ import {
 import {
   enhanceReleaseSocialPrepAutoLaunch,
   RELEASE_SOCIAL_PREP_COMPANION_IN_FLIGHT_ATTRIBUTE,
+  launchReleaseSocialPrepCompanion,
   RELEASE_SOCIAL_PREP_COMPANION_SETTLED_EVENT,
 } from './release-social-prep-auto-launch.js';
+import {
+  enhanceReleasePublishDialog,
+  RELEASE_PUBLISH_DIALOG_ID,
+  RELEASE_PUBLISH_SETTLED_EVENT,
+} from './release-publish-dialog.js';
 import { removeStatusRetry, showStatusRetry } from './status-retry.js';
 
-// Release Detail refreshes in place after an Edit Release save: the page is
-// fetched again with a GET and each server-rendered region whose content
+// Release Detail refreshes in place after an Edit Release save or a settled
+// Review & Publish: the page is fetched again with a GET and each server-rendered region whose content
 // depends on editable release fields (data-release-detail-region) is replaced
 // from that render. The Edit action, the Edit and Signatures dialogs, the
 // selected assets and the dialog feedback notice sit outside every region and
-// are never replaced. A region holding an open dialog or a companion request
+// are never replaced. An archived render (data-release-detail-archived) is the
+// exception: it has no editing controls (data-release-detail-editing), so adopting it withdraws
+// them. A region holding an open dialog or a companion request
 // in flight is left alone and marked stale (data-release-detail-stale); once
 // that dialog closes or that request settles, Release Detail is fetched again.
 //
@@ -30,7 +38,9 @@ import { removeStatusRetry, showStatusRetry } from './status-retry.js';
 // return, never a poll, and it reports nothing unless it fails.
 const PAGE_SELECTOR = '[data-release-detail]';
 const REGION_SELECTOR = '[data-release-detail-region]';
-const STALE_ATTRIBUTE = 'data-release-detail-stale';
+const ARCHIVED_ATTRIBUTE = 'data-release-detail-archived';
+const EDITING_SELECTOR = '[data-release-detail-editing]';
+const STALE_ATTRIBUTE = DIALOG_HOST_STALE_ATTRIBUTE;
 // Controls in a stale region that would act on the superseded release state.
 const STALE_ACTION_SELECTOR = '[data-dialog-submit], [data-release-social-prep-companion-action]';
 const STATE_KEY = '__creatorCrateReleaseDetailRefresh';
@@ -41,10 +51,46 @@ const RETRY_KEY = 'retryButton';
 const ONE_SHOT_PARAMS = ['edit', 'publish', 'prep', 'returnTo'];
 const FOCUSABLE_SELECTOR = 'a[href], button, input, select, textarea, summary, [tabindex]';
 
-const SAVED_MESSAGE = 'Release updated.';
-const REFRESHING_MESSAGE = 'Release saved. Refreshing Release Detail…';
-const STALE_MESSAGE = 'Release saved, but Release Detail could not refresh. The information shown may be out of date.';
-const DEFERRED_MESSAGE = 'Release saved. Some Release Detail sections will refresh when the open dialog closes or the publishing companion request finishes.';
+const SAVE_MESSAGES = Object.freeze({
+  done: 'Release updated.',
+  refreshing: 'Release saved. Refreshing Release Detail…',
+  stale: 'Release saved, but Release Detail could not refresh. The information shown may be out of date.',
+  deferred: 'Release saved. Some Release Detail sections will refresh when the open dialog closes or the publishing companion request finishes.',
+});
+const PUBLISH_MESSAGES = Object.freeze({
+  done: 'Release published.',
+  refreshing: 'Release published. Refreshing Release Detail…',
+  stale: 'Release published, but Release Detail could not refresh. The information shown may be out of date.',
+  deferred: 'Release published. Some Release Detail sections will refresh when the open dialog closes or the publishing companion request finishes.',
+});
+// A dismissed Review & Publish whose outcome or state could not be trusted: the
+// refreshed page itself shows what is true, so only a server's report is added.
+const PUBLISH_STALE_MESSAGES = Object.freeze({
+  done: null,
+  refreshing: 'Refreshing Release Detail…',
+  stale: 'Release Detail could not refresh, so its publication state may be out of date. Reload the page if this continues.',
+  deferred: 'Some Release Detail sections will refresh when the open dialog closes or the publishing companion request finishes.',
+});
+
+// The server's report stays on screen whatever the refresh does. A refusal
+// because the release is archived is never shown as a success.
+function publishStaleMessages(message, archived) {
+  if (!message) return PUBLISH_STALE_MESSAGES;
+  const { stale, deferred } = PUBLISH_STALE_MESSAGES;
+  return {
+    ...PUBLISH_STALE_MESSAGES,
+    done: message,
+    doneTone: archived ? 'error' : 'success',
+    stale: `${message} ${stale}`,
+    deferred: `${message} ${deferred}`,
+  };
+}
+
+// Success tone only while a confirmed result is being refreshed.
+function refreshingTone({ done, doneTone = 'success' }) {
+  return done && doneTone === 'success' ? 'success' : 'pending';
+}
+
 const STALE_DIALOG_MESSAGE = 'This release has changed. Close this dialog to load its current details.';
 // A return refresh does not know whether anything changed.
 const RETURN_STALE_DIALOG_MESSAGE = 'Release Detail is being updated. Close this dialog to load its current details.';
@@ -125,9 +171,12 @@ function applyRefresh(document, parsed, releaseId, staleDialogMessage) {
   if (!page || nextPage?.getAttribute('data-release-detail') !== releaseId) return false;
   const current = regionsByName(document);
   const next = regionsByName(parsed);
+  const archived = nextPage.hasAttribute(ARCHIVED_ATTRIBUTE);
   // Every region must be found exactly once on both sides before anything is
-  // replaced, so a refresh never leaves a mix of old and new regions.
-  if (current.size === 0 || [...current].some(([name, region]) => !region || !next.get(name))) return false;
+  // replaced, so a refresh never leaves a mix of old and new regions. Only an
+  // archived render may lack a region, and only one among the editing controls.
+  if (current.size === 0 || [...current].some(([name, region]) => !region
+    || (!next.get(name) && !(archived && region.closest(EDITING_SELECTOR))))) return false;
 
   const windowObject = liveRegionWindow(document);
   const scrollX = windowObject.scrollX;
@@ -138,6 +187,7 @@ function applyRefresh(document, parsed, releaseId, staleDialogMessage) {
   let deferred = false;
 
   current.forEach((region, name) => {
+    if (!next.get(name)) return;
     if (regionIsBusy(region)) {
       markStale(region, staleDialogMessage);
       deferred = true;
@@ -155,9 +205,26 @@ function applyRefresh(document, parsed, releaseId, staleDialogMessage) {
     enhanceDatePickers(replacement);
   });
 
+  if (archived) {
+    // They go together, so an open Edit dialog keeps the action it returns
+    // focus to; closing it fetches the page again and withdraws them.
+    const editing = Array.from(document.querySelectorAll(EDITING_SELECTOR));
+    if (editing.some(regionIsBusy)) {
+      editing.forEach((element) => markStale(element, staleDialogMessage));
+      deferred = true;
+    } else {
+      editing.forEach((element) => {
+        if (active && element.contains(active)) focusLost = true;
+        closePickersWithin(element);
+        element.remove();
+      });
+    }
+  }
+
   // A replaced Review & Publish dialog binds through the shared lifecycle.
   enhanceAppDialogs(document);
   enhanceDropdowns(document);
+  enhanceReleasePublishDialog(document);
 
   const title = parsed.querySelector('title')?.textContent;
   if (title) document.title = title;
@@ -240,9 +307,25 @@ async function fetchReleaseDetail(document, releaseId, staleDialogMessage) {
   return outcome;
 }
 
-async function refreshAfterSave(document, releaseId, { focusResult = false } = {}) {
+// While the page could not be refreshed it must not offer Review & Publish
+// again for a release that has left the state it was rendered in.
+function withdrawPublishAction(document) {
+  document.querySelector(`[data-dialog-open="${RELEASE_PUBLISH_DIALOG_ID}"]`)?.remove();
+}
+
+function hideFeedback(document) {
+  const notice = document.querySelector('[data-dialog-feedback]');
+  if (notice) notice.hidden = true;
+}
+
+// messages names this outcome's feedback (done may be null: nothing to add).
+// onRefreshed runs only when this first refresh is adopted, never on a retry.
+async function refreshAfterSave(document, releaseId, {
+  focusResult = false, messages = SAVE_MESSAGES, withdrawPublish = false, onRefreshed = null,
+} = {}) {
   const state = refreshState(document);
   removeStatusRetry(state, RETRY_KEY);
+  state.saveMessages = messages;
   const outcome = await refreshReleaseDetail(document, releaseId);
   // A newer save or retry owns the outcome now.
   if (outcome === 'superseded') return;
@@ -251,26 +334,34 @@ async function refreshAfterSave(document, releaseId, { focusResult = false } = {
   state.deferred = outcome === 'deferred' ? 'save' : false;
   state.returnNotice = false;
   if (outcome === 'deferred') {
-    setFeedback(document, DEFERRED_MESSAGE, 'pending');
+    setFeedback(document, messages.deferred, 'pending');
     return;
   }
   if (outcome === 'refreshed') {
-    setFeedback(document, SAVED_MESSAGE);
-    if (focusResult) document.querySelector(`[data-release-edit-id="${releaseId}"]`)?.focus?.();
+    if (messages.done) setFeedback(document, messages.done, messages.doneTone);
+    else hideFeedback(document);
+    // An archived render has no Edit action to return to.
+    if (focusResult) {
+      (document.querySelector(`[data-release-edit-id="${releaseId}"]`) || document.getElementById('main-content'))?.focus?.();
+    }
+    onRefreshed?.();
     return;
   }
-  const notice = setFeedback(document, STALE_MESSAGE, 'error');
+  const publishActionHadFocus = withdrawPublish
+    && document.activeElement?.matches?.(`[data-dialog-open="${RELEASE_PUBLISH_DIALOG_ID}"]`);
+  if (withdrawPublish) withdrawPublishAction(document);
+  const notice = setFeedback(document, messages.stale, 'error');
   const retry = notice ? showStatusRetry({
     state,
     status: notice,
     attribute: 'data-release-detail-refresh-retry',
     key: RETRY_KEY,
     onRetry: ({ wasFocused }) => {
-      setFeedback(document, REFRESHING_MESSAGE);
-      return refreshAfterSave(document, releaseId, { focusResult: wasFocused });
+      setFeedback(document, messages.refreshing, refreshingTone(messages));
+      return refreshAfterSave(document, releaseId, { focusResult: wasFocused, messages, withdrawPublish });
     },
   }) : null;
-  if (focusResult) retry?.focus?.();
+  if (focusResult || publishActionHadFocus) retry?.focus?.();
 }
 
 // Called when a dialog closes or a companion request settles: once no stale
@@ -292,8 +383,9 @@ function reconcileDeferred(document, releaseId) {
     void refreshOnReturn(document, releaseId);
     return;
   }
-  setFeedback(document, REFRESHING_MESSAGE);
-  void refreshAfterSave(document, releaseId);
+  const messages = state.saveMessages || SAVE_MESSAGES;
+  setFeedback(document, messages.refreshing, refreshingTone(messages));
+  void refreshAfterSave(document, releaseId, { messages });
 }
 
 // Waits for whichever refresh is newest: a superseded one hands over to its
@@ -346,7 +438,9 @@ async function refreshOnReturn(document, releaseId, { focusResult = false } = {}
     } else if (state.deferred === 'save') {
       // Every region a save left stale has now been replaced.
       state.deferred = false;
-      setFeedback(document, SAVED_MESSAGE);
+      const { done, doneTone } = state.saveMessages || SAVE_MESSAGES;
+      if (done) setFeedback(document, done, doneTone);
+      else hideFeedback(document);
     } else {
       state.deferred = false;
     }
@@ -377,8 +471,9 @@ async function refreshOnReturn(document, releaseId, { focusResult = false } = {}
 
 // Listens for the user coming back to this page once a companion launch has
 // been attempted. One set of listeners serves every later launch; it is
-// removed when the page is left (navigation, reload or bfcache).
-function armReturnRefresh(document, releaseId) {
+// removed when the page is left (navigation, reload or bfcache). onReturn is
+// the hosting page's GET-only refresh.
+export function armCompanionReturnRefresh(document, onReturn) {
   const state = refreshState(document);
   if (state.returnListeners) return;
   const windowObject = liveRegionWindow(document);
@@ -394,7 +489,7 @@ function armReturnRefresh(document, releaseId) {
   const back = () => {
     if (!state.away || document.visibilityState === 'hidden') return;
     state.away = false;
-    void refreshOnReturn(document, releaseId);
+    onReturn();
   };
   windowObject.addEventListener('blur', leave, { signal });
   windowObject.addEventListener('focus', back, { signal });
@@ -409,9 +504,18 @@ function armReturnRefresh(document, releaseId) {
   }, { signal });
 }
 
+// The address stops asking for the dialog once the release has left review.
+function dropPublishMarker(windowObject) {
+  const url = new URL(windowObject.location.href);
+  if (!url.searchParams.has('publish')) return;
+  url.searchParams.delete('publish');
+  windowObject.history.replaceState(windowObject.history.state, '', url.href);
+}
+
 /**
  * Refreshes Release Detail in place after each acknowledged Edit Release save
- * of the release it shows. Binds once per document.
+ * and each settled Review & Publish of the release it shows. Binds once per
+ * document.
  */
 export function enhanceReleaseDetailRefresh(scope = globalThis.document) {
   const document = scope?.nodeType === 9 ? scope : scope?.ownerDocument;
@@ -422,14 +526,41 @@ export function enhanceReleaseDetailRefresh(scope = globalThis.document) {
     if (String(event.detail?.releaseId ?? '') !== releaseId) return;
     void refreshAfterSave(document, releaseId);
   });
+  document.addEventListener(RELEASE_PUBLISH_SETTLED_EVENT, (event) => {
+    const { outcome, message, archived, socialPreparationAvailable } = event.detail ?? {};
+    if (String(event.detail?.releaseId ?? '') !== releaseId) return;
+    dropPublishMarker(liveRegionWindow(document));
+    if (outcome === 'published') {
+      setFeedback(document, PUBLISH_MESSAGES.refreshing);
+      void refreshAfterSave(document, releaseId, {
+        messages: PUBLISH_MESSAGES,
+        withdrawPublish: true,
+        // The established follow-up to a publication that initialized Social
+        // Preparation (the native route's ?prep=1), once and without leaving.
+        onRefreshed: socialPreparationAvailable ? () => launchReleaseSocialPrepCompanion(document) : null,
+      });
+      return;
+    }
+    setFeedback(document, PUBLISH_STALE_MESSAGES.refreshing, 'pending');
+    void refreshAfterSave(document, releaseId, {
+      messages: publishStaleMessages(message, archived === true),
+      withdrawPublish: true,
+    });
+  });
   // close does not bubble: capture it, then check once the dialog lifecycle
   // has finished closing (it clears its open state in its own listener).
   document.addEventListener('close', (event) => {
     if (!event.target?.closest?.(`[${STALE_ATTRIBUTE}]`)) return;
-    liveRegionWindow(document).setTimeout(() => reconcileDeferred(document, releaseId), 0);
+    liveRegionWindow(document).setTimeout(() => {
+      // The action that opened the dialog may have gone with an adopted render.
+      if (document.activeElement === document.body) document.getElementById('main-content')?.focus?.({ preventScroll: true });
+      reconcileDeferred(document, releaseId);
+    }, 0);
   }, true);
   document.addEventListener(RELEASE_SOCIAL_PREP_COMPANION_SETTLED_EVENT, (event) => {
-    if (event.detail?.launchAttempted === true) armReturnRefresh(document, releaseId);
+    if (event.detail?.launchAttempted === true) {
+      armCompanionReturnRefresh(document, () => { void refreshOnReturn(document, releaseId); });
+    }
     if (!event.target?.closest?.(`[${STALE_ATTRIBUTE}]`)) return;
     reconcileDeferred(document, releaseId);
   });

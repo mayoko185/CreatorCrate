@@ -73,8 +73,10 @@
      fields; release-detail-refresh.js replaces each one from a fresh render
      of this page (identified by data-release-detail) after an Edit Release
      save. While the release is editable every region renders its wrapper, so
-     a refresh always finds the same set. #}
-  <div class="release-detail-region" data-release-detail-region="heading" data-release-detail="{{ release.id }}">
+     a refresh always finds the same set. An archived render says so
+     (data-release-detail-archived) and has none of the editing controls marked
+     data-release-detail-editing; a refresh that adopts it withdraws them. #}
+  <div class="release-detail-region" data-release-detail-region="heading" data-release-detail="{{ release.id }}"{% if isArchived %} data-release-detail-archived{% endif %}>
   {% if isArchived %}
     {{ pageHeading.render("", "archived", "Archived", navItems=releaseNavItems) }}
   {% else %}
@@ -123,6 +125,7 @@
 
   <div class="project-detail-summary">
     {% if not isArchived %}
+      <div class="release-detail-region" data-release-detail-editing>
       <div class="project-detail-meta">
         <nav class="project-detail-action-toolbar" aria-label="Release actions">
           {# The Edit action stays outside the region, so a refresh keeps it
@@ -140,6 +143,7 @@
             {{ icons.icon('edit') }}
           </a>
         </nav>
+      </div>
       </div>
     {% endif %}
 
@@ -295,8 +299,10 @@
   {% if not overlayIsArchived %}
     {# The shared async Edit Release dialog (release-edit-dialog.js); saves stay
        on this page. #}
+    <div data-release-detail-editing>
     {{ releaseEditDialog.render(release, releaseEditForm, _csrf, releaseSignatureConfiguration, platformChoices, clockFormat, '', editDeepLink) }}
     {{ releaseSignaturesDialog.render(releaseSignatureConfiguration, _csrf) }}
+    </div>
   {% endif %}
 
   {# Review & Publish follows the publication state and the saved title and

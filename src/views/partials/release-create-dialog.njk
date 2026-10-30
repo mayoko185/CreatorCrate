@@ -11,10 +11,20 @@
   {% set releaseProjectDropdownId = 'release-create-project' %}
   {% set releaseSignatureConfiguration = configuration %}
   {% set platformChoices = platformOptions %}
+  {# Project Assets saves its selected-assets dialog in place; the Releases handoff stays native. #}
+  {% set asyncCreate = not releaseCreateForm.selectedAssetsFlow or releaseCreateForm.selectedAssetsFormId %}
   {% call dialog.render('release-create-dialog', 'New Release', open, '', 'release-create-form', 'project-form-dialog app-dialog--refined') %}
     <div class="app-dialog-body project-edit-dialog-body">
       <form id="release-create-form" method="post" action="/releases" class="app-dialog-form project-form project-edit-dialog-form"
-            data-dialog-form data-dialog-async="false" data-dialog-reset-on-close{% if releaseCreateForm.resetValues %} data-dialog-reset-values="{{ releaseCreateForm.resetValues | dump }}"{% endif %} data-release-create-fresh="{{ 'true' if releaseCreateForm.isFreshCreate else 'false' }}" data-release-schedule-defaults="{{ 'fresh' if releaseCreateForm.scheduleDefaulted else 'keep' }}" novalidate>
+            data-dialog-form data-dialog-async="{{ 'true' if asyncCreate else 'false' }}" data-dialog-reset-on-close{% if releaseCreateForm.resetValues %} data-dialog-reset-values="{{ releaseCreateForm.resetValues | dump }}"{% endif %} data-release-create-fresh="{{ 'true' if releaseCreateForm.isFreshCreate else 'false' }}" data-release-schedule-defaults="{{ 'fresh' if releaseCreateForm.scheduleDefaulted else 'keep' }}"
+            {%- if releaseCreateForm.selectedAssetsFormId %}
+            data-release-create-selection-form="{{ releaseCreateForm.selectedAssetsFormId }}"
+            {%- endif %}
+            {%- if asyncCreate %}
+            data-dialog-pending-message="Creating release…"
+            data-dialog-error-message="Release could not be created."
+            data-dialog-network-error-message="Could not confirm whether the release was created. Check Releases before creating it again."
+            {%- endif %} novalidate>
         <input type="hidden" name="_csrf" value="{{ csrfToken }}">
         <input type="hidden" name="returnTo" value="{{ releaseCreateForm.selectedAssetsReturnTo or releaseCreateForm.invocationReturnTo or returnTo }}"{% if releaseCreateForm.selectedAssetsReturnTo or releaseCreateForm.invocationReturnTo %} data-dialog-return-location{% endif %}>
         {% if releaseCreateForm.selectedAssetsFlow %}
@@ -23,7 +33,13 @@
         {% for assetId in values.selectedAssetIds %}
           <input type="hidden" name="selectedAssetIds" value="{{ assetId }}">
         {% endfor %}
-        {% if errors.general or releaseCreateForm.selectedAssetsInvalid %}
+        {% if releaseCreateForm.selectedAssetsFormId %}
+          <p class="app-dialog-description" data-release-create-selection-summary></p>
+        {% endif %}
+        {% if asyncCreate %}
+          {# An in-place dialog saves asynchronously; the shared binder writes its errors here. #}
+          <div class="error-summary" role="alert" data-dialog-error{% if not errors.general %} hidden{% endif %}><p data-dialog-error-text>{{ errors.general }}</p></div>
+        {% elif errors.general or releaseCreateForm.selectedAssetsInvalid %}
           <div class="error-summary" role="alert">
             {% if errors.general %}<p>{{ errors.general }}</p>{% endif %}
             {% if releaseCreateForm.selectedAssetsInvalid %}

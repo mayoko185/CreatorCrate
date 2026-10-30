@@ -1,5 +1,5 @@
 import { isEnhancementBound, markEnhancementBound, setHidden } from './dom.js';
-import { openAppDialogById, setAppDialogBaseline } from './app-dialogs.js';
+import { dialogHostIsStale, openAppDialogById, setAppDialogBaseline } from './app-dialogs.js';
 import { initializeCreatorCrateDropdown } from './dropdowns.js';
 import { dismissActiveGridInfoCard } from './info-cards.js';
 
@@ -21,6 +21,7 @@ const DEEP_LINK_ATTRIBUTE = 'data-release-edit-deep-link';
 const PLATFORM_FIELD_SELECTOR = '[data-dialog-field="selectedPlatforms"]';
 const LOAD_FAILURE_MESSAGE = 'The release could not be loaded.';
 const LOAD_NETWORK_FAILURE_MESSAGE = 'Could not load the release. Check your connection and try again.';
+const STALE_MESSAGE = 'This release has changed. Close this dialog to load its current details.';
 const LINK_CHECKING_MESSAGE = 'Checking whether the Release link changed in the Posting Helper…';
 const LINK_CONFLICT_SUBMIT_MESSAGE = 'Not saved. The saved Release link changed after this form was loaded. Use the saved Release link, then save again.';
 const LINK_CHECK_FAILED_MESSAGE = 'Not saved. Could not check whether the Release link changed in the Posting Helper. Your changes are kept. Check the Release link again, then save.';
@@ -34,10 +35,12 @@ const controllers = new WeakMap();
 // that was loaded before the check began.
 let linkSequence = 0;
 
+// While the host holds this dialog stale, that is what its status says.
 function setStatus(dialog, message, error = false) {
+  const text = dialogHostIsStale(dialog) ? STALE_MESSAGE : message;
   const status = dialog.querySelector('[data-dialog-status]');
-  if (status) status.textContent = message || '';
-  if (message) dialog.setAttribute('data-dialog-state', error ? 'error' : 'pending');
+  if (status) status.textContent = text || '';
+  if (text) dialog.setAttribute('data-dialog-state', error ? 'error' : 'pending');
   else dialog.removeAttribute('data-dialog-state');
 }
 
@@ -362,6 +365,12 @@ function createController(document, dialog) {
       // A superseded or dismissed load never hydrates or reopens the dialog.
       if (generation !== controller.generation || !dialog.open) return;
       controller.abort = null;
+      // The model predates the render that made this dialog stale. Without it
+      // the form stays hidden, holds no target and cannot be saved.
+      if (dialogHostIsStale(dialog)) {
+        setStatus(dialog, '');
+        return;
+      }
       if (!response.ok || payload?.status !== 'success'
         || String(payload.release?.id) !== releaseId || !payload.actions?.update) {
         setStatus(dialog, payload?.message || LOAD_FAILURE_MESSAGE, true);
@@ -391,6 +400,8 @@ function createController(document, dialog) {
   // continues only if the link was confirmed unchanged.
   dialog.addEventListener('submit', (event) => {
     if (event.target !== form) return;
+    // The shared binder refuses it, with no Release link report on the way.
+    if (dialogHostIsStale(dialog)) return;
     const checking = checkJudgesForm(controller.linkCheck);
     if (controller.releaseId && controller.linkConflict === null && !controller.linkUnverified && !checking) return;
     event.preventDefault();

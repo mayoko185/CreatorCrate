@@ -1,3 +1,4 @@
+import { appDialogOpenCount } from './app-dialogs.js';
 import {
   isEnhancementBound,
   liveRegionDocument,
@@ -13,6 +14,18 @@ import { DATE_PICKER_SELECT_EVENT, enhanceDatePickers } from './pickers.js';
 import { enhancePreviewMedia } from './preview.js';
 import { RELEASE_EDIT_SAVED_EVENT } from './release-edit-dialog.js';
 import { PROJECT_EDIT_SAVED_EVENT } from './project-edit-dialog.js';
+import {
+  openReleasePublishDialog,
+  RELEASE_PUBLISH_DIALOG_ID,
+  RELEASE_PUBLISH_SETTLED_EVENT,
+} from './release-publish-dialog.js';
+import { armCompanionReturnRefresh } from './release-detail-refresh.js';
+import {
+  enhanceReleaseSocialPrepAutoLaunch,
+  launchReleaseSocialPrepCompanion,
+  RELEASE_SOCIAL_PREP_COMPANION_IN_FLIGHT_ATTRIBUTE,
+  RELEASE_SOCIAL_PREP_COMPANION_SETTLED_EVENT,
+} from './release-social-prep-auto-launch.js';
 
 const STATUS_FILTERS_SELECTOR = '[data-dashboard-status-filters]';
 const STATUS_FILTER_SELECTOR = '[data-dashboard-status-filter]';
@@ -710,6 +723,7 @@ const DASHBOARD_TODAY_SELECTOR = '.dashboard-today';
 const DASHBOARD_STATE_KEY = '__creatorCrateDashboardLiveRegion';
 const NEEDS_DATE_SECTION_SELECTOR = '#needs-date';
 const NEEDS_DATE_HEADING_ID = 'dashboard-needs-date-heading';
+const SCHEDULED_HEADING_ID = 'dashboard-scheduled-heading';
 const NEEDS_DATE_LIST_SELECTOR = '[data-dashboard-needs-date-list]';
 const NEEDS_DATE_ITEM_SELECTOR = '[data-dashboard-needs-date-item]';
 const RETAINED_TITLES_SELECTOR = 'template[data-dashboard-retained-titles]';
@@ -1048,7 +1062,9 @@ function restoreDashboardFocus(state, region, { snapshot, releaseId }) {
   const target = kept
     || (focus && findEquivalentFocus(region, focus))
     || releaseFocusTarget(region, focus ? focus.releaseId : releaseId)
-    || headingFocusTarget(region, focus?.sectionHeadingId ?? NEEDS_DATE_HEADING_ID);
+    || headingFocusTarget(region, focus?.sectionHeadingId ?? NEEDS_DATE_HEADING_ID)
+    // The focused row's whole schedule group can leave with it.
+    || headingFocusTarget(region, SCHEDULED_HEADING_ID);
   if (target && state.document.activeElement !== target) target.focus({ preventScroll: true });
 }
 
@@ -1138,7 +1154,7 @@ export function refreshDashboard(scope = globalThis.document, { releaseId = null
   const retainedIds = retainedReleaseIds(state);
   if (retainedIds.length) url.searchParams.set('retain', retainedIds.join(','));
   dashboardLiveEngine.invalidate(state);
-  return new Promise((resolve) => {
+  const settled = new Promise((resolve) => {
     state.dashboardRefresh = {
       resolve,
       retainedIds,
@@ -1147,8 +1163,17 @@ export function refreshDashboard(scope = globalThis.document, { releaseId = null
       nextToday: null,
       replaced: false,
     };
-    dashboardLiveEngine.load(state, url, 'none', null);
   });
+  state.dashboardRefresh.settled = settled;
+  dashboardLiveEngine.load(state, url, 'none', null);
+  return settled;
+}
+
+// Waits out refreshes already in flight, so a later one does not take their
+// outcome and recovery away from them.
+async function dashboardRefreshesSettled(doc) {
+  const state = doc[DASHBOARD_STATE_KEY];
+  while (state?.dashboardRefresh) await state.dashboardRefresh.settled;
 }
 
 /**
@@ -1221,8 +1246,19 @@ const SYNC_RELOAD_SELECTOR = '[data-dashboard-sync-reload]';
 const SYNC_DISMISS_SELECTOR = '[data-dashboard-sync-dismiss]';
 const ANNOUNCER_SELECTOR = '[data-dashboard-announcer]';
 const RELEASE_ROW_SELECTOR = '[data-dashboard-release-row]';
+const PUBLISH_TRIGGER_SELECTOR = '[data-dashboard-publish]';
+const PUBLISH_MOUNT_SELECTOR = '[data-dashboard-publish-mount]';
+const PUBLISH_COMPANIONS_SELECTOR = '[data-dashboard-publish-companions]';
+const PUBLISH_COMPANION_RELEASE_ATTRIBUTE = 'data-dashboard-publish-companion';
+const PUBLISH_COMPANION_CHECK_ATTRIBUTE = 'data-dashboard-publish-companion-check';
+const PUBLISH_COMPANION_CHECK_SELECTOR = `[${PUBLISH_COMPANION_CHECK_ATTRIBUTE}]`;
+const PUBLISH_COMPANION_CHECK_MESSAGE_ATTRIBUTE = 'data-dashboard-publish-companion-check-message';
+const RELEASE_COMPANION_SELECTOR = '[data-release-social-prep-companion]:not([data-target-platform])';
+const RELEASE_COMPANION_ACTION_SELECTOR = '[data-release-social-prep-companion-action]';
 const SYNC_BOUND_KEY = 'dashboardSyncBound';
 const EDIT_SAVED_BOUND_KEY = 'dashboardReleaseEditSavedBound';
+// Dispatched (cancelable) by the New Release dialog after a confirmed create.
+export const DASHBOARD_RELEASE_CREATED_EVENT = 'dashboard-release-created';
 // Long enough for assistive technology to notice the cleared region, so an
 // identical message is announced again.
 const ANNOUNCE_DELAY_MS = 100;
@@ -1232,7 +1268,9 @@ const RECOVERY_MESSAGES = Object.freeze({
   refreshed: 'Dashboard refreshed. Scheduling is available again.',
   undoUnavailable: 'Dashboard refreshed. Undo is no longer available for that change; open the release to change its date.',
   paused: 'Scheduling is paused until the dashboard refreshes.',
+  publishingPaused: 'Scheduling and publishing are paused until the dashboard refreshes.',
   stillFailing: 'Try again, or reload the page.',
+  companionUnverified: 'We couldn’t check whether this action is still available, so it’s turned off for now.',
 });
 
 function refreshProblem(outcome) {
@@ -1298,9 +1336,22 @@ function reconciledMessage(followUp, region) {
 
 function blockedMessage(followUp, outcome) {
   const problem = refreshProblem(outcome);
+  // A failed check says nothing about what the helper itself did.
+  if (followUp.kind === 'companion') {
+    return `We couldn’t check for changes made in the Posting Helper, so social status and publishing companion actions may be out of date. ${RECOVERY_MESSAGES.publishingPaused}`;
+  }
+  if (followUp.kind === 'publication') {
+    const paused = RECOVERY_MESSAGES.publishingPaused;
+    if (followUp.published) {
+      return `${releaseName(followUp.title)} was published, but ${problem}, so counts and lists may be out of date. ${paused}`;
+    }
+    const lead = followUp.message || 'We couldn’t confirm whether the release was published.';
+    return `${lead} ${problem.charAt(0).toUpperCase()}${problem.slice(1)}, so it may not show the current publication state. ${paused}`;
+  }
   if (followUp.kind === 'edited') {
     const record = followUp.record === 'project' ? 'project' : 'release';
-    return `The ${record} was saved, but ${problem}, so counts and lists may be out of date. ${RECOVERY_MESSAGES.paused}`;
+    const outcome = followUp.created ? 'created' : 'saved';
+    return `The ${record} was ${outcome}, but ${problem}, so counts and lists may be out of date. ${RECOVERY_MESSAGES.paused}`;
   }
   if (followUp.kind === 'saved') {
     const change = followUp.mutation.action === 'undo' ? 'Undo was saved' : 'The schedule change was saved';
@@ -1346,6 +1397,7 @@ function createScheduleRecovery(doc, ui) {
   let announceTimer = null;
   // The release a settled notice describes, where Dismiss returns focus.
   let noticeReleaseId = null;
+  let onSettled = null;
 
   function announce(message) {
     clearTimeout(announceTimer);
@@ -1400,7 +1452,9 @@ function createScheduleRecovery(doc, ui) {
   function settledMessage(followUp) {
     const region = dashboardLiveEngine.getRegion(doc);
     if (followUp.kind === 'reconcile') return reconciledMessage(followUp, region);
-    if (followUp.kind === 'edited') return RECOVERY_MESSAGES.refreshed;
+    if (followUp.kind === 'edited' || followUp.kind === 'publication' || followUp.kind === 'companion') {
+      return RECOVERY_MESSAGES.refreshed;
+    }
     const { mutation } = followUp;
     // A replacement that failed part-way can drop the confirmation holding
     // Undo; say so rather than imply it is still available.
@@ -1419,6 +1473,7 @@ function createScheduleRecovery(doc, ui) {
     noticeReleaseId = followUp.releaseId;
     show('notice', message);
     announce(message);
+    onSettled?.();
   }
 
   async function retry() {
@@ -1465,14 +1520,53 @@ function createScheduleRecovery(doc, ui) {
     // which already reflects the saved record and reports its own outcome. A
     // refresh that settles the dashboard also settles a pending recovery,
     // including one this refresh interrupted.
-    async editSaved(detail, record = 'release') {
+    async editSaved(detail, record = 'release', { created = false } = {}) {
       const releaseId = detail?.releaseId ?? null;
       const outcome = await refreshDashboard(doc, { releaseId });
       if (outcome.status === 'refreshed') {
         if (pending) settle(pending.followUp);
       } else if (outcome.status !== 'superseded') {
-        block({ kind: 'edited', record, releaseId }, outcome);
+        block({ kind: 'edited', record, created, releaseId }, outcome);
       }
+    },
+    // A settled Review & Publish refreshes the same way (GET only). Until a
+    // refresh succeeds the release's Publish action is withdrawn and the held
+    // gate refuses the others, so a stale action cannot start another attempt.
+    async publicationSettled({ releaseId, published, title, message }) {
+      const outcome = await refreshDashboard(doc, { releaseId });
+      if (outcome.status === 'refreshed') {
+        if (pending) settle(pending.followUp);
+        return;
+      }
+      if (outcome.status !== 'superseded') {
+        block({ kind: 'publication', releaseId, published, title, message }, outcome);
+      }
+      const region = dashboardLiveEngine.getRegion(doc);
+      const trigger = region && findByAttribute(region, PUBLISH_TRIGGER_SELECTOR, 'data-dashboard-publish', String(releaseId));
+      if (!trigger) return;
+      const hadFocus = doc.activeElement === trigger;
+      trigger.remove();
+      if (hadFocus) (pending ? ui.retry : headingFocusTarget(region, SCHEDULED_HEADING_ID))?.focus?.({ preventScroll: true });
+    },
+    // A return from the Posting Helper refreshes silently. A failed refresh
+    // joins any recovery already pending, and a later success settles it.
+    // Refreshes that were superseded report through whichever refresh replaced
+    // them. A companion control that could not be checked is that control's
+    // concern, so it never reaches this page-level state.
+    companionReturned(outcome) {
+      if (outcome.status === 'refreshed') {
+        if (pending) settle(pending.followUp);
+      } else if (outcome.status !== 'superseded') {
+        block(pending?.followUp ?? { kind: 'companion', releaseId: null }, outcome);
+      }
+    },
+    announce,
+    set onSettled(callback) { onSettled = callback; },
+    // The banner already explains the pause; Publish leads the user to it.
+    get publishingPaused() { return pending !== null; },
+    pointToRetry() {
+      announce(RECOVERY_MESSAGES.publishingPaused);
+      ui.retry.focus?.({ preventScroll: true });
     },
     async reconcile(detail) {
       const region = dashboardLiveEngine.getRegion(doc);
@@ -1487,6 +1581,326 @@ function createScheduleRecovery(doc, ui) {
 }
 
 const scheduleRecoveries = new WeakMap();
+
+function showPublishFeedback(doc, message, error = false) {
+  const notice = doc.querySelector('[data-dialog-feedback]');
+  const text = notice?.querySelector('[data-dialog-feedback-text]');
+  if (!notice || !text) return;
+  notice.classList.toggle('notice--error', error);
+  notice.classList.toggle('notice--success', !error);
+  text.textContent = message;
+  notice.hidden = false;
+}
+
+// Release Detail's render decides which companion control a release offers.
+// A release that no longer exists offers none. Only a GET is sent, and any
+// failure or sign-in redirect leaves `loaded` false.
+async function loadReleaseCompanion(doc, releaseId) {
+  try {
+    const windowObject = doc.defaultView;
+    const response = await windowObject.fetch(`/releases/${releaseId}`, {
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: { Accept: 'text/html' },
+    });
+    if (response.status === 404) return { loaded: true, companion: null };
+    if (response.ok) {
+      const parsed = new windowObject.DOMParser().parseFromString(await response.text(), 'text/html');
+      const loaded = parsed.querySelector('[data-release-detail]')?.getAttribute('data-release-detail') === String(releaseId);
+      return { loaded, companion: loaded ? parsed.querySelector(RELEASE_COMPANION_SELECTOR) : null };
+    }
+  } catch { /* the caller reports it */ }
+  return { loaded: false, companion: null };
+}
+
+function importReleaseCompanion(doc, companion) {
+  const control = doc.importNode(companion, true);
+  control.removeAttribute('data-auto-launch');
+  return control;
+}
+
+/**
+ * Brings Release Detail's own companion control to the Dashboard for a release
+ * just published here, then launches it as that page's ?prep=1 marker would.
+ * The rendered control carries the current mode and session; only a GET is
+ * sent before its own click. It stays on the page for an explicit retry.
+ */
+async function launchPublishedReleaseCompanion(doc, slot, releaseId, title) {
+  const entry = doc.createElement('p');
+  entry.className = 'notice notice--info dashboard-publish-companion';
+  const { loaded, companion } = await loadReleaseCompanion(doc, releaseId);
+  // The release has nothing to prepare, so there is nothing to launch.
+  if (loaded && !companion) return;
+  const name = doc.createElement('span');
+  if (companion) {
+    entry.setAttribute(PUBLISH_COMPANION_RELEASE_ATTRIBUTE, String(releaseId));
+    name.textContent = `${releaseName(title)}:`;
+    entry.append(name, importReleaseCompanion(doc, companion));
+  } else {
+    name.textContent = `The publishing companion could not be opened for ${releaseName(title)}.`;
+    const link = doc.createElement('a');
+    link.href = `/releases/${releaseId}`;
+    link.textContent = 'Open release';
+    entry.append(name, link);
+  }
+  slot.append(entry);
+  setHidden(slot, false);
+  if (!companion) return;
+  enhanceReleaseSocialPrepAutoLaunch(entry);
+  launchReleaseSocialPrepCompanion(entry);
+}
+
+/**
+ * Brings the Dashboard back in line after a return from the Posting Helper,
+ * which saves its work outside the browser: one GET-only Dashboard refresh and
+ * one GET of Release Detail per retained control. Each control is withdrawn
+ * until that render confirms what the release offers now; nothing is clicked or
+ * launched. Returns during a pass fold into one more pass, so an older pass can
+ * never overwrite a newer one. A control whose request is in flight is left
+ * alone and checked once it settles.
+ *
+ * A control whose check fails stays withdrawn with its own Check again (one GET
+ * of its release). Only that control is affected: the Dashboard's own refresh
+ * decides whether the page's recovery applies.
+ */
+function bindPublishCompanionReturn(doc, slot, recovery) {
+  let run = null;
+  let awaitingSettle = false;
+  // A disabled control may lose the focus it held before its replacement exists.
+  const heldFocus = new WeakSet();
+  // Only the newest check of a control may decide it, up to the moment it is
+  // adopted: a pass holds its results until the Dashboard refresh settles.
+  const latestChecks = new WeakMap();
+
+  const isBusy = (entry) => Boolean(entry.querySelector(`[${RELEASE_SOCIAL_PREP_COMPANION_IN_FLIGHT_ATTRIBUTE}]`));
+
+  // The result carries the check's token for adopt to verify.
+  async function check(entry) {
+    const token = {};
+    latestChecks.set(entry, token);
+    const result = await loadReleaseCompanion(doc, entry.getAttribute(PUBLISH_COMPANION_RELEASE_ATTRIBUTE));
+    return { ...result, token };
+  }
+
+  function withdraw(entry) {
+    if (isBusy(entry)) return;
+    const action = entry.querySelector(RELEASE_COMPANION_ACTION_SELECTOR);
+    if (!action) return;
+    if (action === doc.activeElement) heldFocus.add(entry);
+    action.disabled = true;
+  }
+
+  // Offers the withdrawn control's own recovery; a failed check says nothing
+  // about what the helper itself did.
+  function markUnverified(entry) {
+    let button = entry.querySelector(PUBLISH_COMPANION_CHECK_SELECTOR);
+    if (!button) {
+      const message = doc.createElement('span');
+      message.setAttribute(PUBLISH_COMPANION_CHECK_MESSAGE_ATTRIBUTE, '');
+      message.textContent = RECOVERY_MESSAGES.companionUnverified;
+      button = doc.createElement('button');
+      button.type = 'button';
+      button.className = 'button button-small button-secondary';
+      button.setAttribute(PUBLISH_COMPANION_CHECK_ATTRIBUTE, '');
+      button.addEventListener('click', () => { void checkAgain(entry, button); });
+      entry.append(message, button);
+    }
+    button.removeAttribute('aria-disabled');
+    button.textContent = 'Check again';
+    if (heldFocus.delete(entry)) button.focus?.({ preventScroll: true });
+  }
+
+  function clearUnverified(entry) {
+    entry.querySelector(PUBLISH_COMPANION_CHECK_SELECTOR)?.remove();
+    entry.querySelector(`[${PUBLISH_COMPANION_CHECK_MESSAGE_ATTRIBUTE}]`)?.remove();
+  }
+
+  // Returns false when the release's current control could not be confirmed.
+  // A check a newer one replaced decides nothing; the newer one reports.
+  function adopt(entry, result) {
+    if (!entry.isConnected || latestChecks.get(entry) !== result.token) return true;
+    if (isBusy(entry)) {
+      awaitingSettle = true;
+      return true;
+    }
+    const { loaded, companion } = result;
+    if (!loaded) {
+      markUnverified(entry);
+      return false;
+    }
+    const hadFocus = heldFocus.delete(entry) || entry.contains(doc.activeElement);
+    clearUnverified(entry);
+    if (companion) {
+      entry.querySelector(RELEASE_COMPANION_SELECTOR).replaceWith(importReleaseCompanion(doc, companion));
+      enhanceReleaseSocialPrepAutoLaunch(entry);
+      if (hadFocus) entry.querySelector(RELEASE_COMPANION_ACTION_SELECTOR)?.focus?.({ preventScroll: true });
+      return true;
+    }
+    entry.remove();
+    setHidden(slot, slot.childElementCount === 0);
+    if (hadFocus) {
+      const region = dashboardLiveEngine.getRegion(doc);
+      (headingFocusTarget(region, SCHEDULED_HEADING_ID) || doc.getElementById('main-content'))?.focus?.({ preventScroll: true });
+    }
+    return true;
+  }
+
+  // Sends only the GET of this release, so the Dashboard and its drafts are
+  // untouched. aria-disabled rather than disabled keeps keyboard focus here.
+  async function checkAgain(entry, button) {
+    if (button.getAttribute('aria-disabled') === 'true') return;
+    button.setAttribute('aria-disabled', 'true');
+    button.textContent = 'Checking…';
+    const result = await check(entry);
+    if (!adopt(entry, result)) recovery.announce(RECOVERY_MESSAGES.companionUnverified);
+  }
+
+  async function synchronize() {
+    if (run) {
+      run.again = true;
+      return;
+    }
+    const current = { again: true };
+    run = current;
+    try {
+      while (current.again) {
+        current.again = false;
+        awaitingSettle = false;
+        const entries = [...slot.querySelectorAll(`[${PUBLISH_COMPANION_RELEASE_ATTRIBUTE}]`)];
+        entries.forEach(withdraw);
+        await dashboardRefreshesSettled(doc);
+        const refresh = refreshDashboard(doc);
+        const loads = await Promise.all(entries.map(check));
+        const outcome = await refresh;
+        const failed = entries.filter((entry, index) => !adopt(entry, loads[index]));
+        if (current.again) continue;
+        recovery.companionReturned(outcome);
+        if (failed.length && !recovery.publishingPaused) recovery.announce(RECOVERY_MESSAGES.companionUnverified);
+      }
+    } finally {
+      run = null;
+    }
+  }
+
+  doc.addEventListener(RELEASE_SOCIAL_PREP_COMPANION_SETTLED_EVENT, (event) => {
+    const entry = event.target?.closest?.(`[${PUBLISH_COMPANION_RELEASE_ATTRIBUTE}]`);
+    if (!entry) return;
+    if (event.detail?.launchAttempted === true) {
+      armCompanionReturnRefresh(doc, () => { void synchronize(); });
+    }
+    if (run) {
+      // Settling re-enables the action; the render in flight may predate it.
+      withdraw(entry);
+      run.again = true;
+    } else if (awaitingSettle) {
+      void synchronize();
+    }
+  });
+
+  // A refresh that ended recovery leaves any withdrawn control still to confirm;
+  // a pass already running is confirming it.
+  recovery.onSettled = () => {
+    if (!run && slot.querySelector(PUBLISH_COMPANION_CHECK_SELECTOR)) void synchronize();
+  };
+}
+
+function bindDashboardPublish(doc, recovery) {
+  const mount = doc.querySelector(PUBLISH_MOUNT_SELECTOR);
+  const companions = doc.querySelector(PUBLISH_COMPANIONS_SELECTOR);
+  if (!mount || !companions) return;
+  bindPublishCompanionReturn(doc, companions, recovery);
+  // Published here, so its Publish action is only waiting for a refresh.
+  const published = new Set();
+  let loading = null;
+  let dialogReleaseId = null;
+
+  const rowTitle = (releaseId) => {
+    const region = dashboardLiveEngine.getRegion(doc);
+    return findByAttribute(region, RELEASE_ROW_SELECTOR, 'data-release-id', String(releaseId))
+      ?.querySelector(TITLE_TRIGGER_SELECTOR)?.textContent.trim() || null;
+  };
+
+  async function open(trigger) {
+    const releaseId = trigger.getAttribute('data-dashboard-publish');
+    if (recovery.publishingPaused) {
+      recovery.pointToRetry();
+      return;
+    }
+    // A dialog opened since the load began has superseded it, so it no longer
+    // stands in for this click.
+    if (published.has(releaseId) || (loading?.releaseId === releaseId
+      && loading.dialogOpens === appDialogOpenCount(doc))) return;
+    const request = { releaseId, dialogOpens: appDialogOpenCount(doc) };
+    loading = request;
+    dismissActiveGridInfoCard();
+    let result;
+    try {
+      result = await openReleasePublishDialog(doc, releaseId, { mount, opener: trigger });
+    } finally {
+      // A newer load owns the guard from the moment it starts.
+      if (loading === request) loading = null;
+    }
+    if (result.status === 'superseded') return;
+    if (result.status === 'opened') {
+      dialogReleaseId = releaseId;
+      const notice = doc.querySelector('[data-dialog-feedback]');
+      if (notice) notice.hidden = true;
+      return;
+    }
+    showPublishFeedback(doc, result.message, true);
+    // The action no longer matches the server; a failed load says nothing new.
+    if (result.status === 'unavailable') {
+      void recovery.publicationSettled({ releaseId, published: false, title: rowTitle(releaseId), message: result.message });
+    }
+  }
+
+  doc.addEventListener('click', (event) => {
+    if (event.defaultPrevented || event.button !== 0
+      || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const trigger = event.target?.closest?.(PUBLISH_TRIGGER_SELECTOR);
+    if (!trigger) return;
+    event.preventDefault();
+    void open(trigger);
+  });
+
+  doc.addEventListener(RELEASE_PUBLISH_SETTLED_EVENT, async (event) => {
+    const { outcome, releaseId, message, socialPreparationAvailable, payload } = event.detail ?? {};
+    const title = payload?.release?.title ?? rowTitle(releaseId);
+    if (outcome === 'published') {
+      published.add(String(releaseId));
+      showPublishFeedback(doc, `${releaseName(title)} was published.`);
+      await recovery.publicationSettled({ releaseId, published: true, title });
+      if (socialPreparationAvailable) await launchPublishedReleaseCompanion(doc, companions, releaseId, title);
+      return;
+    }
+    if (message) showPublishFeedback(doc, message, true);
+    await recovery.publicationSettled({ releaseId, published: false, title, message });
+    if (!message && !recovery.publishingPaused) {
+      showPublishFeedback(doc, 'We couldn’t confirm whether the release was published. The dashboard has been refreshed; open Review & Publish again to check it.', true);
+    }
+  });
+
+  // close does not bubble: capture it, then act once the dialog lifecycle has
+  // finished closing and returned focus to the opener that still exists.
+  doc.addEventListener('close', (event) => {
+    const closed = event.target;
+    if (closed?.id !== RELEASE_PUBLISH_DIALOG_ID) return;
+    const releaseId = dialogReleaseId;
+    doc.defaultView.setTimeout(() => {
+      if (closed.open) return;
+      const active = doc.activeElement;
+      // With its opener gone, focus can stay on a control in the closed dialog.
+      const focusLost = !active || active === doc.body || active === doc.documentElement || closed.contains(active);
+      // A closed dialog holds nothing a later open may reuse.
+      closed.remove();
+      if (!focusLost) return;
+      const region = dashboardLiveEngine.getRegion(doc);
+      const target = findByAttribute(region, PUBLISH_TRIGGER_SELECTOR, 'data-dashboard-publish', releaseId)
+        || headingFocusTarget(region, SCHEDULED_HEADING_ID);
+      target?.focus?.({ preventScroll: true });
+    }, 0);
+  }, true);
+}
 
 /**
  * Activates Needs-a-date scheduling on the Dashboard: quick picks, custom
@@ -1528,6 +1942,13 @@ export function enhanceDashboardScheduling(scope = globalThis.document, { reques
       markEnhancementBound(doc.documentElement, EDIT_SAVED_BOUND_KEY);
       doc.addEventListener(RELEASE_EDIT_SAVED_EVENT, (event) => { void recovery.editSaved(event.detail); });
       doc.addEventListener(PROJECT_EDIT_SAVED_EVENT, (event) => { void recovery.editSaved(event.detail, 'project'); });
+      // A New Release created from the Dashboard dialog refreshes the same
+      // way; preventDefault tells the dialog the refresh is handled here.
+      doc.addEventListener(DASHBOARD_RELEASE_CREATED_EVENT, (event) => {
+        event.preventDefault();
+        void recovery.editSaved(event.detail, 'release', { created: true });
+      });
+      bindDashboardPublish(doc, recovery);
     }
   }
   return handle;

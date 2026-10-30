@@ -69,7 +69,8 @@
   <h3>{{ 'Release details' if releaseFormDialog else 'Basic information' }}</h3>
   <div class="release-form-section-body{% if releaseFormDialog %} project-form-section-body project-edit-dialog-section-body release-details-section-body{% endif %}">
   {% if releaseFormDialog and not release %}
-  <div class="release-details-project">
+  {# The async dialog binder shows a refused Project here. #}
+  <div class="release-details-project" data-dialog-field="projectId" data-dialog-error-ref="{{ idPrefix }}projectId-error">
     {{ releaseProjectField | safe }}
   </div>
   {% endif %}

@@ -5,7 +5,9 @@ import { enhanceReleaseSignatureManagers } from './client/release-signature-mana
 import { enhanceReleaseSignatures } from './client/release-signatures.js';
 import { enhanceReleaseScheduleDefaults } from './client/release-schedule-defaults.js';
 import { enhanceReleaseEditDialog } from './client/release-edit-dialog.js';
+import { enhanceReleasePublishDialog } from './client/release-publish-dialog.js';
 import { enhanceProjectCreateDialog } from './client/project-create-dialog.js';
+import { enhanceReleaseCreateDialog } from './client/release-create-dialog.js';
 import { enhanceProjectEditDialog } from './client/project-edit-dialog.js';
 import { enhanceProjectDetailRefresh } from './client/project-detail-refresh.js';
 import { enhanceProjectEditHostRefresh } from './client/project-edit-host-refresh.js';
@@ -311,7 +313,9 @@ if (typeof document !== 'undefined') {
     enhanceAppDialogs(document);
     enhanceAssetEditDialog(document);
     enhanceReleaseScheduleDefaults(document);
+    enhanceReleaseCreateDialog(document);
     enhanceReleaseEditDialog(document);
+    enhanceReleasePublishDialog(document);
     enhanceProjectCreateDialog(document);
     enhanceProjectEditDialog(document);
     enhanceProjectDetailRefresh(document);

@@ -57,7 +57,7 @@
         <dd>{{ asset.formattedModified or '—' }}</dd>
       </div>
       {% if options.showReleaseUsage != false %}
-        <div class="asset-viewer-grid-card-info-row">
+        <div class="asset-viewer-grid-card-info-row" data-asset-release-section>
           <dt>Release usage</dt>
           <dd>
             {% if asset.release_titles and asset.release_titles.length > 0 %}

@@ -2,7 +2,7 @@ import { syncCreatorCrateDropdownFromNative } from './dropdowns.js';
 
 export const PROJECT_ASSET_CATEGORIES_CHANGED = 'project-asset-categories-changed';
 
-function syncRenderedCategorySelect(current, rendered, { useRenderedSelection = false } = {}) {
+export function syncRenderedSelect(current, rendered, { useRenderedSelection = false } = {}) {
   if (!current || !rendered) return false;
   const previous = current.value;
   const renderedValue = rendered.value;
@@ -25,7 +25,7 @@ export function syncProjectAssetCategoryConsumers(document, renderedPage) {
   for (const current of document.querySelectorAll('[data-processing-category-select]')) {
     const rendered = renderedPage.getElementById(current.id);
     if (!rendered) continue;
-    const valid = syncRenderedCategorySelect(current, rendered);
+    const valid = syncRenderedSelect(current, rendered);
     const root = current.closest('[data-processing-root]');
     if (!valid && root && !root.__ccProcessingJob && !root.__ccProcessingBusy
       && root.querySelector('[data-processing-scope-option="category"]')?.checked) {
@@ -39,7 +39,7 @@ export function syncProjectAssetCategoryConsumers(document, renderedPage) {
   if (output) {
     const rendered = renderedPage.getElementById(output.id);
     const previous = output.value;
-    syncRenderedCategorySelect(output, rendered);
+    syncRenderedSelect(output, rendered);
     const root = output.closest('[data-processing-root]');
     if (previous !== output.value && !root?.__ccProcessingJob && !root?.__ccProcessingBusy) {
       const Event = document.defaultView?.Event || globalThis.Event;
@@ -51,7 +51,7 @@ export function syncProjectAssetCategoryConsumers(document, renderedPage) {
   const currentDefault = manager?.querySelector('[name="defaultCategory"]');
   const renderedDefault = renderedPage.getElementById(currentDefault?.id);
   if (currentDefault && renderedDefault && !manager.__creatorCrateAppDialogState?.assetBrowserDefault?.pending) {
-    syncRenderedCategorySelect(currentDefault, renderedDefault, { useRenderedSelection: true });
+    syncRenderedSelect(currentDefault, renderedDefault, { useRenderedSelection: true });
     const currentFallback = manager.querySelector('[data-asset-browser-default-fallback]');
     const renderedFallback = renderedPage.getElementById(currentFallback?.id);
     if (currentFallback && renderedFallback) {

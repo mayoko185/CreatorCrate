@@ -45,6 +45,7 @@
     {# Next 7 days rows open through the title card's Open release action; an Open button would duplicate it. #}
     {% if groupId != 'next7' %}
       <a class="button button-small {% if release.action.kind == 'publish' %}button-primary{% else %}button-secondary{% endif %} dashboard-release-row-action dashboard-release-row-action--{{ release.action.kind }}"
+         {% if release.action.kind == 'publish' %}data-dashboard-publish="{{ release.id }}"{% endif %}
          href="{{ release.action.href }}" aria-label="{{ release.action.label }} {{ release.title }}">{{ release.action.label }}</a>
     {% endif %}
   </li>

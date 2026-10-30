@@ -60,6 +60,21 @@ const RELEASES_NOTICES = Object.freeze({
 });
 const SELECTED_ASSETS_RELEASE_CREATE_FLOW = 'selected-assets';
 const SCHEDULE_REQUEST_FIELDS = Object.freeze(['plannedDate', 'plannedTime', 'expectedPlannedDate', 'expectedPlannedTime']);
+// The user-editable New Release controls a dialog reopened after a successful
+// create starts from. The schedule and Description are omitted: the client
+// resets them to fresh browser-local defaults and the default signature.
+const RELEASE_CREATE_RESET_VALUES = Object.freeze({
+  projectId: '',
+  title: '',
+  notes: '',
+  selectedPlatforms: Object.freeze([]),
+  patreonUrl: '',
+});
+
+function assetCountLabel(assetIds) {
+  const count = new Set(assetIds).size;
+  return `${count} asset${count === 1 ? '' : 's'}`;
+}
 
 function readSelectedAssetsReleaseReturnLocation(candidate, projectId) {
   if (!isSafeRedirectTarget(candidate)) return '';
@@ -265,6 +280,12 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
       }
     }
 
+    // The New Release dialogs submit with Accept: application/json and stay on
+    // their host page (the selected-assets flow from Project Assets included);
+    // standalone form posts and the Releases handoff keep their redirect and
+    // rerender.
+    const json = (!selectedAssetsIntent || selectedAssetsFlow) && wantsJson(req);
+
     try {
       if ((hasReleaseCreateFlow && !selectedAssetsFlow) || (hasSelectedAssetIds && !selectedAssetsFlow)) {
         throw new ReleaseValidationError({ general: 'Invalid release creation flow.' });
@@ -293,12 +314,57 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
           input,
           normalizedSelection.ids,
         );
+        if (json) {
+          return res.status(201).json({
+            status: 'success',
+            message: `Release “${release.title}” created with ${assetCountLabel(normalizedSelection.ids)}.`,
+            release: {
+              id: release.id,
+              projectId: release.project_id,
+              title: release.title,
+              url: `/releases/${release.id}`,
+              manageAssetsUrl: `/releases/${release.id}/assets`,
+            },
+            // The project stays the host page's and the title its default.
+            values: {
+              ...RELEASE_CREATE_RESET_VALUES,
+              projectId: String(release.project_id),
+              title: projectService.findById(release.project_id)?.title ?? '',
+            },
+          });
+        }
         return res.redirect(`/releases/${release.id}/assets`);
       }
 
       const release = releaseService.createRelease(projectId, input);
+      if (json) {
+        return res.status(201).json({
+          status: 'success',
+          message: `Release “${release.title}” created.`,
+          release: { id: release.id, projectId: release.project_id, title: release.title, url: `/releases/${release.id}` },
+          values: RELEASE_CREATE_RESET_VALUES,
+        });
+      }
       return res.redirect(`/releases/${release.id}`);
     } catch (err) {
+      if (json) {
+        const assetNotFound = selectedAssetsFlow && err instanceof AssetNotFoundError;
+        const validation = assetNotFound || err instanceof ReleaseValidationError;
+        const errors = err instanceof ReleaseValidationError ? { ...err.errors } : {};
+        // A refused selection has no field of its own, so its reason is the message.
+        const selectionError = assetNotFound ? err.message : (errors.assetIds || errors.assets);
+        // The dialog keeps the whole draft, so no submitted values are echoed.
+        return res.status(validation ? 422 : 500).json({
+          status: 'error',
+          code: validation ? 'VALIDATION_FAILED' : 'SERVER_ERROR',
+          message: validation
+            ? (errors.general
+              || (selectionError && `${selectionError} Update the selection on Project Assets and try again.`)
+              || 'Fix the highlighted fields and try again.')
+            : 'Release creation failed. Please try again.',
+          errors,
+        });
+      }
       if (err instanceof ReleaseValidationError || (selectedAssetsFlow && err instanceof AssetNotFoundError)) {
         const errors = err instanceof ReleaseValidationError
           ? { ...err.errors }
@@ -465,10 +531,14 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
 
     const release = releaseService.findRelease(id);
     if (!release) {
-      return next(createNotFound());
+      return wantsJson(req) ? sendReleaseNotFoundJson(res) : next(createNotFound());
     }
 
     const project = projectService.findById(release.project_id);
+
+    if (wantsJson(req)) {
+      return sendReleasePublishModelJson(req, res, next, { appName, releaseService, release, project });
+    }
 
     // Archived and already-published releases cannot enter publication review.
     if (release.archived_at || isProjectArchived(project)) {
@@ -481,11 +551,12 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
     return res.redirect(`/releases/${id}?publish=1`);
   });
 
-  // POST /releases/:id/publish — Publish a release
+  // POST /releases/:id/publish — Publish a release. The Review & Publish dialog
+  // asks for JSON and stays on its page; a plain form post keeps its redirect.
   router.post('/:id/publish', (req, res, next) => {
     const id = parseId(req.params.id);
     if (id === null) {
-      return next(createNotFound());
+      return wantsJson(req) ? sendReleaseNotFoundJson(res) : next(createNotFound());
     }
 
     // Resolve the published date from: explicit form value, then the release's
@@ -493,42 +564,30 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
     const submittedDate = parsePublishedDateInput(req.body.publishedDate);
     const existingRelease = releaseService.findRelease(id);
     if (!existingRelease) {
-      return next(createNotFound());
+      return wantsJson(req) ? sendReleaseNotFoundJson(res) : next(createNotFound());
     }
     const publishedDate = submittedDate || existingRelease.published_date || null;
     const submittedProjectStatus = req.body.projectStatus ?? '';
 
     try {
-      releaseService.publishRelease(id, publishedDate, { projectStatus: submittedProjectStatus });
+      const published = releaseService.publishRelease(id, publishedDate, { projectStatus: submittedProjectStatus });
+      // Nothing after this point may report the committed publication as failed.
+      const socialPreparationAvailable = initializeSocialPreparationAfterPublication(req, id);
 
-      let socialPreparationAvailable = false;
-      const selectedPlatforms = req.app.locals.socialPrepRepository.listPlatformsByReleaseId(id)
-        .filter((row) => row.is_selected === 1).map((row) => row.platform);
-      try {
-        const socialPrepSettingsService = req.app?.locals?.socialPrepSettingsService;
-        const socialPrepService = req.app?.locals?.socialPrepService;
-        if (selectedPlatforms.length > 0 && socialPrepSettingsService?.isEnabled?.()
-          && typeof socialPrepService?.initializePlatformState === 'function') {
-          const initialized = socialPrepService.initializePlatformState(id, selectedPlatforms);
-          socialPreparationAvailable = Array.isArray(initialized) && initialized.length > 0;
-        }
-      } catch (socialPrepError) {
-        try {
-          req.app?.locals?.applicationLogger?.error?.({
-            kind: 'diagnostic',
-            subsystem: 'social-preparation',
-            event: 'social_preparation.platform_initialization_failed',
-            message: 'Social Preparation platform state could not be initialized after publication.',
-            context: { releaseId: id, selectedPlatformCount: selectedPlatforms.length },
-            error: socialPrepError,
-          });
-        } catch {
-          // Social Preparation logging must not change the completed publication outcome.
-        }
+      if (wantsJson(req)) {
+        return res.json({
+          status: 'success',
+          message: 'Release published.',
+          ...buildReleasePublishModel(published, projectService.findById(published.project_id)),
+          socialPreparation: { available: socialPreparationAvailable },
+          values: { publishedDate: published.published_date, projectStatus: '' },
+        });
       }
-
       res.redirect(`/releases/${id}${socialPreparationAvailable ? '?prep=1' : ''}`);
     } catch (err) {
+      if (wantsJson(req)) {
+        return sendReleasePublishJsonError(req, res, id, err, { releaseService, projectService });
+      }
       if (err instanceof ReleaseNotFoundError) {
         return next(createNotFound());
       }
@@ -1944,6 +2003,120 @@ function sendReleaseUpdateJsonError(req, res, releaseId, err) {
       { currentReleaseLink: err.currentReleaseLink });
   }
   return sendReleaseEditJsonError(res, 500, 'SERVER_ERROR', 'Release update failed. Please try again.');
+}
+
+function initializeSocialPreparationAfterPublication(req, releaseId) {
+  let selectedPlatforms = [];
+  try {
+    selectedPlatforms = listSelectedReleasePlatforms(req, releaseId);
+    const socialPrepSettingsService = req.app?.locals?.socialPrepSettingsService;
+    const socialPrepService = req.app?.locals?.socialPrepService;
+    if (selectedPlatforms.length > 0 && socialPrepSettingsService?.isEnabled?.()
+      && typeof socialPrepService?.initializePlatformState === 'function') {
+      const initialized = socialPrepService.initializePlatformState(releaseId, selectedPlatforms);
+      return Array.isArray(initialized) && initialized.length > 0;
+    }
+  } catch (socialPrepError) {
+    try {
+      req.app?.locals?.applicationLogger?.error?.({
+        kind: 'diagnostic',
+        subsystem: 'social-preparation',
+        event: 'social_preparation.platform_initialization_failed',
+        message: 'Social Preparation platform state could not be initialized after publication.',
+        context: { releaseId, selectedPlatformCount: selectedPlatforms.length },
+        error: socialPrepError,
+      });
+    } catch {
+      // Social Preparation logging must not change the completed publication outcome.
+    }
+  }
+  return false;
+}
+
+/**
+ * Authoritative publication state of a release: what a Review & Publish dialog
+ * host needs to confirm an outcome or to decide whether it can be opened.
+ */
+function buildReleasePublishModel(release, project) {
+  const published = release.published_date != null;
+  const archived = Boolean(release.archived_at) || isProjectArchived(project);
+  return {
+    release: {
+      id: release.id,
+      projectId: release.project_id,
+      title: release.title,
+      publishedDate: release.published_date || null,
+      published,
+      archived,
+    },
+    eligibility: { publishable: !published && !archived },
+    actions: { detail: `/releases/${release.id}`, publish: `/releases/${release.id}/publish` },
+  };
+}
+
+// The publication state, plus the rendered closed dialog when the release can
+// be published, so a page without the dialog can host the same Review & Publish.
+function sendReleasePublishModelJson(req, res, next, { appName, releaseService, release, project }) {
+  const model = buildReleasePublishModel(release, project);
+  if (!model.eligibility.publishable) return res.json({ status: 'success', ...model, dialogHtml: null });
+  const renderModel = buildReleaseDetailRenderModel({
+    appName,
+    releaseService,
+    release,
+    project,
+    releaseAssets: releaseService.listReleaseAssets(release.id),
+    req,
+  });
+  return res.render('releases/publish-dialog-fragment.njk', renderModel, (err, dialogHtml) => {
+    if (err) return next(err);
+    return res.json({ status: 'success', ...model, dialogHtml });
+  });
+}
+
+function submittedReleasePublishValues(req) {
+  const { publishedDate, projectStatus } = req.body ?? {};
+  return {
+    publishedDate: typeof publishedDate === 'string' ? publishedDate : '',
+    projectStatus: typeof projectStatus === 'string' ? projectStatus : '',
+  };
+}
+
+function sendReleasePublishJsonError(req, res, releaseId, err, { releaseService, projectService }) {
+  if (err instanceof ReleaseNotFoundError) return sendReleaseNotFoundJson(res);
+  if (err instanceof ReleaseValidationError) {
+    const release = releaseService.findRelease(releaseId);
+    if (!release) return sendReleaseNotFoundJson(res);
+    const model = buildReleasePublishModel(release, projectService.findById(release.project_id));
+    if (model.release.published) {
+      return sendReleaseEditJsonError(res, 409, 'RELEASE_ALREADY_PUBLISHED', 'This release is already published.', model);
+    }
+    const errors = err.errors || { general: err.message };
+    return sendReleaseEditJsonError(res, 422, 'VALIDATION_FAILED',
+      errors.general || 'Fix the highlighted fields and try again.', {
+        errors,
+        values: submittedReleasePublishValues(req),
+      });
+  }
+  if (err instanceof ReleaseArchivedError || err instanceof ReleaseParentArchivedError) {
+    return sendReleaseEditJsonError(res, 422,
+      err instanceof ReleaseArchivedError ? 'RELEASE_ARCHIVED' : 'PROJECT_ARCHIVED',
+      err instanceof ReleaseArchivedError
+        ? 'This release is archived, so it cannot be published.'
+        : 'The parent project is archived, so this release cannot be published.');
+  }
+  try {
+    req.app?.locals?.applicationLogger?.error?.({
+      kind: 'diagnostic',
+      subsystem: 'releases',
+      event: 'release.publish_failed',
+      message: 'Release publication failed.',
+      context: { releaseId },
+      error: err,
+    });
+  } catch {
+    // Logging must not change the reported outcome.
+  }
+  return sendReleaseEditJsonError(res, 500, 'SERVER_ERROR', 'The release was not published. Please try again.');
 }
 
 function parseId(value) {

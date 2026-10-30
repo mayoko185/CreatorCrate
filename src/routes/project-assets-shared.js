@@ -9,6 +9,11 @@ import {
 
 import { buildPageDefaultsDialogModel } from './page-defaults.js';
 import { buildProjectEditDialogFormModel } from './project-create-form.js';
+import {
+  buildProjectAssetsReleaseCreateFormModel,
+  getReleasePlatformChoices,
+  getReleaseSignatureConfiguration,
+} from './release-create-form.js';
 
 import { buildCanonicalAssetBrowserQuery, buildAssetBrowserQueryString } from '../services/workflow-query-service.js';
 
@@ -755,6 +760,12 @@ export function buildBrowserRenderModel(
       tagService: req?.app?.locals?.tagService,
       pageDefaultsService,
     }),
+    // New Release from the selected assets also opens in place.
+    ...(req && !isProjectArchived(project) ? {
+      releaseCreateForm: buildProjectAssetsReleaseCreateFormModel(project, 'bulk-select-form'),
+      releaseSignatureConfiguration: getReleaseSignatureConfiguration(req),
+      platformChoices: getReleasePlatformChoices(req),
+    } : {}),
     openLocallyUri: buildOpenLocallyUri({
       windowsRoot: req ? getOpenLocallySettingsService(req).getWindowsProjectsPath() : null,
       projectDir: project.project_dir,
