@@ -1,0 +1,4 @@
+{# Where this parent's Page deletion recovery can be read. Set pageDeletionDiscoveryUrl
+   before including. The ID attributes appear only for this owner's active deletion
+   from this parent, and an action token never appears in this HTML. #}
+<div hidden data-page-deletion-recovery data-page-deletion-discovery-url="{{ pageDeletionDiscoveryUrl }}"{% if pageDeletionRecovery %} data-page-deletion-id="{{ pageDeletionRecovery.deletionId }}" data-page-deletion-status-url="{{ pageDeletionRecovery.statusUrl }}" data-page-deletion-expires-at="{{ pageDeletionRecovery.expiresAt }}"{% endif %}></div>

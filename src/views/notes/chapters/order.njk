@@ -1,10 +1,17 @@
 {% import "partials/dialog.njk" as dialog %}
+{# Opened from Chapter Detail the dialog saves in place. A directly visited
+   /notes/chapters/:id/notes/order (and its validation render) stays native. #}
+{% set chapterOrderAsync = not chapterOrderDialogOpen %}
 {% call dialog.render('chapter-order-dialog', 'Change order', chapterOrderDialogOpen, '', '', 'project-form-dialog app-dialog--refined') %}
   <form id="notes-chapter-order-form" method="post" action="/notes/chapters/{{ chapter.id }}/notes/reorder" data-chapter-page-reorder-form
-        class="app-dialog-form project-form project-edit-dialog-form" data-dialog-form data-dialog-async="false">
+        class="app-dialog-form project-form project-edit-dialog-form" data-dialog-form data-dialog-async="{{ 'true' if chapterOrderAsync else 'false' }}"{% if chapterOrderAsync %} data-dialog-pending-message="Saving Page order…" data-dialog-error-message="The Page order could not be saved."{% endif %}>
     <input type="hidden" name="_csrf" value="{{ _csrf }}">
     <div class="app-dialog-body">
-      {% if chapterOrderNotice %}<div class="error-summary" role="alert"><p>{{ chapterOrderNotice.text }}</p></div>{% endif %}
+      {% if chapterOrderAsync %}
+        <div class="error-summary" role="alert" data-dialog-error hidden><p data-dialog-error-text></p></div>
+      {% elif chapterOrderNotice %}
+        <div class="error-summary" role="alert"><p>{{ chapterOrderNotice.text }}</p></div>
+      {% endif %}
       <section class="notes-chapter-order project-edit-dialog-section" data-notes-chapter-order-page aria-labelledby="notes-order-heading">
         <h3 id="notes-order-heading">Pages</h3>
         <div class="project-edit-dialog-section-body">
@@ -64,6 +71,7 @@
         </div>
       </section>
     </div>
+    {% if chapterOrderAsync %}<div class="app-dialog-status" data-dialog-status role="status" aria-live="polite"></div>{% endif %}
     <footer class="app-dialog-footer">
       {% if notes.length > 0 %}
         <button class="button button-primary" type="submit" form="notes-chapter-order-form" data-dialog-submit>Save</button>

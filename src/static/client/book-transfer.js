@@ -197,12 +197,30 @@ async function refreshCanonical(state, refreshUrl = '/notes') {
   const installed = installNotesBooksLiveRegionSnapshot(state.document, authority, snapshot.shelf);
   if (installed !== 'installed') throw new Error('Canonical refresh was superseded.');
   currentContent.replaceWith(snapshot.content);
+  state.deferredContent = null;
   state.refreshFailed = false;
   bindContent(state, snapshot.content);
   applyRetainedResult(state);
   if (dialogIsOpen(state.dialog)) {
     snapshot.content.querySelector?.('[data-book-import-submit]')?.focus?.({ preventScroll: true });
   }
+}
+
+function installTransferContent(state, content) {
+  state.deferredContent = null;
+  state.dialog.querySelector?.(CONTENT_SELECTOR)?.replaceWith?.(content);
+  bindContent(state, content);
+  applyRetainedResult(state);
+}
+
+// Another shelf change brought a newer Book list. Work in this dialog is never
+// replaced under the user: it waits for the dialog to close.
+export function adoptBookTransferSnapshot(document, parsed) {
+  const state = document?.querySelector?.(DIALOG_SELECTOR)?.__creatorCrateBookTransferState;
+  const content = parsed?.querySelector?.(`${DIALOG_SELECTOR} ${CONTENT_SELECTOR}`);
+  if (!state || !content) return;
+  if (dialogIsOpen(state.dialog) || state.importing || state.refreshing) state.deferredContent = content;
+  else installTransferContent(state, content);
 }
 
 function showRefreshFailure(state) {
@@ -358,7 +376,12 @@ export function enhanceBookTransfer(scope = globalThis.document) {
       importResult: null,
     };
     dialog.__creatorCrateBookTransferState = state;
-    dialog.addEventListener?.('close', () => discardTransferDraft(state));
+    dialog.addEventListener?.('close', () => {
+      discardTransferDraft(state);
+      if (state.deferredContent && !state.importing && !state.refreshing) {
+        installTransferContent(state, state.deferredContent);
+      }
+    });
     if (typeof state.window.MutationObserver === 'function' && state.document.body) {
       state.shelfObserver = new state.window.MutationObserver(() => syncExportOrderFromShelf(state));
       state.shelfObserver.observe(state.document.body, { childList: true, subtree: true });

@@ -111,6 +111,20 @@ export function enhanceNoteConnections(scope = globalThis.document) {
         controller = undefined;
         const projectIds = new Set((next.projectIds || []).map(String));
         const assetIds = new Set((next.assetIds || []).map(String));
+        // A retained asset is one the Page has saved, which an in-place save changes.
+        if (Array.isArray(next.assets)) {
+          catalogue.forEach((asset) => { asset.persisted = false; });
+          next.assets.forEach((asset) => {
+            const id = String(asset.id);
+            catalogue.set(id, {
+              id,
+              projectId: String(asset.projectId),
+              label: String(asset.label || ''),
+              persisted: true,
+              thumbnail: asset.thumbnail || catalogue.get(id)?.thumbnail || null,
+            });
+          });
+        }
         const projectInputs = Array.from(projects.querySelectorAll('input[type="checkbox"]'));
         projectInputs.forEach((input) => { input.checked = projectIds.has(String(input.value)); });
         render(assetIds);

@@ -35,6 +35,10 @@
     {% include "partials/notice.njk" %}
   {% endif %}
 
+  <div class="notice notice--success app-dialog-feedback" data-dialog-feedback role="status" hidden>
+    <p data-dialog-feedback-text></p>
+  </div>
+
   <section class="notes-books-index" aria-label="Books" data-notes-books-live-region>
     <span class="sr-only" data-notes-books-live-status aria-live="polite" aria-atomic="true"></span>
     {% if books.length > 0 %}
@@ -47,7 +51,7 @@
                 <span class="notes-book-content-kind">Book</span>
                 <h2 class="notes-book-card-title"><a href="/notes/books/{{ book.id }}">{{ book.title }}</a></h2>
                 <div class="notes-book-content-actions">
-                  <a class="button button-small button-secondary" href="/notes/books/{{ book.id }}/edit" data-dialog-invocation aria-label="Edit Book: {{ book.title }}">Edit Book</a>
+                  <a class="button button-small button-secondary" href="/notes/books/{{ book.id }}/edit" data-book-edit-open="{{ book.id }}" aria-label="Edit Book: {{ book.title }}">Edit Book</a>
                 </div>
               </div>
             </article>
@@ -71,19 +75,30 @@
   {% set values = bookCreateForm.values %}
   {% set errors = bookCreateForm.errors %}
   {% set bookCoverSource = none %}
+  {# Opened from the shelf the dialog saves in place. A directly visited
+     /notes/books/new (and its validation render) keeps the native submission. #}
+  {% set bookCreateAsync = not bookCreateDialogOpen %}
   {% call dialog.render('book-create-dialog', 'New Book', bookCreateDialogOpen, '', '', 'project-form-dialog app-dialog--refined') %}
     <form id="book-form" method="post" action="{{ bookCreateForm.submitUrl }}" enctype="multipart/form-data" class="app-dialog-form project-form project-edit-dialog-form"
-          data-dialog-form data-dialog-async="false" data-dialog-reset-on-close{% if errors.title or errors.general %} data-dialog-reset-values="{{ { title: '' } | dump }}"{% endif %} novalidate>
+          data-dialog-form data-dialog-async="{{ 'true' if bookCreateAsync else 'false' }}" data-dialog-reset-on-close{% if errors.title or errors.general %} data-dialog-reset-values="{{ { title: '' } | dump }}"{% endif %}{% if bookCreateAsync %} data-dialog-pending-message="Creating Book…" data-dialog-error-message="Book could not be created."{% endif %} novalidate>
       <input type="hidden" name="_csrf" value="{{ _csrf }}">
       <div class="app-dialog-body">
-        {% if errors.general %}
+        {% if bookCreateAsync %}
+          <div class="error-summary" role="alert" data-dialog-error hidden><p data-dialog-error-text></p></div>
+        {% elif errors.general %}
           <div class="error-summary" role="alert"><p>{{ errors.general }}</p></div>
         {% endif %}
         {% include "notes/books/form-fields.njk" %}
       </div>
+      {% if bookCreateAsync %}<div class="app-dialog-status" data-dialog-status role="status" aria-live="polite"></div>{% endif %}
       <footer class="app-dialog-footer">
         <button class="button button-primary" type="submit" data-dialog-submit><span class="project-create-submit-icon" aria-hidden="true">{{ icons.icon('plus') }}</span>Create</button>
       </footer>
     </form>
+  {% endcall %}
+
+  {# Holds the form each shelf Edit Book loads from the Book's own render. #}
+  {% call dialog.render('book-edit-dialog', 'Edit Book', false, '', '', 'project-form-dialog app-dialog--refined') %}
+    <div class="app-dialog-body" data-book-edit-shelf-load role="status" aria-live="polite" aria-atomic="true"></div>
   {% endcall %}
 {% endblock %}

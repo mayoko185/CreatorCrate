@@ -654,7 +654,7 @@ test.describe('CreatorCrate development browser smoke', () => {
       page.waitForResponse((response) => (
         response.request().method() === 'POST'
         && new URL(response.url()).pathname === `/notes/${pageId}`
-        && response.status() === 302
+        && response.status() === 200
       )),
       dialog.getByRole('button', { name: 'Save', exact: true }).click(),
     ]);
@@ -1119,10 +1119,9 @@ test.describe('CreatorCrate development browser smoke', () => {
 
       if (viewport.width > 1024) {
         await editDialog.locator('#chapter-edit-title').fill(editedTitle);
-        await Promise.all([
-          page.waitForURL(new RegExp(`/notes/chapters/${chapterId}$`)),
-          editDialog.getByRole('button', { name: 'Save', exact: true }).click(),
-        ]);
+        await editDialog.getByRole('button', { name: 'Save', exact: true }).click();
+        await expect(page.locator('#chapter-edit-dialog')).not.toHaveAttribute('open', '');
+        await expect(page).toHaveURL(new RegExp(`/notes/chapters/${chapterId}$`));
         await expect(page.locator('h1.app-section-title')).toContainText(editedTitle);
 
         await page.getByRole('link', { name: 'Edit Chapter', exact: true }).click();
@@ -1837,10 +1836,9 @@ test.describe('CreatorCrate development browser smoke', () => {
       .toBe(`${pageIds[2]},${pageIds[0]},${pageIds[1]}`);
     expect(reorderRequests).toHaveLength(0);
 
-    await Promise.all([
-      page.waitForURL((url) => url.pathname === `/notes/chapters/${chapterId}`),
-      page.getByRole('button', { name: 'Save', exact: true }).click(),
-    ]);
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(page.locator('#chapter-order-dialog')).toBeHidden();
+    await expect(page).toHaveURL(chapterUrl);
     expect(reorderRequests).toHaveLength(1);
     const persistedRows = page.locator('.notes-page-nav-item');
     await expect(persistedRows.nth(0)).toContainText(pageTitles[2]);
@@ -2455,10 +2453,9 @@ test.describe('CreatorCrate development browser smoke', () => {
     await editCandidate.uncheck();
     await expect(editCandidate).not.toBeChecked();
 
-    await Promise.all([
-      page.waitForURL(new RegExp(`/notes/${noteId}$`)),
-      page.locator('button[type="submit"][form="note-form"]').click(),
-    ]);
+    await page.locator('button[type="submit"][form="note-form"]').click();
+    await expect(page.locator('#note-edit-dialog')).not.toBeVisible();
+    await expect(page).toHaveURL(new RegExp(`/notes/${noteId}$`));
     await expect(page.locator('.notes-detail-assets')).toHaveCount(0);
     expect(diagnostics.failedRequests.filter(({ url }) => new URL(url).pathname.startsWith('/notes/asset-picker/'))).toEqual([]);
     expect(diagnostics.failedResponses.filter(({ url }) => new URL(url).pathname.startsWith('/notes/asset-picker/'))).toEqual([]);

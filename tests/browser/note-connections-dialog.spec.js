@@ -253,7 +253,13 @@ for (const edit of [false, true]) test(`${edit ? 'Edit' : 'New'}: real Projects 
     await dialog.locator('[name="title"]').fill('Saved connections');
     const saved = page.waitForResponse(r => r.request().method() === 'POST');
     await dialog.getByRole('button', { name: edit ? 'Save' : 'Create', exact: true }).click();
-    expect((await saved).status()).toBe(302);
+    const savedResponse = await saved;
+    expect(savedResponse.status()).toBe(edit ? 200 : 201);
+    // New Page saves in place, so the Page is opened through its explicit link.
+    if (!edit) {
+      await expect(page).toHaveURL(new RegExp(`/notes/books/${book.id}$`));
+      await page.locator('[data-page-view]').click();
+    }
     await expect(page).toHaveURL(/\/notes\/\d+$/);
     const savedId = Number(new URL(page.url()).pathname.split('/').pop());
     expect(db.prepare('SELECT project_id FROM note_projects WHERE note_id = ? ORDER BY project_id').all(savedId).map(r => r.project_id)).toEqual([2]);

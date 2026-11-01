@@ -1333,6 +1333,25 @@ export function installNotesBooksLiveRegionSnapshot(
   }
 }
 
+// A read restarted by a Notes save was not asked for by anything the user is
+// looking at, so the Chapters they opened and the link they are on stay. A
+// Chapter opened by hand stays open even if the read carries a collapsed default.
+function keepBookNavigatorState(state, nextRegion) {
+  const currentRegion = bookDetailLiveEngine.getRegion(state.document);
+  currentRegion?.querySelectorAll?.('[data-book-nav-chapter]').forEach((item) => {
+    if (item.closest('details')?.open !== true) return;
+    const chapter = item.getAttribute('data-book-nav-chapter');
+    const details = nextRegion.querySelector(`[data-book-nav-chapter="${chapter}"]`)?.closest('details');
+    if (details) details.open = true;
+  });
+  const active = state.document.activeElement;
+  if (!active || !currentRegion?.contains?.(active)) return;
+  const href = active.getAttribute('href');
+  const chapter = active.querySelector?.('[data-book-nav-chapter]')?.getAttribute('data-book-nav-chapter');
+  if (href) state.bookDetailFocusSelector = `a[href="${href}"]`;
+  else if (chapter) state.bookDetailFocusSelector = `summary:has([data-book-nav-chapter="${chapter}"])`;
+}
+
 const bookDetailLiveEngine = createLiveRegionEngine({
   regionSelector: BOOK_DETAIL_LIVE_REGION_SELECTOR,
   formSelector: [],
@@ -1349,6 +1368,17 @@ const bookDetailLiveEngine = createLiveRegionEngine({
   },
   onCreate(state) {
     state.bookDetailRefreshWaiters = [];
+    state.bookDetailKeepNavigator = false;
+    state.bookDetailFocusSelector = null;
+  },
+  onResponseParsed(state, parsed, nextRegion) {
+    if (state.bookDetailKeepNavigator) keepBookNavigatorState(state, nextRegion);
+    state.bookDetailKeepNavigator = false;
+  },
+  onRegionReplaced(state, nextRegion) {
+    const selector = state.bookDetailFocusSelector;
+    state.bookDetailFocusSelector = null;
+    if (selector) nextRegion.querySelector?.(selector)?.focus?.({ preventScroll: true });
   },
   onLoadComplete(state) {
     const waiters = state.bookDetailRefreshWaiters.splice(0);
@@ -1407,6 +1437,19 @@ export function refreshBookDetailLiveRegion(
   });
   bookDetailLiveEngine.load(state, url, 'none', null);
   return 'started';
+}
+
+// A Notes save has just written to this Book, so anything read before it is out
+// of date. Moving the generation rejects those reads, and one still loading starts
+// again, keeping its waiters, so a Book Defaults refresh arrives with both changes.
+export function supersedeBookDetailLiveRefresh(scope = globalThis.document) {
+  const state = liveRegionDocument(scope)?.__creatorCrateBookDetailLiveRegion;
+  if (!state) return;
+  const url = state.controller ? state.requestedUrl : null;
+  bookDetailLiveEngine.invalidate(state);
+  if (!url) return;
+  state.bookDetailKeepNavigator = true;
+  bookDetailLiveEngine.load(state, url, 'none', null);
 }
 
 export function installBookDetailLiveRegionSnapshot(

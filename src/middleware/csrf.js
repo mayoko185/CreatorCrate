@@ -193,6 +193,11 @@ function getCookie(req, name) {
   return null;
 }
 
+/** The browser identity disabled-mode CSRF is bound to, or null before it is issued. */
+export function readDisabledModeVisitorSecret(req) {
+  return getCookie(req, DISABLED_CSRF_COOKIE);
+}
+
 /**
  * @param {object} opts
  * @param {boolean} opts.cookieSecure

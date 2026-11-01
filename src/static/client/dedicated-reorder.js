@@ -1257,6 +1257,8 @@ export function enhanceDedicatedReorder(scope, config) {
     config.onInitialize?.(state);
 
     form.addEventListener?.('submit', (event) => {
+      // A list replaced inside its form leaves the serializing to its successor.
+      if (list.isConnected === false) return;
       if (config.isBusy?.(state)) {
         event.preventDefault?.();
         return;
@@ -1933,6 +1935,39 @@ function queueBookReorderSave(state, config, refreshShelf) {
   startBookReorderSave(state, config, refreshShelf, desiredIds);
 }
 
+// Another shelf change brought a newer Book list. A dialog in use keeps its
+// list: saving against a changed membership already reconciles through the
+// server's refusal.
+// Book Detail's hierarchy editor follows a Chapter created beside it. A dialog
+// in use keeps its editor: the server refuses a stale save, which reconciles.
+export function adoptBookHierarchySnapshot(document, parsed) {
+  const form = document?.querySelector?.(BOOK_HIERARCHY_FORM_SELECTOR);
+  const replacement = parsed?.querySelector?.(BOOK_HIERARCHY_FORM_SELECTOR);
+  const dialog = form?.closest?.(APP_DIALOG_SELECTOR);
+  if (!form || !replacement || !dialog) return;
+  const dialogState = dialog.__creatorCrateAppDialogState;
+  const state = form.querySelector?.(BOOK_HIERARCHY_EDITOR_SELECTOR)?.__creatorCrateBookHierarchyState;
+  if (dialog.open === true || dialogState?.open === true || state?.saving || state?.reconciling
+    || state?.queuedHierarchy || state?.pendingUncertainHierarchy) return;
+  form.replaceWith(replacement);
+  if (dialogState) dialogState.form = replacement;
+  enhanceBookHierarchyReorder(document);
+}
+
+export function adoptBookReorderSnapshot(document, parsed) {
+  const form = document?.querySelector?.('[data-book-reorder-form]');
+  const replacement = parsed?.querySelector?.('[data-book-reorder-form]');
+  const dialog = form?.closest?.(APP_DIALOG_SELECTOR);
+  if (!form || !replacement || !dialog) return;
+  const dialogState = dialog.__creatorCrateAppDialogState;
+  const state = form.querySelector?.(BOOK_REORDER_LIST_SELECTOR)?.__creatorCrateBookReorderState;
+  if (dialog.open === true || dialogState?.open === true
+    || state?.saving || state?.reconciling || state?.retired || state?.queuedIds) return;
+  form.replaceWith(replacement);
+  if (dialogState) dialogState.form = replacement;
+  enhanceBookReorder(document);
+}
+
 export function enhanceBookReorder(scope = globalThis.document, options = {}) {
   const refreshShelf = options.refreshShelf || refreshNotesBooksLiveRegion;
   const config = {
@@ -1986,24 +2021,108 @@ export function enhanceBookReorder(scope = globalThis.document, options = {}) {
   return enhanceDedicatedReorder(scope, config);
 }
 
+const CHAPTER_PAGE_REORDER_CONFIG = {
+  listSelector: CHAPTER_PAGE_REORDER_LIST_SELECTOR,
+  itemSelector: CHAPTER_PAGE_REORDER_ITEM_SELECTOR,
+  handleSelector: CHAPTER_PAGE_REORDER_HANDLE_SELECTOR,
+  formSelector: '[data-chapter-page-reorder-form]',
+  inputSelector: '[data-chapter-page-order-input]',
+  liveSelector: '[data-chapter-page-reorder-live]',
+  positionSelector: '[data-chapter-page-order-position]',
+  idDataset: 'noteId',
+  idAttribute: 'data-note-id',
+  labelDataset: 'noteLabel',
+  labelAttribute: 'data-note-label',
+  label: 'Page',
+  pointerDragSurfaceSelector: CHAPTER_PAGE_REORDER_ITEM_SELECTOR,
+  pointerDragExcludedSelector: NOTES_REORDER_INTERACTIVE_SELECTOR,
+  bindingKey: 'chapterPageReorderBound',
+  // The order being saved cannot change under its own request.
+  isBusy: (state) => state.form.getAttribute?.('aria-busy') === 'true',
+  onInitialize(state) {
+    state.list.__creatorCrateChapterPageReorderState = state;
+  },
+};
+
 export function enhanceChapterPageReorder(scope = globalThis.document) {
-  return enhanceDedicatedReorder(scope, {
-    listSelector: CHAPTER_PAGE_REORDER_LIST_SELECTOR,
-    itemSelector: CHAPTER_PAGE_REORDER_ITEM_SELECTOR,
-    handleSelector: CHAPTER_PAGE_REORDER_HANDLE_SELECTOR,
-    formSelector: '[data-chapter-page-reorder-form]',
-    inputSelector: '[data-chapter-page-order-input]',
-    liveSelector: '[data-chapter-page-reorder-live]',
-    positionSelector: '[data-chapter-page-order-position]',
-    idDataset: 'noteId',
-    idAttribute: 'data-note-id',
-    labelDataset: 'noteLabel',
-    labelAttribute: 'data-note-label',
-    label: 'Page',
-    pointerDragSurfaceSelector: CHAPTER_PAGE_REORDER_ITEM_SELECTOR,
-    pointerDragExcludedSelector: NOTES_REORDER_INTERACTIVE_SELECTOR,
-    bindingKey: 'chapterPageReorderBound',
+  return enhanceDedicatedReorder(scope, CHAPTER_PAGE_REORDER_CONFIG);
+}
+
+function chapterPageReorderState(form) {
+  return form?.querySelector?.(CHAPTER_PAGE_REORDER_LIST_SELECTOR)?.__creatorCrateChapterPageReorderState || null;
+}
+
+export function chapterPageOrderIds(form) {
+  const state = chapterPageReorderState(form);
+  return state ? dedicatedReorderOrder(state.list, CHAPTER_PAGE_REORDER_CONFIG) : [];
+}
+
+// The sequence a Chapter Detail render lists for this form.
+export function renderedChapterPageOrderIds(form, parsed) {
+  return Array.from(
+    parsed.querySelectorAll(`#${form.id} ${CHAPTER_PAGE_REORDER_ITEM_SELECTOR}`),
+    (item) => dedicatedReorderId(item, CHAPTER_PAGE_REORDER_CONFIG),
+  );
+}
+
+export function chapterPageOrderDragging(form) {
+  return Boolean(chapterPageReorderState(form)?.draggedItem);
+}
+
+// Shows a saved order: the positions, and the Page numbers a draft leaves alone.
+export function applyChapterPageOrder(form, ids) {
+  const state = chapterPageReorderState(form);
+  if (!state) return false;
+  finishDedicatedDrag(state);
+  if (!restoreDedicatedReorderOrder(state, ids, CHAPTER_PAGE_REORDER_CONFIG)) return false;
+  dedicatedReorderItems(state.list, CHAPTER_PAGE_REORDER_CONFIG).forEach((item, index) => {
+    const number = item.querySelector('.notes-chapter-page-number');
+    if (number) number.textContent = `Page ${index + 1}`;
   });
+  return true;
+}
+
+function chapterPageOrderSignature(section) {
+  const list = section.querySelector(CHAPTER_PAGE_REORDER_LIST_SELECTOR);
+  return JSON.stringify([
+    list?.getAttribute('aria-label') || null,
+    Array.from(section.querySelectorAll(CHAPTER_PAGE_REORDER_ITEM_SELECTOR)).map((item) => [
+      dedicatedReorderId(item, CHAPTER_PAGE_REORDER_CONFIG),
+      dedicatedReorderLabel(item, CHAPTER_PAGE_REORDER_CONFIG),
+      item.querySelector('.notes-chapter-page-number')?.textContent,
+    ]),
+  ]);
+}
+
+// Adopts the Pages a Chapter Detail render lists, inside the same form so its
+// binding and CSRF field remain. Returns the serialized order, or null when the
+// render has none. An unchanged list is left in place, along with its focus.
+export function adoptChapterPageOrder(form, parsed) {
+  const section = form.querySelector('[data-notes-chapter-order-page]');
+  const replacement = parsed.querySelector(`#${form.id} [data-notes-chapter-order-page]`);
+  if (!section || !replacement) return null;
+  if (chapterPageOrderSignature(section) !== chapterPageOrderSignature(replacement)) {
+    const document = form.ownerDocument;
+    const focusedId = dedicatedReorderId(
+      document.activeElement?.closest?.(CHAPTER_PAGE_REORDER_ITEM_SELECTOR),
+      CHAPTER_PAGE_REORDER_CONFIG,
+    );
+    const hadFocus = section.contains(document.activeElement);
+    const state = chapterPageReorderState(form);
+    if (state) finishDedicatedDrag(state);
+    section.replaceWith(replacement);
+    const footer = parsed.querySelector(`#${form.id} .app-dialog-footer`);
+    if (footer) form.querySelector('.app-dialog-footer')?.replaceWith(footer);
+    enhanceChapterPageReorder(form);
+    if (hadFocus) {
+      const item = focusedId
+        ? form.querySelector(`${CHAPTER_PAGE_REORDER_ITEM_SELECTOR}[data-note-id="${focusedId}"]`)
+        : null;
+      (item?.querySelector(CHAPTER_PAGE_REORDER_HANDLE_SELECTOR)
+        || form.closest(APP_DIALOG_SELECTOR)?.querySelector('[data-dialog-close]'))?.focus?.();
+    }
+  }
+  return chapterPageOrderIds(form).join(',');
 }
 
 export function enhanceBookContentReorder(scope = globalThis.document) {

@@ -1,4 +1,4 @@
-<div class="project-form-section-body" data-note-connections data-assets-url="/notes/asset-picker/assets">
+<div class="project-form-section-body" data-note-connections data-assets-url="/notes/asset-picker/assets" data-dialog-field="associations" data-dialog-error-ref="associations-error">
           <p class="notes-connections-description">Link this Page to existing projects and assets.</p>
 
           {% set projectError = errors.projectIds or errors.associations %}
@@ -47,6 +47,7 @@
               suffix: "."
             },
             fieldClasses: "asset-viewer-filter-field asset-viewer-project-filter" ~ (" field-error" if projectError else ""),
+            fieldAttributes: [["data-dialog-field", "projectIds"]],
             panelLabel: "Project options"
           }) }}
           {% if projectError %}<span class="field-error-message" id="projectIds-error">{{ projectError }}</span>{% endif %}
@@ -66,6 +67,7 @@
               emptySummary: "No assets selected", countLabel: "assets", panelLabel: "Asset options",
               emptyOptionText: "No assets available for the selected projects.",
               fieldClasses: "asset-viewer-filter-field asset-viewer-project-filter",
+              fieldAttributes: [["data-dialog-field", "assetIds"]],
               classes: "asset-project-filter-disclosure",
               nativeSelect: { id: "note-assets-native", attributes: [["aria-describedby", "assetIds-error" if assetError else none], ["aria-invalid", "true" if assetError else none]] },
               summaryAttributes: [["aria-describedby", "assetIds-error" if assetError else none], ["aria-invalid", "true" if assetError else none]],

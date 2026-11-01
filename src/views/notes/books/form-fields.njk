@@ -1,7 +1,7 @@
     <section class="settings-section project-form-section project-edit-dialog-section" data-notes-dialog-compact-section data-notes-book-details-section>
       <h3>Book details</h3>
       <div class="project-form-section-body project-edit-dialog-section-body">
-      <div class="field app-dialog-field {% if errors.title %}field-error{% endif %}">
+      <div class="field app-dialog-field {% if errors.title %}field-error{% endif %}" data-dialog-field="title">
         <label for="title">Title <span class="required" aria-label="required">*</span></label>
         <input type="text" id="title" name="title" value="{{ values.title or '' }}" maxlength="200" required{% if bookEditForm %} data-book-title-autosave{% endif %}{% if errors.title %} aria-describedby="title-error" aria-invalid="true"{% endif %}>
         {% if errors.title %}<span class="field-error-message" id="title-error">{{ errors.title }}</span>{% endif %}
@@ -22,10 +22,10 @@
             <input type="hidden" name="expectedCoverKind" value="{{ bookCoverSource.kind or 'none' }}">
             <input type="hidden" name="expectedCoverId" value="{{ bookCoverSource.id or '' }}">
             <input type="hidden" name="coverReplacementConfirmed" value="false">
-            <div class="field app-dialog-field">
+            <div class="field app-dialog-field" data-dialog-field="cover">
               <label for="book-cover">Book cover image</label>
               <input type="file" id="book-cover" name="cover" accept="image/png,image/jpeg,image/webp" aria-describedby="book-cover-help"{% if bookEditForm %} data-book-cover-autosave{% endif %}>
-              <span class="help-text" id="book-cover-help">Optional. PNG, JPEG, or WebP; animated WebP is supported. GIF and APNG uploads are not supported. Uploads are stored by CreatorCrate, not in a Project. After a validation error, select the file again.</span>
+              <span class="help-text" id="book-cover-help">Optional. PNG, JPEG, or WebP; animated WebP is supported. GIF and APNG uploads are not supported. Uploads are stored by CreatorCrate, not in a Project.{% if not bookCreateAsync %} After a validation error, select the file again.{% endif %}</span>
             </div>
           </div>
         </details>
@@ -34,7 +34,7 @@
         <summary>Delete Book</summary>
         <div class="notes-workspace-disclosure-content">
           <p class="notes-workspace-warning">The Book must be empty before it can be deleted. This cannot be undone.</p>
-          <button class="button button-small button-danger" type="submit" form="book-delete-form" data-confirm="Delete this Book permanently? This cannot be undone.">Delete Book</button>
+          <button class="button button-small button-danger" type="submit" form="book-delete-form" data-dialog-secondary-action data-confirm="Delete this Book permanently? This cannot be undone.">Delete Book</button>
         </div>
       </details>
     {% endif %}

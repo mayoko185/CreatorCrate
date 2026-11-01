@@ -72,6 +72,11 @@ import { enhanceBookCoverUploads } from './client/book-cover-upload.js';
 import { enhanceBookEditFetchSave } from './client/book-edit-fetch-save.js';
 import { enhanceBookDefaultsFetchSave } from './client/book-defaults-fetch-save.js';
 import { enhanceBookTransfer } from './client/book-transfer.js';
+import { enhanceBookCreateDialog } from './client/book-create-dialog.js';
+import { enhanceBookEditShelfDialog } from './client/book-edit-shelf-dialog.js';
+import { enhanceChapterDialogs, enhancePageDeletionNotice } from './client/chapter-dialogs.js';
+import { enhanceBookDetailDelete } from './client/dialog-record-delete.js';
+import { enhancePageDeletionUndo } from './client/page-deletion-undo.js';
 import { enhanceAssetEditDialog } from './client/asset-edit-dialog.js';
 import {
   enhanceAssetViewerInfoCards,
@@ -114,6 +119,7 @@ import {
 } from './client/app-dialogs.js';
 import {
   enhanceAppConfirmationControls,
+  installAppConfirmationSubmitGate,
   requestAppConfirmation,
 } from './client/confirm-dialog.js';
 import { enhanceProjectOwnershipRecovery } from './client/project-ownership-recovery.js';
@@ -254,6 +260,7 @@ export {
 
 if (typeof document !== 'undefined') {
   const run = () => {
+    installAppConfirmationSubmitGate(document);
     enhancePreviewMedia(document);
     enhanceVideoPlayback(document);
     enhanceNumberInputs(document);
@@ -317,6 +324,12 @@ if (typeof document !== 'undefined') {
     enhanceReleaseEditDialog(document);
     enhanceReleasePublishDialog(document);
     enhanceProjectCreateDialog(document);
+    enhanceBookCreateDialog(document);
+    enhanceBookEditShelfDialog(document);
+    enhanceChapterDialogs(document);
+    enhancePageDeletionNotice(document);
+    enhancePageDeletionUndo(document);
+    enhanceBookDetailDelete(document);
     enhanceProjectEditDialog(document);
     enhanceProjectDetailRefresh(document);
     enhanceProjectEditHostRefresh(document);

@@ -553,6 +553,8 @@ describe('app construction — asset actions chunk 3 wiring', () => {
       bookContentRepository,
       noteRevisionSettingsService: app.locals.noteRevisionSettingsService,
       applicationLogger: app.locals.applicationLogger,
+      bookPagePreviewSettingsRepository: expect.anything(),
+      noteDeletionSnapshotRepository: expect.anything(),
     });
     expect(serviceArgs[0].bookContentRepository).toBe(bookContentRepository);
     expect(serviceArgs[0].bookContentRepository)
@@ -932,6 +934,20 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     coordinator.run(projectId, () => { contending = service.cleanupEvidence(projectId, [row.evidenceId]); });
     await expect(contending).rejects.toMatchObject({ code: 'PROJECT_OPERATION_IN_PROGRESS' });
     expect(repository.findEvidence(projectId, row.evidenceId)).toEqual(row);
+  });
+
+  it('wires Page deletion Undo to the persistent pepper and its snapshot repository', () => {
+    buildApp();
+    const [serviceOpts] = dependencyInstrumentation.noteServices[0].args;
+    expect(serviceOpts.noteDeletionUndoSecret).toBe(csrfPepper);
+    expect(serviceOpts.noteDeletionUndoSecret).toBe(ensureAuthEnablement(appDataRoot).csrfPepper);
+    expect(typeof serviceOpts.noteDeletionSnapshotRepository.findReceipt).toBe('function');
+  });
+
+  it('leaves Page deletion Undo without a secret when no pepper is supplied', () => {
+    createApp({ appName: 'CreatorCrate', db, projectsRoot }, { appDataRoot });
+    const [serviceOpts] = dependencyInstrumentation.noteServices[0].args;
+    expect(serviceOpts.noteDeletionUndoSecret).toBeUndefined();
   });
 
   it('omits the Assets router when filesystem roots are unavailable', () => {

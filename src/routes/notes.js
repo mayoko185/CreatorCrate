@@ -3,6 +3,7 @@ import express from 'express';
 import { createBookWithUploadedCover } from '../middleware/book-create-multipart.js';
 import { updateBookWithUploadedCover } from '../middleware/book-edit-multipart.js';
 import { isSafeRedirectTarget } from '../middleware/auth.js';
+import { readDisabledModeVisitorSecret } from '../middleware/csrf.js';
 import { BookPrimaryImageError } from '../services/book-primary-image-service.js';
 import { BookExportError } from '../services/book-export-service.js';
 import { BookImportError, parseBookImportArchive } from '../services/book-import-service.js';
@@ -10,7 +11,10 @@ import { BookImportMultipartError } from '../services/book-import-multipart.js';
 import { ManagedImageError } from '../services/managed-image-service.js';
 import { AssetPickerCursorError } from '../data/asset-picker-pagination.js';
 import {
+  createNoteDeletionId,
+  NoteDeletionUndoError,
   NoteNotFoundError,
+  NoteOperationError,
   NoteRevisionAssociationUnavailableError,
   NoteRevisionNotFoundError,
   NoteValidationError,
@@ -21,7 +25,7 @@ import {
   BookNotFoundError,
   BookValidationError,
 } from '../services/book-service.js';
-import { ChapterNotFoundError, ChapterValidationError } from '../services/chapter-service.js';
+import { ChapterNotEmptyError, ChapterNotFoundError, ChapterValidationError } from '../services/chapter-service.js';
 import { buildAssetPreviewModel, buildAssetViewerUrl } from '../services/asset-presentation.js';
 import { projectImagePresentationPolicy } from '../services/project-image-policy.js';
 import { resolveBookPrimaryImageMedia } from '../services/primary-image-presenter.js';
@@ -51,7 +55,159 @@ function readBookEditReturnLocation(candidate) {
   }
 }
 
+function isEnhancedBookCreateRequest(req) {
+  return String(req.get?.('Accept') || '').toLowerCase().includes('application/json');
+}
+
+function chapterResponse(chapter) {
+  return {
+    id: chapter.id,
+    title: chapter.title,
+    bookId: chapter.book_id,
+    url: `/notes/chapters/${chapter.id}`,
+  };
+}
+
+// Sanitized outcomes for the Chapter dialogs, which save in place. Each service
+// write is atomic, so a failure reported here has left nothing behind.
+function sendChapterFailure(req, res, event, message, error, code = 'CHAPTER_OPERATION_FAILED') {
+  try {
+    req.app.locals.applicationLogger?.error?.({
+      event, kind: 'diagnostic', subsystem: 'notes',
+      message, context: { code: error?.code || error?.name || 'UNKNOWN' },
+    });
+  } catch { /* Logging must not change the operation outcome. */ }
+  return res.status(500).json({
+    status: 'error', code, message: `${message} No changes were made.`,
+  });
+}
+
+function sendChapterValidation(res, err) {
+  return res.status(422).json({
+    status: 'error',
+    code: 'VALIDATION',
+    message: 'Fix the highlighted fields and try again.',
+    errors: err.errors || {},
+  });
+}
+
+function sendPageUnavailable(res, err = null) {
+  const [code, label] = err instanceof ChapterNotFoundError ? ['CHAPTER_NOT_FOUND', 'Chapter']
+    : err instanceof BookNotFoundError ? ['BOOK_NOT_FOUND', 'Book']
+      : ['PAGE_NOT_FOUND', 'Page'];
+  return res.status(404).json({
+    status: 'error', code, message: `This ${label} is no longer available.`,
+  });
+}
+
+// A well-formed list of distinct IDs was refused only because it no longer
+// matches the Chapter's Pages; anything else could never have been accepted.
+function sendPageOrderFailure(req, res, noteService, chapterId, submittedIds, err) {
+  try {
+    if (err instanceof ChapterNotFoundError) throw err;
+    if (!(err instanceof NoteValidationError)) {
+      return sendChapterFailure(req, res, 'note.reorder_failed', 'The Page order could not be saved.', err);
+    }
+    const currentIds = noteService.listNotesForChapter(chapterId).map((note) => note.id);
+    const stale = Array.isArray(submittedIds) && new Set(submittedIds).size === submittedIds.length;
+    return res.status(stale ? 409 : 422).json({
+      status: 'error',
+      code: stale ? 'ORDER_STALE' : 'ORDER_INVALID',
+      message: stale
+        ? 'The Pages in this Chapter have changed, so this order was not saved. Close this dialog to load the current Pages, then reorder them again.'
+        : 'This Page order is invalid, so it was not saved. Every Page must appear exactly once.',
+      orderedNoteIds: currentIds,
+    });
+  } catch (readError) {
+    if (readError instanceof ChapterNotFoundError) {
+      return res.status(404).json({
+        status: 'error', code: 'CHAPTER_NOT_FOUND', message: 'This Chapter is no longer available.',
+      });
+    }
+    return sendChapterFailure(req, res, 'note.reorder_failed', 'The Page order could not be saved.', readError);
+  }
+}
+
+const PAGE_DELETION_OUT_OF_DATE = 'This Delete form is out of date, so the Page was not deleted. Reload the Page and try again.';
+
+// Every refusal a recovery response can report. A refused restore changes nothing.
+const PAGE_DELETION_UNDO_MESSAGES = {
+  UNDO_UNAVAILABLE: 'This Page deletion cannot be undone.',
+  UNDO_EXPIRED: 'The time to undo this deletion has passed.',
+  UNDO_ALREADY_RESTORED: 'This Page has already been restored.',
+  UNDO_PARENT_MISSING: 'This Page cannot be restored because its Book is no longer available.',
+  UNDO_PARENT_CHANGED: 'This Page cannot be restored because its Chapter is no longer available.',
+  UNDO_ASSOCIATION_MISSING: 'This Page cannot be restored because a Project or Asset connected to it is no longer available.',
+  UNDO_ORDER_CHANGED: 'This Page cannot be restored because the Pages around it have changed.',
+  UNDO_PREVIEW_CHANGED: 'This Page cannot be restored because the Book’s Page previews have changed.',
+  UNDO_ID_CONFLICT: 'This Page cannot be restored because its identity is in use again.',
+};
+
+// Page deletion recovery is scoped to one server-established identity: the session
+// when authentication is on, the CSRF visitor cookie when it is off. The mode comes
+// from the server, and neither mode falls back to the other.
+function resolvePageDeletionOwnerKey(req, res, noteService) {
+  if (!noteService.isNoteDeletionUndoConfigured()) {
+    throw new NoteOperationError('Page deletion Undo is not configured.', { code: 'UNDO_NOT_CONFIGURED' });
+  }
+  const auth = res.locals.auth;
+  let owner = null;
+  if (auth?.enabled === true && auth.authenticated && auth.csrfSecret) {
+    owner = { kind: 'session', identity: auth.csrfSecret };
+  } else if (auth?.enabled === false) {
+    const identity = readDisabledModeVisitorSecret(req);
+    if (identity) owner = { kind: 'browser', identity };
+  }
+  return owner ? noteService.deriveNoteDeletionOwnerKey(owner) : null;
+}
+
+function pageDeletionParent({ bookId, chapterId }) {
+  return chapterId === null
+    ? { kind: 'book', id: bookId, bookId, url: `/notes/books/${bookId}` }
+    : { kind: 'chapter', id: chapterId, bookId, url: `/notes/chapters/${chapterId}` };
+}
+
+function pageDeletionStatusUrl(deletionId) {
+  return `/notes/page-deletions/${deletionId}`;
+}
+
+// Safe metadata only: never an owner key, the snapshot or, here, a token.
+function pageDeletionResponse(receipt) {
+  return {
+    deletionId: receipt.deletionId,
+    status: receipt.status,
+    createdAt: receipt.createdAt,
+    expiresAt: receipt.expiresAt,
+    restoredAt: receipt.restoredAt,
+    page: { id: receipt.noteId, url: `/notes/${receipt.noteId}` },
+    parent: pageDeletionParent(receipt),
+  };
+}
+
+function preventPageDeletionCaching(_req, res, next) {
+  res.set('Cache-Control', 'private, no-store');
+  next();
+}
+
+function sendPageDeletionFailure(req, res, err, details = {}) {
+  if (err?.code === 'UNDO_NOT_CONFIGURED') {
+    return res.status(503).json({
+      status: 'error', code: err.code, message: 'Page deletion recovery is not available right now.',
+    });
+  }
+  if (err instanceof NoteDeletionUndoError && PAGE_DELETION_UNDO_MESSAGES[err.code]) {
+    return res.status(err.status).json({
+      status: 'error', code: err.code, message: PAGE_DELETION_UNDO_MESSAGES[err.code], ...details,
+    });
+  }
+  return sendChapterFailure(
+    req, res, 'note.deletion_undo_failed', 'The Page deletion recovery could not be completed.', err, 'UNDO_OPERATION_FAILED',
+  );
+}
+
 const NOTICES = {
+  page_deleted: { variant: 'success', text: 'Page deleted.' },
+  page_unavailable: { variant: 'warning', text: 'That Page is no longer available.' },
   book_reordered: { variant: 'success', text: 'Book order updated.' },
   book_reorder_invalid: {
     variant: 'error',
@@ -299,6 +455,14 @@ function resolveNotice(code) {
   return Object.prototype.hasOwnProperty.call(NOTICES, code) ? NOTICES[code] : null;
 }
 
+// What the parent of a Page that has gone says on arrival: only these two codes, so
+// the parent's other notices keep their own rendering.
+function resolvePageDeletionNotice(code, recovery) {
+  // "Deleted" is a claim only this owner's active deletion from this parent can make.
+  if (code === 'page_deleted') return recovery ? NOTICES[code] : null;
+  return code === 'page_unavailable' ? NOTICES[code] : null;
+}
+
 function isNsfwTag(tag) {
   return [tag?.displayName, tag?.display_name, tag?.normalizedName, tag?.normalized_name].some((value) => (
     typeof value === 'string' && value.trim().toLowerCase() === NSFW_TAG_NORMALIZED_NAME
@@ -430,6 +594,29 @@ export function createNotesRouter({
     throw new Error('createNotesRouter requires a bookPagePreviewSettingsService dependency.');
   }
 
+  // What a parent may say about the locator in its URL. Anything but this owner's
+  // active deletion from this parent is treated as if no locator had been given.
+  function resolvePageDeletionRecovery(req, res, parent) {
+    if (req.query.notice !== 'page_deleted' || typeof req.query.undo !== 'string') return null;
+    try {
+      const ownerKey = resolvePageDeletionOwnerKey(req, res, noteService);
+      if (!ownerKey) return null;
+      const receipt = noteService.getNoteDeletionUndo(req.query.undo, { ownerKey });
+      if (receipt.status !== 'available'
+        || receipt.bookId !== (parent.bookId ?? receipt.bookId)
+        || receipt.chapterId !== parent.chapterId) {
+        return null;
+      }
+      return {
+        deletionId: receipt.deletionId,
+        expiresAt: receipt.expiresAt,
+        statusUrl: pageDeletionStatusUrl(receipt.deletionId),
+      };
+    } catch {
+      return null;
+    }
+  }
+
   async function renderBooksIndex(res, {
     appName: pageAppName, bookService: pageBookService, bookPrimaryImageService: pagePrimaryImageService,
     notice = null, status = 200, booksOrderDialogOpen = false, booksOrderNotice = null, bookCreateDialogOpen = false, values = { title: '' }, errors = {},
@@ -473,7 +660,7 @@ export function createNotesRouter({
 
   async function renderBookDetail(req, res, {
     appName: pageAppName, bookService: pageBookService, bookPrimaryImageService: pagePrimaryImageService,
-    bookId, notice = null, status = 200, bookEditDialogOpen = false, bookEditReturnTo = '', values, errors = {},
+    bookId, notice = null, pageDeletionNotice = null, pageDeletionRecovery = null, status = 200, bookEditDialogOpen = false, bookEditReturnTo = '', values, errors = {},
     noteCreateForm = null, noteCreateDialogOpen = false,
     bookOrderDialogOpen = false, bookOrderNotice = null,
     chapterCreateDialogOpen = false, chapterValues = { title: '' }, chapterErrors = {},
@@ -522,7 +709,7 @@ export function createNotesRouter({
       .map(({ page }) => page);
     const canChangeOrder = canChangeBookOrder(contents);
     res.status(status).render('notes/books/detail.njk', {
-      appName: pageAppName, book, contents, bookContents: contents, chapters, pages, canChangeOrder, notice,
+      appName: pageAppName, book, contents, bookContents: contents, chapters, pages, canChangeOrder, notice, pageDeletionNotice, pageDeletionRecovery,
       bookOrderDialogOpen, bookOrderNotice, bookHierarchy,
       noteCreateDialogOpen,
       noteCreateForm: noteCreateForm ?? buildNoteCreateForm(book, null, contents),
@@ -558,7 +745,7 @@ export function createNotesRouter({
 
   async function renderChapterDetail(res, {
     appName, bookService, bookPrimaryImageService: pagePrimaryImageService,
-    chapterService, noteService, chapterId, notice = null, status = 200,
+    chapterService, noteService, chapterId, notice = null, pageDeletionNotice = null, pageDeletionRecovery = null, status = 200,
     noteCreateForm = null, noteCreateDialogOpen = false,
     chapterOrderDialogOpen = false, chapterOrderNotice = null,
     chapterEditDialogOpen = false, chapterEditValues = null, chapterEditErrors = {},
@@ -575,7 +762,7 @@ export function createNotesRouter({
     const bookContents = bookService.listBookContents(book.id);
     const notes = noteService.listNotesForChapter(chapterId);
     res.status(status).render('notes/chapters/detail.njk', {
-      appName, book, bookContents, navCurrentChapterId: chapter.id, chapter, notes, notice, chapterOrderDialogOpen, chapterOrderNotice,
+      appName, book, bookContents, navCurrentChapterId: chapter.id, chapter, notes, notice, pageDeletionNotice, pageDeletionRecovery, chapterOrderDialogOpen, chapterOrderNotice,
       noteCreateDialogOpen,
       noteCreateForm: noteCreateForm
         ? { ...noteCreateForm, book }
@@ -626,6 +813,15 @@ export function createNotesRouter({
         ? await createBookWithUploadedCover(req, res, { bookService, managedImageService }, cover.bytes)
         : bookService.createBook({ title: body.title });
       if (!book) return;
+      if (isEnhancedBookCreateRequest(req)) {
+        // The New Book dialog stays on the shelf; the next open starts blank.
+        return res.status(201).json({
+          status: 'success',
+          message: `Book “${book.title}” created.`,
+          book: { id: book.id, title: book.title, url: `/notes/books/${book.id}` },
+          values: { title: '' },
+        });
+      }
       return res.redirect(`/notes/books/${book.id}`);
     } catch (err) {
       if (err instanceof ManagedImageError && err.code === 'INVALID_IMAGE'
@@ -643,9 +839,18 @@ export function createNotesRouter({
         }
         return res.status(err.code === 'INVALID_IMAGE' ? 422 : 500).json({
           status: 'error', code: err.code, message: err.message,
+          ...(err.code === 'INVALID_IMAGE' ? { errors: { cover: err.message } } : {}),
         });
       }
       if (err instanceof BookValidationError) {
+        if (isEnhancedBookCreateRequest(req)) {
+          return res.status(422).json({
+            status: 'error',
+            code: 'VALIDATION',
+            message: err.errors?.general || 'Fix the highlighted fields and try again.',
+            errors: err.errors || {},
+          });
+        }
         try {
           return await renderBooksIndex(res, {
             appName, bookService, bookPrimaryImageService, status: 422, bookCreateDialogOpen: true,
@@ -945,11 +1150,36 @@ export function createNotesRouter({
   router.post('/books/:bookId/delete', (req, res, next) => {
     const id = parseId(req.params.bookId);
     if (id === null) return next(createNotFound());
+    const wantsJson = req.accepts(['html', 'json']) === 'json';
 
     try {
+      const book = bookService.getBook(id);
       bookService.deleteBook(id);
+      if (wantsJson) {
+        return res.json({
+          status: 'success',
+          message: `Book “${book.title}” deleted.`,
+          book: { id: book.id, title: book.title },
+          redirectUrl: '/notes',
+        });
+      }
       return res.redirect('/notes');
     } catch (err) {
+      if (wantsJson) {
+        if (err instanceof BookNotFoundError) {
+          return res.status(404).json({
+            status: 'error', code: 'BOOK_NOT_FOUND', message: 'This Book is no longer available.',
+          });
+        }
+        // The service checks for Chapters; the database refuses a Book that still
+        // holds Pages directly.
+        if (err instanceof BookNotEmptyError || String(err?.code).startsWith('SQLITE_CONSTRAINT')) {
+          return res.status(409).json({
+            status: 'error', code: 'BOOK_NOT_EMPTY', message: 'This Book still contains Chapters or Pages, so it was not deleted. Delete them first.',
+          });
+        }
+        return sendChapterFailure(req, res, 'book.delete_failed', 'Book could not be deleted.', err, 'BOOK_OPERATION_FAILED');
+      }
       if (err instanceof BookNotFoundError) return next(createNotFound());
       return next(err);
     }
@@ -973,14 +1203,32 @@ export function createNotesRouter({
     const bookId = parseId(req.params.bookId);
     if (bookId === null) return next(createNotFound());
     const body = req.body || {};
+    const wantsJson = req.accepts(['html', 'json']) === 'json';
 
     try {
       bookService.getBook(bookId);
       const chapter = chapterService.createChapter({ bookId, title: body.title });
+      if (wantsJson) {
+        // The New Chapter dialog stays on Book Detail; the next open starts blank.
+        return res.status(201).json({
+          status: 'success',
+          message: `Chapter “${chapter.title}” created.`,
+          chapter: chapterResponse(chapter),
+          values: { title: '' },
+        });
+      }
       return res.redirect(`/notes/chapters/${chapter.id}`);
     } catch (err) {
-      if (err instanceof BookNotFoundError) return next(createNotFound());
+      if (err instanceof BookNotFoundError) {
+        if (wantsJson) {
+          return res.status(404).json({
+            status: 'error', code: 'BOOK_NOT_FOUND', message: 'This Book is no longer available.',
+          });
+        }
+        return next(createNotFound());
+      }
       if (err instanceof ChapterValidationError) {
+        if (wantsJson) return sendChapterValidation(res, err);
         try {
           return await renderBookDetail(req, res, {
             appName, bookService, bookPrimaryImageService, bookId,
@@ -993,6 +1241,7 @@ export function createNotesRouter({
           return next(lookupError);
         }
       }
+      if (wantsJson) return sendChapterFailure(req, res, 'chapter.create_failed', 'Chapter could not be created.', err);
       return next(err);
     }
   });
@@ -1139,8 +1388,11 @@ export function createNotesRouter({
     if (id === null) return next(createNotFound());
 
     try {
+      const pageDeletionRecovery = resolvePageDeletionRecovery(req, res, { bookId: id, chapterId: null });
       await renderBookDetail(req, res, {
         appName, bookService, bookPrimaryImageService, chapterService, noteService, bookId: id,
+        pageDeletionNotice: resolvePageDeletionNotice(req.query.notice, pageDeletionRecovery),
+        pageDeletionRecovery,
       });
       return;
     } catch (err) {
@@ -1154,8 +1406,11 @@ export function createNotesRouter({
     if (chapterId === null) return next(createNotFound());
 
     try {
+      const pageDeletionRecovery = resolvePageDeletionRecovery(req, res, { chapterId });
       await renderChapterDetail(res, {
         appName, bookService, bookPrimaryImageService, chapterService, noteService, chapterId,
+        pageDeletionNotice: resolvePageDeletionNotice(req.query.notice, pageDeletionRecovery),
+        pageDeletionRecovery,
       });
       return;
     } catch (err) {
@@ -1184,12 +1439,24 @@ export function createNotesRouter({
   router.post('/chapters/:chapterId/notes/reorder', async (req, res, next) => {
     const chapterId = parseId(req.params.chapterId);
     if (chapterId === null) return next(createNotFound());
+    const wantsJson = req.accepts(['html', 'json']) === 'json';
 
+    let orderedIds = null;
     try {
-      const orderedIds = parseOrderedNoteIds(req.body?.orderedNoteIds);
-      noteService.reorderNotes(chapterId, orderedIds);
+      orderedIds = parseOrderedNoteIds(req.body?.orderedNoteIds);
+      const reordered = noteService.reorderNotes(chapterId, orderedIds);
+      if (wantsJson) {
+        const savedIds = reordered.map((note) => note.id);
+        return res.json({
+          status: 'success',
+          message: 'Page order saved.',
+          orderedNoteIds: savedIds,
+          values: { orderedNoteIds: savedIds.join(',') },
+        });
+      }
       return res.redirect(`/notes/chapters/${chapterId}`);
     } catch (err) {
+      if (wantsJson) return sendPageOrderFailure(req, res, noteService, chapterId, orderedIds, err);
       if (err instanceof ChapterNotFoundError) return next(createNotFound());
       if (err instanceof NoteValidationError) {
         try {
@@ -1236,13 +1503,30 @@ export function createNotesRouter({
     const chapterId = parseId(req.params.chapterId);
     if (chapterId === null) return next(createNotFound());
     const body = req.body || {};
+    const wantsJson = req.accepts(['html', 'json']) === 'json';
 
     try {
       const chapter = chapterService.updateChapter(chapterId, { title: body.title });
+      if (wantsJson) {
+        return res.json({
+          status: 'success',
+          message: `Chapter “${chapter.title}” saved.`,
+          chapter: chapterResponse(chapter),
+          values: { title: chapter.title },
+        });
+      }
       return res.redirect(`/notes/chapters/${chapter.id}`);
     } catch (err) {
-      if (err instanceof ChapterNotFoundError) return next(createNotFound());
+      if (err instanceof ChapterNotFoundError) {
+        if (wantsJson) {
+          return res.status(404).json({
+            status: 'error', code: 'CHAPTER_NOT_FOUND', message: 'This Chapter is no longer available.',
+          });
+        }
+        return next(createNotFound());
+      }
       if (err instanceof ChapterValidationError) {
+        if (wantsJson) return sendChapterValidation(res, err);
         try {
           return await renderChapterDetail(res, {
             appName, bookService, bookPrimaryImageService, chapterService, noteService, chapterId,
@@ -1258,6 +1542,7 @@ export function createNotesRouter({
           return next(lookupError);
         }
       }
+      if (wantsJson) return sendChapterFailure(req, res, 'chapter.update_failed', 'Chapter could not be saved.', err);
       return next(err);
     }
   });
@@ -1265,12 +1550,34 @@ export function createNotesRouter({
   router.post('/chapters/:chapterId/delete', (req, res, next) => {
     const chapterId = parseId(req.params.chapterId);
     if (chapterId === null) return next(createNotFound());
+    const wantsJson = req.accepts(['html', 'json']) === 'json';
 
     try {
       const chapter = chapterService.getChapter(chapterId);
       chapterService.deleteChapter(chapterId);
+      if (wantsJson) {
+        return res.json({
+          status: 'success',
+          message: `Chapter “${chapter.title}” deleted.`,
+          chapter: { id: chapter.id, title: chapter.title, bookId: chapter.book_id },
+          redirectUrl: `/notes/books/${chapter.book_id}`,
+        });
+      }
       return res.redirect(`/notes/books/${chapter.book_id}`);
     } catch (err) {
+      if (wantsJson) {
+        if (err instanceof ChapterNotFoundError) {
+          return res.status(404).json({
+            status: 'error', code: 'CHAPTER_NOT_FOUND', message: 'This Chapter is no longer available.',
+          });
+        }
+        if (err instanceof ChapterNotEmptyError) {
+          return res.status(409).json({
+            status: 'error', code: err.code, message: 'This Chapter still contains Pages, so it was not deleted. Move or delete its Pages first.',
+          });
+        }
+        return sendChapterFailure(req, res, 'chapter.delete_failed', 'Chapter could not be deleted.', err);
+      }
       if (err instanceof ChapterNotFoundError) return next(createNotFound());
       return next(err);
     }
@@ -1318,6 +1625,109 @@ export function createNotesRouter({
       });
     } catch (err) {
       return handlePickerError(err, res, next);
+    }
+  });
+
+  // ─── Page deletion recovery ──────────────────────────────────────────────
+  // Registered before the dynamic Note routes. JSON only, and never cached: the
+  // status read is the one place an Undo action token leaves the server.
+
+  // GET /notes/page-deletions?chapterId=:id or ?bookId=:id — this owner's active
+  // deletions directly inside one parent, newest first, without tokens.
+  router.get('/page-deletions', preventPageDeletionCaching, (req, res) => {
+    const query = req.query || {};
+    const hasChapterId = Object.hasOwn(query, 'chapterId');
+    const hasBookId = Object.hasOwn(query, 'bookId');
+    const parentId = parseId(hasChapterId ? query.chapterId : query.bookId);
+    if (hasChapterId === hasBookId || parentId === null) {
+      return res.status(422).json({
+        status: 'error', code: 'PARENT_INVALID', message: 'Name one Book or one Chapter.',
+      });
+    }
+    const parent = hasChapterId
+      ? { kind: 'chapter', id: parentId, url: `/notes/chapters/${parentId}` }
+      : { kind: 'book', id: parentId, url: `/notes/books/${parentId}` };
+
+    try {
+      const ownerKey = resolvePageDeletionOwnerKey(req, res, noteService);
+      const { deletions, hasMore } = ownerKey
+        ? noteService.listNoteDeletionUndos({
+          ownerKey, ...(hasChapterId ? { chapterId: parentId } : { bookId: parentId }),
+        })
+        : { deletions: [], hasMore: false };
+      return res.json({
+        status: 'success',
+        parent,
+        hasMore,
+        deletions: deletions.map((deletion) => ({
+          deletionId: deletion.deletionId,
+          status: deletion.status,
+          title: deletion.title,
+          createdAt: deletion.createdAt,
+          expiresAt: deletion.expiresAt,
+          page: { id: deletion.noteId, url: `/notes/${deletion.noteId}` },
+          statusUrl: pageDeletionStatusUrl(deletion.deletionId),
+        })),
+      });
+    } catch (err) {
+      return sendPageDeletionFailure(req, res, err);
+    }
+  });
+
+  // GET /notes/page-deletions/:deletionId — one owned deletion, with an action
+  // token only while it can still be undone. An owned record of any state also
+  // proves that its Delete committed, which settles a lost Delete response.
+  router.get('/page-deletions/:deletionId', preventPageDeletionCaching, (req, res) => {
+    try {
+      const ownerKey = resolvePageDeletionOwnerKey(req, res, noteService);
+      if (!ownerKey) throw new NoteDeletionUndoError('UNDO_UNAVAILABLE');
+      const receipt = noteService.getNoteDeletionUndo(req.params.deletionId, { ownerKey });
+      if (receipt.status === 'restored') return res.json(pageDeletionResponse(receipt));
+      if (receipt.status === 'available') {
+        const action = noteService.issueNoteDeletionUndoAction(req.params.deletionId, { ownerKey });
+        return res.json({ ...pageDeletionResponse(action), undoToken: action.undoToken });
+      }
+      return res.status(410).json({
+        ...pageDeletionResponse(receipt), code: 'UNDO_EXPIRED', message: PAGE_DELETION_UNDO_MESSAGES.UNDO_EXPIRED,
+      });
+    } catch (err) {
+      return sendPageDeletionFailure(req, res, err);
+    }
+  });
+
+  // POST /notes/page-deletions/:deletionId/restore — one attempt per request. The
+  // token is read from the CSRF-protected body only.
+  router.post('/page-deletions/:deletionId/restore', preventPageDeletionCaching, (req, res) => {
+    let ownerKey = null;
+    try {
+      ownerKey = resolvePageDeletionOwnerKey(req, res, noteService);
+      if (!ownerKey) throw new NoteDeletionUndoError('UNDO_UNAVAILABLE');
+      const restored = noteService.restoreDeletedNote(req.params.deletionId, {
+        ownerKey, undoToken: req.body?.undoToken,
+      });
+      return res.json({
+        status: 'restored',
+        message: 'Page restored.',
+        deletionId: restored.deletionId,
+        page: { id: restored.noteId, url: `/notes/${restored.noteId}` },
+        parent: pageDeletionParent(restored),
+        restoredAt: restored.restoredAt,
+      });
+    } catch (err) {
+      // Reached only with a valid token: the service checks it first. The receipt
+      // tells the caller where the Page is, while the code says this call did not
+      // restore it.
+      if (err?.code === 'UNDO_ALREADY_RESTORED') {
+        let details = {};
+        try {
+          const { page, parent, restoredAt } = pageDeletionResponse(
+            noteService.getNoteDeletionUndo(req.params.deletionId, { ownerKey }),
+          );
+          details = { page, parent, restoredAt };
+        } catch { /* The refusal stands without its details. */ }
+        return sendPageDeletionFailure(req, res, err, details);
+      }
+      return sendPageDeletionFailure(req, res, err);
     }
   });
 
@@ -1369,11 +1779,16 @@ export function createNotesRouter({
     const body = req.body || {};
     const hasChapterId = Object.hasOwn(body, 'chapterId');
     const hasBookId = Object.hasOwn(body, 'bookId');
-    if (hasChapterId === hasBookId) return next(createNotFound());
-
+    const wantsJson = req.accepts(['html', 'json']) === 'json';
     const chapterId = hasChapterId ? parseId(body.chapterId) : null;
     const bookId = hasBookId ? parseId(body.bookId) : null;
-    if ((hasChapterId && chapterId === null) || (hasBookId && bookId === null)) {
+    if (hasChapterId === hasBookId
+      || (hasChapterId && chapterId === null) || (hasBookId && bookId === null)) {
+      if (wantsJson) {
+        return res.status(422).json({
+          status: 'error', code: 'PAGE_PARENT_INVALID', message: 'This Page needs one valid Book or Chapter.',
+        });
+      }
       return next(createNotFound());
     }
 
@@ -1382,12 +1797,36 @@ export function createNotesRouter({
         ...(hasChapterId ? { chapterId } : { bookId }),
         ...parseNoteInput(body),
       });
+      if (wantsJson) {
+        // The New Page dialog stays on its host; the next open starts blank.
+        return res.status(201).json({
+          status: 'success',
+          message: `Page “${note.title}” created.`,
+          page: {
+            id: note.id,
+            title: note.title,
+            bookId: note.book_id,
+            chapterId: note.chapter_id,
+            url: `/notes/${note.id}`,
+          },
+          values: { title: '', content: '' },
+        });
+      }
       return res.redirect(`/notes/${note.id}`);
     } catch (err) {
       if (err instanceof ChapterNotFoundError || err instanceof BookNotFoundError) {
+        if (wantsJson) {
+          const isChapter = err instanceof ChapterNotFoundError;
+          return res.status(404).json({
+            status: 'error',
+            code: isChapter ? 'CHAPTER_NOT_FOUND' : 'BOOK_NOT_FOUND',
+            message: `This ${isChapter ? 'Chapter' : 'Book'} is no longer available.`,
+          });
+        }
         return next(createNotFound());
       }
       if (err instanceof NoteValidationError) {
+        if (wantsJson) return sendChapterValidation(res, err);
         try {
           const chapter = hasChapterId ? chapterService.getChapter(chapterId) : null;
           const book = hasChapterId
@@ -1424,6 +1863,9 @@ export function createNotesRouter({
           return next(lookupError);
         }
       }
+      if (wantsJson) {
+        return sendChapterFailure(req, res, 'note.create_failed', 'The Page could not be created.', err, 'PAGE_OPERATION_FAILED');
+      }
       return next(err);
     }
   });
@@ -1432,27 +1874,59 @@ export function createNotesRouter({
   // Registered before the dynamic Note routes.
   router.post('/:id/move', (req, res, next) => {
     const id = parseId(req.params.id);
+    const wantsJson = req.accepts(['html', 'json']) === 'json';
     if (id === null) {
-      return next(createNotFound());
+      return wantsJson ? sendPageUnavailable(res) : next(createNotFound());
     }
 
     try {
       const target = parseMoveTarget(req.body || {});
+      // Read before the write, so a failure here can never follow a committed move.
+      const source = wantsJson ? noteService.getNote(id) : null;
+      const label = wantsJson ? moveDestinationLabel(target, { bookService, chapterService }) : null;
       const moved = target.kind === 'chapter'
         ? noteService.moveNoteToChapter(id, target.id)
         : noteService.moveNote(id, { bookId: target.id });
-      return res.redirect(moved.chapter_id === null
+      const destinationUrl = moved.chapter_id === null
         ? `/notes/books/${moved.book_id}`
-        : `/notes/chapters/${moved.chapter_id}`);
+        : `/notes/chapters/${moved.chapter_id}`;
+      if (wantsJson) {
+        // The Edit Page dialog stays on Page Detail and keeps its draft, so this
+        // carries the saved location only, never the Page's fields.
+        const changed = source.book_id !== moved.book_id || source.chapter_id !== moved.chapter_id;
+        return res.json({
+          status: 'success',
+          message: changed ? `Page moved to ${label}.` : `This Page is already in ${label}.`,
+          changed,
+          page: { id: moved.id, bookId: moved.book_id, chapterId: moved.chapter_id, url: `/notes/${moved.id}` },
+          destination: {
+            container: moved.chapter_id === null ? `book:${moved.book_id}` : `chapter:${moved.chapter_id}`,
+            kind: moved.chapter_id === null ? 'book' : 'chapter',
+            label,
+            url: destinationUrl,
+          },
+        });
+      }
+      return res.redirect(destinationUrl);
     } catch (err) {
       if (err instanceof NoteValidationError) {
+        if (wantsJson) {
+          return res.status(422).json({
+            status: 'error',
+            code: err.code || 'MOVE_TARGET_INVALID',
+            message: 'Choose a valid Book or Chapter destination.',
+          });
+        }
         err.status = 422;
         return next(err);
       }
       if (err instanceof NoteNotFoundError
         || err instanceof ChapterNotFoundError
         || err instanceof BookNotFoundError) {
-        return next(createNotFound());
+        return wantsJson ? sendPageUnavailable(res, err) : next(createNotFound());
+      }
+      if (wantsJson) {
+        return sendChapterFailure(req, res, 'note.move_failed', 'The Page could not be moved.', err, 'PAGE_OPERATION_FAILED');
       }
       return next(err);
     }
@@ -1620,8 +2094,9 @@ export function createNotesRouter({
   // POST /notes/:id — Update note fields and replace independent associations.
   router.post('/:id', async (req, res, next) => {
     const id = parseId(req.params.id);
+    const wantsJson = req.accepts(['html', 'json']) === 'json';
     if (id === null) {
-      return next(createNotFound());
+      return wantsJson ? sendPageUnavailable(res) : next(createNotFound());
     }
 
     const body = req.body || {};
@@ -1633,14 +2108,30 @@ export function createNotesRouter({
       });
       const note = noteService.updateNote(id, parseNoteInput(body));
       if (!note) {
-        return next(createNotFound());
+        return wantsJson ? sendPageUnavailable(res) : next(createNotFound());
+      }
+      if (wantsJson) {
+        // The Edit Page dialog stays on Page Detail; these become its saved baseline.
+        return res.json({
+          status: 'success',
+          message: `Page “${note.title}” saved.`,
+          page: {
+            id: note.id,
+            title: note.title,
+            bookId: note.book_id,
+            chapterId: note.chapter_id,
+            url: `/notes/${note.id}`,
+          },
+          values: buildNoteDialogBaseline(noteToFormValues(note), assetRepository),
+        });
       }
       return res.redirect(`/notes/${note.id}`);
     } catch (err) {
       if (err instanceof NoteNotFoundError || err instanceof ChapterNotFoundError || err instanceof BookNotFoundError) {
-        return next(createNotFound());
+        return wantsJson ? sendPageUnavailable(res, err) : next(createNotFound());
       }
       if (err instanceof NoteValidationError) {
+        if (wantsJson) return sendChapterValidation(res, err);
         try {
           return await renderNoteDetail(res, hierarchy, {
             values: buildFormValues(body),
@@ -1654,26 +2145,77 @@ export function createNotesRouter({
           return next(lookupError);
         }
       }
+      if (wantsJson) {
+        return sendChapterFailure(req, res, 'note.update_failed', 'The Page could not be saved.', err, 'PAGE_OPERATION_FAILED');
+      }
       return next(err);
     }
   });
 
-  // POST /notes/:id/delete — Permanently delete a note.
-  router.post('/:id/delete', (req, res, next) => {
+  // POST /notes/:id/delete — Delete a Page with a durable recovery snapshot, or
+  // refuse. It never deletes without one. The form supplies the deletionId its
+  // page was rendered with, so a lost response can be settled by reading it.
+  router.post('/:id/delete', preventPageDeletionCaching, (req, res, next) => {
     const id = parseId(req.params.id);
     if (id === null) {
       return next(createNotFound());
     }
+    const wantsJson = req.accepts(['html', 'json']) === 'json';
+    // Never 404: the Page Delete client takes that to mean the Page has gone.
+    const refuse = (status, code, message) => {
+      if (wantsJson) return res.status(status).json({ status: 'error', code, message });
+      const refusal = new Error(message);
+      refusal.status = status;
+      return next(refusal);
+    };
 
     try {
       const { note, chapter, book } = loadNoteHierarchy({
         noteService, chapterService, bookService, id,
       });
-      noteService.deleteNote(id);
-      return res.redirect(chapter ? `/notes/chapters/${chapter.id}` : `/notes/books/${book.id}`);
+      const ownerKey = resolvePageDeletionOwnerKey(req, res, noteService);
+      if (!ownerKey) {
+        return refuse(403, 'UNDO_OWNER_UNAVAILABLE', 'Your session could not be verified, so the Page was not deleted. Reload the Page and try again.');
+      }
+      const deleted = noteService.deleteNoteWithUndo(id, { deletionId: req.body?.deletionId, ownerKey });
+      const parentUrl = chapter ? `/notes/chapters/${chapter.id}` : `/notes/books/${book.id}`;
+      const redirectUrl = `${parentUrl}?notice=page_deleted&undo=${deleted.deletionId}`;
+      if (wantsJson) {
+        return res.json({
+          status: 'success',
+          message: `Page “${note.title}” deleted.`,
+          page: { id: note.id, title: note.title },
+          redirectUrl,
+          recovery: {
+            available: true,
+            deletionId: deleted.deletionId,
+            createdAt: deleted.createdAt,
+            expiresAt: deleted.expiresAt,
+            statusUrl: pageDeletionStatusUrl(deleted.deletionId),
+          },
+        });
+      }
+      return res.redirect(redirectUrl);
     } catch (err) {
       if (err instanceof NoteNotFoundError || err instanceof ChapterNotFoundError || err instanceof BookNotFoundError) {
+        if (wantsJson) {
+          return res.status(404).json({
+            status: 'error', code: 'PAGE_NOT_FOUND', message: 'This Page is no longer available.',
+          });
+        }
         return next(createNotFound());
+      }
+      if (err?.code === 'UNDO_NOT_CONFIGURED') {
+        return refuse(503, err.code, 'Page deletion recovery is not available right now, so the Page was not deleted.');
+      }
+      if (err instanceof NoteValidationError) {
+        return refuse(422, 'DELETION_ID_INVALID', PAGE_DELETION_OUT_OF_DATE);
+      }
+      if (err?.code === 'UNDO_DELETION_ID_CONFLICT') {
+        return refuse(409, err.code, PAGE_DELETION_OUT_OF_DATE);
+      }
+      if (wantsJson) {
+        return sendChapterFailure(req, res, 'note.delete_failed', 'The Page could not be deleted.', err, 'PAGE_OPERATION_FAILED');
       }
       return next(err);
     }
@@ -1699,6 +2241,8 @@ function buildNoteFormModel({
       nsfwFilterSettingsService, projectImageSettingsService),
     selectedProjectIds: values.projectIds.map(String),
     selectedAssetIds: values.assetIds.map(String),
+    // Fresh for each rendered Delete form, before anything is deleted.
+    deletionId: note ? createNoteDeletionId() : null,
     dialogBaselineJson: buildNoteDialogBaselineJson(
       baselineValues,
       assetRepository,
@@ -1742,8 +2286,12 @@ function noteAssetOptionLabel(asset) {
 }
 
 function buildNoteDialogBaselineJson(values, assetRepository) {
+  return JSON.stringify(buildNoteDialogBaseline(values, assetRepository)).replace(/</g, '\\u003c');
+}
+
+function buildNoteDialogBaseline(values, assetRepository) {
   const assets = listSelectedAssetOptions(assetRepository, values.assetIds);
-  return JSON.stringify({
+  return {
     title: String(values.title ?? ''),
     content: String(values.content ?? ''),
     projectIds: [...new Set(values.projectIds.map(String))].sort(),
@@ -1754,7 +2302,7 @@ function buildNoteDialogBaselineJson(values, assetRepository) {
       label: noteAssetOptionLabel(asset),
       thumbnail: null,
     })),
-  }).replace(/</g, '\\u003c');
+  };
 }
 
 function buildNoteConnections(assetRepository, projects, values, note, tagRepository,
@@ -1852,6 +2400,12 @@ function listChapterOptions(bookService, chapterService) {
     book,
     chapters: chapterService.listChapters(book.id),
   }));
+}
+
+function moveDestinationLabel(target, { bookService, chapterService }) {
+  if (target.kind === 'book') return `Book “${bookService.getBook(target.id).title}”`;
+  const chapter = chapterService.getChapter(target.id);
+  return `Chapter “${bookService.getBook(chapter.book_id).title} / ${chapter.title}”`;
 }
 
 function parseMoveTarget(body) {

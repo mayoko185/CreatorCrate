@@ -575,8 +575,9 @@ for (const kind of ['books', 'contents', 'pages']) {
     const expected = [...initial].reverse();
     const response = page.waitForResponse(r => r.request().method() === 'POST');
     await dialog.getByRole('button', { name: 'Save', exact: true }).click();
-    expect((await response).status()).toBe(302);
-    await expect(page).toHaveURL(base + (config.redirect || config.host));
+    expect((await response).status()).toBe(200);
+    await expect(dialog).toBeHidden();
+    await expect(page).toHaveURL(base + config.host);
     expect(config.read()).toEqual(expected);
     expect(new URLSearchParams(posts[0].postData()).get(config.input)).toBe(expected.join(','));
     expect(new URLSearchParams(posts[0].postData()).get('_csrf')).toBeTruthy();

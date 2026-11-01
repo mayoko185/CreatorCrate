@@ -64,7 +64,10 @@ function expectNewBookDialog(html, open) {
   expect(dialog).toContain('class="app-dialog-footer"');
   expect(/<dialog\b[^>]*\sopen(?:\s|>)/.test(dialog)).toBe(open);
   expect(dialog).not.toContain('data-dialog-backdrop-static');
-  expect(dialog).toMatch(/data-dialog-form data-dialog-async="false" data-dialog-reset-on-close(?: data-dialog-reset-values="[^"]+")? novalidate/);
+  // Hosted closed on the shelf it saves in place; rendered open it stays native.
+  expect(dialog).toMatch(open
+    ? /data-dialog-form data-dialog-async="false" data-dialog-reset-on-close(?: data-dialog-reset-values="[^"]+")? novalidate/
+    : /data-dialog-form data-dialog-async="true" data-dialog-reset-on-close data-dialog-pending-message="[^"]+" data-dialog-error-message="[^"]+" novalidate/);
   expect(dialog.match(/<form\b/g)).toHaveLength(1);
   expect(html.match(/<form\b[^>]*id="book-form"/g)).toHaveLength(1);
   expect(dialog).toContain('<form id="book-form" method="post" action="/notes/books"');
@@ -134,7 +137,7 @@ function expectNewChapterDialog(html, bookId, open, hasBookCover = false) {
   for (const part of ['header', 'body', 'footer']) expect(dialog).toContain('class="app-dialog-' + part + '"');
   expect(/<dialog\b[^>]*\sopen(?:\s|>)/.test(dialog)).toBe(open);
   expect(dialog).not.toContain('data-dialog-backdrop-static');
-  expect(dialog).toContain('data-dialog-form data-dialog-async="false" novalidate');
+  expect(dialog).toContain(`data-dialog-form data-dialog-async="${open ? 'false' : 'true'}" data-dialog-reset-on-close`);
   expect(dialog).toContain('<form id="chapter-form" method="post" action="/notes/books/' + bookId + '/chapters"');
   expect(dialog).toMatch(/name="_csrf"[^>]+value="[^"]+"/);
   expect(dialog.match(/<form\b/g)).toHaveLength(1);
@@ -363,7 +366,7 @@ describe('Book HTTP routes', () => {
     const response = await agent.get('/notes').expect(200);
 
     expect(response.text).toContain(`<a href="/notes/books/${book.id}">Single Book</a>`);
-    expect(response.text).toContain(`<a class="button button-small button-secondary" href="/notes/books/${book.id}/edit" data-dialog-invocation aria-label="Edit Book: Single Book">Edit Book</a>`);
+    expect(response.text).toContain(`<a class="button button-small button-secondary" href="/notes/books/${book.id}/edit" data-book-edit-open="${book.id}" aria-label="Edit Book: Single Book">Edit Book</a>`);
     expectNotesHeadingIconAction(response.text, {
       href: '/notes/books/new',
       label: 'New Book',
@@ -396,8 +399,8 @@ describe('Book HTTP routes', () => {
     expect(booksList.indexOf('Second Book')).toBeLessThan(booksList.indexOf('First Book'));
     expect(booksList).toContain(`<a href="/notes/books/${second.id}">Second Book</a>`);
     expect(booksList).toContain(`<a href="/notes/books/${first.id}">First Book</a>`);
-    expect(booksList).toContain(`<a class="button button-small button-secondary" href="/notes/books/${second.id}/edit" data-dialog-invocation aria-label="Edit Book: Second Book">Edit Book</a>`);
-    expect(booksList).toContain(`<a class="button button-small button-secondary" href="/notes/books/${first.id}/edit" data-dialog-invocation aria-label="Edit Book: First Book">Edit Book</a>`);
+    expect(booksList).toContain(`<a class="button button-small button-secondary" href="/notes/books/${second.id}/edit" data-book-edit-open="${second.id}" aria-label="Edit Book: Second Book">Edit Book</a>`);
+    expect(booksList).toContain(`<a class="button button-small button-secondary" href="/notes/books/${first.id}/edit" data-book-edit-open="${first.id}" aria-label="Edit Book: First Book">Edit Book</a>`);
     expect(response.text).toContain('aria-label="Change book order"');
     const newBookAction = expectNotesHeadingIconAction(response.text, {
       href: '/notes/books/new',
@@ -1352,7 +1355,7 @@ describe('Book HTTP routes', () => {
     expect(form.text).toContain('<label for="title">Title <span class="required" aria-label="required">*</span></label>');
     expect(form.text).toContain('<details class="notes-workspace-disclosure notes-workspace-disclosure--delete">');
     expect(form.text).toContain('<summary>Delete Book</summary>');
-    expect(form.text).toContain(`<form id="book-delete-form" method="post" action="/notes/books/${book.id}/delete">`);
+    expect(form.text).toContain(`<form id="book-delete-form" method="post" action="/notes/books/${book.id}/delete" data-dialog-secondary-action>`);
     expect(form.text).toMatch(new RegExp(`<form id="book-delete-form"[\\s\\S]*?name="_csrf"[^>]+value="[^"]+"`));
     expect(form.text).toContain('data-confirm="Delete this Book permanently? This cannot be undone."');
     expect(form.text).toContain('The Book must be empty before it can be deleted.');
@@ -1478,7 +1481,7 @@ describe('Book HTTP routes', () => {
     expectEditBookDialog(invalid.text, book.id, true);
     expect(invalid.text).toContain('<h1 class="app-section-title">Notes — Stored title</h1>');
     expect(invalid.text).not.toContain('notes-hierarchy');
-    expect(invalid.text).toContain(`<form id="book-delete-form" method="post" action="/notes/books/${book.id}/delete">`);
+    expect(invalid.text).toContain(`<form id="book-delete-form" method="post" action="/notes/books/${book.id}/delete" data-dialog-secondary-action>`);
     expect(invalid.text).not.toContain('form="book-form">Edit</button>');
     expect(app.locals.bookService.getBook(book.id).title).toBe('Stored title');
     for (const id of ['999999', '01', 'invalid', '0']) {
@@ -1547,6 +1550,57 @@ describe('Book HTTP routes', () => {
     expect(app.locals.bookService.getBook(book.id)).toMatchObject({ title: 'Non-empty Book' });
     expect(app.locals.chapterService.listChapters(book.id)).toEqual(chaptersBeforeDelete);
     expect(app.locals.chapterService.getChapter(chapter.id)).toMatchObject({ title: 'Chapter', book_id: book.id });
+  });
+
+  it('answers an enhanced Delete Book with JSON for each outcome', async () => {
+    const json = (url, body) => agent.post(url).set('Accept', 'application/json').type('form').send(body);
+    const first = app.locals.bookService.createBook({ title: 'Deleted Book' });
+    const kept = app.locals.bookService.createBook({ title: 'Kept Book' });
+
+    const refused = await json(`/notes/books/${first.id}/delete`, {}).expect(403);
+    expect(refused.body).toMatchObject({ status: 'error' });
+    expect(app.locals.bookService.getBook(first.id).title).toBe('Deleted Book');
+
+    const deleted = await json(`/notes/books/${first.id}/delete`, { _csrf: csrfToken }).expect(200);
+    expect(deleted.body).toEqual({
+      status: 'success',
+      message: 'Book “Deleted Book” deleted.',
+      book: { id: first.id, title: 'Deleted Book' },
+      redirectUrl: '/notes',
+    });
+    expect(app.locals.bookService.listBooks().map((book) => book.id)).toEqual([kept.id]);
+
+    const missing = await json(`/notes/books/${first.id}/delete`, { _csrf: csrfToken }).expect(404);
+    expect(missing.body).toEqual({
+      status: 'error', code: 'BOOK_NOT_FOUND', message: 'This Book is no longer available.',
+    });
+
+    const chapter = app.locals.chapterService.createChapter({ bookId: kept.id, title: 'Chapter' });
+    const nonEmpty = await json(`/notes/books/${kept.id}/delete`, { _csrf: csrfToken }).expect(409);
+    expect(nonEmpty.body).toMatchObject({ status: 'error', code: 'BOOK_NOT_EMPTY' });
+    expect(nonEmpty.body.message).toContain('still contains Chapters');
+    expect(app.locals.chapterService.getChapter(chapter.id).book_id).toBe(kept.id);
+    app.locals.chapterService.deleteChapter(chapter.id);
+
+    const direct = app.locals.noteService.createNote({ bookId: kept.id, title: 'Direct Page', content: '' });
+    const holdsPage = await json(`/notes/books/${kept.id}/delete`, { _csrf: csrfToken }).expect(409);
+    expect(holdsPage.body).toMatchObject({ status: 'error', code: 'BOOK_NOT_EMPTY' });
+    expect(app.locals.noteService.getNote(direct.id).book_id).toBe(kept.id);
+    app.locals.noteService.deleteNote(direct.id);
+
+    const original = app.locals.bookService.deleteBook;
+    app.locals.bookService.deleteBook = () => { throw new Error('SQLITE_BUSY: internal detail'); };
+    try {
+      const failed = await json(`/notes/books/${kept.id}/delete`, { _csrf: csrfToken }).expect(500);
+      expect(failed.body).toEqual({
+        status: 'error',
+        code: 'BOOK_OPERATION_FAILED',
+        message: 'Book could not be deleted. No changes were made.',
+      });
+    } finally {
+      app.locals.bookService.deleteBook = original;
+    }
+    expect(app.locals.bookService.getBook(kept.id).title).toBe('Kept Book');
   });
 
   it('reorders Books with CSRF protection and renders the resulting order on the landing', async () => {

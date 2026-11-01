@@ -4398,7 +4398,8 @@
       .button-secondary { border-color: var(--border-strong); color: var(--muted); }
       .button-secondary:hover { color: var(--text); border-color: var(--text); }
       .button:disabled,
-      .button[aria-disabled="true"] {
+      .button[aria-disabled="true"],
+      .app-dialog:has([data-dialog-form][aria-busy="true"]) .button[data-dialog-secondary-action] {
         background: var(--surface-card);
         border-color: var(--border);
         color: var(--muted);
@@ -13777,6 +13778,11 @@
    the pilot dialogs' form spacing, which dialog families adopt one at a time.
    Specialized surfaces (processing grids, media, hierarchy editors) keep
    their own layout rules. */
+/* Focus held on the dialog while a save is pending is not a control the user reached. */
+.app-dialog[tabindex="-1"]:focus {
+  outline: none;
+}
+
 .app-dialog {
   --refined-control-height: 2.25rem;
   --refined-control-radius: var(--radius-md);
@@ -16561,4 +16567,43 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   position: sticky;
   top: 0.5rem;
   z-index: 5;
+}
+
+/* Dismiss sits at the far right of its feedback, whatever wraps beside it. */
+.app-dialog-feedback > [data-dialog-feedback-text]:has(> :is([data-release-create-dismiss], [data-book-create-dismiss], [data-chapter-feedback-dismiss])) {
+  display: flow-root;
+  overflow-wrap: anywhere;
+}
+.app-dialog-feedback > [data-dialog-feedback-text] > :is([data-release-create-dismiss], [data-book-create-dismiss], [data-chapter-feedback-dismiss]) {
+  float: right;
+  margin-inline-start: var(--space-sm);
+}
+.dashboard-sync-actions > [data-dashboard-sync-dismiss] {
+  margin-inline-start: auto;
+}
+
+/* One alert for each Page deletion that can still be undone. */
+.page-deletion-undo-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-inline-end: var(--space-sm);
+}
+.page-deletion-undo-actions:empty {
+  margin-inline-end: 0;
+}
+.page-deletion-undo-actions > [hidden] {
+  display: none;
+}
+.page-deletion-undo-limit {
+  margin-block: var(--space-sm);
+}
+
+/* The idle New Book status reserves no space above the footer. */
+#book-create-dialog .app-dialog-status:empty,
+#chapter-create-dialog .app-dialog-status:empty,
+#chapter-edit-dialog .app-dialog-status:empty {
+  min-height: 0;
+  margin-top: 0;
 }

@@ -123,6 +123,8 @@ const APP_DIALOG_INVOCATION_SELECTOR = '[data-dialog-invocation]';
 const APP_DIALOG_CLOSE_SELECTOR = '[data-dialog-close]';
 const APP_DIALOG_FORM_SELECTOR = '[data-dialog-form]';
 const APP_DIALOG_RETURN_LOCATION_SELECTOR = '[data-dialog-return-location]';
+const APP_DIALOG_SECONDARY_ACTION_SELECTOR = '[data-dialog-secondary-action]';
+const APP_DIALOG_SECONDARY_ACTION_REFUSAL = 'Wait for the save to finish, then try again.';
 const PROJECT_ASSETS_DEFAULTS_DIALOG_ID = 'project-assets-defaults-dialog';
 const ASSET_BROWSER_DEFAULT_LIVE_FORM_SELECTOR = '[data-asset-browser-default-live]';
 const APP_DIALOG_FOCUSABLE_SELECTOR = 'a[href], button, input, select, textarea, summary, [tabindex]';
@@ -167,6 +169,7 @@ function appDialogFocusable(dialog) {
       && element.getAttribute?.('aria-disabled') !== 'true'
       && !element.hidden
       && !element.hasAttribute?.('hidden')
+      && !element.closest?.('[inert]')
       && !appDialogFocusableAncestorHidden(element, dialog));
 }
 
@@ -538,10 +541,11 @@ function appDialogSuccessMessage(state) {
     || 'Projects defaults saved successfully.';
 }
 
-function appDialogFeedback(document, message, error = false) {
+export function appDialogFeedback(document, message, error = false) {
   const feedback = document?.querySelector?.('[data-dialog-feedback]');
   const text = feedback?.querySelector?.('[data-dialog-feedback-text]');
   if (!feedback || !text) return;
+  feedback.classList?.remove?.('notice--warning');
   feedback.classList?.toggle?.('notice--error', error);
   feedback.classList?.toggle?.('notice--success', !error);
   text.textContent = message;
@@ -963,6 +967,51 @@ function appDialogDisableSubmitControls(state) {
   };
 }
 
+// Nothing in the form may change while its save is pending: the request already
+// holds the values, and a success resets the form, which would drop later edits.
+// Inert blocks the pointer, keyboard, editor and file picker alike, and leaves
+// every value in place for a refused save. The form's own status live region and
+// close controls are left out, so they stay announced and dismissal keeps its guards.
+function appDialogFreezeForm(state) {
+  return appDialogFreezeWithin(state, state.form);
+}
+
+// The whole dialog, for a deletion or a move: it reaches past the form to the draft
+// and actions beside it. Its status and the action's own message stay available.
+export function freezeAppDialog(state) {
+  return appDialogFreezeWithin(state, state.dialog);
+}
+
+function appDialogFreezeWithin(state, root) {
+  const { dialog, document } = state;
+  const focused = document?.activeElement;
+  const exempt = Array.from(dialog.querySelectorAll?.(
+    `[data-dialog-status], [data-book-edit-save-status], [data-dialog-delete-error], [data-dialog-move-notice], ${APP_DIALOG_CLOSE_SELECTOR}`,
+  ) || []);
+  const inertTargets = (element) => (exempt.some((control) => element.contains?.(control))
+    ? Array.from(element.children || []).filter((child) => !exempt.includes(child)).flatMap(inertTargets)
+    : [element]);
+  // The form itself stays hit-testable, so a click on a frozen field never
+  // falls through to the dialog and reads as a click on the backdrop.
+  const targets = Array.from(root?.children || []).filter((child) => !exempt.includes(child)).flatMap(inertTargets);
+  targets.forEach((target) => target.setAttribute?.('inert', ''));
+  // Focus stays on the dialog: from the body, Escape would skip the dialog's
+  // key guard, and a repeated one closes a modal natively, save or no save.
+  const holdFocus = !focused || focused === document?.body || focused.disabled
+    || targets.some((target) => target.contains?.(focused));
+  if (holdFocus) {
+    dialog.setAttribute?.('tabindex', '-1');
+    dialog.focus?.({ preventScroll: true });
+  }
+  return () => {
+    targets.forEach((target) => target.removeAttribute?.('inert'));
+    if (!holdFocus) return;
+    const heldFocus = document?.activeElement === dialog;
+    dialog.removeAttribute?.('tabindex');
+    if (heldFocus) focused?.focus?.({ preventScroll: true });
+  };
+}
+
 function appDialogBindForm(state) {
   const form = state.form;
   if (!form || form.getAttribute?.('data-dialog-async') === 'false'
@@ -985,25 +1034,37 @@ function appDialogBindForm(state) {
 
     event.preventDefault?.();
     if (state.submitting || appDialogSubmitLocked(state)) return;
+    // Serialized here, before the form freezes, so the request holds exactly what
+    // the user sees; a serialization failure settles as a failed save below.
+    const requestBody = new Promise((resolve) => {
+      // A form that declares multipart carries files, which URL encoding would lose.
+      const formData = new windowObject.FormData(form);
+      resolve(form.enctype === 'multipart/form-data' ? formData : new windowObject.URLSearchParams(formData));
+    });
     state.submitting = true;
     appDialogClearErrors(state);
     appDialogStatus(state, appDialogPendingMessage(state));
     form.setAttribute?.('aria-busy', 'true');
     const restoreSubmitControls = appDialogDisableSubmitControls(state);
+    const restoreFrozenForm = appDialogFreezeForm(state);
+    const settle = () => {
+      state.submitting = false;
+      form.removeAttribute?.('aria-busy');
+      restoreSubmitControls();
+      restoreFrozenForm();
+    };
     const action = form.action || form.getAttribute?.('action');
     const method = String(form.method || form.getAttribute?.('method') || 'POST').toUpperCase();
 
-    Promise.resolve().then(() => windowObject.fetch(action, {
+    requestBody.then((body) => windowObject.fetch(action, {
       method,
-      body: new windowObject.URLSearchParams(new windowObject.FormData(form)),
+      body,
       credentials: 'same-origin',
       redirect: 'follow',
       headers: { Accept: 'application/json' },
     })).then(async (response) => ({ response, payload: await appDialogPayload(response) }))
       .then(({ response, payload }) => {
-        state.submitting = false;
-        form.removeAttribute?.('aria-busy');
-        restoreSubmitControls();
+        settle();
         if (response?.ok === false || payload?.status !== 'success') {
           if (!state.preserveValuesOnError) {
             appDialogApplyValues(form, payload?.values || appDialogValues(form));
@@ -1023,15 +1084,29 @@ function appDialogBindForm(state) {
         appDialogClose(state);
       })
       .catch(() => {
-        state.submitting = false;
-        form.removeAttribute?.('aria-busy');
-        restoreSubmitControls();
+        settle();
         appDialogShowErrors(state, {}, `${appDialogSaveErrorMessage(state)} Your selections were kept.`);
         appDialogStatus(state, appDialogNetworkFailureMessage(state), true);
         // The outcome is unknown; a host whose request may have committed reports that.
         state.onUnconfirmedSubmit?.();
       });
   });
+}
+
+// Move and Delete sit in forms of their own beside the form being saved, and their
+// native submit would navigate away and cancel its request. While that form is busy
+// (the binder's save, or a Book autosave up to the end of its reconciliation) they
+// are refused, not queued. Being read from the form at each attempt, the refusal
+// holds no state of its own and ends when the save settles.
+function appDialogSecondaryActionRefused(form) {
+  if (!form?.matches?.(APP_DIALOG_SECONDARY_ACTION_SELECTOR)) return false;
+  const dialog = form.closest?.(APP_DIALOG_SELECTOR);
+  if (!dialog?.querySelector?.(`${APP_DIALOG_FORM_SELECTOR}[aria-busy="true"]`)) return false;
+  const status = dialog.querySelector('[data-dialog-status], [data-book-edit-save-status]');
+  if (status && !status.textContent.includes(APP_DIALOG_SECONDARY_ACTION_REFUSAL)) {
+    status.textContent = `${status.textContent} ${APP_DIALOG_SECONDARY_ACTION_REFUSAL}`.trim();
+  }
+  return true;
 }
 
 // How many app dialogs each document has opened. A load that started before the
@@ -1234,6 +1309,19 @@ export function enhanceAppDialogs(scope = globalThis.document) {
   });
   if (!isEnhancementBound(document, 'appDialogsBound')) {
     markEnhancementBound(document, 'appDialogsBound');
+    // Captured, so a refused click never reaches the confirmation control, and a
+    // confirmed action replayed after a save began stops here too.
+    document.addEventListener?.('click', (event) => {
+      const control = event.target?.closest?.('button[type="submit"], input[type="submit"]');
+      if (!appDialogSecondaryActionRefused(control?.form)) return;
+      event.preventDefault?.();
+      event.stopPropagation?.();
+    }, true);
+    document.addEventListener?.('submit', (event) => {
+      if (!appDialogSecondaryActionRefused(event.target)) return;
+      event.preventDefault?.();
+      event.stopPropagation?.();
+    }, true);
     document.addEventListener?.('click', (event) => {
       const trigger = event.target?.closest?.(APP_DIALOG_TRIGGER_SELECTOR);
       const dialog = trigger

@@ -9,6 +9,8 @@ import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
 import { buildAssetPreviewModel } from '../src/services/asset-presentation.js';
 import { PAGE_DEFAULT_DEFINITIONS } from '../src/services/page-defaults-service.js';
+import { ChapterNotFoundError } from '../src/services/chapter-service.js';
+import { createNoteDeletionId } from '../src/services/note-service.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -47,7 +49,7 @@ function expectNewNoteDialog(html, open) {
   expect(dialog).toContain('data-dialog-close aria-label="Close New Page"');
   expect(dialog).not.toContain('data-dialog-backdrop-static');
   expect(/<dialog\b[^>]*\sopen(?:\s|>)/.test(dialog)).toBe(open);
-  expect(dialog).toContain('data-notes-editor-form data-note-dialog-dirty data-dialog-form data-dialog-async="false" novalidate');
+  expect(dialog).toContain(`data-notes-editor-form data-note-dialog-dirty data-dialog-form data-dialog-async="${open ? 'false' : 'true'}"`);
   expect(dialog).toContain('type="application/json" data-note-dialog-baseline>');
   expect(dialog).toContain('class="app-dialog-body project-edit-dialog-body"');
   expect(dialog).toContain('class="app-dialog-footer"');
@@ -86,7 +88,9 @@ function expectEditNoteDialog(html, noteId, open) {
   expect(/<dialog\b[^>]*\sopen(?:\s|>)/.test(dialog)).toBe(open);
   expect(html).toContain('class="notes-page-detail-layout"');
   expect(html).toContain('href="/notes/' + noteId + '/edit" data-dialog-open="note-edit-dialog"');
-  expect(dialog).toContain('data-notes-editor-form data-note-dialog-dirty data-dialog-form data-dialog-async="false" novalidate');
+  expect(dialog).toContain(open
+    ? 'data-notes-editor-form data-note-dialog-dirty data-dialog-form data-dialog-async="false" novalidate'
+    : 'data-notes-editor-form data-note-dialog-dirty data-dialog-form data-dialog-async="true" data-dialog-reset-on-close data-dialog-pending-message="Saving Page…" data-dialog-error-message="The Page could not be saved." novalidate');
   expect(dialog).toContain('type="application/json" data-note-dialog-baseline>');
   expect(dialog).toContain('type="submit" form="note-form" data-dialog-submit>Save</button>');
   expect(html.match(/<form\b[^>]*id="note-form"/g)).toHaveLength(1);
@@ -187,7 +191,7 @@ function captureChapterDetailLocals(app) {
 }
 
 function extractNoteProjectsField(html) {
-  return html.match(/<fieldset class="field asset-filter-multiselect-field[^\"]*">\s*<legend>Projects<\/legend>[\s\S]*?<\/fieldset>/)?.[0] || '';
+  return html.match(/<fieldset class="field asset-filter-multiselect-field[^\"]*"[^>]*>\s*<legend>Projects<\/legend>[\s\S]*?<\/fieldset>/)?.[0] || '';
 }
 
 function expectEditChapterDialog(html, chapterId, open) {
@@ -213,7 +217,7 @@ function expectEditChapterDialog(html, chapterId, open) {
   expect(dialog).toContain('data-dialog-close aria-label="Close Edit Chapter"');
   expect(/<dialog\b[^>]*\sopen(?:\s|>)/.test(dialog)).toBe(open);
   expect(dialog).not.toContain('data-dialog-backdrop-static');
-  expect(dialog).toContain('data-dialog-form data-dialog-async="false" novalidate');
+  expect(dialog).toContain(`data-dialog-form data-dialog-async="${open ? 'false' : 'true'}" data-dialog-reset-on-close`);
   expect(dialog).toContain('type="submit" form="chapter-form" data-dialog-submit>Save</button>');
   expect(dialog).toContain('<form id="chapter-form" method="post" action="/notes/chapters/' + chapterId + '"');
   expect(dialog).toMatch(/<form id="chapter-form"[\s\S]*?name="_csrf"[^>]+value="[^"]+"/);
@@ -313,6 +317,227 @@ describe('top-level Notes HTTP slice', () => {
       .map(([tag]) => tag).filter((tag) => !tag.includes('id="note-create-dialog"'));
     expect(otherDialogs.length).toBeGreaterThan(0);
     for (const tag of otherDialogs) expect(tag).not.toMatch(/\sopen(?:\s|>)/);
+  });
+
+  describe('POST /notes as JSON for the in-place New Page dialog', () => {
+    const postJson = (body) => agent.post('/notes').set('Accept', 'application/json').type('form')
+      .send({ _csrf: csrfToken, ...body });
+    const noteCount = () => app.locals.noteService.listNotes().length;
+
+    it('creates one Chapter Page and reports it without redirecting', async () => {
+      const { book, chapter } = createChapterContext(app);
+      const before = noteCount();
+      const response = await postJson({
+        chapterId: String(chapter.id), title: 'Dialog Page', content: '# Heading\n\n**Body**',
+      }).expect(201);
+      expect(response.headers.location).toBeUndefined();
+      expect(noteCount()).toBe(before + 1);
+      const saved = app.locals.noteService.getNote(response.body.page.id);
+      expect(saved.title).toBe('Dialog Page');
+      expect(saved.content).toBe('# Heading\n\n**Body**');
+      expect(response.body).toEqual({
+        status: 'success',
+        message: 'Page “Dialog Page” created.',
+        page: {
+          id: saved.id, title: 'Dialog Page', bookId: book.id, chapterId: chapter.id, url: `/notes/${saved.id}`,
+        },
+        values: { title: '', content: '' },
+      });
+    });
+
+    it('creates a direct Book Page in its Book contents', async () => {
+      const { book } = createChapterContext(app);
+      const response = await postJson({ bookId: String(book.id), title: 'Direct Page' }).expect(201);
+      expect(response.body.page).toMatchObject({ bookId: book.id, chapterId: null });
+      const contents = app.locals.bookService.listBookContents(book.id);
+      expect(contents.at(-1)).toMatchObject({ type: 'page', id: response.body.page.id });
+    });
+
+    it('refuses invalid fields and stale connections with field errors and nothing written', async () => {
+      const { chapter } = createChapterContext(app);
+      const before = noteCount();
+      const blank = await postJson({ chapterId: String(chapter.id), title: ' ', content: 'kept' }).expect(422);
+      expect(blank.body).toMatchObject({ status: 'error', code: 'VALIDATION', errors: { title: 'Title is required.' } });
+      const stale = await postJson({
+        chapterId: String(chapter.id), title: 'Stale', 'projectIds[]': '999999', 'assetIds[]': '999998',
+      }).expect(422);
+      expect(stale.body.errors).toMatchObject({
+        projectIds: 'Project 999999 not found.', assetIds: 'Asset 999998 not found.',
+      });
+      expect(noteCount()).toBe(before);
+    });
+
+    it('refuses a missing, malformed or deleted parent without HTML', async () => {
+      const { book, chapter } = createChapterContext(app);
+      const before = noteCount();
+      expect((await postJson({ title: 'No parent' }).expect(422)).body.code).toBe('PAGE_PARENT_INVALID');
+      expect((await postJson({ chapterId: 'x', title: 'Bad' }).expect(422)).body.code).toBe('PAGE_PARENT_INVALID');
+      expect((await postJson({ chapterId: String(chapter.id), bookId: String(book.id), title: 'Both' }).expect(422)).body.code)
+        .toBe('PAGE_PARENT_INVALID');
+      expect((await postJson({ chapterId: '999999', title: 'Gone' }).expect(404)).body.code).toBe('CHAPTER_NOT_FOUND');
+      expect((await postJson({ bookId: '999999', title: 'Gone' }).expect(404)).body.code).toBe('BOOK_NOT_FOUND');
+      expect(noteCount()).toBe(before);
+    });
+
+    it('reports a service failure without its details', async () => {
+      const { chapter } = createChapterContext(app);
+      const spy = vi.spyOn(app.locals.noteService, 'createNote').mockImplementation(() => {
+        throw new Error('SQLITE secret /private/path');
+      });
+      try {
+        const response = await postJson({ chapterId: String(chapter.id), title: 'Boom' }).expect(500);
+        expect(response.body).toEqual({
+          status: 'error',
+          code: 'PAGE_OPERATION_FAILED',
+          message: 'The Page could not be created. No changes were made.',
+        });
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('still requires a CSRF token', async () => {
+      const { chapter } = createChapterContext(app);
+      const before = noteCount();
+      await agent.post('/notes').set('Accept', 'application/json').type('form')
+        .send({ chapterId: String(chapter.id), title: 'No token' }).expect(403);
+      expect(noteCount()).toBe(before);
+    });
+
+    it('renders the dialog async on its hosts and native on a direct visit', async () => {
+      const { book, chapter } = createChapterContext(app);
+      for (const host of [`/notes/books/${book.id}`, `/notes/chapters/${chapter.id}`]) {
+        const { text } = await agent.get(host).expect(200);
+        expect(expectNewNoteDialog(text, false)).toMatch(/<form id="note-form"[^>]*data-dialog-async="true"/);
+      }
+      const direct = await agent.get('/notes/new').query({ chapterId: chapter.id }).expect(200);
+      expect(expectNewNoteDialog(direct.text, true)).toMatch(/<form id="note-form"[^>]*data-dialog-async="false"/);
+    });
+  });
+
+  describe('POST /notes/:id as JSON for the in-place Edit Page dialog', () => {
+    const postJson = (id, body) => agent.post(`/notes/${id}`).set('Accept', 'application/json').type('form')
+      .send({ _csrf: csrfToken, ...body });
+    const insertProject = (title) => db.prepare(
+      "INSERT INTO projects (title, slug, description, notes, status, project_type) VALUES (?, ?, '', '', 'tbd', 'images')",
+    ).run(title, title.toLowerCase()).lastInsertRowid;
+
+    it('saves once through the Page service and answers its saved baseline', async () => {
+      const { book, chapter } = createChapterContext(app);
+      const note = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Before', content: 'Old' });
+      const projectId = insertProject('Alpha');
+      const update = vi.spyOn(app.locals.noteService, 'updateNote');
+      try {
+        const response = await postJson(note.id, {
+          title: 'After', content: '# Heading\n\n**Body**', 'projectIds[]': String(projectId),
+        }).expect(200);
+        expect(update).toHaveBeenCalledTimes(1);
+        expect(response.headers.location).toBeUndefined();
+        expect(app.locals.noteService.getNote(note.id)).toMatchObject({
+          title: 'After', content: '# Heading\n\n**Body**', chapter_id: chapter.id, book_id: book.id, projectIds: [projectId],
+        });
+        expect(response.body).toEqual({
+          status: 'success',
+          message: 'Page “After” saved.',
+          page: {
+            id: note.id, title: 'After', bookId: book.id, chapterId: chapter.id, url: `/notes/${note.id}`,
+          },
+          values: {
+            title: 'After', content: '# Heading\n\n**Body**', projectIds: [String(projectId)], assetIds: [], assets: [],
+          },
+        });
+      } finally {
+        update.mockRestore();
+      }
+    });
+
+    it('removes connections that are no longer submitted', async () => {
+      const { chapter } = createChapterContext(app);
+      const projectId = insertProject('Beta');
+      const note = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Linked', projectIds: [projectId] });
+      const response = await postJson(note.id, { title: 'Linked', content: '', 'assetIds[]': '' }).expect(200);
+      expect(response.body.values.projectIds).toEqual([]);
+      expect(app.locals.noteService.getNote(note.id).projectIds).toEqual([]);
+    });
+
+    it('does not move the Page, whatever association fields are submitted', async () => {
+      const { book, chapter } = createChapterContext(app);
+      const other = app.locals.bookService.createBook({ title: 'Other Book' });
+      const note = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Stays' });
+      await postJson(note.id, { title: 'Stays', content: '', bookId: String(other.id), chapterId: '' }).expect(200);
+      expect(app.locals.noteService.getNote(note.id)).toMatchObject({ chapter_id: chapter.id, book_id: book.id });
+    });
+
+    it('refuses invalid fields and stale connections with nothing written', async () => {
+      const { chapter } = createChapterContext(app);
+      const note = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Kept', content: 'Kept body' });
+      const blank = await postJson(note.id, { title: ' ', content: 'Draft' }).expect(422);
+      expect(blank.body).toMatchObject({ status: 'error', code: 'VALIDATION', errors: { title: 'Title is required.' } });
+      const stale = await postJson(note.id, { title: 'Stale', 'projectIds[]': '999999', 'assetIds[]': '999998' }).expect(422);
+      expect(stale.body.errors).toMatchObject({
+        projectIds: 'Project 999999 not found.', assetIds: 'Asset 999998 not found.',
+      });
+      expect(app.locals.noteService.getNote(note.id)).toMatchObject({ title: 'Kept', content: 'Kept body' });
+    });
+
+    it('reports a missing Page or parent as coded JSON, not HTML', async () => {
+      const { chapter } = createChapterContext(app);
+      const note = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Gone soon' });
+      expect((await postJson('999999', { title: 'x' }).expect(404)).body.code).toBe('PAGE_NOT_FOUND');
+      expect((await postJson('abc', { title: 'x' }).expect(404)).body.code).toBe('PAGE_NOT_FOUND');
+      const lookup = vi.spyOn(app.locals.chapterService, 'getChapter').mockImplementation(() => {
+        throw new ChapterNotFoundError(chapter.id);
+      });
+      try {
+        expect((await postJson(note.id, { title: 'x' }).expect(404)).body).toEqual({
+          status: 'error', code: 'CHAPTER_NOT_FOUND', message: 'This Chapter is no longer available.',
+        });
+      } finally {
+        lookup.mockRestore();
+      }
+      app.locals.noteService.deleteNote(note.id);
+      expect((await postJson(note.id, { title: 'x' }).expect(404)).body.code).toBe('PAGE_NOT_FOUND');
+    });
+
+    it('reports a service failure without its details', async () => {
+      const { chapter } = createChapterContext(app);
+      const note = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Boom' });
+      const spy = vi.spyOn(app.locals.noteService, 'updateNote').mockImplementation(() => {
+        throw new Error('SQLITE secret /private/path');
+      });
+      try {
+        expect((await postJson(note.id, { title: 'x' }).expect(500)).body).toEqual({
+          status: 'error',
+          code: 'PAGE_OPERATION_FAILED',
+          message: 'The Page could not be saved. No changes were made.',
+        });
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('still requires a CSRF token', async () => {
+      const { chapter } = createChapterContext(app);
+      const note = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Guarded' });
+      const response = await agent.post(`/notes/${note.id}`).set('Accept', 'application/json').type('form')
+        .send({ title: 'No token' }).expect(403);
+      expect(response.body.status).toBe('error');
+      expect(app.locals.noteService.getNote(note.id).title).toBe('Guarded');
+    });
+
+    it('stays native for an HTML request and renders async only from Page Detail', async () => {
+      const { chapter } = createChapterContext(app);
+      const note = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Native' });
+      const form = (html) => html.match(/<form id="note-form"[^>]*>/)?.[0];
+      expect(form((await agent.get(`/notes/${note.id}`).expect(200)).text)).toContain('data-dialog-async="true"');
+      expect(form((await agent.get(`/notes/${note.id}/edit`).expect(200)).text)).toContain('data-dialog-async="false"');
+      const saved = await agent.post(`/notes/${note.id}`).type('form')
+        .send({ _csrf: csrfToken, title: 'Native saved', content: '' }).expect(302);
+      expect(saved.headers.location).toBe(`/notes/${note.id}`);
+      const refused = await agent.post(`/notes/${note.id}`).type('form')
+        .send({ _csrf: csrfToken, title: '', content: 'Draft' }).expect(422);
+      expect(form(refused.text)).toContain('data-dialog-async="false"');
+    });
   });
 
   it('GET /notes/new renders the Chapter-scoped form contract and one CSRF field', async () => {
@@ -1857,9 +2082,9 @@ describe('top-level Notes HTTP slice', () => {
     const deleteResponse = await agent
       .post(`/notes/${noteId}/delete`)
       .type('form')
-      .send({ _csrf: csrfToken })
+      .send({ _csrf: csrfToken, deletionId: createNoteDeletionId() })
       .expect(302);
-    expect(deleteResponse.headers.location).toBe(`/notes/books/${book.id}`);
+    expect(deleteResponse.headers.location).toMatch(new RegExp(`^/notes/books/${book.id}\\?notice=page_deleted&undo=[0-9a-f]{64}$`));
     expect(app.locals.noteRepository.findById(noteId)).toBeUndefined();
   });
 
@@ -1969,13 +2194,14 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).toContain('<legend>Assets</legend>');
     expect(response.text).toContain('<details class="notes-workspace-disclosure notes-workspace-disclosure--move">');
     expect(response.text).toContain('<details class="notes-workspace-disclosure notes-workspace-disclosure--delete">');
-    expect(response.text).toContain(`<form id="note-move-form" method="post" action="/notes/${note.id}/move" hidden>`);
-    expect(response.text).toContain(`<form id="note-delete-form" method="post" action="/notes/${note.id}/delete" hidden>`);
+    expect(response.text).toContain(`<form id="note-move-form" method="post" action="/notes/${note.id}/move" data-dialog-secondary-action hidden>`);
+    expect(response.text).toContain(`<form id="note-delete-form" method="post" action="/notes/${note.id}/delete" data-dialog-secondary-action data-confirm-submit-required hidden>`);
     expect(response.text).toMatch(/<form id="note-move-form"[\s\S]*?name="_csrf"[^>]+value="[^"]+"/);
     expect(response.text).toMatch(/<form id="note-delete-form"[\s\S]*?name="_csrf"[^>]+value="[^"]+"/);
     expect(response.text).toMatch(/<select[^>]*name="targetContainer"[^>]*required form="note-move-form"/);
-    expect(response.text).toContain('type="submit" form="note-move-form">Move Page</button>');
-    expect(response.text).toContain('type="submit" form="note-delete-form" data-confirm="Delete this Page permanently? This cannot be undone.">Delete Page</button>');
+    expect(response.text).toContain('type="submit" form="note-move-form" data-dialog-secondary-action>Move Page</button>');
+    expect(response.text).toContain('type="submit" form="note-delete-form" data-dialog-secondary-action data-confirm="Delete this Page? Its saved content, revision history and connections will be removed. Undo can restore them for ten minutes, but may be refused if related records or the Page order change." data-confirm-dialog-title="Delete Page?" data-confirm-dialog-confirm-label="Delete Page">Delete Page</button>');
+    expect(response.text).not.toContain('Delete this Page permanently?');
     expect(response.text).toContain(`value="book:${book.id}"`);
     expect(response.text).toContain(`value="chapter:${chapter.id}"`);
     const noteFormStart = response.text.indexOf('<form id="note-form"');
@@ -2717,13 +2943,14 @@ describe('top-level Notes HTTP slice', () => {
     await agent.post(`/notes/${note.id}/delete`).type('form').send({}).expect(403);
     expect(app.locals.noteRepository.findById(note.id)).toBeDefined();
 
+    const deletionId = createNoteDeletionId();
     const response = await agent
       .post(`/notes/${note.id}/delete`)
       .type('form')
-      .send({ _csrf: csrfToken })
+      .send({ _csrf: csrfToken, deletionId })
       .expect(302);
 
-    expect(response.headers.location).toBe(`/notes/chapters/${chapter.id}`);
+    expect(response.headers.location).toBe(`/notes/chapters/${chapter.id}?notice=page_deleted&undo=${deletionId}`);
     expect(app.locals.noteRepository.findById(note.id)).toBeUndefined();
     expect(db.prepare('SELECT * FROM note_projects WHERE note_id = ?').all(note.id)).toEqual([]);
     expect(db.prepare('SELECT * FROM note_assets WHERE note_id = ?').all(note.id)).toEqual([]);
@@ -2733,6 +2960,63 @@ describe('top-level Notes HTTP slice', () => {
     expect(chapterPage.text).toContain(`<a class="notes-page-nav-link" href="/notes/${last.id}">Last Page</a>`);
     expect(chapterPage.text).not.toContain(`<a href="/notes/${note.id}">Delete me</a>`);
     expect(chapterPage.text.indexOf('First Page')).toBeLessThan(chapterPage.text.indexOf('Last Page'));
+  });
+
+  it('POST /notes/:id/delete answers JSON with the parent, and the parent names the outcome', async () => {
+    const { book, chapter } = createChapterContext(app);
+    const inChapter = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Chapter Page', content: 'Saved' });
+    const direct = app.locals.noteService.createNote({ bookId: book.id, title: 'Direct Page', content: '' });
+    const send = (id, token = csrfToken, deletionId = createNoteDeletionId()) => agent.post(`/notes/${id}/delete`).set('Accept', 'application/json').type('form').send({ _csrf: token, deletionId });
+
+    expect((await send(inChapter.id, 'wrong').expect(403)).body.status).toBe('error');
+    expect(app.locals.noteRepository.findById(inChapter.id)).toBeDefined();
+
+    const deletionId = createNoteDeletionId();
+    expect((await send(inChapter.id, csrfToken, deletionId).expect(200)).body).toEqual({
+      status: 'success',
+      message: 'Page “Chapter Page” deleted.',
+      page: { id: inChapter.id, title: 'Chapter Page' },
+      redirectUrl: `/notes/chapters/${chapter.id}?notice=page_deleted&undo=${deletionId}`,
+      recovery: expect.objectContaining({ available: true, deletionId }),
+    });
+    expect(app.locals.noteRepository.findById(inChapter.id)).toBeUndefined();
+    expect((await send(direct.id).expect(200)).body.redirectUrl).toMatch(new RegExp(`^/notes/books/${book.id}\\?notice=page_deleted&undo=[0-9a-f]{64}$`));
+
+    expect((await send(inChapter.id).expect(404)).body).toEqual({
+      status: 'error', code: 'PAGE_NOT_FOUND', message: 'This Page is no longer available.',
+    });
+
+    const chapterPage = await agent.get(`/notes/chapters/${chapter.id}?notice=page_deleted&undo=${deletionId}`).expect(200);
+    expect(chapterPage.text).toContain('data-page-deletion-notice');
+    expect(chapterPage.text).toContain('Page deleted.');
+    // "Deleted" is claimed only for this owner's active deletion from this parent.
+    for (const unproven of ['', `&undo=${createNoteDeletionId()}`]) {
+      const unprovenPage = await agent.get(`/notes/chapters/${chapter.id}?notice=page_deleted${unproven}`).expect(200);
+      expect(unprovenPage.text).not.toContain('data-page-deletion-notice');
+      expect(unprovenPage.text).not.toContain('Page deleted.');
+    }
+    const bookPage = await agent.get(`/notes/books/${book.id}?notice=page_unavailable`).expect(200);
+    expect(bookPage.text).toContain('That Page is no longer available.');
+    expect(bookPage.text).toContain('notice--warning');
+    expect((await agent.get(`/notes/books/${book.id}?notice=book_reordered`).expect(200)).text).not.toContain('data-page-deletion-notice');
+    expect((await agent.get(`/notes/chapters/${chapter.id}`).expect(200)).text).not.toContain('data-page-deletion-notice');
+  });
+
+  it('POST /notes/:id/delete reports a service failure safely as JSON, with the Page kept', async () => {
+    const { chapter } = createChapterContext(app);
+    const note = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Kept', content: 'Saved' });
+    const deleteNote = vi.spyOn(app.locals.noteService, 'deleteNoteWithUndo').mockImplementation(() => {
+      throw new Error('SQLITE internal detail');
+    });
+    try {
+      const response = await agent.post(`/notes/${note.id}/delete`).set('Accept', 'application/json').type('form').send({ _csrf: csrfToken, deletionId: createNoteDeletionId() }).expect(500);
+      expect(response.body).toEqual({
+        status: 'error', code: 'PAGE_OPERATION_FAILED', message: 'The Page could not be deleted. No changes were made.',
+      });
+    } finally {
+      deleteNote.mockRestore();
+    }
+    expect(app.locals.noteRepository.findById(note.id)).toBeDefined();
   });
 
   it('POST /notes/:id/delete returns 404 for malformed and nonexistent Page IDs', async () => {
@@ -2906,6 +3190,108 @@ describe('top-level Notes HTTP slice', () => {
       .type('form')
       .send({ _csrf: csrfToken, targetChapterId: String(chapter.id) })
       .expect(404);
+  });
+
+  describe('POST /notes/:id/move as JSON', () => {
+    const postMove = (id, body) => agent
+      .post(`/notes/${id}/move`)
+      .set('Accept', 'application/json')
+      .type('form')
+      .send({ _csrf: csrfToken, ...body });
+
+    it('moves once into a Chapter and answers with the saved location, not the Page fields', async () => {
+      const { chapter: source, note } = createPage(app, { title: 'JSON Move Page', content: 'Kept' });
+      const book = app.locals.bookService.createBook({ title: 'JSON Target Book' });
+      const target = app.locals.chapterService.createChapter({ bookId: book.id, title: 'JSON Target Chapter' });
+      const existing = app.locals.noteService.createNote({ chapterId: target.id, title: 'Already Here', content: '' });
+      const before = app.locals.noteService.getNote(note.id);
+
+      const response = await postMove(note.id, { targetContainer: `chapter:${target.id}` }).expect(200);
+
+      expect(response.body).toEqual({
+        status: 'success',
+        message: 'Page moved to Chapter “JSON Target Book / JSON Target Chapter”.',
+        changed: true,
+        page: { id: note.id, bookId: book.id, chapterId: target.id, url: `/notes/${note.id}` },
+        destination: {
+          container: `chapter:${target.id}`,
+          kind: 'chapter',
+          label: 'Chapter “JSON Target Book / JSON Target Chapter”',
+          url: `/notes/chapters/${target.id}`,
+        },
+      });
+      expect(app.locals.noteService.getNote(note.id)).toMatchObject({
+        id: note.id, book_id: book.id, chapter_id: target.id, title: before.title, content: before.content,
+      });
+      expect(app.locals.noteService.listNotesForChapter(source.id)).toEqual([]);
+      expect(app.locals.noteService.listNotesForChapter(target.id).map((page) => page.id)).toEqual([existing.id, note.id]);
+    });
+
+    it('moves to a Book as a direct Page and reports a move that changes nothing', async () => {
+      const { note } = createPage(app, { title: 'JSON Direct Page', content: 'Kept' });
+      const book = app.locals.bookService.createBook({ title: 'JSON Direct Book' });
+
+      const response = await postMove(note.id, { targetContainer: `book:${book.id}` }).expect(200);
+      expect(response.body.destination).toEqual({
+        container: `book:${book.id}`, kind: 'book', label: 'Book “JSON Direct Book”', url: `/notes/books/${book.id}`,
+      });
+      expect(app.locals.noteService.getNote(note.id)).toMatchObject({ book_id: book.id, chapter_id: null });
+
+      const again = await postMove(note.id, { targetContainer: `book:${book.id}` }).expect(200);
+      expect(again.body).toMatchObject({ changed: false, message: 'This Page is already in Book “JSON Direct Book”.' });
+    });
+
+    it('refuses an invalid or missing destination, leaving the Page where it was', async () => {
+      const { chapter, note } = createPage(app, { title: 'JSON Refused Page', content: 'Kept' });
+      for (const body of [{}, { targetContainer: 'chapter:01' }, { targetContainer: 'shelf:1' }]) {
+        const response = await postMove(note.id, body).expect(422);
+        expect(response.body).toEqual({
+          status: 'error', code: 'MOVE_TARGET_INVALID', message: 'Choose a valid Book or Chapter destination.',
+        });
+      }
+      const chapterGone = await postMove(note.id, { targetContainer: 'chapter:999999' }).expect(404);
+      expect(chapterGone.body).toMatchObject({ status: 'error', code: 'CHAPTER_NOT_FOUND', message: 'This Chapter is no longer available.' });
+      const bookGone = await postMove(note.id, { targetContainer: 'book:999999' }).expect(404);
+      expect(bookGone.body).toMatchObject({ status: 'error', code: 'BOOK_NOT_FOUND', message: 'This Book is no longer available.' });
+      expect(app.locals.noteService.getNote(note.id).chapter_id).toBe(chapter.id);
+    });
+
+    it('reports a missing Page or malformed ID as unavailable', async () => {
+      const { chapter } = createPage(app, { title: 'JSON Missing Page', content: 'Kept' });
+      for (const id of ['999999', '01']) {
+        const response = await postMove(id, { targetContainer: `chapter:${chapter.id}` }).expect(404);
+        expect(response.body).toMatchObject({ status: 'error', code: 'PAGE_NOT_FOUND', message: 'This Page is no longer available.' });
+      }
+    });
+
+    it('requires CSRF', async () => {
+      const { chapter, note } = createPage(app, { title: 'JSON CSRF Page', content: 'Kept' });
+      const book = app.locals.bookService.createBook({ title: 'JSON CSRF Book' });
+      await agent
+        .post(`/notes/${note.id}/move`)
+        .set('Accept', 'application/json')
+        .type('form')
+        .send({ targetContainer: `book:${book.id}` })
+        .expect(403);
+      expect(app.locals.noteService.getNote(note.id).chapter_id).toBe(chapter.id);
+    });
+
+    it('sanitizes a service failure', async () => {
+      const { chapter, note } = createPage(app, { title: 'JSON Failure Page', content: 'Kept' });
+      const book = app.locals.bookService.createBook({ title: 'JSON Failure Book' });
+      const spy = vi.spyOn(app.locals.noteService, 'moveNote').mockImplementation(() => {
+        throw new Error('SQLITE_BUSY: secret internal detail');
+      });
+      try {
+        const response = await postMove(note.id, { targetContainer: `book:${book.id}` }).expect(500);
+        expect(response.body).toEqual({
+          status: 'error', code: 'PAGE_OPERATION_FAILED', message: 'The Page could not be moved. No changes were made.',
+        });
+      } finally {
+        spy.mockRestore();
+      }
+      expect(app.locals.noteService.getNote(note.id).chapter_id).toBe(chapter.id);
+    });
   });
 
   it('does not add Notes controls to project or asset pages', async () => {
@@ -3550,6 +3936,122 @@ describe('top-level Notes HTTP slice', () => {
         .expect(404);
     });
 
+    describe('Chapter dialog JSON contract', () => {
+      const postJson = (url, body) => agent.post(url).set('Accept', 'application/json').type('form')
+        .send({ _csrf: csrfToken, ...body });
+
+      it('creates exactly one Chapter in place, appended after existing contents', async () => {
+        const book = app.locals.bookService.createBook({ title: 'Async Create Book' });
+        const page = app.locals.noteService.createNote({ bookId: book.id, title: 'Existing Page' });
+
+        const response = await postJson(`/notes/books/${book.id}/chapters`, { title: '  Async Chapter  ' }).expect(201);
+
+        const [chapter] = app.locals.chapterService.listChapters(book.id);
+        expect(app.locals.chapterService.listChapters(book.id)).toHaveLength(1);
+        expect(response.body).toEqual({
+          status: 'success',
+          message: 'Chapter “Async Chapter” created.',
+          chapter: { id: chapter.id, title: 'Async Chapter', bookId: book.id, url: `/notes/chapters/${chapter.id}` },
+          values: { title: '' },
+        });
+        expect(app.locals.bookService.listBookContents(book.id).map(({ type, id }) => [type, id]))
+          .toEqual([['page', page.id], ['chapter', chapter.id]]);
+      });
+
+      it('updates a Chapter in place without changing its Book, order or Pages', async () => {
+        const book = app.locals.bookService.createBook({ title: 'Async Edit Book' });
+        const first = app.locals.chapterService.createChapter({ bookId: book.id, title: 'First' });
+        const second = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Second' });
+        const page = app.locals.noteService.createNote({ chapterId: first.id, title: 'Kept Page' });
+
+        const response = await postJson(`/notes/chapters/${first.id}`, { title: '  Renamed  ' }).expect(200);
+
+        expect(response.body).toEqual({
+          status: 'success',
+          message: 'Chapter “Renamed” saved.',
+          chapter: { id: first.id, title: 'Renamed', bookId: book.id, url: `/notes/chapters/${first.id}` },
+          values: { title: 'Renamed' },
+        });
+        expect(app.locals.chapterService.listChapters(book.id).map(({ id }) => id)).toEqual([first.id, second.id]);
+        expect(app.locals.noteService.listNotesForChapter(first.id).map(({ id }) => id)).toEqual([page.id]);
+      });
+
+      it('returns field errors without writing', async () => {
+        const book = app.locals.bookService.createBook({ title: 'Async Validation Book' });
+        const chapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Unchanged' });
+
+        for (const [url, title] of [
+          [`/notes/books/${book.id}/chapters`, ''],
+          [`/notes/books/${book.id}/chapters`, 'x'.repeat(201)],
+          [`/notes/chapters/${chapter.id}`, '   '],
+        ]) {
+          const response = await postJson(url, { title }).expect(422);
+          expect(response.body).toMatchObject({ status: 'error', code: 'VALIDATION' });
+          expect(response.body.errors.title).toEqual(expect.any(String));
+        }
+        expect(app.locals.chapterService.listChapters(book.id)).toHaveLength(1);
+        expect(app.locals.chapterService.getChapter(chapter.id).title).toBe('Unchanged');
+      });
+
+      it('reports a missing Book or Chapter as JSON', async () => {
+        const created = await postJson('/notes/books/999999/chapters', { title: 'Orphan' }).expect(404);
+        expect(created.body).toMatchObject({ status: 'error', code: 'BOOK_NOT_FOUND' });
+        const edited = await postJson('/notes/chapters/999999', { title: 'Gone' }).expect(404);
+        expect(edited.body).toMatchObject({ status: 'error', code: 'CHAPTER_NOT_FOUND' });
+      });
+
+      it('refuses a request without a valid CSRF token', async () => {
+        const book = app.locals.bookService.createBook({ title: 'Async CSRF Book' });
+        const response = await agent.post(`/notes/books/${book.id}/chapters`).set('Accept', 'application/json')
+          .type('form').send({ title: 'Forged' }).expect(403);
+        expect(response.body.status).toBe('error');
+        expect(app.locals.chapterService.listChapters(book.id)).toEqual([]);
+      });
+
+      it('reports service failures without internal details', async () => {
+        const book = app.locals.bookService.createBook({ title: 'Async Failure Book' });
+        const chapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Stable' });
+        const secret = 'SQLITE_FULL at /secret/path';
+        vi.spyOn(app.locals.chapterService, 'createChapter').mockImplementationOnce(() => { throw new Error(secret); });
+        vi.spyOn(app.locals.chapterService, 'updateChapter').mockImplementationOnce(() => { throw new Error(secret); });
+
+        const created = await postJson(`/notes/books/${book.id}/chapters`, { title: 'Nope' }).expect(500);
+        const edited = await postJson(`/notes/chapters/${chapter.id}`, { title: 'Nope' }).expect(500);
+
+        for (const { body, text } of [created, edited]) {
+          expect(body).toMatchObject({ status: 'error', code: 'CHAPTER_OPERATION_FAILED' });
+          expect(text).not.toContain('secret');
+        }
+      });
+
+      it('keeps the native form routes and marks only hosted dialogs async', async () => {
+        const book = app.locals.bookService.createBook({ title: 'Native Book' });
+        const chapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Native Chapter' });
+        const asyncAttribute = (html, id) => html
+          .match(new RegExp(`<dialog\\b[^>]*id="${id}"[\\s\\S]*?</dialog>`))?.[0]
+          .match(/id="chapter-form"[\s\S]*?data-dialog-async="(\w+)"/)?.[1];
+
+        const hosts = [
+          [`/notes/books/${book.id}`, `/notes/books/${book.id}/chapters/new`, 'chapter-create-dialog'],
+          [`/notes/chapters/${chapter.id}`, `/notes/chapters/${chapter.id}/edit`, 'chapter-edit-dialog'],
+        ];
+        for (const [host, direct, id] of hosts) {
+          expect(asyncAttribute((await agent.get(host).expect(200)).text, id)).toBe('true');
+          expect(asyncAttribute((await agent.get(direct).expect(200)).text, id)).toBe('false');
+        }
+
+        const created = await agent.post(`/notes/books/${book.id}/chapters`).type('form')
+          .send({ _csrf: csrfToken, title: 'Native Created' }).expect(302);
+        expect(created.headers.location).toMatch(/^\/notes\/chapters\/\d+$/);
+        const edited = await agent.post(`/notes/chapters/${chapter.id}`).type('form')
+          .send({ _csrf: csrfToken, title: 'Native Edited' }).expect(302);
+        expect(edited.headers.location).toBe(`/notes/chapters/${chapter.id}`);
+        const refused = await agent.post(`/notes/chapters/${chapter.id}`).type('form')
+          .send({ _csrf: csrfToken, title: '' }).expect(422);
+        expect(asyncAttribute(refused.text, 'chapter-edit-dialog')).toBe('false');
+      });
+    });
+
     it('renders an empty Chapter with parent Book context and a New Page action', async () => {
       const book = app.locals.bookService.createBook({ title: 'Parent Book' });
       const chapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Detail Chapter' });
@@ -3760,7 +4262,7 @@ describe('top-level Notes HTTP slice', () => {
       expect(form.text).toContain('<label for="chapter-edit-title">Title <span class="required" aria-label="required">*</span></label>');
       expect(form.text).toContain('<details class="notes-workspace-disclosure notes-workspace-disclosure--delete">');
       expect(form.text).toContain('<summary>Delete Chapter</summary>');
-      expect(form.text).toContain(`<form id="chapter-delete-form" method="post" action="/notes/chapters/${chapter.id}/delete">`);
+      expect(form.text).toContain(`<form id="chapter-delete-form" method="post" action="/notes/chapters/${chapter.id}/delete" data-dialog-secondary-action>`);
       expect(form.text).toMatch(new RegExp(`<form id="chapter-delete-form"[\\s\\S]*?name="_csrf"[^>]+value="[^"]+"`));
       expect(form.text).toContain('data-confirm="Delete this Chapter permanently? This cannot be undone."');
       expect(form.text).toContain('The Chapter must be empty before it can be deleted.');
@@ -3851,6 +4353,48 @@ describe('top-level Notes HTTP slice', () => {
         .type('form')
         .send({ _csrf: csrfToken })
         .expect(404);
+    });
+
+    it('answers an enhanced Delete Chapter with JSON for each outcome', async () => {
+      const json = (url, body) => agent.post(url).set('Accept', 'application/json').type('form').send(body);
+      const book = app.locals.bookService.createBook({ title: 'JSON Delete Book' });
+      const empty = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Empty' });
+      const full = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Full' });
+      const page = app.locals.noteService.createNote({ chapterId: full.id, title: 'Kept Page', content: '' });
+
+      const forbidden = await json(`/notes/chapters/${empty.id}/delete`, {}).expect(403);
+      expect(forbidden.body).toMatchObject({ status: 'error' });
+
+      const deleted = await json(`/notes/chapters/${empty.id}/delete`, { _csrf: csrfToken }).expect(200);
+      expect(deleted.body).toEqual({
+        status: 'success',
+        message: 'Chapter “Empty” deleted.',
+        chapter: { id: empty.id, title: 'Empty', bookId: book.id },
+        redirectUrl: `/notes/books/${book.id}`,
+      });
+
+      const missing = await json(`/notes/chapters/${empty.id}/delete`, { _csrf: csrfToken }).expect(404);
+      expect(missing.body).toEqual({
+        status: 'error', code: 'CHAPTER_NOT_FOUND', message: 'This Chapter is no longer available.',
+      });
+
+      const refused = await json(`/notes/chapters/${full.id}/delete`, { _csrf: csrfToken }).expect(409);
+      expect(refused.body).toMatchObject({ status: 'error', code: 'CHAPTER_NOT_EMPTY' });
+      expect(refused.body.message).toContain('still contains Pages');
+      expect(app.locals.noteService.getNote(page.id).chapter_id).toBe(full.id);
+
+      const original = app.locals.chapterService.deleteChapter;
+      app.locals.chapterService.deleteChapter = () => { throw new Error('SQLITE_BUSY: internal detail'); };
+      try {
+        const failed = await json(`/notes/chapters/${full.id}/delete`, { _csrf: csrfToken }).expect(500);
+        expect(failed.body).toEqual({
+          status: 'error',
+          code: 'CHAPTER_OPERATION_FAILED',
+          message: 'Chapter could not be deleted. No changes were made.',
+        });
+      } finally {
+        app.locals.chapterService.deleteChapter = original;
+      }
     });
 
     it('reorders Chapters only within their Book and renders authoritative Book-content order', async () => {
@@ -4273,6 +4817,98 @@ describe('top-level Notes HTTP slice', () => {
           .send({ _csrf: csrfToken, orderedNoteIds: `${first.id},${second.id}` })
           .expect(404);
       }
+    });
+
+    describe('in-page Change order saves', () => {
+      const postOrder = (chapterId, orderedNoteIds, extra = { _csrf: csrfToken }) => agent
+        .post(`/notes/chapters/${chapterId}/notes/reorder`)
+        .set('Accept', 'application/json')
+        .type('form')
+        .send({ ...extra, orderedNoteIds });
+      const threePages = () => {
+        const { chapter } = createChapterContext(app);
+        const pages = ['First', 'Second', 'Third']
+          .map((title) => app.locals.noteService.createNote({ chapterId: chapter.id, title }));
+        return { chapter, ids: pages.map((note) => note.id) };
+      };
+      const order = (chapterId) => app.locals.noteService.listNotesForChapter(chapterId).map((note) => note.id);
+
+      it('saves through the ordering service once and answers with the persisted order', async () => {
+        const { chapter, ids } = threePages();
+        const target = [ids[2], ids[0], ids[1]];
+        const reorder = vi.spyOn(app.locals.noteService, 'reorderNotes');
+
+        const { body, headers } = await postOrder(chapter.id, target.join(',')).expect(200);
+
+        expect(headers.location).toBeUndefined();
+        expect(body).toEqual({
+          status: 'success',
+          message: 'Page order saved.',
+          orderedNoteIds: target,
+          values: { orderedNoteIds: target.join(',') },
+        });
+        expect(reorder).toHaveBeenCalledTimes(1);
+        expect(reorder).toHaveBeenCalledWith(chapter.id, target);
+        expect(order(chapter.id)).toEqual(target);
+      });
+
+      it('refuses malformed or duplicate drafts as invalid and changes nothing', async () => {
+        const { chapter, ids } = threePages();
+        for (const draft of ['not-an-id', `${ids[0]},,${ids[1]}`, `${ids[0]},${ids[0]},${ids[1]}`]) {
+          const { body, text } = await postOrder(chapter.id, draft).expect(422);
+          expect(body).toMatchObject({ status: 'error', code: 'ORDER_INVALID', orderedNoteIds: ids });
+          expect(text).not.toContain('not-an-id');
+          expect(order(chapter.id)).toEqual(ids);
+        }
+      });
+
+      it('refuses drafts that no longer match the Chapter as stale and reports its current Pages', async () => {
+        const { chapter, ids } = threePages();
+        const { chapter: otherChapter } = createChapterContext(app);
+        const foreign = app.locals.noteService.createNote({ chapterId: otherChapter.id, title: 'Foreign' });
+        const deleted = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Deleted' });
+        const draftWithDeleted = [...ids, deleted.id].join(',');
+        app.locals.noteService.deleteNote(deleted.id);
+        for (const draft of [
+          draftWithDeleted,
+          `${ids[0]},${ids[1]}`,
+          `${ids[0]},${ids[1]},${foreign.id}`,
+          `${ids.join(',')},999999`,
+        ]) {
+          const { body, text } = await postOrder(chapter.id, draft).expect(409);
+          expect(body).toMatchObject({ status: 'error', code: 'ORDER_STALE', orderedNoteIds: ids });
+          expect(text).not.toContain('999999');
+          expect(order(chapter.id)).toEqual(ids);
+          expect(order(otherChapter.id)).toEqual([foreign.id]);
+        }
+      });
+
+      it('reports an unavailable Chapter and keeps the CSRF refusal', async () => {
+        const { chapter, ids } = threePages();
+        const missing = await postOrder(999999, ids.join(',')).expect(404);
+        expect(missing.body).toEqual({
+          status: 'error', code: 'CHAPTER_NOT_FOUND', message: 'This Chapter is no longer available.',
+        });
+        await postOrder(chapter.id, [...ids].reverse().join(','), {}).expect(403);
+        expect(order(chapter.id)).toEqual(ids);
+      });
+
+      it('reports a service failure without internal details', async () => {
+        const { chapter, ids } = threePages();
+        vi.spyOn(app.locals.noteService, 'reorderNotes')
+          .mockImplementationOnce(() => { throw new Error('SQLITE_FULL at /secret/path'); });
+        const { body, text } = await postOrder(chapter.id, [...ids].reverse().join(',')).expect(500);
+        expect(body).toMatchObject({ status: 'error', code: 'CHAPTER_OPERATION_FAILED' });
+        expect(text).not.toContain('secret');
+        expect(order(chapter.id)).toEqual(ids);
+      });
+
+      it('renders async on Chapter Detail and native on the direct order URL', async () => {
+        const { chapter } = threePages();
+        const asyncOf = ({ text }) => text.match(/id="notes-chapter-order-form"[\s\S]*?data-dialog-async="(\w+)"/)?.[1];
+        expect(asyncOf(await agent.get(`/notes/chapters/${chapter.id}`).expect(200))).toBe('true');
+        expect(asyncOf(await agent.get(`/notes/chapters/${chapter.id}/notes/order`).expect(200))).toBe('false');
+      });
     });
   });
 });

@@ -31,7 +31,7 @@
           <details class="notes-book-nav-disclosure"{% if bookNavInitialMode == 'expanded' or (not hasInitialMode and (chapterIsCurrent or chapterContainsCurrentPage)) %} open{% endif %}>
             <summary class="notes-book-nav-summary">
               <span class="notes-book-nav-disclosure-indicator" aria-hidden="true"></span>
-              <span class="notes-book-nav-title-wrap">
+              <span class="notes-book-nav-title-wrap" data-book-nav-chapter="{{ item.id }}">
                 <span class="notes-book-nav-chapter-title">{{ item.chapter.title }}</span>
               </span>
             </summary>

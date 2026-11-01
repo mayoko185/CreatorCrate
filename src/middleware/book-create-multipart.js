@@ -20,7 +20,10 @@ export async function parseBookCreateMultipart(req, res, next) {
     res.once('finish', () => socket?.destroy());
     const safe = error instanceof BookCoverMultipartError
       ? error : new BookCoverMultipartError('MALFORMED_MULTIPART');
-    return res.status(safe.status).json({ status: 'error', code: safe.code, message: safe.message });
+    return res.status(safe.status).json({
+      status: 'error', code: safe.code, message: safe.message,
+      ...(safe.code === 'FILE_TOO_LARGE' ? { errors: { cover: safe.message } } : {}),
+    });
   }
 }
 

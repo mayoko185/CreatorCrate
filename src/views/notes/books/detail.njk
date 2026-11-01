@@ -29,6 +29,18 @@
     {% include "partials/notice.njk" %}
   {% endif %}
 
+  {% if pageDeletionNotice %}
+    <div class="notice notice--{{ pageDeletionNotice.variant }} app-dialog-feedback" data-dialog-feedback data-page-deletion-notice role="status">
+      <p data-dialog-feedback-text>{{ pageDeletionNotice.text }}</p>
+    </div>
+  {% else %}
+    <div class="notice notice--success app-dialog-feedback" data-dialog-feedback role="status" hidden>
+      <p data-dialog-feedback-text></p>
+    </div>
+  {% endif %}
+  {% set pageDeletionDiscoveryUrl = '/notes/page-deletions?bookId=' + book.id %}
+  {% include "notes/page-deletion-recovery.njk" %}
+
   <div class="asset-viewer-display-controls" data-book-detail-toolbar>
     <div class="project-filter-actions project-filter-actions--projects">
       <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--right"
@@ -234,16 +246,22 @@
   {% set values = chapterCreateForm.values %}
   {% set errors = chapterCreateForm.errors %}
   {% set chapterTitleId = 'chapter-create-title' %}
+  {# Opened from Book Detail the dialog saves in place. A directly visited
+     /notes/books/:id/chapters/new (and its validation render) stays native. #}
+  {% set chapterCreateAsync = not chapterCreateDialogOpen %}
   {% call dialog.render('chapter-create-dialog', 'New Chapter', chapterCreateDialogOpen, '', '', 'project-form-dialog app-dialog--refined') %}
     <form id="chapter-form" method="post" action="{{ chapterCreateForm.submitUrl }}" class="app-dialog-form project-form project-edit-dialog-form"
-          data-dialog-form data-dialog-async="false" data-dialog-reset-on-close{% if errors.title or errors.general %} data-dialog-reset-values="{{ { title: '' } | dump }}"{% endif %} novalidate>
+          data-dialog-form data-dialog-async="{{ 'true' if chapterCreateAsync else 'false' }}" data-dialog-reset-on-close{% if errors.title or errors.general %} data-dialog-reset-values="{{ { title: '' } | dump }}"{% endif %}{% if chapterCreateAsync %} data-dialog-pending-message="Creating Chapter…" data-dialog-error-message="Chapter could not be created."{% endif %} novalidate>
       <input type="hidden" name="_csrf" value="{{ _csrf }}">
       <div class="app-dialog-body">
-        {% if errors.general %}
+        {% if chapterCreateAsync %}
+          <div class="error-summary" role="alert" data-dialog-error hidden><p data-dialog-error-text></p></div>
+        {% elif errors.general %}
           <div class="error-summary" role="alert"><p>{{ errors.general }}</p></div>
         {% endif %}
         {% include "notes/chapters/form-fields.njk" %}
       </div>
+      {% if chapterCreateAsync %}<div class="app-dialog-status" data-dialog-status role="status" aria-live="polite"></div>{% endif %}
       <footer class="app-dialog-footer">
         <button class="button button-primary" type="submit" data-dialog-submit><span class="project-create-submit-icon" aria-hidden="true">{{ icons.icon('plus') }}</span>Create</button>
       </footer>
@@ -269,7 +287,7 @@
       </div>
     </form>
 
-    <form id="book-delete-form" method="post" action="/notes/books/{{ book.id }}/delete">
+    <form id="book-delete-form" method="post" action="/notes/books/{{ book.id }}/delete" data-dialog-secondary-action>
       <input type="hidden" name="_csrf" value="{{ _csrf }}">
     </form>
   {% endcall %}

@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { NoteError } from '../data/note-repository.js';
 import { BookContentIntegrityError, BookNotFoundError } from './book-service.js';
 import { buildCurrentBookHierarchy, planBookHierarchy } from './book-hierarchy.js';
@@ -67,6 +68,56 @@ export class NoteRevisionAssociationUnavailableError extends Error {
     this.missingProjectIds = missingProjectIds;
     this.missingAssetIds = missingAssetIds;
   }
+}
+
+export const NOTE_DELETION_UNDO_WINDOW_MS = 10 * 60 * 1000;
+const NOTE_DELETION_RECEIPT_RETENTION_MS = 24 * 60 * 60 * 1000;
+const NOTE_DELETION_CLEANUP_INTERVAL_MS = 60 * 1000;
+const NOTE_DELETION_SNAPSHOT_VERSION = 1;
+const NOTE_DELETION_LIST_LIMIT = 10;
+const HEX_256_BIT = /^[0-9a-f]{64}$/;
+const NOTE_DELETION_OWNER_KINDS = new Set(['session', 'browser']);
+
+const UNDO_ERROR_STATUS = {
+  UNDO_UNAVAILABLE: 404,
+  UNDO_EXPIRED: 410,
+};
+
+export class NoteDeletionUndoError extends Error {
+  constructor(code, message = 'This Page deletion cannot be undone.') {
+    super(message);
+    this.name = 'NoteDeletionUndoError';
+    this.code = code;
+    this.status = UNDO_ERROR_STATUS[code] ?? 409;
+  }
+}
+
+/** A random 256-bit public locator for one Page deletion. */
+export function createNoteDeletionId() {
+  return crypto.randomBytes(32).toString('hex');
+}
+
+/**
+ * Purpose-bound HMAC for Undo values. The key is shared with disabled-mode CSRF,
+ * where a visitor chooses the cookie string that gets HMACed and can read the
+ * result, so that derivation is a chosen-message oracle over UTF-8 text. The
+ * leading 0xFF byte can never appear in UTF-8, which keeps these messages
+ * outside everything that oracle can sign.
+ */
+function noteDeletionHmac(secret, parts) {
+  return crypto.createHmac('sha256', secret)
+    .update(Buffer.from([0xff]))
+    .update(JSON.stringify(parts))
+    .digest('hex');
+}
+
+function hexValuesMatch(expected, submitted) {
+  if (typeof submitted !== 'string' || !HEX_256_BIT.test(submitted)) return false;
+  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(submitted));
+}
+
+function sameJson(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function assertPlainObject(value, fieldLabel) {
@@ -164,6 +215,10 @@ function isNoteRepositoryError(error) {
  * @param {object} [deps.bookContentRepository]
  * @param {object} [deps.applicationLogger]
  * @param {object} [deps.noteRevisionSettingsService]
+ * @param {object} [deps.bookPagePreviewSettingsRepository]
+ * @param {object} [deps.noteDeletionSnapshotRepository]
+ * @param {string} [deps.noteDeletionUndoSecret] - persistent server-only key
+ * @param {() => number} [deps.now] - epoch milliseconds
  */
 export function createNoteService({
   db,
@@ -175,6 +230,10 @@ export function createNoteService({
   bookContentRepository,
   noteRevisionSettingsService = null,
   applicationLogger = null,
+  bookPagePreviewSettingsRepository = null,
+  noteDeletionSnapshotRepository = null,
+  noteDeletionUndoSecret = null,
+  now = () => Date.now(),
 } = {}) {
   if (!noteRepository) {
     throw new Error('createNoteService requires a noteRepository dependency.');
@@ -488,6 +547,277 @@ export function createNoteService({
     return deleteDirectBookPageTx(note);
   }
 
+  function performNoteDeletion(note) {
+    if (note.chapter_id === null) {
+      return deleteDirectBookPage(note);
+    }
+
+    const deleted = noteRepository.deleteById(note.id);
+    if (!deleted) {
+      throw new NoteNotFoundError(note.id);
+    }
+    return deleted;
+  }
+
+  // ─── Page deletion Undo ──────────────────────────────────────────────────
+
+  const noteDeletionUndoConfigured = Boolean(
+    db
+    && typeof db.transaction === 'function'
+    && bookRepository
+    && bookContentRepository
+    && bookPagePreviewSettingsRepository
+    && noteDeletionSnapshotRepository
+    && typeof noteDeletionUndoSecret === 'string'
+    && noteDeletionUndoSecret.length > 0
+  );
+
+  function requireNoteDeletionUndo() {
+    if (!noteDeletionUndoConfigured) {
+      throw new NoteOperationError('Page deletion Undo is not configured.', {
+        code: 'UNDO_NOT_CONFIGURED',
+      });
+    }
+  }
+
+  function assertHex256(value, fieldLabel) {
+    if (typeof value !== 'string' || !HEX_256_BIT.test(value)) {
+      throw new NoteValidationError({ [fieldLabel]: `${fieldLabel} is invalid.` });
+    }
+  }
+
+  function undoTokenFor({ id, owner_key: ownerKey, note_id: noteId, expires_at: expiresAt }) {
+    return noteDeletionHmac(noteDeletionUndoSecret, [
+      'note-deletion-undo-token', 1, id, ownerKey, noteId, expiresAt,
+    ]);
+  }
+
+  let nextNoteDeletionCleanupAt = 0;
+
+  // Opportunistic and throttled. A failure only delays erasure: restoration
+  // checks expires_at itself, so an uncleaned row still cannot be restored.
+  function cleanupNoteDeletionSnapshots() {
+    if (!noteDeletionSnapshotRepository) return;
+    const current = now();
+    if (current < nextNoteDeletionCleanupAt) return;
+    nextNoteDeletionCleanupAt = current + NOTE_DELETION_CLEANUP_INTERVAL_MS;
+    try {
+      noteDeletionSnapshotRepository.clearExpiredSnapshots(current);
+      noteDeletionSnapshotRepository.deleteReceiptsExpiredBy(
+        current - NOTE_DELETION_RECEIPT_RETENTION_MS,
+      );
+    } catch {
+      // Cleanup must never alter the Note operation that triggered it.
+    }
+  }
+
+  function readAffectedOrdering(note) {
+    return {
+      pageOrder: (note.chapter_id === null
+        ? noteRepository.listForBook(note.book_id)
+        : noteRepository.listForChapter(note.chapter_id)
+      ).map(({ id, sort_order }) => ({ id, sort_order })),
+      bookContents: note.chapter_id === null
+        ? bookContentRepository.listForBook(note.book_id)
+        : null,
+    };
+  }
+
+  function readPreviewSelection(bookId) {
+    return {
+      mode: bookPagePreviewSettingsRepository.findByBookId(bookId)?.mode ?? null,
+      selectedPageIds: bookPagePreviewSettingsRepository.listSelectedPageIds(bookId),
+    };
+  }
+
+  function captureBeforeDeletion(note) {
+    const book = bookRepository.findById(note.book_id);
+    const chapter = note.chapter_id === null ? null : chapterRepository.findById(note.chapter_id);
+    if (!book || (note.chapter_id !== null && chapter?.book_id !== note.book_id)) {
+      throw new BookContentIntegrityError(
+        `Page ${note.id} has an inconsistent parent hierarchy.`,
+        { code: 'HIERARCHY_INTEGRITY' },
+      );
+    }
+    return {
+      graph: noteRepository.readDeletionGraph(note.id),
+      // Timestamps pin the parents' identity, not only their numeric IDs.
+      parent: {
+        bookCreatedAt: book.created_at,
+        chapterCreatedAt: chapter ? chapter.created_at : null,
+      },
+      before: {
+        ...readAffectedOrdering(note),
+        pageSelected: bookPagePreviewSettingsRepository.isPageSelected(note.book_id, note.id),
+      },
+    };
+  }
+
+  const deleteNoteWithUndoTx = noteDeletionUndoConfigured
+    ? db.transaction((noteId, deletionId, ownerKey) => {
+      if (noteDeletionSnapshotRepository.findReceipt(deletionId)) {
+        throw new NoteDeletionUndoError(
+          'UNDO_DELETION_ID_CONFLICT',
+          'This deletion ID has already been used.',
+        );
+      }
+
+      const note = requireNote(noteId);
+      const captured = captureBeforeDeletion(note);
+      performNoteDeletion(note);
+
+      const snapshotJson = JSON.stringify({
+        ...captured,
+        after: {
+          ...readAffectedOrdering(note),
+          preview: readPreviewSelection(note.book_id),
+        },
+      });
+      const createdAt = now();
+      const expiresAt = createdAt + NOTE_DELETION_UNDO_WINDOW_MS;
+      noteDeletionSnapshotRepository.insert({
+        id: deletionId,
+        ownerKey,
+        noteId: note.id,
+        bookId: note.book_id,
+        chapterId: note.chapter_id,
+        createdAt,
+        expiresAt,
+        snapshotVersion: NOTE_DELETION_SNAPSHOT_VERSION,
+        snapshotJson,
+      });
+      return { note, createdAt, expiresAt };
+    })
+    : null;
+
+  function loadOwnedReceipt(deletionId, ownerKey) {
+    const receipt = typeof deletionId === 'string' && HEX_256_BIT.test(deletionId)
+      ? noteDeletionSnapshotRepository.findReceipt(deletionId)
+      : undefined;
+    if (!receipt || !hexValuesMatch(receipt.owner_key, ownerKey)) {
+      throw new NoteDeletionUndoError('UNDO_UNAVAILABLE');
+    }
+    return receipt;
+  }
+
+  // The one eligibility rule shared by token issuance and restoration.
+  function readActivePayload(receipt, current) {
+    if (receipt.restored_at !== null) {
+      throw new NoteDeletionUndoError('UNDO_ALREADY_RESTORED');
+    }
+    if (current >= receipt.expires_at) {
+      throw new NoteDeletionUndoError('UNDO_EXPIRED');
+    }
+    if (receipt.snapshot_version !== NOTE_DELETION_SNAPSHOT_VERSION) {
+      throw new NoteDeletionUndoError('UNDO_UNAVAILABLE');
+    }
+    const json = noteDeletionSnapshotRepository.findSnapshotJson(receipt.id);
+    if (typeof json !== 'string') {
+      throw new NoteDeletionUndoError('UNDO_EXPIRED');
+    }
+    return json;
+  }
+
+  function assertRestorable({ graph, parent, after, before }) {
+    const { note } = graph;
+
+    const book = bookRepository.findById(note.book_id);
+    if (!book || book.created_at !== parent.bookCreatedAt) {
+      throw new NoteDeletionUndoError('UNDO_PARENT_MISSING');
+    }
+    if (note.chapter_id !== null) {
+      const chapter = chapterRepository.findById(note.chapter_id);
+      if (!chapter
+        || chapter.book_id !== note.book_id
+        || chapter.created_at !== parent.chapterCreatedAt) {
+        throw new NoteDeletionUndoError('UNDO_PARENT_CHANGED');
+      }
+    }
+
+    if (noteRepository.findById(note.id)
+      || graph.revisions.some(({ id }) => noteRepository.isRevisionIdOccupied(id))) {
+      throw new NoteDeletionUndoError('UNDO_ID_CONFLICT');
+    }
+
+    if (graph.projectIds.some((id) => !projectRepository.findById(id))
+      || graph.assetIds.some((id) => !assetRepository.findById(id))) {
+      throw new NoteDeletionUndoError('UNDO_ASSOCIATION_MISSING');
+    }
+
+    const ordering = readAffectedOrdering(note);
+    if (!sameJson(ordering.pageOrder, after.pageOrder)
+      || !sameJson(ordering.bookContents, after.bookContents)) {
+      throw new NoteDeletionUndoError('UNDO_ORDER_CHANGED');
+    }
+
+    // An unselected Page does not take part in the preview at all, so later
+    // preview edits only conflict when a selection has to be reinstated.
+    if (before.pageSelected && !sameJson(readPreviewSelection(note.book_id), after.preview)) {
+      throw new NoteDeletionUndoError('UNDO_PREVIEW_CHANGED');
+    }
+  }
+
+  function writeRestoredPage({ graph, before }) {
+    const { note } = graph;
+    noteRepository.restoreDeletedGraph(graph);
+    noteRepository.restoreSortOrders(before.pageOrder.filter(({ id }) => id !== note.id));
+    if (before.bookContents) {
+      bookContentRepository.restoreRows(note.book_id, before.bookContents);
+    }
+    if (before.pageSelected) {
+      bookPagePreviewSettingsRepository.restorePageSelection(note.book_id, note.id);
+    }
+  }
+
+  function assertRestoredPage({ graph, before }) {
+    const { note } = graph;
+    const ordering = readAffectedOrdering(note);
+    if (!sameJson(noteRepository.readDeletionGraph(note.id), graph)
+      || !sameJson(ordering.pageOrder, before.pageOrder)
+      || !sameJson(ordering.bookContents, before.bookContents)
+      || bookPagePreviewSettingsRepository.isPageSelected(note.book_id, note.id) !== before.pageSelected) {
+      throw new BookContentIntegrityError(
+        `Restored Page ${note.id} does not match its deletion snapshot.`,
+        { code: 'HIERARCHY_INTEGRITY' },
+      );
+    }
+  }
+
+  // Any throw rolls back every write here, including the consumption marker.
+  const restoreDeletedNoteTx = noteDeletionUndoConfigured
+    ? db.transaction((deletionId, ownerKey, undoToken) => {
+      const receipt = loadOwnedReceipt(deletionId, ownerKey);
+      if (!hexValuesMatch(undoTokenFor(receipt), undoToken)) {
+        throw new NoteDeletionUndoError('UNDO_UNAVAILABLE');
+      }
+
+      // Read after the write lock is held: this instant decides expiry.
+      const current = now();
+      const snapshot = JSON.parse(readActivePayload(receipt, current));
+      assertRestorable(snapshot);
+      writeRestoredPage(snapshot);
+      assertRestoredPage(snapshot);
+
+      if (!noteDeletionSnapshotRepository.markRestored(receipt.id, current)) {
+        throw new NoteDeletionUndoError('UNDO_ALREADY_RESTORED');
+      }
+      return { note: snapshot.graph.note, restoredAt: current };
+    })
+    : null;
+
+  function rethrowUndoFailure(error, message) {
+    if (error instanceof NoteDeletionUndoError
+      || error instanceof NoteValidationError
+      || error instanceof NoteNotFoundError
+      || error instanceof NoteOperationError
+      || error instanceof BookContentIntegrityError) {
+      throw error;
+    }
+    throw new NoteOperationError(message, { code: 'UNDO_OPERATION_FAILED', cause: error });
+  }
+
+  cleanupNoteDeletionSnapshots();
+
   const moveChapterPageToDirectBookTx = db && typeof db.transaction === 'function'
     ? db.transaction((note, target) => {
       const moved = noteRepository.moveToContainer(note.id, target);
@@ -795,18 +1125,192 @@ export function createNoteService({
 
     deleteNote(id) {
       const note = requireNote(id);
-      if (note.chapter_id === null) {
-        const deleted = deleteDirectBookPage(note);
-        logActivity('note.deleted', noteContext(note));
-        return deleted;
-      }
-
-      const deleted = noteRepository.deleteById(id);
-      if (!deleted) {
-        throw new NoteNotFoundError(id);
-      }
+      const deleted = performNoteDeletion(note);
       logActivity('note.deleted', noteContext(note));
       return deleted;
+    },
+
+    /**
+     * False when Undo cannot be honored. A deletion that promises Undo must then
+     * be refused; falling back to deleteNote would delete without recovery.
+     */
+    isNoteDeletionUndoConfigured() {
+      return noteDeletionUndoConfigured;
+    },
+
+    /**
+     * Derive the stored owner key from trusted server request context. Never
+     * pass a value taken from a request body, query or custom header.
+     *
+     * @param {{ kind: 'session'|'browser', identity: string }} owner
+     * @returns {string}
+     */
+    deriveNoteDeletionOwnerKey({ kind, identity } = {}) {
+      requireNoteDeletionUndo();
+      if (!NOTE_DELETION_OWNER_KINDS.has(kind) || typeof identity !== 'string' || identity.length === 0) {
+        throw new NoteValidationError({ owner: 'owner is invalid.' });
+      }
+      return noteDeletionHmac(noteDeletionUndoSecret, ['note-deletion-owner', 1, kind, identity]);
+    },
+
+    /**
+     * Delete a Page and commit its recovery snapshot in one transaction, or
+     * refuse with UNDO_NOT_CONFIGURED and change nothing. The returned undoToken
+     * is derived, never stored; issueNoteDeletionUndoAction derives it again.
+     *
+     * @param {number} noteId
+     * @param {{ deletionId: string, ownerKey: string }} context
+     */
+    deleteNoteWithUndo(noteId, { deletionId, ownerKey } = {}) {
+      requireNoteDeletionUndo();
+      assertHex256(deletionId, 'deletionId');
+      assertHex256(ownerKey, 'ownerKey');
+      cleanupNoteDeletionSnapshots();
+
+      let outcome;
+      try {
+        outcome = deleteNoteWithUndoTx.immediate(noteId, deletionId, ownerKey);
+      } catch (error) {
+        rethrowUndoFailure(error, 'The Page could not be deleted.');
+      }
+
+      const { note, createdAt, expiresAt } = outcome;
+      logActivity('note.deleted', noteContext(note));
+      return {
+        deletionId,
+        noteId: note.id,
+        bookId: note.book_id,
+        chapterId: note.chapter_id,
+        title: note.title,
+        status: 'available',
+        createdAt,
+        expiresAt,
+        undoToken: undoTokenFor({
+          id: deletionId, owner_key: ownerKey, note_id: note.id, expires_at: expiresAt,
+        }),
+      };
+    },
+
+    /**
+     * Safe status of one owned deletion. Exposes neither the payload nor a token.
+     *
+     * @param {string} deletionId
+     * @param {{ ownerKey: string }} context
+     * @returns {{ deletionId: string, noteId: number, bookId: number, chapterId: number|null, status: 'available'|'restored'|'expired', createdAt: number, expiresAt: number, restoredAt: number|null }}
+     */
+    getNoteDeletionUndo(deletionId, { ownerKey } = {}) {
+      requireNoteDeletionUndo();
+      cleanupNoteDeletionSnapshots();
+      const receipt = loadOwnedReceipt(deletionId, ownerKey);
+      let status = 'available';
+      if (receipt.restored_at !== null) status = 'restored';
+      else if (now() >= receipt.expires_at) status = 'expired';
+      return {
+        deletionId: receipt.id,
+        noteId: receipt.note_id,
+        bookId: receipt.book_id,
+        chapterId: receipt.chapter_id,
+        status,
+        createdAt: receipt.created_at,
+        expiresAt: receipt.expires_at,
+        restoredAt: receipt.restored_at,
+      };
+    },
+
+    /**
+     * The owner's active deletions directly inside one parent, newest first, so
+     * a clean parent URL can rediscover them. Carries no payload and no token.
+     * chapterId null means Pages directly in the Book.
+     *
+     * @param {{ ownerKey: string, bookId?: number, chapterId?: number|null, limit?: number }} context
+     * @returns {{ deletions: Array<{ deletionId: string, noteId: number, bookId: number, chapterId: number|null, title: string|null, status: 'available', createdAt: number, expiresAt: number }>, hasMore: boolean }}
+     */
+    listNoteDeletionUndos({ ownerKey, bookId = null, chapterId = null, limit = NOTE_DELETION_LIST_LIMIT } = {}) {
+      requireNoteDeletionUndo();
+      assertHex256(ownerKey, 'ownerKey');
+      cleanupNoteDeletionSnapshots();
+      const rows = noteDeletionSnapshotRepository.listActiveForOwnerInParent(
+        ownerKey, { bookId, chapterId }, now(), limit + 1,
+      );
+      return {
+        deletions: rows.slice(0, limit)
+          .filter((row) => row.snapshot_version === NOTE_DELETION_SNAPSHOT_VERSION)
+          .map((row) => ({
+            deletionId: row.id,
+            noteId: row.note_id,
+            bookId: row.book_id,
+            chapterId: row.chapter_id,
+            title: row.title,
+            status: 'available',
+            createdAt: row.created_at,
+            expiresAt: row.expires_at,
+          })),
+        hasMore: rows.length > limit,
+      };
+    },
+
+    /**
+     * Re-derive the action token of one active deletion for its verified owner,
+     * so Undo survives navigation, refresh and restart. ownerKey must come from
+     * deriveNoteDeletionOwnerKey over trusted server state. Never put the token
+     * in a URL or log, and only return it in a no-store response.
+     *
+     * @param {string} deletionId
+     * @param {{ ownerKey: string }} context
+     * @returns {{ deletionId: string, noteId: number, bookId: number, chapterId: number|null, status: 'available', createdAt: number, expiresAt: number, restoredAt: null, undoToken: string }}
+     * @throws {NoteDeletionUndoError} UNDO_UNAVAILABLE, UNDO_EXPIRED or UNDO_ALREADY_RESTORED
+     */
+    issueNoteDeletionUndoAction(deletionId, { ownerKey } = {}) {
+      requireNoteDeletionUndo();
+      cleanupNoteDeletionSnapshots();
+      try {
+        const receipt = loadOwnedReceipt(deletionId, ownerKey);
+        readActivePayload(receipt, now());
+        return {
+          deletionId: receipt.id,
+          noteId: receipt.note_id,
+          bookId: receipt.book_id,
+          chapterId: receipt.chapter_id,
+          status: 'available',
+          createdAt: receipt.created_at,
+          expiresAt: receipt.expires_at,
+          restoredAt: null,
+          undoToken: undoTokenFor(receipt),
+        };
+      } catch (error) {
+        return rethrowUndoFailure(error, 'The Page deletion could not be read.');
+      }
+    },
+
+    /**
+     * Restore a deleted Page completely or refuse with a NoteDeletionUndoError.
+     * A refused or failed attempt changes nothing and keeps the opportunity.
+     *
+     * @param {string} deletionId
+     * @param {{ ownerKey: string, undoToken: string }} context
+     * @returns {{ deletionId: string, noteId: number, bookId: number, chapterId: number|null, status: 'restored', restoredAt: number }}
+     */
+    restoreDeletedNote(deletionId, { ownerKey, undoToken } = {}) {
+      requireNoteDeletionUndo();
+      cleanupNoteDeletionSnapshots();
+
+      let outcome;
+      try {
+        outcome = restoreDeletedNoteTx.immediate(deletionId, ownerKey, undoToken);
+      } catch (error) {
+        rethrowUndoFailure(error, 'The Page could not be restored.');
+      }
+
+      const { note, restoredAt } = outcome;
+      logActivity('note.deletion_undone', noteContext(note));
+      return {
+        deletionId,
+        noteId: note.id,
+        bookId: note.book_id,
+        chapterId: note.chapter_id,
+        status: 'restored',
+        restoredAt,
+      };
     },
 
     reorderNotes(chapterId, orderedIds) {

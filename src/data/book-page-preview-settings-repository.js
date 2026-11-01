@@ -42,6 +42,18 @@ export function createBookPagePreviewSettingsRepository(db) {
     WHERE id = ? AND book_id = ?
   `);
 
+  const listRawSelectedPageIdsStmt = db.prepare(`
+    SELECT page_id
+    FROM book_page_preview_pages
+    WHERE book_id = ?
+    ORDER BY page_id ASC
+  `).pluck();
+  const findPageSelectionStmt = db.prepare(`
+    SELECT 1
+    FROM book_page_preview_pages
+    WHERE book_id = ? AND page_id = ?
+  `);
+
   function read(bookId) {
     const settings = findSettingsStmt.get(bookId);
     if (!settings) return undefined;
@@ -74,6 +86,25 @@ export function createBookPagePreviewSettingsRepository(db) {
 
     replace(bookId, settings) {
       return replaceTx(bookId, settings);
+    },
+
+    /** Selected Page IDs as stored, without requiring a settings row. */
+    listSelectedPageIds(bookId) {
+      return listRawSelectedPageIdsStmt.all(bookId);
+    },
+
+    isPageSelected(bookId, pageId) {
+      return findPageSelectionStmt.get(bookId, pageId) !== undefined;
+    },
+
+    /** Reinstate one captured selection during Page deletion Undo. */
+    restorePageSelection(bookId, pageId) {
+      if (insertOwnedPageStmt.run(bookId, pageId, bookId).changes !== 1) {
+        throw new BookPagePreviewSettingsRepositoryError(
+          `Page ${pageId} does not belong to Book ${bookId}.`,
+          { code: 'PAGE_NOT_IN_BOOK' },
+        );
+      }
     },
   };
 }

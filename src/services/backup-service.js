@@ -4,6 +4,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { openDatabase, closeDatabase, runMigrations } from '../db.js';
 import { resetGeneratedImagePublicationsForRestore } from '../data/generated-image-publication-lifecycle-repository.js';
+import { invalidateNoteDeletionSnapshotsForRestore } from '../data/note-deletion-snapshot-repository.js';
 import { disableReleaseNotificationsForRestore } from './release-notification-restore.js';
 import {
   resolveBackupDir,
@@ -444,6 +445,8 @@ export function createBackupService({
    * current filesystem cache holds. Release notifications in the restored
    * copy are saved disabled and its unsent deliveries cancelled, so an older
    * notification ledger never replays (see release-notification-restore.js).
+   * Page deletion Undo opportunities in the restored copy are removed so an
+   * older recovery snapshot can never be redeemed against the restored data.
    * The staged file is returned to a single
    * rollback-journal file (WAL checkpointed, sidecars removed) and fsynced.
    * Generated cache directories are not touched.
@@ -454,6 +457,7 @@ export function createBackupService({
       runMigrations(staged, migrationsDir);
       resetGeneratedImagePublicationsForRestore(staged, { now });
       disableReleaseNotificationsForRestore(staged, { now });
+      invalidateNoteDeletionSnapshotsForRestore(staged);
       staged.pragma('journal_mode = DELETE');
     } finally {
       closeDatabase(staged);

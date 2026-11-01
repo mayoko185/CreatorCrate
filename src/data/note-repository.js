@@ -20,6 +20,10 @@ const HIERARCHY_ORDER = `
 `;
 const NOTE_COLUMNS_QUALIFIED = COLUMNS.map((c) => `notes.${c}`).join(', ');
 const DEFAULT_REVISION_RETENTION = 10;
+const REVISION_COLUMNS = [
+  'id', 'note_id', 'title', 'content', 'project_ids_json', 'asset_ids_json',
+  'source_updated_at', 'created_at',
+];
 
 export class NoteError extends Error {
   constructor(message, { code } = {}) {
@@ -340,6 +344,25 @@ export function createNoteRepository(db) {
     );
   });
 
+  // ─── Deletion Undo statements ────────────────────────────────────────────
+
+  const insertRestoredNoteStmt = db.prepare(`
+    INSERT INTO notes (${COLUMNS.join(', ')})
+    VALUES (${COLUMNS.map(() => '?').join(', ')})
+  `);
+  const insertRestoredRevisionStmt = db.prepare(`
+    INSERT INTO note_revisions (${REVISION_COLUMNS.join(', ')})
+    VALUES (${REVISION_COLUMNS.map(() => '?').join(', ')})
+  `);
+  const listRawRevisionsStmt = db.prepare(`
+    SELECT ${REVISION_COLUMNS.join(', ')}
+    FROM note_revisions
+    WHERE note_id = ?
+    ORDER BY id ASC
+  `);
+  const findRevisionByIdStmt = db.prepare('SELECT id FROM note_revisions WHERE id = ?');
+  const setSortOrderStmt = db.prepare('UPDATE notes SET sort_order = ? WHERE id = ?');
+
   // ─── Association statements ──────────────────────────────────────────────
 
   const findNoteStmt = db.prepare('SELECT id FROM notes WHERE id = ?');
@@ -585,7 +608,65 @@ export function createNoteRepository(db) {
     };
   });
 
+  const restoreDeletedGraphTx = db.transaction(({ note, revisions, projectIds, assetIds }) => {
+    insertRestoredNoteStmt.run(...COLUMNS.map((column) => note[column]));
+    for (const revision of revisions) {
+      insertRestoredRevisionStmt.run(...REVISION_COLUMNS.map((column) => revision[column]));
+    }
+    for (const projectId of projectIds) {
+      insertNoteProjectStmt.run(note.id, projectId);
+    }
+    for (const assetId of assetIds) {
+      insertNoteAssetStmt.run(note.id, assetId);
+    }
+  });
+
+  const restoreSortOrdersTx = db.transaction((rows) => {
+    for (const { id, sort_order: sortOrder } of rows) {
+      if (setSortOrderStmt.run(sortOrder, id).changes !== 1) {
+        throw new NoteError(`Note ${id} could not be repositioned.`, {
+          code: 'UPDATE_CHANGES_MISMATCH',
+        });
+      }
+    }
+  });
+
   return {
+    /**
+     * Raw rows that deleting this Note removes, for a deletion snapshot. Revision
+     * payloads are returned unparsed so malformed history survives unchanged.
+     *
+     * @param {number} noteId
+     * @returns {{ note: object, revisions: object[], projectIds: number[], assetIds: number[] }|undefined}
+     */
+    readDeletionGraph(noteId) {
+      const note = findByIdStmt.get(noteId);
+      if (!note) return undefined;
+      return {
+        note,
+        revisions: listRawRevisionsStmt.all(noteId),
+        projectIds: listNoteProjectIdsStmt.all(noteId).map((row) => row.project_id),
+        assetIds: listNoteAssetIdsStmt.all(noteId).map((row) => row.asset_id),
+      };
+    },
+
+    /**
+     * Reinsert a captured deletion graph with its original IDs and timestamps.
+     * AUTOINCREMENT high-water marks are untouched, so later IDs stay new.
+     */
+    restoreDeletedGraph(graph) {
+      restoreDeletedGraphTx(graph);
+    },
+
+    /** Set exact positions without touching content or `updated_at`. */
+    restoreSortOrders(rows) {
+      restoreSortOrdersTx(rows);
+    },
+
+    isRevisionIdOccupied(revisionId) {
+      return findRevisionByIdStmt.get(revisionId) !== undefined;
+    },
+
     /**
      * Create a note, appending it after the current highest container-local sort_order.
      *

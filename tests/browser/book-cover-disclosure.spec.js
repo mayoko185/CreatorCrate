@@ -82,6 +82,7 @@ test('actual New/Edit Book cover disclosures preserve create submission and imme
     await create.locator('[name="title"]').fill('Uploaded cover');
     await cover(create).locator('[name="cover"]').setInputFiles(file);
     await create.getByRole('button', { name: 'Create', exact: true }).click();
+    await page.locator('[data-book-create-view]').click();
     await expect(page).toHaveURL(/\/notes\/books\/\d+$/);
     await page.getByRole('link', { name: 'Edit book', exact: true }).click();
     const edit = page.locator('#book-edit-dialog');

@@ -38,11 +38,12 @@ function showError(form, payload, kind) {
     const field = title.closest?.('.field');
     field?.classList?.add?.('field-error');
     title.setAttribute?.('aria-invalid', 'true');
-    title.setAttribute?.('aria-describedby', 'title-error');
+    const errorId = `${title.id || 'title'}-error`;
+    title.setAttribute?.('aria-describedby', errorId);
     const message = form.ownerDocument?.createElement?.('span');
     if (message) {
       message.className = 'field-error-message';
-      message.id = 'title-error';
+      message.id = errorId;
       message.textContent = titleError;
       title.insertAdjacentElement?.('afterend', message);
     }
@@ -209,7 +210,7 @@ export function parseBookCoverAuthority(kind, id) {
   return null;
 }
 
-async function fetchBookEditAuthority(state) {
+export async function fetchBookEditAuthority(state) {
   const Parser = state.form.ownerDocument?.defaultView?.DOMParser || globalThis.DOMParser;
   const destination = state.form.action || state.form.getAttribute?.('action');
   if (!destination || typeof globalThis.fetch !== 'function' || typeof Parser !== 'function') return null;
@@ -237,7 +238,7 @@ async function fetchBookEditAuthority(state) {
   }
 }
 
-function installBookEditDialogPresentation(state, authority) {
+export function installBookEditDialogPresentation(state, authority) {
   const current = state.form.querySelector?.(COVER_PRESENTATION_SELECTOR);
   if (!current || !authority?.coverPresentation) return false;
   if (typeof current.replaceWith === 'function') current.replaceWith(authority.coverPresentation);
@@ -303,6 +304,7 @@ async function reconcileEditBook(state, operation, reason = 'uncertain', recover
     }, staleCover
       ? 'The Book cover changed elsewhere, and your selected replacement was not applied. Could not restore current Book authority.'
       : 'Could not restore current Book authority.');
+    state.onPresentationFailure?.(state);
     return false;
   }
 
@@ -312,7 +314,7 @@ async function reconcileEditBook(state, operation, reason = 'uncertain', recover
   if (submittedTitle !== null && state.title.value === submittedTitle) state.title.value = authority.title;
   state.acknowledgedTitle = authority.title;
   applyCurrentCover(state.form, authority.currentCover);
-  updateVisibleTitle(state.form, authority.title);
+  state.updateVisibleTitle(state.form, authority.title);
   if (state.uncertainOperation?.kind === 'cover'
     && state.cover?.files?.[0] === state.uncertainOperation.file) state.cover.value = '';
 
@@ -371,7 +373,7 @@ function showAcknowledgedRefreshFailure(state) {
   if (status && !status.id) status.id = 'book-edit-save-status';
   setStatus(
     state.form,
-    'The Book was saved, but its detail could not refresh. ',
+    state.refreshFailureMessage,
     'saved-refresh-error',
   );
   showStatusRetry({
@@ -385,6 +387,7 @@ function showAcknowledgedRefreshFailure(state) {
       captureEditBookFocus(state, wasFocused),
     ),
   });
+  state.onPresentationFailure?.(state);
 }
 
 async function retryAcknowledgedPresentation(state, recoveryFocus = null) {
@@ -415,7 +418,7 @@ async function retryAcknowledgedPresentation(state, recoveryFocus = null) {
   if (state.title.value === state.acknowledgedTitle) state.title.value = authority.title;
   state.acknowledgedTitle = authority.title;
   applyCurrentCover(state.form, authority.currentCover);
-  updateVisibleTitle(state.form, authority.title);
+  state.updateVisibleTitle(state.form, authority.title);
   clearErrors(state.form);
   removeStatusRetry(state);
   setStatus(state.form, 'Book saved. Presentation refreshed.', 'saved');
@@ -493,7 +496,7 @@ async function runQueue(state) {
       state.refreshUrl = payload.refreshUrl || state.refreshUrl;
       state.acknowledgedTitle = payload.book.title;
       applyCurrentCover(state.form, payload.currentCover);
-      updateVisibleTitle(state.form, payload.book?.title);
+      state.updateVisibleTitle(state.form, payload.book?.title);
       if (operation.kind === 'cover' && state.cover?.files?.[0] === operation.file) state.cover.value = '';
       setStatus(state.form, operation.kind === 'cover' ? 'Book cover saved.' : 'Book title saved.', 'saved');
       if (operation.kind === 'cover') {
@@ -555,6 +558,9 @@ export function enhanceBookEditFetchSave(scope = globalThis.document, options = 
       publishDetailAndDialog: options.publishDetailAndDialog
         || publishBookDetailLiveRegionSnapshotAtomically,
       confirmCover: options.confirmCover || confirmCover,
+      updateVisibleTitle: options.updateVisibleTitle || updateVisibleTitle,
+      refreshFailureMessage: options.refreshFailureMessage || 'The Book was saved, but its detail could not refresh. ',
+      onPresentationFailure: options.onPresentationFailure || null,
     };
     title.addEventListener?.('change', () => queueOperation(state, { kind: 'title', title: title.value }));
     cover.addEventListener?.('change', () => {

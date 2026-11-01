@@ -68,6 +68,7 @@ import { createTagRepository } from './data/tag-repository.js';
 import { createProjectPrimaryImageRepository } from './data/project-primary-image-repository.js';
 import { createSocialPrepRepository } from './data/social-prep-repository.js';
 import { createAssetBrowserPreferenceService } from './services/asset-browser-preference-service.js';
+import { createNoteDeletionSnapshotRepository } from './data/note-deletion-snapshot-repository.js';
 import { createNoteService } from './services/note-service.js';
 import { createBookService } from './services/book-service.js';
 import { createChapterService } from './services/chapter-service.js';
@@ -533,6 +534,10 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     bookContentRepository,
     noteRevisionSettingsService,
     applicationLogger,
+    bookPagePreviewSettingsRepository,
+    noteDeletionSnapshotRepository: opts.noteDeletionSnapshotRepository
+      || createNoteDeletionSnapshotRepository(db),
+    noteDeletionUndoSecret: opts.authState?.csrfPepper,
   });
   const chapterService = opts.chapterService || createChapterService({
     db,

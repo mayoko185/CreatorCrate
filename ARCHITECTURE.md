@@ -908,6 +908,83 @@ save atomic; neither introduces SQL of its own. Treat that as the shape a
 route-level transaction is allowed to take (see §6), not as licence for a
 route to own domain logic.
 
+### Page deletion recovery
+
+Deleting a Page removes it for real: foreign keys still cascade, and no row is
+kept as a soft delete. What makes Undo possible is a durable recovery snapshot,
+for one Page at a time and for a short window. There is no trash and no way to
+browse older deletions. Migration
+[`046_add_note_deletion_snapshots.sql`](migrations/046_add_note_deletion_snapshots.sql)
+adds `note_deletion_snapshots`, reached through
+[`note-deletion-snapshot-repository.js`](src/data/note-deletion-snapshot-repository.js).
+It deliberately has no foreign keys to live records, because the Page is gone by
+definition and its parent may go too; restoration re-validates every dependency.
+
+A row holds a public `id`, `owner_key`, `note_id`, `book_id`, `chapter_id`,
+`created_at`, `expires_at`, `restored_at`, `snapshot_version` (currently 1) and
+`snapshot_json`. An active row has a payload and no `restored_at`, a restored row
+has `restored_at` and no payload, and an expired row has neither. The payload
+holds **saved data only; an unsaved editor draft is never in it**:
+
+- `graph`: the raw `notes` row (original ID, content, order and timestamps), every
+  raw revision row unparsed (so even malformed history survives unchanged), and
+  the Page's current project and asset associations.
+- `parent`: the Book's and Chapter's `created_at`, which pin their identity and not
+  only their numeric IDs.
+- `before`: the affected ordering (Page `sort_order`s in the container and, for a
+  direct Book Page, the `book_contents` rows) plus whether the Book's selected
+  previews included this Page.
+- `after`: the same ordering once the deletion has applied, plus the Book's preview
+  mode and selected Page IDs.
+
+**Deletion and restoration are each one `BEGIN IMMEDIATE` transaction.**
+`noteService.deleteNoteWithUndo` captures the snapshot, deletes the Page and inserts
+the row together, so there is never a deletion without its snapshot or the reverse.
+`restoreDeletedNote` validates, reinserts the graph with its original Page and
+revision IDs and timestamps, reinstates the ordering and any preview selection,
+compares the result with the snapshot, and consumes the opportunity
+(`markRestored` clears the payload). No revision is created, `updated_at` does not
+move, and AUTOINCREMENT high-water marks are untouched, so later IDs stay new. The
+repository's graph and sort-order writes are savepoint-safe nested transactions
+under that outer one. Any throw rolls back everything, including the consumption,
+so a refused or failed attempt keeps the opportunity, and a consumed one cannot be
+restored twice. Activity (`note.deleted`, `note.deletion_undone`) is logged only
+after commit.
+
+**Restoration refuses rather than improvises.** It never moves the Page elsewhere
+or overwrites newer data. Each conflict changes nothing and has its own code:
+
+| Code | Refused when |
+|---|---|
+| `UNDO_UNAVAILABLE` | unknown or malformed locator, another owner's record, a wrong token, or an unknown snapshot version |
+| `UNDO_EXPIRED` | the window has ended, or the payload was already cleared |
+| `UNDO_ALREADY_RESTORED` | this opportunity was already consumed |
+| `UNDO_PARENT_MISSING` | the Book is gone, or its `created_at` differs |
+| `UNDO_PARENT_CHANGED` | the Chapter is gone, is in another Book, or its `created_at` differs |
+| `UNDO_ID_CONFLICT` | the Page ID or any revision ID is occupied |
+| `UNDO_ASSOCIATION_MISSING` | a project or asset the Page was connected to is gone |
+| `UNDO_ORDER_CHANGED` | the container's current ordering differs from `after` |
+| `UNDO_PREVIEW_CHANGED` | the Page was a selected preview and the Book's preview mode or selection differs from `after` |
+
+A Page that was not a selected preview takes no part in the preview check, so later
+preview edits do not block it. Ordering is compared conservatively for the whole
+container: a later deletion in the same Chapter or the same direct Book scope
+changes it, so after several deletions there Undo proceeds newest-first, and an
+older one answers `UNDO_ORDER_CHANGED` until the newer ones are undone.
+
+**Expiry and cleanup.** The window is ten minutes
+(`NOTE_DELETION_UNDO_WINDOW_MS`). Expiry is decided inside the restore transaction,
+from a clock read once the write lock is held, so a cleanup failure can never make
+an expired Undo valid. Being in SQLite and keyed by the persistent secret (§14),
+an opportunity survives a normal application restart. Cleanup is opportunistic:
+service construction, deletion and recovery calls run it at most once a minute, and its
+failure is swallowed so it cannot alter the operation that triggered it. It clears
+expired payloads and removes receipts 24 hours after their `expires_at`, after which
+a locator simply answers `UNDO_UNAVAILABLE`. Clearing a payload is a logical
+removal only: old content may physically remain in free SQLite pages, the WAL and
+existing backups. Managed backup restore removes every opportunity from the staged
+database (§15).
+
 ### Application logging
 
 Application logging is a process/application-context concern, not a service-local
@@ -1090,7 +1167,10 @@ After CSRF and validation, WP7A `createCommittedImage({ bytes, namespace:
 'book-covers' })` completes outside any Book transaction; WP7B
 `createBookWithManagedPrimaryImage` then atomically creates the Book and selects
 the managed source. Existing service activity logs follow durable commit and
-the destination remains `/notes/books/:id`.
+the destination remains `/notes/books/:id`. The shelf's New Book dialog submits
+the same multipart form with `Accept: application/json` and stays on the shelf:
+success returns `201` with the created Book's URL, and refusals return JSON
+errors. A directly visited `/notes/books/new` keeps the native redirect.
 
 If compound save fails, the operation token goes through WP7A
 `rollbackCommitted` before `compensate`. A refused/uncertain cleanup stops safe
@@ -2523,6 +2603,36 @@ modes exist because there is not always a session:
   enablement file — which is exactly why the pepper is created even when auth
   has never been enabled.
 
+**Page deletion Undo** is authorized by server-derived values, with two separate
+things not to be confused: the `deletionId` is a public 256-bit locator, safe in a
+URL and on its own worth nothing, while the *action token* is the secret that
+restoration requires. Neither knowing a locator nor holding a token works without
+the matching owner.
+
+- *Owner.* `resolvePageDeletionOwnerKey` takes identity only from server-established
+  state: the authenticated session (`res.locals.auth.csrfSecret`) when auth is on,
+  the disabled-mode CSRF visitor cookie when it is off. Neither mode falls back to
+  the other, and no request body, query or header can name an owner. Only an HMAC of
+  that identity (`owner_key`) is stored. Signing out, session invalidation, clearing
+  the visitor cookie or changing auth mode therefore ends access to earlier
+  opportunities.
+- *Keys.* `owner_key` and the token are HMACs under the persistent CSRF pepper,
+  separated by purpose labels (`note-deletion-owner`, `note-deletion-undo-token`).
+  Because disabled-mode CSRF signs a visitor-chosen cookie string with the same key
+  and shows the result, it is a chosen-message oracle over UTF-8 text.
+  `noteDeletionHmac` therefore prefixes its messages with a `0xFF` byte, which can
+  never occur in UTF-8, keeping them outside anything that oracle can sign. Do not
+  drop the prefix or derive a sub-key from a plain text label.
+- *Token.* It is derived on demand and bound to the deletion, owner, Page and expiry.
+  It is never stored in the snapshot, and never placed in a URL, HTML, browser storage
+  or a log. Its one way out of the server is a `private, no-store` status GET, which
+  re-derives it only after verifying the owner and that the opportunity is still
+  active. The Delete response does not carry it, so nothing has to retain it.
+- *Verification.* Owner keys and tokens are compared in constant time over validated
+  hex. Other owners' records answer exactly as unknown ones do. The restore POST also
+  passes the ordinary authentication and CSRF middleware, and takes the token from
+  its CSRF-protected body only.
+
 **Other defenses**: a strict CSP with no inline script; `no-store` on
 `/login`, `/settings/*`, and all HTML while auth is enabled; open-redirect
 hardening on the post-login `next` parameter that bounded-decodes
@@ -2585,8 +2695,10 @@ contract:
    opened, migrated, and its derived generated-image publication index reset
    in one transaction (all publication, derivative, and intent rows removed;
    the lifecycle record set to `restore`/`completed`/`repairRequired`, see
-   §12). The staged file is returned to a single rollback-journal file and
-   fsynced. All of this happens before the live database is touched, so a
+   §12). Every Page deletion Undo opportunity is also removed from the staged
+   copy, because the signing pepper lives outside the database and would
+   otherwise revive the snapshots the backup carries. The staged file is
+   returned to a single rollback-journal file and fsynced. All of this happens before the live database is touched, so a
    failed restore reopens the original with its publication rows and intents
    intact, and the only file that can ever be installed is already reset.
    Generated cache directories are not deleted.
@@ -2654,9 +2766,61 @@ validate that value for its exact entity and allowed host path before carrying
 it through the host redirect and native form. A validated hidden
 `data-dialog-return-location` field lets `appDialogRequestClose()` navigate
 only after the existing close guard accepts a terminal cancellation; ordinary
-dialog close lifecycles do not navigate. Books -> Edit Book and Project
-Assets -> selected-assets New Release adopt this contract. Project dialogs no
-longer use it for ordinary in-page invocation (see Project dialogs below);
+dialog close lifecycles do not navigate. A direct `/notes/books/:id/edit` link
+and Project Assets -> selected-assets New Release adopt this contract. The Books
+shelf's Edit Book stays on the shelf instead: it mounts the Edit Book form from
+a GET of Book Detail, keeps the Book Detail autosave, and refreshes the shelf
+with a GET of `/notes`. Book Detail's New Chapter and Chapter Detail's Edit Chapter
+also save in place through the shared binder (`Accept: application/json`; a
+direct `/chapters/new` or `/edit` URL stays native). They update the host's Book
+navigators from a GET of the host page, plus the Chapter's title or Book Detail's
+hierarchy editor, and leave other host content alone. Chapter Detail's Change order
+saves the same way through `POST /notes/chapters/:id/notes/reorder`, which answers
+JSON (`ORDER_INVALID` 422, `ORDER_STALE` 409, `CHAPTER_NOT_FOUND` 404) only when
+asked; a direct `/notes/order` URL stays native. Its draft lives in the dialog until
+Save, dismissal returns to the saved order, and each open re-reads the host; a read
+arriving over a draft waits until the dialog closes. Save stays locked until that
+read answers: a failed read freezes the shown order and offers a GET-only Check
+again, and a draft overtaken by a different sequence of the same Pages cannot be
+saved, only discarded. New Page on Book and Chapter
+Detail saves in place too: `POST /notes` answers JSON only when asked (`201` with
+`page.url`; `VALIDATION` 422, `PAGE_PARENT_INVALID` 422, `CHAPTER_NOT_FOUND` or
+`BOOK_NOT_FOUND` 404, `PAGE_OPERATION_FAILED` 500), and a direct `/notes/new` URL
+stays native. The host adopts its Page list, navigators and server-decided order
+trigger from a GET of itself; Book Detail's random previews are adopted only when
+none on screen would vanish. A New Chapter or New Page save on Book Detail also
+moves the Book Detail live region's generation, so a Book Defaults, Edit Book or
+hierarchy read begun before the save can no longer install; one still loading
+restarts as a GET and keeps its waiters. A host read that sees that generation
+move reads again. Edit Page on Page Detail saves in place the same way:
+`POST /notes/:id` answers JSON only when asked (`values` is the saved baseline;
+`VALIDATION` 422, `PAGE_NOT_FOUND`, `CHAPTER_NOT_FOUND` or `BOOK_NOT_FOUND` 404,
+`PAGE_OPERATION_FAILED` 500), and a direct `/notes/:id/edit` URL stays native. Page
+Detail adopts its content, navigators, details and revision history from a GET of
+itself. That read also replaces the dialog's saved baseline, leaving any draft as
+typed. Move Page in that dialog posts once through `page-move-dialog.js`, asking for
+JSON (`destination` is the saved location; `MOVE_TARGET_INVALID` or
+`BOOK_CHAPTER_MISMATCH` 422, `PAGE_NOT_FOUND`, `CHAPTER_NOT_FOUND` or `BOOK_NOT_FOUND`
+404, `PAGE_OPERATION_FAILED` 500), and carries the destination alone: the dialog and
+its draft stay open and Page Detail adopts the new location from a GET of itself. A
+lost or unreadable answer is settled by that GET, never by a repeat POST. A direct
+`/notes/:id/edit` move stays native and redirects to the destination. Delete Page's
+form carries `data-confirm-submit-required`: `installAppConfirmationSubmitGate` lets
+it submit only from the replay of a completed confirmation, and sends any other
+submit (`requestSubmit`) through that same confirmation. An unsaved draft changes
+the wording and offers Keep Editing. The POST goes once through
+`dialog-record-delete.js` and leaves for the parent, which can offer Undo; see Page
+deletion Undo below for its contract. Those
+actions, Delete Chapter and Delete Book carry `data-dialog-secondary-action`: while
+their dialog's form is `aria-busy` (a binder save, or a Book autosave through its
+reconciliation) a click or submit is refused locally, never queued. Delete Book
+and Delete Chapter then post once through `dialog-record-delete.js`, asking for JSON
+(`BOOK_NOT_EMPTY` or `CHAPTER_NOT_EMPTY` 409, `BOOK_NOT_FOUND` or `CHAPTER_NOT_FOUND`
+404, `BOOK_OPERATION_FAILED` or `CHAPTER_OPERATION_FAILED` 500). A refusal stays in
+the dialog with drafts kept, an unreadable or lost answer is settled by a GET of the
+record, and a deleted record removes its shelf card in place or leaves its own
+detail page for `/notes` or its Book. A direct `/notes/chapters/:id/edit` stays
+native. Project dialogs no longer use it for ordinary in-page invocation (see Project dialogs below);
 `returnTo` survives for them only on direct links and native form posts.
 Projects-list New Project and Releases-list New Release also retain exact list
 context through native (HTML) create validation/error rerenders; their route
@@ -2671,6 +2835,152 @@ and the label, ARIA and picker references to it; other release hosts keep
 unprefixed ids. The edit flows may also use the validated destination after a
 successful mutation; a native selected-assets Release creation deliberately
 retains its canonical `/releases/:id/assets` success destination.
+
+**Page deletion Undo.** Storage, conflicts and expiry are in §8 and the security
+model in §14. The flow is:
+
+1. On Edit Page, Delete Page requires a confirmation. Its wording says Undo can
+   restore the saved Page for ten minutes but may be refused. It is separate from
+   closing the dialog, whose own "Discard changes?" guard concerns only a draft; with a
+   draft present, the confirmation warns that Undo cannot restore it and offers Keep
+   Editing.
+2. `data-confirm-submit-required` lets the form submit only from the replay of a
+   completed confirmation. A capture-phase gate stops any other submit
+   (`requestSubmit`, say) ahead of the form's handlers and sends it through the same
+   confirmation.
+3. The POST commits the deletion and its snapshot, and the browser goes to the parent
+   Book or Chapter.
+4. The parent shows an Undo alert for each active deletion this owner has there. Undo
+   reads its action token from the status GET and sends one restore POST. The token
+   lives only for that call.
+5. The parent refreshes its affected regions in place, and the alert says the Page was
+   restored and offers a View Page link. Navigation happens only if that link is used.
+
+Saved content, revisions, associations and position come back. Unsaved editor
+content does not.
+
+- `POST /notes/:id/delete` needs Undo: every rendered form carries a fresh
+  server-preallocated `deletionId`, so a lost answer can be settled by reading that
+  record, and there is no fallback to permanent deletion. JSON success is `200` with
+  `message`, `page`, `redirectUrl` and `recovery` (`available`, `deletionId`,
+  `createdAt`, `expiresAt`, `statusUrl`) and no token. A native post redirects to the
+  same `redirectUrl`, `<parent>?notice=page_deleted&undo=<deletionId>`, which holds the
+  public locator only. Refusals, which delete nothing, are `503` `UNDO_NOT_CONFIGURED`,
+  `403` `UNDO_OWNER_UNAVAILABLE`, `422` `DELETION_ID_INVALID`, `409`
+  `UNDO_DELETION_ID_CONFLICT` and `500` `PAGE_OPERATION_FAILED`; a native post gets the
+  error page for its status. `404` `PAGE_NOT_FOUND` is reserved for a Page that has
+  gone, since the client reads it that way.
+- `GET /notes/page-deletions/:deletionId` is the authoritative status, for the owner
+  alone: `200` `available` with `undoToken`, `200` `restored` without one, `410`
+  `UNDO_EXPIRED` with safe metadata, or `404` `UNDO_UNAVAILABLE`. An owned record of
+  any state also proves its Delete committed.
+- `POST /notes/page-deletions/:deletionId/restore` takes `undoToken` in its body and
+  makes one attempt: `200` `restored` with `page`, `parent` and `restoredAt`; `404`
+  `UNDO_UNAVAILABLE`; `410` `UNDO_EXPIRED`; `409` for the other §8 codes, and
+  `UNDO_ALREADY_RESTORED` adds where the Page is; `503` `UNDO_NOT_CONFIGURED`; or a
+  sanitized `500` `UNDO_OPERATION_FAILED`.
+- `GET /notes/page-deletions?chapterId=N` or `?bookId=N` is discovery. It names exactly
+  one parent (otherwise `422` `PARENT_INVALID`) and answers this owner's active
+  deletions, newest first, at most ten, with `hasMore`, and never a token or payload.
+  `bookId` means Pages directly in the Book: a Page deleted from one of its Chapters
+  appears only under that Chapter. With no verifiable owner the list is empty.
+
+These routes are JSON, `private, no-store`, and registered ahead of the dynamic Note
+routes. **The browser never automatically repeats an uncertain Delete or Restore.** A
+lost Delete answer is settled by the status read, then by reading the Page; a lost
+Restore answer by the status read, with Undo withheld until a read shows the Page is
+still deleted. If reads also fail, the alert or dialog offers a read-only Check again.
+
+The parent decides what its URL may claim. "Page deleted." renders, with the
+`data-page-deletion-*` attributes, only when `undo` names this owner's active deletion
+from exactly this parent; any other locator, or none, is treated as absent and claims
+nothing. `?notice=page_unavailable` says only that a Page is no longer available, and
+is used when a Page is found gone or an unconfirmed Delete has since expired. The
+client removes both codes and the locator from the URL with `replaceState`, so a
+reload or Back does not repeat the claim.
+
+[`page-deletion-undo.js`](src/static/client/page-deletion-undo.js) runs discovery on
+every load of a parent, so a refresh or return finds the same opportunities. Each gets
+its own alert in a separate `[data-page-deletion-undo-alerts]` region rather than the
+page feedback, so a later save does not overwrite it, and several can be active at
+once. An alert shows its deadline and approximate time left. Past the deadline it
+reads the status, and the server's answer decides. Expiry reports that the Page remains
+deleted. `UNDO_ORDER_CHANGED` names the newer deletion to undo first, when one is on
+show. A failed discovery keeps any verified notice and offers Check again; `hasMore`
+adds a note that only the ten most recent are shown. Dismiss hides one alert in this tab
+only: it records public locators, never tokens, in `sessionStorage`, and the server's
+opportunity is untouched. A change that removes the focused control moves focus to what
+the alert now offers, while focus the user moved elsewhere stays there; dismissing moves
+it to the next alert or the page's heading action.
+
+**Host refresh coordination.** Book, Chapter and Page Detail dialogs in
+[`chapter-dialogs.js`](src/static/client/chapter-dialogs.js) share one host record per
+document, because every read reconciles the same page. `startHostRead` is the only way
+to begin a read: it takes ownership with a new request object in `host.refresh` and
+records the read's settling promise in `host.latestRead`. `fetchAndInstallHost` installs
+only while its request still owns `host.refresh`, so a stale answer can never overwrite
+a newer one, and it reads again if the Book Detail live region's generation moved during
+the fetch.
+
+Being overtaken is not the same as being refreshed. The newer read may fail unreported,
+or install less: New Chapter's read omits the preview choices that a New Page or Undo
+needs. So `readHostAfterWrite`, used for anything a mutation depends on, treats internal
+supersession as neither success nor failure. It waits for the newest read to settle
+(`hostReadsSettled`), then makes another authoritative GET through its own installer,
+until one of its reads installs (`true`) or fails while still the newest (`false`). Each
+overlap costs one more GET. Callers see only that boolean: `refreshHost` for dialogs and
+`refreshPageDeletionParent` for Undo. On `false` the confirmed mutation stays reported
+as done, with a note that the page could not refresh and a Retry refresh that repeats
+only the GET. Reconciliation never repeats a mutation POST. Reads nothing depends on
+(`readHostQuietly`, `checkPageOrder`) still pass through `startHostRead`, so they can be
+waited for, but do not make this guarantee.
+
+The flows share the guarantee, not their rendering:
+
+| Flow | Host installer | Notes |
+|---|---|---|
+| New Chapter | `installBookDetail` | navigators, hierarchy editor, order trigger |
+| Edit Chapter, Change order | `installChapterDetail` | adds the Page list, title and order section; an open order draft waits behind the read |
+| New Page, Undo on Book Detail | `installBookDetailPages` | `installBookDetail` plus details, preview choices and, when nothing shown would vanish, random previews |
+| New Page, Undo on Chapter Detail | `installChapterDetail` | as for Edit Chapter |
+| Edit Page, Move Page | `installPageDetail` | keeps the draft and replaces its saved baseline; a read also settles an uncertain move |
+
+Book Defaults, Edit Book and hierarchy reads run in Book Detail's live region rather than
+through `startHostRead`. Before a host read begins after a write,
+`supersedeBookDetailLiveRefresh` moves that region's generation and restarts any load in
+progress as a GET, keeping its waiters, so neither side installs an answer older than
+the other's write.
+
+**Shared dialog form lifecycle.** The binder in
+[`app-dialogs.js`](src/static/client/app-dialogs.js) orders a save so the request holds
+exactly what the user sees. Custom editors go first: `syncEditorBeforeSubmit` copies the
+Markdown editor's content to its textarea from a capture-phase listener, ahead of the
+binder's handler and of the editor's own late-added one. The binder then captures the
+payload synchronously, as `FormData` for a form declaring `multipart/form-data` (it
+carries files) and as `URLSearchParams` otherwise, and only after that sets
+`state.submitting` and `aria-busy`, disables the submit controls and freezes the form
+with `inert`, since a later edit would be missing from the request and lost when success
+resets the form. Inert covers pointer, keyboard, editor and file picker alike,
+and leaves out status regions, the action's own messages and close controls. Focus is
+held on the dialog, because Escape from the body would skip its key guard.
+
+While pending, a second submit returns early (`state.submitting`, or a host's
+`submitLocked`), and `beforeClose` guards keep the dialog open since the request may
+already have written. Move and Delete live in separate forms, and their native submit
+would cancel the save, so while the dialog's form is `aria-busy` a capture-phase guard
+refuses them, never queues them; the check reads the form each time and holds no state.
+A deletion or move freezes the whole dialog with `freezeAppDialog`, because it reaches
+past the form to the draft beside it. On validation, refusal or network failure the
+form unlocks, and values stay as typed where the host set `preserveValuesOnError`,
+otherwise taking the values the server returned. All of this is user-facing protection.
+Authentication, CSRF and service validation remain authoritative on the server.
+
+**Notes feedback alerts.** Dismiss sits at the far right of the supported feedback alerts
+through scoped CSS: its feedback text becomes a `flow-root` and the button floats, whatever
+wraps beside it. Page deletion uses this existing feedback rather than a new component.
+The parent's rendered notice is pinned (`app-dialog-feedback--pinned`) and is retired in
+favor of the Undo alert naming the same deletion, passing focus along if it held it.
+Undo alerts reuse the notice styles and that Dismiss alignment in their own region.
 
 **New Release dialog.** The ordinary Dashboard and Releases New Release dialog
 ([`release-create-dialog.js`](src/static/client/release-create-dialog.js))

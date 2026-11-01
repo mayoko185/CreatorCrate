@@ -10,12 +10,19 @@
   {% set selectedProjectIds = noteFormModel.selectedProjectIds %}
   {% set selectedAssetIds = noteFormModel.selectedAssetIds %}
   {% set selectedAssets = noteFormModel.selectedAssets %}
+  {# Opened from its host page, New Page or Edit Page saves in place. A directly
+     visited /notes/new or /notes/:id/edit (and its validation render) stays native. #}
+  {% set noteFormAsync = not noteDialogOpen %}
+  {% set noteFormIsEdit = noteFormModel.action == 'Edit' %}
   {% call noteDialog.render(noteDialogId, noteDialogTitle, noteDialogOpen, '', 'note-form', 'project-form-dialog app-dialog--refined') %}
     <div class="app-dialog-body project-edit-dialog-body">
       <form id="note-form" method="post" action="{{ noteFormModel.submitUrl }}" class="app-dialog-form project-form project-edit-dialog-form notes-form notes-workspace"
-            data-notes-editor-form data-note-dialog-dirty data-dialog-form data-dialog-async="false" novalidate>
+            data-notes-editor-form data-note-dialog-dirty data-dialog-form data-dialog-async="{{ 'true' if noteFormAsync else 'false' }}"{% if noteFormAsync %} data-dialog-reset-on-close data-dialog-pending-message="{{ 'Saving Page…' if noteFormIsEdit else 'Creating Page…' }}" data-dialog-error-message="{{ 'The Page could not be saved.' if noteFormIsEdit else 'The Page could not be created.' }}"{% endif %} novalidate>
         <input type="hidden" name="_csrf" value="{{ _csrf }}">
         <script type="application/json" data-note-dialog-baseline>{{ noteFormModel.dialogBaselineJson | safe }}</script>
+        {% if noteFormAsync %}
+          <div class="error-summary" role="alert" data-dialog-error hidden><p data-dialog-error-text></p></div>
+        {% endif %}
         {% if noteFormModel.action == 'Create' and noteFormModel.chapter %}
           <input type="hidden" name="chapterId" value="{{ values.chapterId }}">
         {% elif noteFormModel.action == 'Create' %}
@@ -79,24 +86,25 @@
                   panelLabel: 'Page destinations',
                   nativeSelect: { id: 'note-move-target', attributes: [['required', true], ['form', 'note-move-form']] }
                 }) }}
-                <button class="button button-small button-secondary" type="submit" form="note-move-form">Move Page</button>
+                <button class="button button-small button-secondary" type="submit" form="note-move-form" data-dialog-secondary-action>Move Page</button>
               </div>
             </details>
 
             <details class="notes-workspace-disclosure notes-workspace-disclosure--delete">
               <summary>Delete Page</summary>
               <div class="notes-workspace-disclosure-content">
-                <p class="notes-workspace-warning">Permanently delete this Page and its associations. This cannot be undone.</p>
-                <button class="button button-small button-danger" type="submit" form="note-delete-form" data-confirm="Delete this Page permanently? This cannot be undone.">Delete Page</button>
+                <p class="notes-workspace-warning">Delete this saved Page, including its content, revision history and connections. Undo can restore the saved Page for ten minutes, but may be refused if related records or the Page order change. Unsaved changes cannot be restored. To discard only your unsaved changes, close this dialog instead.</p>
+                <button class="button button-small button-danger" type="submit" form="note-delete-form" data-dialog-secondary-action data-confirm="Delete this Page? Its saved content, revision history and connections will be removed. Undo can restore them for ten minutes, but may be refused if related records or the Page order change." data-confirm-dialog-title="Delete Page?" data-confirm-dialog-confirm-label="Delete Page">Delete Page</button>
               </div>
             </details>
           </div>
         </section>
-        <form id="note-move-form" method="post" action="/notes/{{ note.id }}/move" hidden>
+        <form id="note-move-form" method="post" action="/notes/{{ note.id }}/move" data-dialog-secondary-action hidden>
           <input type="hidden" name="_csrf" value="{{ _csrf }}">
         </form>
-        <form id="note-delete-form" method="post" action="/notes/{{ note.id }}/delete" hidden>
+        <form id="note-delete-form" method="post" action="/notes/{{ note.id }}/delete" data-dialog-secondary-action data-confirm-submit-required hidden>
           <input type="hidden" name="_csrf" value="{{ _csrf }}">
+          <input type="hidden" name="deletionId" value="{{ noteFormModel.deletionId }}">
         </form>
       {% endif %}
     </div>

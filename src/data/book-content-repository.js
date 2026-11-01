@@ -41,6 +41,12 @@ export function createBookContentRepository(db) {
     WHERE book_id = ?
   `);
 
+  const setSortOrderStmt = db.prepare(`
+    UPDATE book_contents
+    SET sort_order = ?
+    WHERE book_id = ? AND item_type = ? AND item_id = ?
+  `);
+
   const appendTx = db.transaction((bookId, itemType, itemId) => {
     if (findMembershipStmt.get(bookId, itemType, itemId)) {
       throw new BookContentError(
@@ -85,6 +91,35 @@ export function createBookContentRepository(db) {
     const rows = listForBookStmt.all(bookId);
     Object.defineProperty(rows, 'changed', { value: changed });
     return rows;
+  });
+
+  // Reinstate captured rows exactly, adding any that are absent. Every existing
+  // row is moved clear of the captured positions first, so UNIQUE (book_id,
+  // sort_order) holds at each step.
+  const restoreRowsTx = db.transaction((bookId, rows) => {
+    const current = listForBookStmt.all(bookId);
+    const captured = new Set(rows.map((row) => itemKey(row.item_type, row.item_id)));
+    if (current.some((row) => !captured.has(itemKey(row.item_type, row.item_id)))) {
+      throw new BookContentError(
+        `Captured Book-content rows do not cover Book ${bookId}.`,
+        { code: 'UNKNOWN_ITEM' }
+      );
+    }
+
+    if (current.length > 0) {
+      const highest = Math.max(...current.map((row) => row.sort_order), ...rows.map((row) => row.sort_order));
+      shiftOrdersStmt.run(highest + 1, bookId);
+    }
+
+    const existing = new Set(current.map((row) => itemKey(row.item_type, row.item_id)));
+    for (const row of rows) {
+      if (existing.has(itemKey(row.item_type, row.item_id))) {
+        setSortOrderStmt.run(row.sort_order, bookId, row.item_type, row.item_id);
+      } else {
+        insertStmt.get(bookId, row.item_type, row.item_id, row.sort_order);
+      }
+    }
+    return listForBookStmt.all(bookId);
   });
 
   function rewriteOrders(bookId, current, orderedItems) {
@@ -169,6 +204,15 @@ export function createBookContentRepository(db) {
     reorder(bookId, orderedItems) {
       assertId(bookId, 'Book');
       return reorderTx(bookId, orderedItems);
+    },
+
+    /**
+     * Reinstate raw rows captured before a Page deletion. `rows` must cover
+     * every current item in `bookId`; absent items are inserted.
+     */
+    restoreRows(bookId, rows) {
+      assertId(bookId, 'Book');
+      return restoreRowsTx(bookId, rows);
     },
   };
 }

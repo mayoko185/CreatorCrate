@@ -350,7 +350,7 @@ describe('Notes Page detail hierarchy and layout contract', () => {
       expect(forms).toHaveLength(edit ? 2 : 1);
       expect(classes(forms[0])).toEqual(expect.arrayContaining(['app-dialog-form', 'project-form', 'project-edit-dialog-form']));
       expect(forms[0]).toContain('id="chapter-form" method="post" action="' + submitUrl + '"');
-      expect(forms[0]).toContain('data-dialog-form data-dialog-async="false" novalidate');
+      expect(forms[0]).toContain(`data-dialog-form data-dialog-async="${open ? 'false' : 'true'}" data-dialog-reset-on-close`);
       if (edit) {
         expect(dialog).toContain('type="submit" form="chapter-form" data-dialog-submit>Save</button>');
         expect(forms[0]).not.toContain('data-dialog-submit');

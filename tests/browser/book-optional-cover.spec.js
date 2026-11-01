@@ -31,9 +31,10 @@ for (const javaScriptEnabled of [false, true]) {
       const response = page.waitForResponse(res => res.request().method() === 'POST' && res.url().endsWith('/notes/books'));
       await dialog.getByRole('button', { name: 'Create', exact: true }).click();
       const submitted = await response;
-      expect(submitted.status()).toBe(302);
+      // Without JavaScript the shelf's link leads to the native standalone form.
+      expect(submitted.status()).toBe(javaScriptEnabled ? 201 : 302);
       expect(submitted.request().postDataBuffer().toString()).toContain('filename=""\r\nContent-Type: application/octet-stream');
-      await expect(page).toHaveURL(/\/notes\/books\/\d+$/);
+      await expect(page).toHaveURL(javaScriptEnabled ? /\/notes$/ : /\/notes\/books\/\d+$/);
       expect(db.prepare('SELECT title FROM books').all()).toEqual([{ title: 'Native optional cover' }]);
       expect(db.prepare('SELECT * FROM managed_assets').all()).toEqual([]);
       expect(db.prepare('SELECT * FROM book_primary_images').all()).toEqual([]);

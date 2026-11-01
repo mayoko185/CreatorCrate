@@ -320,9 +320,9 @@ describe('WP7D2A New Book multipart HTTP', () => {
   it('rejects invalid image with a sanitized error and cleans staging', async () => {
     const res = await post().set('Accept', 'application/json').field('title', 'Valid title').attach('cover', Buffer.from('private invalid bytes'), 'C-private.png').expect(422);
     expect(res.headers['content-type']).toMatch(/^application\/json/);
+    const message = 'A valid PNG, JPEG or WebP image, including bounded animated WebP, within the managed image limits is required.';
     expect(res.body).toEqual({
-      status: 'error', code: 'INVALID_IMAGE',
-      message: 'A valid PNG, JPEG or WebP image, including bounded animated WebP, within the managed image limits is required.',
+      status: 'error', code: 'INVALID_IMAGE', message, errors: { cover: message },
     });
     expect(res.text).not.toMatch(/private|stack|storage_key/);
     counts();
@@ -543,6 +543,83 @@ describe('WP7D2A New Book multipart HTTP', () => {
       release?.();
       other?.terminal();
     }
+  });
+  describe('New Book dialog JSON contract', () => {
+    const asyncPost = () => post().set('Accept', 'application/json');
+
+    it('creates exactly one Book with the View Book URL and fresh defaults', async () => {
+      const create = vi.spyOn(app.locals.bookService, 'createBook');
+      const res = await asyncPost().field('title', '  Async Book  ').expect(201);
+      const book = db.prepare('SELECT * FROM books').get();
+      expect(res.body).toEqual({
+        status: 'success',
+        message: 'Book “Async Book” created.',
+        book: { id: book.id, title: 'Async Book', url: `/notes/books/${book.id}` },
+        values: { title: '' },
+      });
+      expect(create).toHaveBeenCalledOnce();
+      counts(1, 0);
+    });
+    it('creates through the existing cover services for an optional cover', async () => {
+      const ingestion = vi.spyOn(app.locals.managedImageService, 'createCommittedImage');
+      const compound = vi.spyOn(app.locals.bookService, 'createBookWithManagedPrimaryImage');
+      const res = await asyncPost().field('title', 'Async cover').attach('cover', bytes, 'cover.png').expect(201);
+      expect(res.body.book.url).toBe(`/notes/books/${res.body.book.id}`);
+      expect(ingestion).toHaveBeenCalledOnce();
+      expect(compound).toHaveBeenCalledOnce();
+      expect(app.locals.bookPrimaryImageService.getPrimaryImageSource(res.body.book.id))
+        .toEqual({ kind: 'managed_asset', id: source().id });
+      counts(1, 1);
+    });
+    it.each([false, true])('returns structured title errors before ingestion (cover=%s)', async (cover) => {
+      const ingestion = vi.spyOn(app.locals.managedImageService, 'createCommittedImage');
+      const submit = asyncPost().field('title', '   ');
+      if (cover) submit.attach('cover', bytes, 'private.png');
+      const res = await submit.expect(422);
+      expect(res.body).toEqual({
+        status: 'error', code: 'VALIDATION', message: 'Fix the highlighted fields and try again.',
+        errors: { title: 'Title is required.' },
+      });
+      expect(ingestion).not.toHaveBeenCalled();
+      counts();
+    });
+    it('reports an oversized cover as a field error without mutation', async () => {
+      const res = await asyncPost().field('title', 'Valid')
+        .attach('cover', Buffer.alloc(10 * 1024 * 1024 + 1), 'big.png').expect(413);
+      expect(res.body).toEqual({
+        status: 'error', code: 'FILE_TOO_LARGE', message: 'Cover file exceeds 10 MiB.',
+        errors: { cover: 'Cover file exceeds 10 MiB.' },
+      });
+      counts();
+      expect(files()).toHaveLength(0);
+    });
+    it('cleans up and hides details when upload processing fails after ingestion', async () => {
+      const rollback = vi.spyOn(app.locals.managedAssetRepository, 'rollbackCommitted');
+      db.exec("CREATE TEMP TRIGGER fail_async_cover BEFORE INSERT ON book_primary_images BEGIN SELECT RAISE(ABORT, 'private failure'); END");
+      const res = await asyncPost().field('title', 'Valid').attach('cover', bytes, 'cover.png').expect(500);
+      expect(res.body).toEqual({ status: 'error', message: 'Internal server error.' });
+      expect(rollback).toHaveBeenCalledOnce();
+      counts();
+      expect(files()).toHaveLength(0);
+    });
+    it('returns JSON refusals for authentication and CSRF without mutation', async () => {
+      const csrf = await agent.post('/notes/books').set('Accept', 'application/json')
+        .field('title', 'Blocked').field('_csrf', 'invalid').expect(403);
+      expect(csrf.body.status).toBe('error');
+      const unauthenticated = await request(app).post('/notes/books').set('Accept', 'application/json')
+        .field('title', 'Blocked').expect(401);
+      expect(unauthenticated.body).toEqual({ status: 'error', message: 'Authentication required.' });
+      counts();
+    });
+    it('leaves the shelf form async and a directly visited form native', async () => {
+      const shelf = await agent.get('/notes').expect(200);
+      const direct = await agent.get('/notes/books/new').expect(200);
+      const asyncAttribute = (html) => html.match(/<form\b[^>]*id="book-form"[^>]*>/)?.[0].match(/data-dialog-async="(\w+)"/)?.[1];
+      expect(asyncAttribute(shelf.text)).toBe('true');
+      expect(asyncAttribute(direct.text)).toBe('false');
+      expectBookCoverForm(shelf.text);
+      expectBookCoverForm(direct.text);
+    });
   });
   it('handles a real HTTP abort during partial multipart input without mutation', async () => {
     const started = deferred();
