@@ -18,9 +18,11 @@
         <h3 id="asset-tags-edit-heading">Tags</h3>
         <div class="asset-edit-dialog-section-body asset-tags-edit-section-body">
           <form id="asset-edit-form" method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/tags" data-confirmed-tag-ids="{{ confirmedAssetTagIds | join(',') }}"
-                class="app-dialog-form asset-edit-tags-form" data-dialog-form data-dialog-async="false">
+                class="app-dialog-form asset-edit-tags-form" data-dialog-form data-dialog-async="false" data-asset-tags-form>
             <input type="hidden" name="_csrf" value="{{ _csrf }}">
             <input type="hidden" name="origin" value="asset-edit">
+            {# WP10A1-F3: the saved tag set this form shows, as the save's reviewed state. #}
+            <input type="hidden" name="tagReview" value="{{ assetTagReview }}" data-asset-tag-review>
             {{ dropdown.multiSelect({
               id: "asset-tags-form",
               name: "tagIds[]",
@@ -45,6 +47,11 @@
       </section>
     {% endif %}
 
+    {# Primary-image regions. asset-viewer-refresh.js re-installs them from a GET
+       after a confirmed change; the wrappers are always rendered (display:
+       contents) so a section that appears or disappears still has a place,
+       and they carry the saved selection that the page reconciles against. #}
+    <div class="asset-edit-dialog-region" data-asset-viewer-region="project-primary-image" data-primary-image-selected="{{ 'true' if isPrimaryImage else 'false' }}">
     {% if isPrimaryImage or canSetAsPrimaryImage %}
       <section class="settings-section asset-edit-dialog-section asset-primary-image-section" aria-labelledby="asset-primary-image-heading">
         <h3 id="asset-primary-image-heading">Primary image</h3>
@@ -85,7 +92,9 @@
         </div>
       </section>
     {% endif %}
+    </div>
 
+    <div class="asset-edit-dialog-region" data-asset-viewer-region="book-primary-image" data-book-primary-image-book-ids="{% for usage in bookPrimaryImageUsages %}{{ usage.id }}{% if not loop.last %},{% endif %}{% endfor %}">
     {% if canSetAsBookPrimaryImage or bookPrimaryImageUsages.length > 0 %}
       <section class="settings-section asset-edit-dialog-section asset-book-primary-image-section" aria-labelledby="asset-book-primary-image-heading">
         <h3 id="asset-book-primary-image-heading">Book primary image</h3>
@@ -121,6 +130,8 @@
             {% endif %}
           {% endif %}
 
+          {# Re-installed on its own, so the Book choice above keeps its draft. #}
+          <div class="asset-edit-dialog-region" data-asset-viewer-region="book-primary-image-usages">
           {% if bookPrimaryImageUsages.length > 0 %}
             <p class="asset-primary-image-status">Currently used as the primary image for:</p>
             <ul class="asset-book-primary-image-usage-list">
@@ -143,9 +154,11 @@
               {% endfor %}
             </ul>
           {% endif %}
+          </div>
         </div>
       </section>
     {% endif %}
+    </div>
 
     {% if canMutate %}
       <section class="settings-section asset-edit-dialog-section asset-actions-section" aria-labelledby="asset-actions-heading">
@@ -158,6 +171,7 @@
               <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/rename" class="asset-action-form asset-rename-form">
                 <input type="hidden" name="_csrf" value="{{ _csrf }}">
                 <input type="hidden" name="origin" value="viewer">
+                <input type="hidden" name="{{ assetReviewField }}" value="{{ assetReview }}" data-asset-review>
                 {% for key in contextFields %}
                   {% if context[key] is not none and context[key] != '' %}
                     <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
@@ -180,6 +194,7 @@
               <p class="asset-action-description">Move to a category root or Uncategorized. Nested subfolders are not preserved.</p>
               <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/move" class="asset-action-form asset-move-form">
                 <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                <input type="hidden" name="{{ assetReviewField }}" value="{{ assetReview }}" data-asset-review>
                 {% for key in contextFields %}
                   {% if context[key] is not none and context[key] != '' %}
                     <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
@@ -224,8 +239,16 @@
             <summary>Delete asset</summary>
             <div class="notes-workspace-disclosure-content">
               <p class="notes-workspace-warning">Permanently delete this file from disk. It cannot be restored through CreatorCrate.</p>
-              <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/delete" class="asset-action-form asset-delete-form">
+              {# data-confirm-submit-required: with scripts, only a completed
+                 confirmation may submit this form (requestSubmit and Enter
+                 included); the native form and redirect are unchanged. #}
+              <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/delete" class="asset-action-form asset-delete-form" data-confirm-submit-required>
                 <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                {# The state of the asset this page shows: the server deletes it
+                   only while the asset still has exactly this state, so a
+                   Delete confirmed here never removes a later rename, move or
+                   replacement. A Rename/Move refresh installs the new value. #}
+                <input type="hidden" name="{{ assetDeleteReviewField }}" value="{{ assetDeleteReview }}" data-asset-delete-review>
                 {% for key in contextFields %}
                   {% if context[key] is not none and context[key] != '' %}
                     <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
@@ -233,6 +256,8 @@
                 {% endfor %}
                 <div>
                   <button class="button button-danger" type="submit"
+                          data-confirm-dialog-title="Delete asset?"
+                          data-confirm-dialog-confirm-label="Delete asset"
                           data-confirm="The file will be permanently deleted from disk and cannot be restored through CreatorCrate. Continue?">Delete asset</button>
                 </div>
               </form>
@@ -243,6 +268,9 @@
     {% endif %}
   </div>
 
+  {# The dialog's one live region. The in-place tag save, primary-image,
+     Rename, Move and Delete actions (asset-edit-dialog.js) report here; it stays
+     announced while the dialog is frozen for a save. #}
   <div class="app-dialog-status" data-dialog-status role="status" aria-live="polite"></div>
 
 {% endcall %}

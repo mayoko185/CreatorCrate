@@ -12,9 +12,14 @@
 {% block body_class %}refined-page{% endblock %}
 
 {% block content %}
-  {% if project.isArchived %}
-    {{ pageHeading.render("", "archived") }}
-  {% endif %}
+  {# The archived state is shown outside the hero, so an Archive in place
+     (project-archive.js) re-reads these regions too; each is always rendered
+     (display: contents) so a refresh finds it on both sides. #}
+  <div class="project-detail-archive-state" data-project-detail-region="archive-heading">
+    {% if project.isArchived %}
+      {{ pageHeading.render("", "archived") }}
+    {% endif %}
+  </div>
 
   {% if notice %}
     {% set noticeVariant = notice.variant %}
@@ -22,11 +27,13 @@
     {% include "partials/notice.njk" %}
   {% endif %}
 
-  {% if project.isArchived %}
-    {% set noticeVariant = "warning" %}
-    {% set noticeText = "This project is archived and read-only. Editing, releases, and asset scanning are restricted." %}
-    {% include "partials/notice.njk" %}
-  {% endif %}
+  <div class="project-detail-archive-state" data-project-detail-region="archive-notice">
+    {% if project.isArchived %}
+      {% set noticeVariant = "warning" %}
+      {% set noticeText = "This project is archived and read-only. Editing, releases, and asset scanning are restricted." %}
+      {% include "partials/notice.njk" %}
+    {% endif %}
+  </div>
 
   <div class="notice notice--success app-dialog-feedback" data-dialog-feedback role="status" hidden>
     <p data-dialog-feedback-text></p>
@@ -168,7 +175,7 @@
     <h2>Releases</h2>
 
     <div class="project-detail-section-body">
-      <div class="workflow-actions">
+      <div class="workflow-actions" data-project-detail-region="release-actions">
         <a class="button" href="/releases?project={{ project.id }}">View release records</a>
         {% if not project.isArchived %}
           <a class="button button-secondary" href="/releases/new?projectId={{ project.id }}">Create release record</a>

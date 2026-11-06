@@ -1,6 +1,6 @@
 import { isEnhancementBound, markEnhancementBound, liveRegionWindow } from './dom.js';
 import { enhancePreviewMedia } from './preview.js';
-import { PROJECT_EDIT_SAVED_EVENT } from './project-edit-dialog.js';
+import { PROJECT_ARCHIVED_EVENT, PROJECT_DELETED_EVENT, PROJECT_EDIT_SAVED_EVENT } from './project-edit-dialog.js';
 import { removeStatusRetry, showStatusRetry } from './status-retry.js';
 
 // Project Detail refreshes in place after an Edit Project save: the page is
@@ -9,6 +9,12 @@ import { removeStatusRetry, showStatusRetry } from './status-retry.js';
 // from that render, together with the page heading and document title. The
 // Releases section, the dialogs and the dialog feedback notice sit outside
 // every region and are never replaced. Scroll position and focus are kept.
+// An Archive in place (project-archive.js) refreshes the same way, and the
+// archived heading, notice and release actions are regions too, so the page
+// shows the archived project's read-only state without being replaced.
+// A Delete (project-delete.js) leaves nothing to refresh: that module retires
+// the page, and this one supersedes any refresh still in flight, so a late
+// answer neither installs regions nor reports into the retired page.
 const PAGE_SELECTOR = '[data-project-detail]';
 const REGION_SELECTOR = '[data-project-detail-region]';
 const STATE_KEY = '__creatorCrateProjectDetailRefresh';
@@ -23,6 +29,30 @@ const SAVED_MESSAGE = 'Project updated.';
 const REFRESHING_MESSAGE = 'Project saved. Refreshing Project Detail…';
 const STALE_MESSAGE = 'Project saved, but Project Detail could not refresh. The information shown may be out of date.';
 const SIGNED_OUT_MESSAGE = 'Project saved, but your CreatorCrate sign-in has expired, so Project Detail could not refresh. Sign in again, then retry.';
+const SAVE_MESSAGES = Object.freeze({
+  done: SAVED_MESSAGE,
+  tone: 'success',
+  refreshing: REFRESHING_MESSAGE,
+  stale: STALE_MESSAGE,
+  signedOut: SIGNED_OUT_MESSAGE,
+  // Focus lost with a replaced control moves to its counterpart.
+  focusMain: false,
+});
+
+function archiveMessages(detail) {
+  const lead = typeof detail?.message === 'string' && detail.message ? detail.message : 'Project archived.';
+  return {
+    done: lead,
+    // Only an Archive this page confirmed reads as a success.
+    tone: detail?.confirmed === true ? 'success' : 'error',
+    refreshing: `${lead} Refreshing Project Detail…`,
+    stale: `${lead} Project Detail could not refresh, so the information shown may be out of date.`,
+    signedOut: `${lead} Your CreatorCrate sign-in has expired, so Project Detail could not refresh. Sign in again, then retry.`,
+    // The archived project's Edit action is gone; a control in its place
+    // (by position) is not what the user was on, so focus goes to the page.
+    focusMain: true,
+  };
+}
 
 // tone: 'success', 'error' or 'pending' (neither).
 function setFeedback(document, message, tone = 'success') {
@@ -70,7 +100,7 @@ function focusCounterpart(oldRegion, newRegion, active) {
   return target;
 }
 
-function applyRefresh(document, parsed, projectId) {
+function applyRefresh(document, parsed, projectId, { focusMain = false } = {}) {
   const page = document.querySelector(PAGE_SELECTOR);
   const nextPage = parsed.querySelector(PAGE_SELECTOR);
   if (!page || nextPage?.getAttribute('data-project-detail') !== projectId) return false;
@@ -90,7 +120,7 @@ function applyRefresh(document, parsed, projectId) {
   current.forEach((region, name) => {
     const replacement = document.importNode(next.get(name), true);
     if (active && region.contains(active)) {
-      focusTarget = focusCounterpart(region, replacement, active);
+      focusTarget = focusMain && !active.id ? null : focusCounterpart(region, replacement, active);
       focusLost = true;
     }
     region.replaceWith(replacement);
@@ -131,7 +161,7 @@ function signedOut(windowObject, response) {
  * older one still in flight, so a late response can never overwrite a newer
  * save. Resolves to 'refreshed', 'failed', 'signed-out' or 'superseded'.
  */
-export async function refreshProjectDetail(document, projectId) {
+export async function refreshProjectDetail(document, projectId, { focusMain = false } = {}) {
   const state = refreshState(document);
   state.generation += 1;
   const generation = state.generation;
@@ -153,7 +183,7 @@ export async function refreshProjectDetail(document, projectId) {
     if (unauthenticated) outcome = 'signed-out';
     if (html) {
       const parsed = new windowObject.DOMParser().parseFromString(html, 'text/html');
-      outcome = applyRefresh(document, parsed, projectId) || 'failed';
+      outcome = applyRefresh(document, parsed, projectId, { focusMain }) || 'failed';
     }
   } catch {
     if (generation !== state.generation) return 'superseded';
@@ -162,28 +192,30 @@ export async function refreshProjectDetail(document, projectId) {
   return outcome;
 }
 
-async function refreshAfterSave(document, projectId, { focusResult = false } = {}) {
+async function refreshAfterSave(document, projectId, { focusResult = false, messages = SAVE_MESSAGES } = {}) {
   const state = refreshState(document);
   removeStatusRetry(state, RETRY_KEY);
-  const outcome = await refreshProjectDetail(document, projectId);
+  const outcome = await refreshProjectDetail(document, projectId, { focusMain: messages.focusMain });
   // A newer save or retry owns the outcome now.
   if (outcome === 'superseded') return;
   if (outcome === 'refreshed') {
-    setFeedback(document, SAVED_MESSAGE);
-    if (focusResult) document.querySelector(`[data-project-edit-id="${projectId}"]`)?.focus?.();
+    setFeedback(document, messages.done, messages.tone);
+    if (focusResult) {
+      (document.querySelector(`[data-project-edit-id="${projectId}"]`) || document.getElementById('main-content'))?.focus?.();
+    }
     return;
   }
   // The save itself succeeded: only the page is stale, so the retry repeats
   // the GET, never the save.
-  const notice = setFeedback(document, outcome === 'signed-out' ? SIGNED_OUT_MESSAGE : STALE_MESSAGE, 'error');
+  const notice = setFeedback(document, outcome === 'signed-out' ? messages.signedOut : messages.stale, 'error');
   const retry = notice ? showStatusRetry({
     state,
     status: notice,
     attribute: 'data-project-detail-refresh-retry',
     key: RETRY_KEY,
     onRetry: ({ wasFocused }) => {
-      setFeedback(document, REFRESHING_MESSAGE, 'pending');
-      return refreshAfterSave(document, projectId, { focusResult: wasFocused });
+      setFeedback(document, messages.refreshing, 'pending');
+      return refreshAfterSave(document, projectId, { focusResult: wasFocused, messages });
     },
   }) : null;
   if (focusResult) retry?.focus?.();
@@ -200,6 +232,20 @@ export function enhanceProjectDetailRefresh(scope = globalThis.document) {
     // Only a save of the project this page shows changes it.
     if (String(event.detail?.projectId) !== projectId) return;
     void refreshAfterSave(document, projectId);
+  });
+  document.addEventListener(PROJECT_ARCHIVED_EVENT, (event) => {
+    const projectId = document.querySelector(PAGE_SELECTOR)?.getAttribute('data-project-detail');
+    if (String(event.detail?.projectId) !== projectId) return;
+    void refreshAfterSave(document, projectId, { messages: archiveMessages(event.detail) });
+  });
+  document.addEventListener(PROJECT_DELETED_EVENT, (event) => {
+    const projectId = document.querySelector(PAGE_SELECTOR)?.getAttribute('data-project-detail');
+    if (String(event.detail?.projectId) !== projectId) return;
+    const state = refreshState(document);
+    state.generation += 1;
+    state.abort?.abort();
+    state.abort = null;
+    removeStatusRetry(state, RETRY_KEY);
   });
   return true;
 }

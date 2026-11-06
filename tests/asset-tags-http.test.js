@@ -3,9 +3,37 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import request from 'supertest';
 import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { authenticate, AUTH_CONFIG } from './helpers/auth.js';
+
+import { assetTagReviewToken } from '../src/services/asset-tag-service.js';
+
+// WP10A1-F3: every tag save carries the reviewed-state witness of the saved set
+// its form showed. Tests written before it send the form a page would render
+// now: the current set's token is injected unless the body names tagReview
+// itself (a key with the value undefined sends no field at all).
+let tagReviewDb = null;
+const sendWithoutTagReview = request.Test.prototype.send;
+request.Test.prototype.send = function sendWithTagReview(data) {
+  const match = /^\/projects\/(\d+)\/assets\/(\d+)\/tags$/.exec(new URL(this.url, 'http://x').pathname);
+  if (match && tagReviewDb && this.method === 'POST' && data && typeof data === 'object'
+    && !Object.hasOwn(data, 'tagReview')) {
+    data = { ...data, tagReview: currentTagReview(tagReviewDb, Number(match[1]), Number(match[2])) };
+  }
+  return sendWithoutTagReview.call(this, data);
+};
+
+// A well-formed token that names no saved set: for requests refused before
+// (or regardless of) the review check.
+const PLACEHOLDER_TAG_REVIEW = `t1.${'A'.repeat(43)}`;
+
+function currentTagReview(database, projectId, assetId) {
+  const tagIds = database.prepare('SELECT tag_id FROM asset_tags WHERE asset_id = ?').all(assetId)
+    .map((row) => row.tag_id);
+  return assetTagReviewToken({ projectId, assetId, tagIds }) || PLACEHOLDER_TAG_REVIEW;
+}
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const APP_NAME = 'CreatorCrate';
@@ -48,11 +76,13 @@ describe('asset tags — HTTP', () => {
 
     db = openDatabase(path.join(tmpDir, 'test.db'));
     runMigrations(db, MIGRATIONS_DIR);
+    tagReviewDb = db;
     app = createApp({ appName: APP_NAME, db, projectsRoot, previewRoot }, { authConfig: AUTH_CONFIG });
     ({ agent, csrfToken } = await authenticate(app));
   });
 
   afterEach(() => {
+    tagReviewDb = null;
     try { closeDatabase(db); } catch {}
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
@@ -217,7 +247,11 @@ describe('asset tags — HTTP', () => {
     expect(choices).toMatch(new RegExp(`<input type="checkbox" id="asset-tag-${assigned.id}" name="tagIds\\[\\]" value="${assigned.id}" checked>\\s*<label for="asset-tag-${assigned.id}">Assigned Chip</label>`));
     expect(choices).toMatch(new RegExp(`<input type="checkbox" id="asset-tag-${other.id}" name="tagIds\\[\\]" value="${other.id}">\\s*<label for="asset-tag-${other.id}">Other Chip</label>`));
     expect(form.match(/name="tagIds\[\]"/g)).toHaveLength(2);
-    expect(form.match(/<input type="hidden"[^>]*>/g)).toEqual([`<input type="hidden" name="_csrf" value="${csrfToken}">`]);
+    expect(form.match(/<input type="hidden"[^>]*>/g)).toEqual([
+      `<input type="hidden" name="_csrf" value="${csrfToken}">`,
+      // WP10A1-F3: the reviewed-state witness of the saved set shown.
+      `<input type="hidden" name="tagReview" value="${assetTagReviewToken({ projectId, assetId: asset.id, tagIds: [assigned.id] })}">`,
+    ]);
   });
 
   it('opts Asset Detail into refined-page with the Edit Asset dialog outside <main>', async () => {
@@ -556,5 +590,688 @@ describe('asset tags — HTTP', () => {
     ]);
     expect(rows.map((row) => row.context_json).join('')).not.toContain('log-safe.png');
     expect(rows.map((row) => row.context_json).join('')).not.toContain('assetIds');
+  });
+
+  // WP10A1: the Edit Asset dialog's in-place save (Accept: application/json).
+  describe('enhanced JSON tag save', () => {
+    function postJson(route, body) {
+      return agent
+        .post(route)
+        .set('Accept', 'application/json')
+        .type('form')
+        .send(body);
+    }
+
+    function tagIdsOf(assetId) {
+      return assetTagRows(assetId).map(({ tag_id: tagId }) => tagId);
+    }
+
+    it('replaces the complete set and answers with the authoritative saved IDs, no redirect and no other row changed', async () => {
+      const projectId = await createProject('JSON Replace Tags');
+      const asset = createAsset(projectId, 'json-replace.png');
+      const other = createAsset(projectId, 'json-other.png');
+      const original = createTag('Json Original');
+      const added = createTag('Json Added');
+      const retained = createTag('Json Retained');
+      const projectTag = createTag('Json Project Only');
+      assignAssetTags(asset.id, [original.id, retained.id]);
+      assignAssetTags(other.id, [original.id]);
+      assignProjectTags(projectId, [projectTag.id]);
+      const before = ownerSnapshot(projectId, asset.id);
+      const otherBefore = assetTagRows(other.id);
+
+      const response = await postJson(`/projects/${projectId}/assets/${asset.id}/tags`, {
+        origin: 'asset-edit',
+        tagIds: [String(added.id), String(retained.id), String(retained.id)],
+        _csrf: csrfToken,
+      }).expect(200);
+
+      expect(response.headers['content-type']).toMatch(/application\/json/);
+      expect(response.headers.location).toBeUndefined();
+      expect(response.body).toEqual({
+        status: 'success',
+        outcome: 'committed',
+        message: 'Asset tags updated.',
+        projectId,
+        assetId: asset.id,
+        tagIds: expect.arrayContaining([added.id, retained.id]),
+        tags: expect.arrayContaining([
+          { id: added.id, displayName: 'Json Added' },
+          { id: retained.id, displayName: 'Json Retained' },
+        ]),
+        // WP10A1-F3: the witness of the set this save stored.
+        tagReview: assetTagReviewToken({ projectId, assetId: asset.id, tagIds: [added.id, retained.id] }),
+        refreshRequired: true,
+      });
+      expect(response.body.tagIds).toHaveLength(2);
+      expect([...response.body.tagIds].sort((a, b) => a - b)).toEqual(tagIdsOf(asset.id));
+      expect(tagIdsOf(asset.id)).toEqual([added.id, retained.id].sort((a, b) => a - b));
+      expect(db.prepare('SELECT * FROM assets WHERE id = ?').get(asset.id)).toEqual(before.asset);
+      expect(db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId)).toEqual(before.project);
+      expect(db.prepare('SELECT * FROM tags ORDER BY id').all()).toEqual(before.tags);
+      expect(projectTagRows(projectId)).toEqual(before.projectTags);
+      expect(assetTagRows(other.id)).toEqual(otherBefore);
+    });
+
+    it('treats a form with no tagIds field as an explicit empty set and reports no saved tags', async () => {
+      const projectId = await createProject('JSON Empty Tags');
+      const asset = createAsset(projectId, 'json-empty.png');
+      const first = createTag('Json Empty First');
+      const second = createTag('Json Empty Second');
+      assignAssetTags(asset.id, [first.id, second.id]);
+
+      const response = await postJson(`/projects/${projectId}/assets/${asset.id}/tags`, {
+        origin: 'asset-edit',
+        _csrf: csrfToken,
+      }).expect(200);
+
+      expect(response.body).toEqual(expect.objectContaining({
+        status: 'success',
+        outcome: 'committed',
+        tagIds: [],
+        tags: [],
+      }));
+      expect(assetTagRows(asset.id)).toEqual([]);
+    });
+
+    it('keeps the native Edit Asset and standalone forms on their redirect contract', async () => {
+      const projectId = await createProject('JSON Native Compatibility');
+      const asset = createAsset(projectId, 'json-native.png');
+      const tag = createTag('Json Native');
+
+      const native = await agent
+        .post(`/projects/${projectId}/assets/${asset.id}/tags`)
+        .type('form')
+        .send({ origin: 'asset-edit', tagIds: [String(tag.id)], _csrf: csrfToken })
+        .expect(302);
+      expect(native.headers.location).toBe(`/projects/${projectId}/assets/${asset.id}?notice=asset_tags_updated&edit=1`);
+
+      const standalone = await agent
+        .post(`/projects/${projectId}/assets/${asset.id}/tags`)
+        .type('form')
+        .send({ _csrf: csrfToken })
+        .expect(302);
+      expect(standalone.headers.location).toBe(`/projects/${projectId}/assets/${asset.id}?notice=asset_tags_updated`);
+      expect(assetTagRows(asset.id)).toEqual([]);
+    });
+
+    it('refuses missing, malformed and cross-project identities as JSON 404 without calling the service', async () => {
+      const ownerId = await createProject('JSON Tag Owner');
+      const ownerAsset = createAsset(ownerId, 'json-owner.png');
+      const otherId = await createProject('JSON Tag Other');
+      const tag = createTag('Json Identity');
+      assignAssetTags(ownerAsset.id, [tag.id]);
+      const before = assetTagRows(ownerAsset.id);
+      const replaceAssetTags = vi.spyOn(app.locals.assetTagService, 'replaceAssetTags');
+
+      try {
+        for (const route of [
+          `/projects/not-a-project/assets/${ownerAsset.id}/tags`,
+          `/projects/${ownerId}/assets/not-an-asset/tags`,
+          `/projects/999999/assets/${ownerAsset.id}/tags`,
+          `/projects/${ownerId}/assets/999999/tags`,
+          `/projects/${otherId}/assets/${ownerAsset.id}/tags`,
+        ]) {
+          const response = await postJson(route, { origin: 'asset-edit', _csrf: csrfToken }).expect(404);
+          expect(response.body).toEqual({
+            status: 'error',
+            code: 'ASSET_NOT_FOUND',
+            outcome: 'refused',
+            message: 'This asset no longer exists in this project.',
+          });
+        }
+        expect(replaceAssetTags).not.toHaveBeenCalled();
+      } finally {
+        replaceAssetTags.mockRestore();
+      }
+      expect(assetTagRows(ownerAsset.id)).toEqual(before);
+    });
+
+    it('reports an asset deleted after the ownership read as missing without changing anything', async () => {
+      const projectId = await createProject('JSON Deleted Race');
+      const asset = createAsset(projectId, 'json-deleted.png');
+      const tag = createTag('Json Deleted');
+      // The repository transaction returns undefined when the asset row is gone.
+      const replaceAssetTags = vi.spyOn(app.locals.assetTagService, 'replaceAssetTags')
+        .mockImplementation(() => undefined);
+
+      try {
+        const response = await postJson(`/projects/${projectId}/assets/${asset.id}/tags`, {
+          origin: 'asset-edit',
+          tagIds: [String(tag.id)],
+          _csrf: csrfToken,
+        }).expect(404);
+        expect(response.body).toEqual(expect.objectContaining({ code: 'ASSET_NOT_FOUND', outcome: 'refused' }));
+      } finally {
+        replaceAssetTags.mockRestore();
+      }
+      expect(assetTagRows(asset.id)).toEqual([]);
+    });
+
+    it('refuses an archived project with 409 PROJECT_ARCHIVED and keeps every assignment', async () => {
+      const projectId = await createProject('JSON Archived Tags');
+      const asset = createAsset(projectId, 'json-archived.png');
+      const tag = createTag('Json Archived');
+      assignAssetTags(asset.id, [tag.id]);
+      await agent.post(`/projects/${projectId}/archive`).type('form').send({ _csrf: csrfToken }).expect(302);
+      const before = assetTagRows(asset.id);
+
+      const response = await postJson(`/projects/${projectId}/assets/${asset.id}/tags`, {
+        origin: 'asset-edit',
+        _csrf: csrfToken,
+      }).expect(409);
+
+      expect(response.body).toEqual(expect.objectContaining({
+        status: 'error',
+        code: 'PROJECT_ARCHIVED',
+        outcome: 'refused',
+        errors: { tagIds: expect.stringMatching(/archived and read-only/i) },
+      }));
+      expect(assetTagRows(asset.id)).toEqual(before);
+    });
+
+    it('refuses unknown or deleted tags with 422 TAG_NOT_FOUND, returning the submitted selection', async () => {
+      const projectId = await createProject('JSON Stale Catalog');
+      const asset = createAsset(projectId, 'json-stale.png');
+      const retained = createTag('Json Stale Retained');
+      const deleted = createTag('Json Stale Deleted');
+      assignAssetTags(asset.id, [retained.id]);
+      app.locals.tagService.deleteTag(deleted.id);
+      const before = assetTagRows(asset.id);
+
+      for (const ids of [[String(retained.id), String(deleted.id)], ['999999']]) {
+        const response = await postJson(`/projects/${projectId}/assets/${asset.id}/tags`, {
+          origin: 'asset-edit',
+          tagIds: ids,
+          _csrf: csrfToken,
+        }).expect(422);
+        expect(response.body).toEqual({
+          status: 'error',
+          code: 'TAG_NOT_FOUND',
+          outcome: 'refused',
+          message: 'One or more selected tags no longer exists. Refresh and try again.',
+          errors: { tagIds: 'One or more selected tags no longer exists. Refresh and try again.' },
+          submittedTagIds: ids,
+        });
+      }
+      expect(assetTagRows(asset.id)).toEqual(before);
+    });
+
+    it('refuses malformed and nested tag input with 422 TAG_IDS_INVALID before the service runs', async () => {
+      const projectId = await createProject('JSON Malformed Tags');
+      const asset = createAsset(projectId, 'json-malformed.png');
+      const tag = createTag('Json Malformed');
+      assignAssetTags(asset.id, [tag.id]);
+      const before = assetTagRows(asset.id);
+      const replaceAssetTags = vi.spyOn(app.locals.assetTagService, 'replaceAssetTags');
+
+      try {
+        for (const body of [
+          `origin=asset-edit&tagIds%5B%5D=not-a-tag&_csrf=${encodeURIComponent(csrfToken)}`,
+          `origin=asset-edit&tagIds%5B%5D=0${tag.id}&_csrf=${encodeURIComponent(csrfToken)}`,
+          `origin=asset-edit&tagIds%5Bnested%5D%5Bdeep%5D=1&_csrf=${encodeURIComponent(csrfToken)}`,
+          `origin=asset-edit&tagIds%5B%5D=&_csrf=${encodeURIComponent(csrfToken)}`,
+        ]) {
+          const response = await agent
+            .post(`/projects/${projectId}/assets/${asset.id}/tags`)
+            .set('Accept', 'application/json')
+            .set('Content-Type', 'application/x-www-form-urlencoded')
+            .send(body)
+            .expect(422);
+          expect(response.body).toEqual(expect.objectContaining({
+            status: 'error',
+            code: 'TAG_IDS_INVALID',
+            outcome: 'refused',
+            errors: { tagIds: expect.any(String) },
+          }));
+        }
+        expect(replaceAssetTags).not.toHaveBeenCalled();
+      } finally {
+        replaceAssetTags.mockRestore();
+      }
+      expect(assetTagRows(asset.id)).toEqual(before);
+    });
+
+    it('deduplicates repeated IDs without treating them as an error', async () => {
+      const projectId = await createProject('JSON Duplicate Tags');
+      const asset = createAsset(projectId, 'json-duplicate.png');
+      const tag = createTag('Json Duplicate');
+
+      const response = await postJson(`/projects/${projectId}/assets/${asset.id}/tags`, {
+        origin: 'asset-edit',
+        tagIds: [String(tag.id), String(tag.id)],
+        _csrf: csrfToken,
+      }).expect(200);
+
+      expect(response.body.tagIds).toEqual([tag.id]);
+      expect(tagIdsOf(asset.id)).toEqual([tag.id]);
+    });
+
+    it('answers an unexpected service failure with a safe 500 whose outcome is unknown', async () => {
+      const projectId = await createProject('JSON Service Failure');
+      const asset = createAsset(projectId, 'json-failure.png');
+      const tag = createTag('Json Failure');
+      const replaceAssetTags = vi.spyOn(app.locals.assetTagService, 'replaceAssetTags')
+        .mockImplementation(() => { throw new Error('SQLITE_BUSY: database is locked at C:\\secret\\path'); });
+
+      try {
+        const response = await postJson(`/projects/${projectId}/assets/${asset.id}/tags`, {
+          origin: 'asset-edit',
+          tagIds: [String(tag.id)],
+          _csrf: csrfToken,
+        }).expect(500);
+        expect(response.body).toEqual({
+          status: 'error',
+          code: 'TAG_SAVE_FAILED',
+          outcome: 'unknown',
+          message: 'The asset tag save could not be confirmed.',
+        });
+        expect(JSON.stringify(response.body)).not.toMatch(/SQLITE|secret/);
+      } finally {
+        replaceAssetTags.mockRestore();
+      }
+    });
+
+    it('rejects a bad CSRF token and an unauthenticated request before any tag mutation', async () => {
+      const projectId = await createProject('JSON Tag Security');
+      const asset = createAsset(projectId, 'json-security.png');
+      const existing = createTag('Json Security Existing');
+      const replacement = createTag('Json Security Replacement');
+      assignAssetTags(asset.id, [existing.id]);
+      const before = assetTagRows(asset.id);
+      const replaceAssetTags = vi.spyOn(app.locals.assetTagService, 'replaceAssetTags');
+
+      try {
+        const badCsrf = await postJson(`/projects/${projectId}/assets/${asset.id}/tags`, {
+          origin: 'asset-edit',
+          tagIds: [String(replacement.id)],
+          _csrf: 'deliberately-invalid-csrf-token',
+        }).expect(403);
+        expect(badCsrf.body).toEqual(expect.objectContaining({ status: 'error' }));
+
+        const missingCsrf = await postJson(`/projects/${projectId}/assets/${asset.id}/tags`, {
+          origin: 'asset-edit',
+          tagIds: [String(replacement.id)],
+        });
+        expect(missingCsrf.status).toBe(403);
+
+        const anonymous = await request(app)
+          .post(`/projects/${projectId}/assets/${asset.id}/tags`)
+          .set('Accept', 'application/json')
+          .type('form')
+          .send({ origin: 'asset-edit', tagIds: [String(replacement.id)], _csrf: csrfToken });
+        expect([401, 403]).toContain(anonymous.status);
+        expect(replaceAssetTags).not.toHaveBeenCalled();
+      } finally {
+        replaceAssetTags.mockRestore();
+      }
+      expect(assetTagRows(asset.id)).toEqual(before);
+    });
+
+    it('marks the Asset detail regions and identity the in-place refresh reads', async () => {
+      const projectId = await createProject('JSON Refresh Markers');
+      const asset = createAsset(projectId, 'json-markers.png');
+      const tag = createTag('Json Marker');
+      assignAssetTags(asset.id, [tag.id]);
+
+      const detail = await agent.get(`/projects/${projectId}/assets/${asset.id}`).expect(200);
+      expect(detail.text).toContain(
+        `<div class="asset-preview-viewer" data-asset-viewer-host data-asset-viewer-project-id="${projectId}" data-asset-viewer-asset-id="${asset.id}">`,
+      );
+      expect(detail.text).toContain('data-asset-viewer-region="tags"');
+      expect(section(detail.text, 'asset-tags-section')).toContain('Json Marker');
+      const editDialog = detail.text.match(/<dialog id="asset-edit-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+      expect(editDialog).toContain(`data-confirmed-tag-ids="${tag.id}"`);
+      expect(editDialog).toContain('data-asset-tags-form');
+      // The tag save reports through the dialog's one live region.
+      expect((editDialog.match(/data-dialog-status/g) || [])).toHaveLength(1);
+      expect((detail.text.match(/aria-live="polite"/g) || [])).toHaveLength(1);
+    });
+  });
+  // WP10A1-F3: a delayed complete-set replacement, reviewed against an older
+  // saved set (another tab, a reload, a lost answer), never overwrites a newer
+  // one. The witness is compared inside the replacement transaction.
+  describe('F3. reviewed tag-set witness', () => {
+    const route = (projectId, assetId) => `/projects/${projectId}/assets/${assetId}/tags`;
+
+    function postJson(url, body) {
+      return agent.post(url).set('Accept', 'application/json').type('form').send(body);
+    }
+
+    function tagIdsOf(assetId) {
+      return assetTagRows(assetId).map(({ tag_id: tagId }) => tagId);
+    }
+
+    function review(projectId, assetId, tagIds) {
+      return assetTagReviewToken({ projectId, assetId, tagIds });
+    }
+
+    function formReview(html, projectId, assetId) {
+      const form = html.match(new RegExp(`<form[^>]*action="/projects/${projectId}/assets/${assetId}/tags"[\\s\\S]*?</form>`))?.[0] || '';
+      return form.match(/name="tagReview" value="([^"]*)"/)?.[1] ?? null;
+    }
+
+    async function fixture(title) {
+      const projectId = await createProject(title);
+      const asset = createAsset(projectId, `${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.png`);
+      const alpha = createTag(`${title} Alpha`);
+      const beta = createTag(`${title} Beta`);
+      return { projectId, asset, alpha, beta, url: route(projectId, asset.id) };
+    }
+
+    it('H1. saves the complete set when the reviewed saved set is still current', async () => {
+      const { projectId, asset, alpha, beta, url } = await fixture('F3 Current');
+      assignAssetTags(asset.id, [alpha.id]);
+
+      const response = await postJson(url, {
+        origin: 'asset-edit',
+        tagIds: [String(alpha.id), String(beta.id)],
+        tagReview: review(projectId, asset.id, [alpha.id]),
+        _csrf: csrfToken,
+      }).expect(200);
+
+      expect(response.body).toEqual(expect.objectContaining({
+        status: 'success',
+        outcome: 'committed',
+        tagIds: expect.arrayContaining([alpha.id, beta.id]),
+        tagReview: review(projectId, asset.id, [alpha.id, beta.id]),
+      }));
+      expect(tagIdsOf(asset.id)).toEqual([alpha.id, beta.id].sort((a, b) => a - b));
+    });
+
+    it('H2. refuses an older review after another save changed the set, keeping the newer tags', async () => {
+      const { projectId, asset, alpha, beta, url } = await fixture('F3 Stale');
+      // Tabs A and B both review the empty saved set.
+      const reviewedEmpty = review(projectId, asset.id, []);
+
+      await postJson(url, {
+        origin: 'asset-edit',
+        tagIds: [String(alpha.id), String(beta.id)],
+        tagReview: reviewedEmpty,
+        _csrf: csrfToken,
+      }).expect(200);
+      const newer = assetTagRows(asset.id);
+
+      const stale = await postJson(url, {
+        origin: 'asset-edit',
+        tagIds: [String(alpha.id)],
+        tagReview: reviewedEmpty,
+        _csrf: csrfToken,
+      }).expect(409);
+
+      expect(stale.body).toEqual({
+        status: 'error',
+        code: 'TAG_SET_STALE',
+        outcome: 'refused',
+        message: expect.stringMatching(/saved tags changed.*not saved/i),
+        errors: { tagIds: expect.any(String) },
+        submittedTagIds: [String(alpha.id)],
+      });
+      expect(JSON.stringify(stale.body)).not.toMatch(/sqlite|SELECT |FROM asset_tags|[A-Z]:\\|\/tmp\//);
+      // Untouched: the same rows, created_at included.
+      expect(assetTagRows(asset.id)).toEqual(newer);
+    });
+
+    it('H3. witnesses an empty saved baseline distinctly from a missing witness', async () => {
+      const { projectId, asset, alpha, url } = await fixture('F3 Expected Empty');
+      const emptyReview = review(projectId, asset.id, []);
+      expect(emptyReview).toMatch(/^t1\.[A-Za-z0-9_-]{43}$/);
+      expect(emptyReview).not.toBe(review(projectId, asset.id, [alpha.id]));
+
+      const page = await agent.get(`/projects/${projectId}/assets/${asset.id}?edit=1`).expect(200);
+      expect(formReview(page.text, projectId, asset.id)).toBe(emptyReview);
+
+      await postJson(url, {
+        origin: 'asset-edit', tagIds: [String(alpha.id)], tagReview: emptyReview, _csrf: csrfToken,
+      }).expect(200);
+      expect(tagIdsOf(asset.id)).toEqual([alpha.id]);
+    });
+
+    it('H4. removes every tag for a current review, and refuses a stale empty replacement', async () => {
+      const { projectId, asset, alpha, beta, url } = await fixture('F3 Desired Empty');
+      assignAssetTags(asset.id, [alpha.id, beta.id]);
+
+      // Current review of {Alpha, Beta}; no tagIds field: the explicit empty set.
+      const cleared = await postJson(url, {
+        origin: 'asset-edit', tagReview: review(projectId, asset.id, [alpha.id, beta.id]), _csrf: csrfToken,
+      }).expect(200);
+      expect(cleared.body).toEqual(expect.objectContaining({ outcome: 'committed', tagIds: [], tags: [] }));
+      expect(tagIdsOf(asset.id)).toEqual([]);
+
+      // A stale empty replacement reviewed against {Alpha} while {Alpha, Beta} is saved.
+      assignAssetTags(asset.id, [alpha.id, beta.id]);
+      const newer = assetTagRows(asset.id);
+      const stale = await postJson(url, {
+        origin: 'asset-edit', tagReview: review(projectId, asset.id, [alpha.id]), _csrf: csrfToken,
+      }).expect(409);
+      expect(stale.body).toEqual(expect.objectContaining({ code: 'TAG_SET_STALE', outcome: 'refused', submittedTagIds: [] }));
+      expect(assetTagRows(asset.id)).toEqual(newer);
+    });
+
+    it('H5. refuses a missing, empty, malformed, duplicated, nested, foreign or tampered witness before replacing', async () => {
+      const { projectId, asset, alpha, beta, url } = await fixture('F3 Invalid');
+      const otherProjectId = await createProject('F3 Invalid Other');
+      const otherAsset = createAsset(projectId, 'f3-invalid-other.png');
+      assignAssetTags(asset.id, [alpha.id]);
+      const before = assetTagRows(asset.id);
+      const current = review(projectId, asset.id, [alpha.id]);
+      const tampered = `${current.slice(0, -1)}${current.endsWith('A') ? 'B' : 'A'}`;
+      const desired = [String(alpha.id), String(beta.id)];
+      const replaceAssetTags = vi.spyOn(app.locals.assetTagService, 'replaceAssetTags');
+
+      try {
+        // Shape refusals: decided by the route before the service is called.
+        for (const tagReview of [undefined, '', 'garbage', `v1.${'A'.repeat(43)}`, [current, current], { nested: current }]) {
+          const response = await postJson(url, { origin: 'asset-edit', tagIds: desired, tagReview, _csrf: csrfToken }).expect(422);
+          expect(response.body).toEqual(expect.objectContaining({
+            status: 'error', code: 'TAG_REVIEW_INVALID', outcome: 'refused', submittedTagIds: desired,
+          }));
+        }
+        for (const raw of [
+          `origin=asset-edit&tagIds%5B%5D=${beta.id}&tagReview=${current}&tagReview=${current}`,
+          `origin=asset-edit&tagIds%5B%5D=${beta.id}&tagReview%5Bdeep%5D%5Bx%5D=${current}`,
+        ]) {
+          const response = await agent.post(url)
+            .set('Accept', 'application/json')
+            .set('Content-Type', 'application/x-www-form-urlencoded')
+            .send(`${raw}&_csrf=${encodeURIComponent(csrfToken)}`)
+            .expect(422);
+          expect(response.body.code).toBe('TAG_REVIEW_INVALID');
+        }
+        expect(replaceAssetTags).not.toHaveBeenCalled();
+
+        // Well-formed but naming another project, another asset or nothing:
+        // a mismatch, refused inside the transaction before any change.
+        for (const tagReview of [
+          review(otherProjectId, asset.id, [alpha.id]),
+          review(projectId, otherAsset.id, [alpha.id]),
+          tampered,
+          review(projectId, asset.id, desired),
+        ]) {
+          const response = await postJson(url, { origin: 'asset-edit', tagIds: desired, tagReview, _csrf: csrfToken }).expect(409);
+          expect(response.body).toEqual(expect.objectContaining({ code: 'TAG_SET_STALE', outcome: 'refused' }));
+        }
+      } finally {
+        replaceAssetTags.mockRestore();
+      }
+      expect(assetTagRows(asset.id)).toEqual(before);
+      expect(assetTagRows(otherAsset.id)).toEqual([]);
+    });
+
+    it('H6. keeps the native forms on their contract and refuses a missing or stale native witness', async () => {
+      const { projectId, asset, alpha, beta, url } = await fixture('F3 Native');
+      assignAssetTags(asset.id, [alpha.id]);
+
+      // Valid native Edit Asset save: the redirect contract is unchanged.
+      const saved = await agent.post(url).type('form').send({
+        origin: 'asset-edit',
+        tagIds: [String(alpha.id), String(beta.id)],
+        tagReview: review(projectId, asset.id, [alpha.id]),
+        _csrf: csrfToken,
+      }).expect(302);
+      expect(saved.headers.location).toBe(`/projects/${projectId}/assets/${asset.id}?notice=asset_tags_updated&edit=1`);
+      const newer = assetTagRows(asset.id);
+
+      // Missing witness: 422 viewer page, nothing changed.
+      const missing = await agent.post(url).type('form').send({
+        origin: 'asset-edit', tagIds: [String(beta.id)], tagReview: undefined, _csrf: csrfToken,
+      }).expect(422);
+      expect(missing.text).toContain('could not be checked against the saved tags');
+      expect(assetTagRows(asset.id)).toEqual(newer);
+
+      // Stale native Edit Asset save: 409 viewer page with the submitted
+      // selection kept as a draft and the witness of what is saved now.
+      const stale = await agent.post(url).type('form').send({
+        origin: 'asset-edit', tagIds: [String(beta.id)], tagReview: review(projectId, asset.id, [alpha.id]), _csrf: csrfToken,
+      }).expect(409);
+      expect(stale.text).toContain('The saved tags changed after this selection was reviewed');
+      expect(stale.text).toContain(`data-confirmed-tag-ids="${[alpha.id, beta.id].sort((a, b) => a - b).join(',')}"`);
+      expect(formReview(stale.text, projectId, asset.id)).toBe(review(projectId, asset.id, [alpha.id, beta.id]));
+      expect(assetTagRows(asset.id)).toEqual(newer);
+
+      // The standalone tags page: stale refused (409 page), current saved.
+      const standaloneStale = await agent.post(url).type('form').send({
+        tagIds: [String(beta.id)], tagReview: review(projectId, asset.id, []), _csrf: csrfToken,
+      }).expect(409);
+      expect(standaloneStale.text).toContain('The saved tags changed after this selection was reviewed');
+      expect(checkboxMarkup(standaloneStale.text, beta.id)).toContain('checked');
+      expect(checkboxMarkup(standaloneStale.text, alpha.id)).not.toContain('checked');
+      expect(formReview(standaloneStale.text, projectId, asset.id)).toBe(review(projectId, asset.id, [alpha.id, beta.id]));
+      expect(assetTagRows(asset.id)).toEqual(newer);
+
+      const page = await agent.get(url).expect(200);
+      const standaloneSaved = await agent.post(url).type('form').send({
+        tagIds: [String(beta.id)], tagReview: formReview(page.text, projectId, asset.id), _csrf: csrfToken,
+      }).expect(302);
+      expect(standaloneSaved.headers.location).toBe(`/projects/${projectId}/assets/${asset.id}?notice=asset_tags_updated`);
+      expect(tagIdsOf(asset.id)).toEqual([beta.id]);
+    });
+
+    it('H7. keeps ownership and archive refusals ahead of a valid witness', async () => {
+      const { projectId, asset, alpha, url } = await fixture('F3 Guards');
+      const otherProjectId = await createProject('F3 Guards Other');
+      const valid = review(projectId, asset.id, []);
+      const replaceAssetTags = vi.spyOn(app.locals.assetTagService, 'replaceAssetTags');
+      try {
+        // The asset under another project's URL: not found, whatever the witness says.
+        await postJson(route(otherProjectId, asset.id), {
+          origin: 'asset-edit', tagIds: [String(alpha.id)], tagReview: valid, _csrf: csrfToken,
+        }).expect(404);
+        await agent.post(`/projects/${projectId}/archive`).type('form').send({ _csrf: csrfToken }).expect(302);
+        const archived = await postJson(url, {
+          origin: 'asset-edit', tagIds: [String(alpha.id)], tagReview: valid, _csrf: csrfToken,
+        }).expect(409);
+        expect(archived.body.code).toBe('PROJECT_ARCHIVED');
+        expect(replaceAssetTags).not.toHaveBeenCalled();
+      } finally {
+        replaceAssetTags.mockRestore();
+      }
+      expect(tagIdsOf(asset.id)).toEqual([]);
+    });
+
+    it('H8. compares the witness with the set read inside the replacement transaction, all or nothing', async () => {
+      const { createTagRepository } = await import('../src/data/tag-repository.js');
+      const { createAssetRepository } = await import('../src/data/asset-repository.js');
+      const { createAssetTagService, AssetTagSetStaleError } = await import('../src/services/asset-tag-service.js');
+      const { projectId, asset, alpha, beta } = await fixture('F3 Atomic');
+      const gamma = createTag('F3 Atomic Gamma');
+      assignAssetTags(asset.id, [alpha.id]);
+      const reviewedAlpha = review(projectId, asset.id, [alpha.id]);
+
+      const tagRepository = createTagRepository(db);
+      const realReplace = tagRepository.replaceForAsset;
+      const observed = [];
+      // Another writer commits {Beta, Gamma} after the service's own checks and
+      // before its replacement transaction begins.
+      tagRepository.replaceForAsset = (assetId, tagIds, options = {}) => {
+        realReplace(assetId, [beta.id, gamma.id]);
+        return realReplace(assetId, tagIds, {
+          precondition: (stored) => {
+            observed.push({ inTransaction: db.inTransaction, stored: [...stored].sort((a, b) => a - b) });
+            return options.precondition(stored);
+          },
+        });
+      };
+      const service = createAssetTagService({ tagRepository, assetRepository: createAssetRepository(db) });
+
+      expect(() => service.replaceAssetTags(asset.id, [alpha.id], { expectedReview: reviewedAlpha }))
+        .toThrow(AssetTagSetStaleError);
+      expect(observed).toEqual([{ inTransaction: true, stored: [beta.id, gamma.id] }]);
+      // No partial replacement: exactly the newer set.
+      expect(tagIdsOf(asset.id)).toEqual([beta.id, gamma.id]);
+    });
+
+    it('H9. keeps the unconditional replacement for existing service callers', async () => {
+      const { createTagRepository } = await import('../src/data/tag-repository.js');
+      const { AssetTagReviewInvalidError } = await import('../src/services/asset-tag-service.js');
+      const { asset, alpha, beta } = await fixture('F3 Callers');
+      assignAssetTags(asset.id, [alpha.id]);
+      expect(app.locals.assetTagService.replaceAssetTags(asset.id, [beta.id]).map((tag) => tag.id)).toEqual([beta.id]);
+      expect(app.locals.assetTagService.replaceAssetTags(asset.id, [alpha.id], {}).map((tag) => tag.id)).toEqual([alpha.id]);
+      expect(createTagRepository(db).replaceForAsset(asset.id, [beta.id]).map((tag) => tag.id)).toEqual([beta.id]);
+      // Asking for the check without a token is a caller error, never unconditional.
+      expect(() => app.locals.assetTagService.replaceAssetTags(asset.id, [], { expectedReview: undefined }))
+        .toThrow(AssetTagReviewInvalidError);
+      expect(tagIdsOf(asset.id)).toEqual([beta.id]);
+    });
+
+    it('H10. renders an advanced witness after a save, so a follow-up save from a fresh form succeeds', async () => {
+      const { projectId, asset, alpha, beta, url } = await fixture('F3 Follow Up');
+      const first = await agent.get(`/projects/${projectId}/assets/${asset.id}?edit=1`).expect(200);
+      const firstReview = formReview(first.text, projectId, asset.id);
+
+      const saved = await postJson(url, {
+        origin: 'asset-edit', tagIds: [String(alpha.id)], tagReview: firstReview, _csrf: csrfToken,
+      }).expect(200);
+
+      const second = await agent.get(`/projects/${projectId}/assets/${asset.id}?edit=1`).expect(200);
+      const secondReview = formReview(second.text, projectId, asset.id);
+      expect(secondReview).not.toBe(firstReview);
+      expect(secondReview).toBe(saved.body.tagReview);
+
+      await postJson(url, {
+        origin: 'asset-edit', tagIds: [String(alpha.id), String(beta.id)], tagReview: secondReview, _csrf: csrfToken,
+      }).expect(200);
+      expect(tagIdsOf(asset.id)).toEqual([alpha.id, beta.id].sort((a, b) => a - b));
+      // The first form's witness is now stale.
+      await postJson(url, {
+        origin: 'asset-edit', tagIds: [], tagReview: firstReview, _csrf: csrfToken,
+      }).expect(409);
+      expect(tagIdsOf(asset.id)).toEqual([alpha.id, beta.id].sort((a, b) => a - b));
+    });
+
+    it('H11. keeps catalog validation: a tag deleted after review is refused with no change', async () => {
+      const { projectId, asset, alpha, beta, url } = await fixture('F3 Catalog');
+      assignAssetTags(asset.id, [alpha.id]);
+      const reviewed = review(projectId, asset.id, [alpha.id]);
+      app.locals.tagService.deleteTag(beta.id);
+
+      const response = await postJson(url, {
+        origin: 'asset-edit', tagIds: [String(alpha.id), String(beta.id)], tagReview: reviewed, _csrf: csrfToken,
+      }).expect(422);
+      expect(response.body).toEqual(expect.objectContaining({ code: 'TAG_NOT_FOUND', outcome: 'refused' }));
+      expect(tagIdsOf(asset.id)).toEqual([alpha.id]);
+    });
+
+    it('H12. reports an unexpected failure as unknown, never as nothing saved', async () => {
+      const { projectId, asset, alpha, url } = await fixture('F3 Unknown');
+      const replaceAssetTags = vi.spyOn(app.locals.assetTagService, 'replaceAssetTags')
+        .mockImplementation(() => { throw new Error('SQLITE_BUSY at C:\\secret\\creatorcrate.db'); });
+      try {
+        const response = await postJson(url, {
+          origin: 'asset-edit', tagIds: [String(alpha.id)], tagReview: review(projectId, asset.id, []), _csrf: csrfToken,
+        }).expect(500);
+        expect(response.body).toEqual({
+          status: 'error',
+          code: 'TAG_SAVE_FAILED',
+          outcome: 'unknown',
+          message: 'The asset tag save could not be confirmed.',
+        });
+        expect(response.body.message).not.toMatch(/nothing|no changes|not saved/i);
+        expect(JSON.stringify(response.body)).not.toMatch(/SQLITE|secret/);
+      } finally {
+        replaceAssetTags.mockRestore();
+      }
+    });
   });
 });

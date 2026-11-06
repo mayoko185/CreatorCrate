@@ -16,6 +16,21 @@ export const PROJECT_EDIT_DIALOG_ID = 'project-edit-dialog';
 // Hosts refresh their own views from it; a refresh failure is the host's to
 // report, since the project itself is already saved.
 export const PROJECT_EDIT_SAVED_EVENT = 'project-edit-saved';
+// Dispatched on the document (project-archive.js) once the server has said a
+// project is archived: detail { projectId, project, message, outcome,
+// confirmed }. outcome is 'archived' (this request archived it, confirmed),
+// 'already-archived' or 'observed-archived' (it is archived, not shown to be
+// by this request), or 'missing'. Hosts re-read their own content with a GET.
+export const PROJECT_ARCHIVED_EVENT = 'project-archived';
+// Dispatched on the document (project-delete.js) once a project is known to
+// be gone: detail { projectId, title, message, outcome, confirmed,
+// cleanupComplete }. outcome is 'deleted' (this request deleted it and its
+// folder, confirmed), 'deleted-cleanup-incomplete' (this request deleted it,
+// but its folder needs recovery), 'missing' (it was already gone) or
+// 'observed-missing' (a read found it gone; not shown to be this page's
+// request). Surviving hosts (Dashboard, Projects) re-read their own content
+// with a GET; the project's own pages are retired by project-delete.js.
+export const PROJECT_DELETED_EVENT = 'project-deleted';
 
 const EDIT_TRIGGER_SELECTOR = '[data-project-edit-id]';
 // The project whose values the dialog was rendered open with.
@@ -127,6 +142,9 @@ function createController(document, dialog) {
     // The project the form currently holds and may save; null while loading
     // or after a failed load, so nothing can be written to a stale target.
     projectId: null,
+    // Called with the project id once a load has hydrated the form and made
+    // it ready (project-archive.js shows a standing Archive hold there).
+    onLoaded: null,
   };
 
   const setReady = (ready) => {
@@ -184,6 +202,7 @@ function createController(document, dialog) {
       }
       hydrate(payload);
       setReady(true);
+      controller.onLoaded?.(projectId);
     }).catch(() => {
       if (generation !== controller.generation || !dialog.open) return;
       controller.abort = null;

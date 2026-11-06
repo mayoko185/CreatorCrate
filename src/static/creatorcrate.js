@@ -5,10 +5,14 @@ import { enhanceReleaseSignatureManagers } from './client/release-signature-mana
 import { enhanceReleaseSignatures } from './client/release-signatures.js';
 import { enhanceReleaseScheduleDefaults } from './client/release-schedule-defaults.js';
 import { enhanceReleaseEditDialog } from './client/release-edit-dialog.js';
+import { enhanceReleaseArchive } from './client/release-archive.js';
+import { enhanceReleaseDelete } from './client/release-delete.js';
 import { enhanceReleasePublishDialog } from './client/release-publish-dialog.js';
 import { enhanceProjectCreateDialog } from './client/project-create-dialog.js';
 import { enhanceReleaseCreateDialog } from './client/release-create-dialog.js';
 import { enhanceProjectEditDialog } from './client/project-edit-dialog.js';
+import { enhanceProjectArchive } from './client/project-archive.js';
+import { enhanceProjectDelete } from './client/project-delete.js';
 import { enhanceProjectDetailRefresh } from './client/project-detail-refresh.js';
 import { enhanceProjectEditHostRefresh } from './client/project-edit-host-refresh.js';
 import { enhanceReleaseDetailRefresh } from './client/release-detail-refresh.js';
@@ -41,6 +45,7 @@ import {
   enhanceChapterPageReorder,
 } from './client/dedicated-reorder.js';
 import { enhanceCategoryDetails } from './client/category-details.js';
+import { enhanceSettingsCategoryDelete } from './client/settings-category-delete.js';
 import {
   enhanceDashboardProjectTable,
   enhanceDashboardScheduling,
@@ -78,6 +83,8 @@ import { enhanceChapterDialogs, enhancePageDeletionNotice } from './client/chapt
 import { enhanceBookDetailDelete } from './client/dialog-record-delete.js';
 import { enhancePageDeletionUndo } from './client/page-deletion-undo.js';
 import { enhanceAssetEditDialog } from './client/asset-edit-dialog.js';
+import { enhanceAutoRenameDialog } from './client/auto-rename-dialog.js';
+import { enhanceRemoveMissingAssets } from './client/remove-missing-assets.js';
 import {
   enhanceAssetViewerInfoCards,
   enhanceCalendarInfoCards,
@@ -150,11 +157,14 @@ import {
   refreshProjectAssetsDefaultsLiveRegion,
   refreshProjectsLiveRegion,
   refreshReleasesLiveRegion,
+  refreshProjectAssetsAfterMutation,
   refreshProjectAssetsLiveRegion,
 } from './client/live-regions.js';
 export {
   enhanceAssetAutoRenameOrdering,
   enhanceAssetEditDialog,
+  enhanceAutoRenameDialog,
+  enhanceRemoveMissingAssets,
   enhanceAssetRenames,
   enhanceAssetSelection,
   enhanceNotesCodeBlocks,
@@ -254,6 +264,7 @@ export {
   refreshProjectAssetsDefaultsLiveRegion,
   refreshProjectsLiveRegion,
   refreshReleasesLiveRegion,
+  refreshProjectAssetsAfterMutation,
   refreshProjectAssetsLiveRegion,
 };
 
@@ -319,9 +330,13 @@ if (typeof document !== 'undefined') {
     enhanceProjectAssetsDefaultsFetchSave(document);
     enhanceAppDialogs(document);
     enhanceAssetEditDialog(document);
+    enhanceAutoRenameDialog(document);
+    enhanceRemoveMissingAssets(document);
     enhanceReleaseScheduleDefaults(document);
     enhanceReleaseCreateDialog(document);
     enhanceReleaseEditDialog(document);
+    enhanceReleaseArchive(document);
+    enhanceReleaseDelete(document);
     enhanceReleasePublishDialog(document);
     enhanceProjectCreateDialog(document);
     enhanceBookCreateDialog(document);
@@ -331,6 +346,8 @@ if (typeof document !== 'undefined') {
     enhancePageDeletionUndo(document);
     enhanceBookDetailDelete(document);
     enhanceProjectEditDialog(document);
+    enhanceProjectArchive(document);
+    enhanceProjectDelete(document);
     enhanceProjectDetailRefresh(document);
     enhanceProjectEditHostRefresh(document);
     enhanceReleaseDetailRefresh(document);
@@ -339,6 +356,7 @@ if (typeof document !== 'undefined') {
     enhanceLogViewerAutoRefresh(document);
     enhanceAssetViewerFilterDisclosures(document);
     enhanceAppConfirmationControls(document);
+    enhanceSettingsCategoryDelete(document);
     enhanceProjectOwnershipRecovery(document);
     enhanceProcessingRecoveryDetails(document);
     enhanceBookCoverUploads(document);

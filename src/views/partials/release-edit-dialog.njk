@@ -56,7 +56,9 @@
             <summary>Archive release</summary>
             <div class="notes-workspace-disclosure-content">
               <p class="notes-workspace-warning">Archiving a release makes it read-only. This cannot be undone.</p>
-              <form method="post" action="{{ '/releases/' ~ release.id ~ '/archive' if archiveEligible else '' }}">
+              {# release-archive.js archives in place (Accept: application/json);
+                 without it the form keeps its native POST and redirect. #}
+              <form method="post" action="{{ '/releases/' ~ release.id ~ '/archive' if archiveEligible else '' }}" data-release-archive-form data-dialog-secondary-action data-confirm-submit-required>
                 <input type="hidden" name="_csrf" value="{{ csrfToken }}">
                 <button class="button button-small button-secondary" type="submit" data-confirm="Archive this release? This cannot be undone.">Archive release</button>
               </form>
@@ -67,7 +69,9 @@
             <summary>Delete Release</summary>
             <div class="notes-workspace-disclosure-content">
               <p class="notes-workspace-warning">Deleting this release is permanent and cannot be undone. The release record and its asset associations will be removed; the underlying project assets will not be affected.</p>
-              <form method="post" action="/releases/{{ release.id }}/delete">
+              {# release-delete.js deletes in place (Accept: application/json);
+                 without it the form keeps its native POST and redirect. #}
+              <form method="post" action="{{ '/releases/' ~ release.id ~ '/delete' if release.id else '' }}" data-release-delete-form data-dialog-secondary-action data-confirm-submit-required>
                 <input type="hidden" name="_csrf" value="{{ csrfToken }}">
                 <button class="button button-small button-danger" type="submit" data-confirm="Delete this release permanently? This action is irreversible and cannot be undone.">Delete Release</button>
               </form>

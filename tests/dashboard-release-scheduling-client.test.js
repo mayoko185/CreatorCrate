@@ -1,10 +1,12 @@
 import fs from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   enhanceDashboardReleaseScheduling,
   enhanceDashboardScheduleRefresh,
+  dashboardRecoveryMessage,
   getDashboardMutationGate,
   refreshDashboard,
+  releaseArchivedAttribution,
 } from '../src/static/client/dashboard.js';
 
 // A minimal DOM supporting the attribute selectors the enhancer uses.
@@ -947,5 +949,136 @@ describe('enhanceDashboardScheduleRefresh', () => {
     const doc = createDocument();
     expect(enhanceDashboardScheduleRefresh(doc, { onReconcileRequired() {}, onRefreshFailed() {} })).toBeNull();
     await expect(refreshDashboard(doc)).resolves.toEqual({ status: 'failed', reason: 'unavailable', replaced: false, error: null });
+  });
+});
+
+// WP11B-F1: a release-archived event is no evidence that an Archive ran. The
+// payloads below are the ones release-archive.js and release-delete.js
+// dispatch (see release-archive-client and release-delete-client tests).
+describe('WP11B-F1 release-archived attribution on the Dashboard', () => {
+  const FAILED = { status: 'failed', reason: 'http', replaced: false, error: null };
+  const PROJECT_REFUSAL = 'The parent project is archived, so this release is read-only. Nothing was deleted.';
+  const RELEASE_REFUSAL = 'Archived releases cannot be deleted. Nothing was deleted.';
+  const deleteRefusal = (projectArchived, message) => ({
+    releaseId: '12', projectId: null, release: null, message,
+    outcome: projectArchived ? 'observed-project-archived' : 'observed-archived', confirmed: false,
+  });
+  const edited = (attribution, extra = {}) => ({ kind: 'edited', record: 'release', created: false, deleted: false, releaseId: '12', ...attribution, ...extra });
+  const FALSE_ARCHIVE = /release was archived|archived successfully|release archived/i;
+
+  it('C1 — a Delete refused because the project is archived is observed, never an Archive', () => {
+    const attribution = releaseArchivedAttribution(deleteRefusal(true, PROJECT_REFUSAL));
+    expect(attribution).toEqual({ archived: 'observed', message: PROJECT_REFUSAL });
+  });
+
+  it('C2/C4 — project-archived refusal + failed GET (and a failed Retry) keeps the refusal and the staleness', () => {
+    const followUp = edited(releaseArchivedAttribution(deleteRefusal(true, PROJECT_REFUSAL)));
+    const message = dashboardRecoveryMessage(followUp, FAILED);
+    expect(message).toBe(`${PROJECT_REFUSAL} The dashboard couldn’t refresh, so counts and lists may be out of date. Scheduling is paused until the dashboard refreshes.`);
+    expect(message).not.toMatch(FALSE_ARCHIVE);
+    expect(message).not.toMatch(/release was deleted/i);
+    // Retry re-blocks with the same follow-up: attribution is unchanged.
+    expect(dashboardRecoveryMessage(followUp, FAILED)).toBe(message);
+    expect(dashboardRecoveryMessage(followUp, { ...FAILED, replaced: true })).toContain('didn’t finish loading');
+  });
+
+  it('C3 — a superseded or installed refresh adds no attribution of its own', () => {
+    const followUp = edited(releaseArchivedAttribution(deleteRefusal(true, PROJECT_REFUSAL)));
+    expect(dashboardRecoveryMessage(followUp, { status: 'superseded' })).not.toMatch(FALSE_ARCHIVE);
+  });
+
+  it('C5–C7 — a Delete refused because the release is archived, and Archive’s own already-archived refusal, stay observed', () => {
+    const fromDelete = releaseArchivedAttribution(deleteRefusal(false, RELEASE_REFUSAL));
+    expect(fromDelete).toEqual({ archived: 'observed', message: RELEASE_REFUSAL });
+    const fromArchive = releaseArchivedAttribution({
+      releaseId: '12', projectId: 3, release: { id: 12, archived: true }, message: 'This release is already archived.',
+      outcome: 'already-archived', confirmed: false,
+    });
+    expect(fromArchive.archived).toBe('observed');
+    const observedCheck = releaseArchivedAttribution({
+      releaseId: '12', projectId: null, release: null,
+      message: 'The release is archived now, but this page could not confirm whether that Archive request archived it.',
+      outcome: 'observed-archived', confirmed: false,
+    });
+    expect(observedCheck.archived).toBe('observed');
+    for (const attribution of [fromDelete, fromArchive, observedCheck]) {
+      const message = dashboardRecoveryMessage(edited(attribution), FAILED);
+      expect(message.startsWith(attribution.message)).toBe(true);
+      expect(message).not.toMatch(FALSE_ARCHIVE);
+    }
+  });
+
+  it('never upgrades an unconfirmed event, or one without a message, to an Archive', () => {
+    for (const detail of [
+      { releaseId: '12', outcome: 'archived', confirmed: false },
+      { releaseId: '12', outcome: 'archived' },
+      { releaseId: '12', confirmed: true, outcome: 'observed-archived' },
+      { releaseId: '12' },
+      undefined,
+    ]) {
+      const attribution = releaseArchivedAttribution(detail);
+      expect(attribution.archived).toBe('observed');
+      const message = dashboardRecoveryMessage(edited(attribution), FAILED);
+      expect(message).not.toMatch(FALSE_ARCHIVE);
+      expect(message).toContain('This page did not confirm archiving it.');
+    }
+    // A non-string message is never rendered.
+    expect(releaseArchivedAttribution({ outcome: 'observed-archived', message: { html: '<b>' } }).message).toBe('');
+  });
+
+  it('keeps a release found gone as not found', () => {
+    const attribution = releaseArchivedAttribution({ releaseId: '12', outcome: 'missing', confirmed: false, message: 'gone' });
+    expect(attribution).toEqual({ archived: 'missing', message: '' });
+    expect(dashboardRecoveryMessage(edited(attribution), FAILED)).toMatch(/^The release was not found, but the dashboard couldn’t refresh/);
+  });
+
+  it('C8/C9 — an acknowledged Archive is still reported as archived, qualified by the failed refresh', () => {
+    const attribution = releaseArchivedAttribution({
+      releaseId: '12', projectId: 3, release: { id: 12, archived: true }, message: 'Release archived.',
+      outcome: 'archived', confirmed: true,
+    });
+    expect(attribution).toEqual({ archived: true, message: '' });
+    expect(dashboardRecoveryMessage(edited(attribution), FAILED)).toBe(
+      'The release was archived, but the dashboard couldn’t refresh, so counts and lists may be out of date. Scheduling is paused until the dashboard refreshes.',
+    );
+  });
+
+  it('C10/C11 — an acknowledged Delete stays a Delete, distinct from any Archive', () => {
+    const message = dashboardRecoveryMessage(edited({ deleted: true, archived: false, message: '' }), FAILED);
+    expect(message).toMatch(/^The release was deleted, but the dashboard couldn’t refresh/);
+    expect(message).not.toMatch(/archived/i);
+    expect(dashboardRecoveryMessage(edited({ deleted: 'missing', archived: false }), FAILED)).toMatch(/^The release was not found/);
+  });
+
+  it('C12 — the newest follow-up decides the wording; an older observation cannot restore a success', () => {
+    const confirmed = edited(releaseArchivedAttribution({ releaseId: '12', outcome: 'archived', confirmed: true }));
+    const observed = edited(releaseArchivedAttribution(deleteRefusal(true, PROJECT_REFUSAL)));
+    // Each follow-up is rendered only from its own fields.
+    expect(dashboardRecoveryMessage(observed, FAILED)).not.toMatch(FALSE_ARCHIVE);
+    expect(dashboardRecoveryMessage(confirmed, FAILED)).toMatch(/^The release was archived/);
+    expect(observed).not.toHaveProperty('archived', true);
+  });
+
+  it('C14 — attribution and message mapping send no request', () => {
+    const fetch = vi.fn();
+    const original = globalThis.fetch;
+    globalThis.fetch = fetch;
+    try {
+      dashboardRecoveryMessage(edited(releaseArchivedAttribution(deleteRefusal(false, RELEASE_REFUSAL))), FAILED);
+    } finally {
+      globalThis.fetch = original;
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('C15 — the listener passes the event through the attribution, bound once with the other release listeners', () => {
+    const source = fs.readFileSync(new URL('../src/static/client/dashboard.js', import.meta.url), 'utf8');
+    const listener = /doc\.addEventListener\(RELEASE_ARCHIVED_EVENT, \(event\) => \{([\s\S]*?)\}\);/.exec(source);
+    expect(listener?.[1]).toContain('releaseArchivedAttribution(detail)');
+    expect(listener?.[1]).not.toMatch(/archived:\s*true|: true/);
+    expect(source.match(/addEventListener\(RELEASE_ARCHIVED_EVENT/g)).toHaveLength(1);
+    const guard = source.indexOf('markEnhancementBound(doc.documentElement, EDIT_SAVED_BOUND_KEY)');
+    expect(guard).toBeGreaterThan(-1);
+    expect(source.indexOf('addEventListener(RELEASE_ARCHIVED_EVENT')).toBeGreaterThan(guard);
   });
 });

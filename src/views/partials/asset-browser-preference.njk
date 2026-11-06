@@ -111,7 +111,7 @@
    Defaults section; each block stays its own replaceable autosave region,
    and its dropdown legend is its visible label. #}
 {% macro global(model, action, controlId, csrf) %}
-  <div class="asset-browser-default-section settings-asset-category-preference" data-settings-asset-category-preference="browser-default">
+  <div class="asset-browser-default-section settings-asset-category-preference" data-settings-asset-category-preference="browser-default" data-settings-asset-category-preference-stored="{{ model.storedValue }}">
     <form method="post" action="{{ action }}" class="project-form asset-browser-default-form" novalidate>
       <input type="hidden" name="_csrf" value="{{ csrf }}">
       <div class="asset-browser-default-control-row">
@@ -155,7 +155,7 @@
 {% endmacro %}
 
 {% macro preview(model, action, controlId, csrf) %}
-  <div class="asset-browser-default-section settings-asset-category-preference" data-settings-asset-category-preference="preview-category">
+  <div class="asset-browser-default-section settings-asset-category-preference" data-settings-asset-category-preference="preview-category" data-settings-asset-category-preference-stored="{{ model.storedValue }}">
     <form method="post" action="{{ action }}" class="project-form asset-browser-default-form" novalidate>
       <input type="hidden" name="_csrf" value="{{ csrf }}">
       <div class="asset-browser-default-control-row">

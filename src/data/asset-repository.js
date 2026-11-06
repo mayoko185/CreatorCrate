@@ -1269,6 +1269,8 @@ export function createAssetRepository(db) {
     SELECT COUNT(*) AS c FROM assets WHERE project_id = ? AND is_present = 1
   `);
 
+  const assetIdsByProjectStmt = db.prepare('SELECT id FROM assets WHERE project_id = ? ORDER BY id');
+
   const missingCountByProjectStmt = db.prepare(`
     SELECT COUNT(*) AS c FROM assets WHERE project_id = ? AND is_present = 0
   `);
@@ -2012,6 +2014,16 @@ export function createAssetRepository(db) {
     countPresentByProjectId(projectId) {
       const row = presentCountByProjectStmt.get(projectId);
       return row.c;
+    },
+
+    /**
+     * Every asset id in a project (present or missing), regardless of any
+     * browser filter or page.
+     * @param {number} projectId
+     * @returns {number[]}
+     */
+    findAssetIdsByProjectId(projectId) {
+      return assetIdsByProjectStmt.all(projectId).map((row) => row.id);
     },
 
     /**

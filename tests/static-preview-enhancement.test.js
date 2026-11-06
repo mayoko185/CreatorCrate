@@ -7495,7 +7495,7 @@ describe('category details in-place save enhancement', () => {
         expect(parent.replacements).toEqual([invalid.form]);
         expect(invalid.displayName.value).toBe('');
         expect(invalid.directorySlug.value).toBe('raw-footage');
-        expect(invalid.status.textContent).toBe('Could not save category details. Current changes have not been saved.');
+        expect(invalid.status.textContent).toBe('Could not save the earlier category details. Current changes have not been saved.');
         expect(invalid.form.getAttribute('data-category-details-state')).toBe('error');
         expect(document.activeElement).toBe(invalid.directorySlug);
         expect(invalid.directorySlug.selectionStart).toBe(2);
@@ -7590,7 +7590,7 @@ describe('category details in-place save enhancement', () => {
         expect(parent.replacements).toEqual([clean.form]);
         expect(clean.displayName.value).toBe('Raw Footage');
         expect(clean.directorySlug.value).toBe('raw-footage');
-        expect(clean.status.textContent).toBe('Current changes have not been saved.');
+        expect(clean.status.textContent).toBe('Earlier changes saved. Current changes have not been saved.');
         expect(document.activeElement).toBe(clean.directorySlug);
         expect(clean.directorySlug.selectionStart).toBe(2);
         expect(clean.directorySlug.selectionEnd).toBe(5);

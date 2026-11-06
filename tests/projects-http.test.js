@@ -2723,10 +2723,13 @@ describe('project HTTP workflow', () => {
     expect(dialog).not.toMatch(/<button[^>]*>\s*Cancel\s*<\/button>/);
     expect(dialog).toContain('data-dialog-submit>Save changes</button>');
     expect(dialog).not.toContain('>View assets</a>');
-    expect(dialog).toContain(`<form method="post" action="${location}/archive">`);
+    // WP11A-1: Archive is sent in place, refused while a save is busy, and
+    // only after its confirmation.
+    expect(dialog).toContain(`<form method="post" action="${location}/archive" data-project-archive-form data-dialog-secondary-action data-confirm-submit-required>`);
     expect(dialog).toContain('Archive keeps this project and its data, but makes it archived and read-only.');
-    const archiveForm = dialog.match(new RegExp(`<form method="post" action="${location}/archive">[\\s\\S]*?</form>`))?.[0] || '';
-    const deleteForm = dialog.match(new RegExp(`<form method="post" action="${location}/delete">[\\s\\S]*?</form>`))?.[0] || '';
+    const archiveForm = dialog.match(new RegExp(`<form method="post" action="${location}/archive" data-project-archive-form data-dialog-secondary-action data-confirm-submit-required>[\\s\\S]*?</form>`))?.[0] || '';
+    // WP11A-2: Delete likewise.
+    const deleteForm = dialog.match(new RegExp(`<form method="post" action="${location}/delete" data-project-delete-form data-dialog-secondary-action data-confirm-submit-required>[\\s\\S]*?</form>`))?.[0] || '';
     expect(archiveForm).toContain('data-confirm="Archive this project? This cannot be undone."');
     expect(archiveForm).not.toContain('data-confirm-dialog');
     expect(dialog).toContain('Permanently delete this project and its owned data. This cannot be undone.');
@@ -3002,9 +3005,9 @@ describe('project HTTP workflow', () => {
 
     expect(dialog).not.toBe('');
     expect(dialog).not.toContain('>View assets</a>');
-    expect(dialog).toContain(`<form method="post" action="/projects/${id}/archive">`);
-    expect(dialog).toContain(`<form method="post" action="/projects/${id}/delete">`);
-    expect(dialog).toMatch(/<form id="project-edit-form"[\s\S]*?<\/form>[\s\S]*?<form method="post" action="\/projects\/\d+\/archive">/);
+    expect(dialog).toContain(`<form method="post" action="/projects/${id}/archive" data-project-archive-form data-dialog-secondary-action data-confirm-submit-required>`);
+    expect(dialog).toContain(`<form method="post" action="/projects/${id}/delete" data-project-delete-form data-dialog-secondary-action data-confirm-submit-required>`);
+    expect(dialog).toMatch(/<form id="project-edit-form"[\s\S]*?<\/form>[\s\S]*?<form method="post" action="\/projects\/\d+\/archive" data-project-archive-form data-dialog-secondary-action data-confirm-submit-required>/);
     expect(dialog).toContain('Archive project');
     expect(dialog).toContain('Delete project');
   });

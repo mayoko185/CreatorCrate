@@ -880,6 +880,9 @@ export function buildBrowserRenderModel(
     projectAssetsNsfwReturnUrl: pageUrl({}),
     projectAssetsNsfwError: null,
     slideshowSequenceJson: JSON.stringify(data.slideshowSequence || []).replace(/<\//g, '<\\/'),
+    // Complete project membership, independent of the rendered filter or page:
+    // a refresh confirms a deletion from this list, never from the visible HTML.
+    projectAssetIdsJson: JSON.stringify(workflowQueryService?.getProjectAssetIds?.(project.id) ?? null),
   };
 }
 
@@ -1277,7 +1280,7 @@ export const ASSET_ACTION_NOTICE_MESSAGES = {
   asset_tags_updated: 'Asset tags updated successfully.',
 };
 
-function describeAutoRenameSuccess(renamed, unchanged) {
+export function describeAutoRenameSuccess(renamed, unchanged) {
   const renamedLabel = `asset${renamed === 1 ? '' : 's'}`;
   const unchangedLabel = `asset${unchanged === 1 ? '' : 's'}`;
   return `Renamed ${renamed} ${renamedLabel}. Skipped ${unchanged} unchanged ${unchangedLabel}.`;

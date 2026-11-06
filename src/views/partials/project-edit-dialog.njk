@@ -44,12 +44,15 @@
         <div class="project-edit-dialog-section-body project-edit-dialog-actions-body">
 
           {# Archive and Delete keep their own HTML forms and confirmations;
-             only their target follows the loaded project. #}
+             only their target follows the loaded project. Archive is sent in
+             place (project-archive.js) and is refused while a save is busy;
+             so is Delete (project-delete.js). Without JavaScript both stay the
+             native, confirmed forms. #}
           <details class="notes-workspace-disclosure notes-workspace-disclosure--archive" data-project-edit-action="archive">
             <summary>Archive project</summary>
             <div class="notes-workspace-disclosure-content">
               <p class="notes-workspace-warning">Archive keeps this project and its data, but makes it archived and read-only.</p>
-              <form method="post" action="{{ '/projects/' ~ project.id ~ '/archive' if project and project.id else '' }}">
+              <form method="post" action="{{ '/projects/' ~ project.id ~ '/archive' if project and project.id else '' }}" data-project-archive-form data-dialog-secondary-action data-confirm-submit-required>
                 <input type="hidden" name="_csrf" value="{{ csrfToken }}">
                 <button class="button button-small button-secondary" type="submit" data-confirm="Archive this project? This cannot be undone.">Archive project</button>
               </form>
@@ -60,7 +63,7 @@
             <summary>Delete project</summary>
             <div class="notes-workspace-disclosure-content">
               <p class="notes-workspace-warning">Permanently delete this project and its owned data. This cannot be undone.</p>
-              <form method="post" action="{{ '/projects/' ~ project.id ~ '/delete' if project and project.id else '' }}">
+              <form method="post" action="{{ '/projects/' ~ project.id ~ '/delete' if project and project.id else '' }}" data-project-delete-form data-dialog-secondary-action data-confirm-submit-required>
                 <input type="hidden" name="_csrf" value="{{ csrfToken }}">
                 <button class="button button-small button-danger" type="submit" data-confirm="Delete this project permanently? This cannot be undone." data-confirm-dialog-title="Delete project" data-confirm-dialog-confirm-label="Delete project">Delete project</button>
               </form>

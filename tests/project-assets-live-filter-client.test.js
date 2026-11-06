@@ -4,8 +4,11 @@ import {
   enhanceAssetGridSize,
   enhanceAssetListSize,
   enhanceProjectAssetsLiveFiltering,
+  refreshProjectAssetsAfterMutation,
   refreshProjectAssetsDefaultsLiveRegion,
+  refreshProjectAssetsLiveRegion,
 } from '../src/static/creatorcrate.js';
+import { retainedAssetSelectionIds } from '../src/static/client/asset-ordering.js';
 
 function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } = {}) {
   const attributes = new Map();
@@ -107,6 +110,29 @@ function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } =
       };
       adopt(child);
       return child;
+    },
+    insertBefore(child, reference) {
+      const previous = child.parentNode?.children;
+      if (previous) previous.splice(previous.indexOf(child), 1);
+      children.splice(children.indexOf(reference), 0, child);
+      child.parentNode = this;
+      child.parentElement = this;
+      const document = this.ownerDocument || (this.nodeType === 9 ? this : null);
+      const adopt = (current) => {
+        current.ownerDocument = document;
+        current.children.forEach(adopt);
+      };
+      adopt(child);
+      return child;
+    },
+    remove() {
+      const siblings = this.parentNode?.children;
+      if (siblings) siblings.splice(siblings.indexOf(this), 1);
+      this.parentNode = null;
+      this.parentElement = null;
+    },
+    createElement(tagName) {
+      return makeNode({ tagName });
     },
     replaceChildren(...nextChildren) {
       children.splice(0).forEach((child) => {
@@ -610,6 +636,9 @@ function htmlResponse(text, url) {
 function jsonResponse(payload, ok = true) {
   return { ok, json: vi.fn(async () => payload) };
 }
+
+const liveFailureNotice = (document) => document.querySelector('[data-live-filter-failure]');
+const liveFailureRetries = (document) => document.querySelectorAll('[data-live-filter-retry]');
 
 async function flush() {
   for (let index = 0; index < 10; index += 1) await Promise.resolve();
@@ -1346,8 +1375,49 @@ describe('Project Assets live filtering enhancement', () => {
     expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(initial.region);
     expect(initial.region.hasAttribute('aria-busy')).toBe(false);
     expect(initial.region.getAttribute('data-project-assets-live-state')).toBe('error');
-    expect(initial.status.textContent).toBe('Project Assets are loading as a full page.');
-    expect(initial.form.submit).toHaveBeenCalledOnce();
+    expect(initial.status.textContent).toContain('The requested filters were not applied');
+    expect(initial.form.submit).not.toHaveBeenCalled();
+    expect(initial.presenceMissing.checked).toBe(true);
+    expect(liveFailureRetries(initial.document)).toHaveLength(1);
+  });
+
+  it('retries a failed filter with GET only, then commits the history it still owes', async () => {
+    const initial = makePage();
+    const recovered = makePage();
+    const { windowObject } = makeWindow(initial.document, new Map([['recovered', recovered.document]]));
+    windowObject.fetch.mockRejectedValueOnce(new Error('offline'));
+    enhanceProjectAssetsLiveFiltering(initial.document);
+    initial.presenceAll.checked = false;
+    initial.presenceMissing.checked = true;
+    initial.presenceMissing.dispatch('change');
+    await flush();
+    const requested = windowObject.fetch.mock.calls[0][0];
+    expect(windowObject.history.pushes).toHaveLength(0);
+
+    windowObject.fetch.mockResolvedValueOnce(htmlResponse('recovered', requested));
+    liveFailureRetries(initial.document)[0].dispatch('click');
+    await flush();
+
+    expect(windowObject.fetch.mock.calls[1][0]).toBe(requested);
+    expect(windowObject.fetch.mock.calls[1][1].method).toBe('GET');
+    expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(recovered.region);
+    expect(liveFailureNotice(initial.document)).toBeNull();
+    expect(windowObject.history.pushes).toHaveLength(1);
+  });
+
+  it('rejects a response redirected to another project without replacing the region', async () => {
+    const initial = makePage();
+    const other = makePage();
+    const { windowObject } = makeWindow(initial.document, new Map([['other', other.document]]));
+    windowObject.fetch.mockResolvedValueOnce(htmlResponse('other', 'http://creatorcrate.test/projects/2/assets'));
+    enhanceProjectAssetsLiveFiltering(initial.document);
+    initial.presenceAll.checked = false;
+    initial.presenceMissing.checked = true;
+    initial.presenceMissing.dispatch('change');
+    await flush();
+
+    expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(initial.region);
+    expect(liveFailureRetries(initial.document)).toHaveLength(1);
   });
 
   it('debounces search, restores the current URL through popstate, and falls back to native submit without fetch', async () => {
@@ -1552,5 +1622,433 @@ describe('Project Assets live filtering enhancement', () => {
       expect(initial.status.textContent).toBe(DEFAULTS_ERROR);
       expect(initial.region.getAttribute('data-project-assets-live-state')).toBe('error');
     });
+  });
+});
+
+describe('Project Assets post-mutation refresh contract', () => {
+  const PATH = 'http://creatorcrate.test/projects/1/assets';
+
+  // Adds selectable assets and, optionally, the server's complete membership.
+  function withAssets(page, ids, { selected = [], membership = null, gridStyle = null } = {}) {
+    page.selectionCheckbox.remove();
+    const boxes = new Map();
+    ids.forEach((id) => {
+      const card = makeNode({ tagName: 'article', attrs: { 'data-asset-id': String(id), 'data-asset-selectable-card': '' } });
+      const box = makeNode({ tagName: 'input', attrs: { type: 'checkbox', name: 'selectedAssetIds', value: String(id) } });
+      box.checked = selected.includes(id);
+      box.form = page.selectionForm;
+      card.appendChild(box);
+      page.grid.appendChild(card);
+      boxes.set(id, box);
+    });
+    if (membership) {
+      const marker = makeNode({ tagName: 'script', attrs: { 'data-project-assets-membership': '' } });
+      marker.textContent = JSON.stringify(membership);
+      page.region.appendChild(marker);
+    }
+    if (gridStyle) page.grid.setAttribute('data-grid-style', gridStyle);
+    return boxes;
+  }
+
+  function scenario(initialOptions, nextOptions) {
+    const initial = makePage({ withAssetSelection: true });
+    const initialBoxes = withAssets(initial, initialOptions.ids, initialOptions);
+    const next = makePage({ withAssetSelection: true });
+    const nextBoxes = withAssets(next, nextOptions.ids, nextOptions);
+    const { windowObject } = makeWindow(initial.document, new Map([['next', next.document]]));
+    windowObject.fetch = vi.fn();
+    enhanceProjectAssetsLiveFiltering(initial.document);
+    return { initial, initialBoxes, next, nextBoxes, windowObject };
+  }
+
+  it('settles only after the authoritative region is installed, without a history entry', async () => {
+    const { initial, next, windowObject } = scenario({ ids: [1] }, { ids: [1] });
+    const pending = deferred();
+    windowObject.fetch.mockReturnValueOnce(pending.promise);
+    const settled = vi.fn();
+    const completion = refreshProjectAssetsAfterMutation(initial.document).then(settled);
+    await flush();
+    expect(windowObject.fetch.mock.calls[0][1].method).toBe('GET');
+    expect(settled).not.toHaveBeenCalled();
+
+    pending.resolve(htmlResponse('next', PATH));
+    await completion;
+    expect(settled.mock.calls[0][0].status).toBe('installed');
+    expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(next.region);
+    expect(windowObject.history.pushes).toHaveLength(0);
+    expect(windowObject.history.replaces).toHaveLength(0);
+    expect(next.region.hasAttribute('aria-busy')).toBe(false);
+  });
+
+  it('reports failure, keeps the page and selection, and recovers through a GET-only Retry', async () => {
+    const { initial, initialBoxes, next, nextBoxes, windowObject } = scenario(
+      { ids: [1, 2], selected: [2] },
+      { ids: [1, 2], membership: [1, 2] },
+    );
+    windowObject.fetch.mockRejectedValueOnce(new Error('offline'));
+    const onRecovered = vi.fn();
+    const result = await refreshProjectAssetsAfterMutation(initial.document, { onRecovered });
+    expect(result.status).toBe('failed');
+    expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(initial.region);
+    expect(initialBoxes.get(2).checked).toBe(true);
+    expect(liveFailureRetries(initial.document)).toHaveLength(1);
+    expect(onRecovered).not.toHaveBeenCalled();
+
+    windowObject.fetch.mockResolvedValueOnce(htmlResponse('next', PATH));
+    liveFailureRetries(initial.document)[0].dispatch('click');
+    await flush();
+    expect(windowObject.fetch.mock.calls.map(([, options]) => options.method)).toEqual(['GET', 'GET']);
+    expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(next.region);
+    expect(nextBoxes.get(2).checked).toBe(true);
+    expect(onRecovered).toHaveBeenCalledOnce();
+  });
+
+  it('treats a response without a region as failed, not installed', async () => {
+    const { initial, windowObject } = scenario({ ids: [1] }, { ids: [1] });
+    windowObject.fetch.mockResolvedValueOnce(htmlResponse('unknown', PATH));
+    const result = await refreshProjectAssetsAfterMutation(initial.document);
+    expect(result.status).toBe('failed');
+    expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(initial.region);
+    expect(liveFailureRetries(initial.document)).toHaveLength(1);
+  });
+
+  it('reports supersession truthfully and lets the newer load satisfy the refresh', async () => {
+    const { initial, next, nextBoxes, initialBoxes, windowObject } = scenario(
+      { ids: [1], selected: [1] },
+      { ids: [1], membership: [1] },
+    );
+    const stale = deferred();
+    const newer = deferred();
+    windowObject.fetch.mockReturnValueOnce(stale.promise).mockReturnValueOnce(newer.promise);
+    const onRecovered = vi.fn();
+    const completion = refreshProjectAssetsAfterMutation(initial.document, { onRecovered });
+    await flush();
+
+    initial.presenceAll.checked = false;
+    initial.presenceMissing.checked = true;
+    initial.presenceMissing.dispatch('change');
+    expect((await completion).status).toBe('superseded');
+    expect(onRecovered).not.toHaveBeenCalled();
+
+    // The late, older response cannot install.
+    stale.resolve(htmlResponse('next', PATH));
+    await flush();
+    expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(initial.region);
+    expect(initialBoxes.get(1).checked).toBe(true);
+
+    newer.resolve(htmlResponse('next', windowObject.fetch.mock.calls[1][0]));
+    await flush();
+    expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(next.region);
+    expect(onRecovered).toHaveBeenCalledOnce();
+    expect(nextBoxes.get(1).checked).toBe(true);
+  });
+
+  it('keeps the owed refresh when the newer load fails, with Retry for the newer request', async () => {
+    const { initial, next, nextBoxes, windowObject } = scenario(
+      { ids: [1], selected: [1] },
+      { ids: [1], membership: [1] },
+    );
+    const stale = deferred();
+    windowObject.fetch.mockReturnValueOnce(stale.promise).mockRejectedValueOnce(new Error('offline'));
+    const completion = refreshProjectAssetsAfterMutation(initial.document);
+    await flush();
+    initial.presenceAll.checked = false;
+    initial.presenceMissing.checked = true;
+    initial.presenceMissing.dispatch('change');
+    expect((await completion).status).toBe('superseded');
+    await flush();
+    const requested = windowObject.fetch.mock.calls[1][0];
+    expect(liveFailureRetries(initial.document)).toHaveLength(1);
+
+    windowObject.fetch.mockResolvedValueOnce(htmlResponse('next', requested));
+    liveFailureRetries(initial.document)[0].dispatch('click');
+    await flush();
+    expect(windowObject.fetch.mock.calls[2][0]).toBe(requested);
+    expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(next.region);
+    expect(nextBoxes.get(1).checked).toBe(true);
+  });
+
+  describe('retained category order', () => {
+    const KEPT = 'Your unsaved category order was kept, but it cannot be shown in this view.';
+
+    // A rendered ordering surface; no surface at all when categoryId is omitted.
+    function orderPage({ categoryId = null, ids = [1, 3], baseOrder = [1, 2, 3, 4] } = {}) {
+      const page = makePage({ withAssetSelection: true });
+      page.status = page.region.querySelector('[data-project-assets-live-status]');
+      if (categoryId === null) return page;
+      const surface = makeNode({
+        tagName: 'section',
+        attrs: {
+          'data-auto-rename-surface': '',
+          'data-category-reorder-enabled': 'true',
+          'data-auto-rename-category-id': categoryId,
+          'data-auto-rename-base-order': JSON.stringify(baseOrder),
+          'data-auto-rename-view': 'grid',
+        },
+      });
+      const form = makeNode({ tagName: 'form', attrs: { 'data-auto-rename-form': '' } });
+      form.appendChild(makeNode({ tagName: 'input', attrs: { 'data-auto-rename-order-input': '' } }));
+      form.appendChild(makeNode({ tagName: 'button', attrs: { 'data-auto-rename-submit': '' } }));
+      surface.appendChild(form);
+      const list = makeNode({ tagName: 'ul' });
+      const append = list.appendChild;
+      list.appendChild = function appendMoved(child) {
+        child.remove();
+        return append.call(this, child);
+      };
+      ids.forEach((id, index) => list.appendChild(makeNode({
+        tagName: 'li',
+        attrs: {
+          'data-auto-rename-asset': '',
+          'data-auto-rename-asset-id': String(id),
+          'data-auto-rename-initial-index': String(index),
+        },
+      })));
+      surface.appendChild(list);
+      page.region.appendChild(surface);
+      Object.assign(page, {
+        surface,
+        list,
+        orderValue: () => JSON.parse(form.querySelector('[data-auto-rename-order-input]').value),
+      });
+      return page;
+    }
+
+    function orderScenario(pages) {
+      const initial = orderPage({ categoryId: '7' });
+      const { windowObject } = makeWindow(
+        initial.document,
+        new Map(Object.entries(pages).map(([name, page]) => [name, page.document])),
+      );
+      windowObject.fetch = vi.fn();
+      enhanceProjectAssetsLiveFiltering(initial.document);
+      // The user's unsaved move: 3 before 1, so the complete order is 3, 2, 1, 4.
+      initial.list.insertBefore(initial.list.children[1], initial.list.children[0]);
+      // An install moves the rendered filter inputs into the mounted form.
+      let current = initial;
+      const changeFilter = () => current.presenceMissing.dispatch('change');
+      const navigate = async (name) => {
+        windowObject.fetch.mockResolvedValueOnce(htmlResponse(name, PATH));
+        changeFilter();
+        await flush();
+        current = pages[name];
+      };
+      const methods = () => windowObject.fetch.mock.calls.map(([, options]) => options.method);
+      return { initial, windowObject, navigate, changeFilter, methods };
+    }
+
+    const installed = (initial) => initial.document.querySelector('[data-project-assets-live-region]');
+
+    it('holds the order through a zero-match install and restores it unsaved on the matching view', async () => {
+      const empty = orderPage();
+      const match = orderPage({ categoryId: '7' });
+      const { initial, navigate, methods } = orderScenario({ empty, match });
+
+      await navigate('empty');
+      expect(installed(initial)).toBe(empty.region);
+      expect(empty.status.textContent).toBe(KEPT);
+
+      await navigate('match');
+      expect(installed(initial)).toBe(match.region);
+      expect(match.orderValue()).toEqual([3, 2, 1, 4]);
+      expect(match.surface.getAttribute('data-auto-rename-base-order')).toBe('[1,2,3,4]');
+      expect(match.surface.getAttribute('data-auto-rename-draft')).toBe('true');
+      expect(match.status.textContent).toBe('');
+      expect(methods().every((method) => method === 'GET')).toBe(true);
+    });
+
+    it('never applies the order to another category, and each category keeps its own', async () => {
+      const other = orderPage({ categoryId: '8', ids: [5, 6], baseOrder: [5, 6] });
+      const back = orderPage({ categoryId: '7' });
+      const otherAgain = orderPage({ categoryId: '8', ids: [5, 6], baseOrder: [5, 6] });
+      const { navigate } = orderScenario({ other, back, otherAgain });
+
+      await navigate('other');
+      expect(other.orderValue()).toEqual([5, 6]);
+      expect(other.surface.hasAttribute('data-auto-rename-draft')).toBe(false);
+      expect(other.status.textContent).toBe(KEPT);
+      other.list.insertBefore(other.list.children[1], other.list.children[0]);
+
+      await navigate('back');
+      expect(back.orderValue()).toEqual([3, 2, 1, 4]);
+      expect(back.status.textContent).toBe(KEPT);
+
+      await navigate('otherAgain');
+      expect(otherAgain.orderValue()).toEqual([6, 5]);
+    });
+
+    it('is not cleared by a stale or failed response, and Retry restores it with GET only', async () => {
+      const empty = orderPage();
+      const match = orderPage({ categoryId: '7' });
+      const { initial, windowObject, navigate, changeFilter, methods } = orderScenario({ empty, match });
+      await navigate('empty');
+
+      const stale = deferred();
+      windowObject.fetch.mockReturnValueOnce(stale.promise);
+      const completion = refreshProjectAssetsAfterMutation(initial.document);
+      await flush();
+      windowObject.fetch.mockRejectedValueOnce(new Error('offline'));
+      changeFilter();
+      expect((await completion).status).toBe('superseded');
+      await flush();
+      stale.resolve(htmlResponse('match', PATH));
+      await flush();
+      expect(installed(initial)).toBe(empty.region);
+      expect(liveFailureRetries(initial.document)).toHaveLength(1);
+
+      windowObject.fetch.mockResolvedValueOnce(htmlResponse('match', PATH));
+      liveFailureRetries(initial.document)[0].dispatch('click');
+      await flush();
+      expect(installed(initial)).toBe(match.region);
+      expect(match.orderValue()).toEqual([3, 2, 1, 4]);
+      expect(methods().every((method) => method === 'GET')).toBe(true);
+    });
+
+    it('reconciles membership on return: deleted identities leave, additions require review', async () => {
+      const empty = orderPage();
+      const grown = orderPage({ categoryId: '7', baseOrder: [1, 2, 3, 5] });
+      const { initial, navigate, methods } = orderScenario({ empty, grown });
+      await navigate('empty');
+      await navigate('grown');
+      expect(installed(initial)).toBe(grown.region);
+      // 4 is gone; new 5 follows 3, its predecessor in the server order.
+      expect(grown.orderValue()).toEqual([3, 5, 2, 1]);
+      expect(grown.surface.autoRenameOrderingState.reviewRequired).toBe(true);
+      expect(methods().every((method) => method === 'GET')).toBe(true);
+    });
+
+    it('ends when the user moves back to the saved order', async () => {
+      const empty = orderPage();
+      const match = orderPage({ categoryId: '7' });
+      const { initial, navigate } = orderScenario({ empty, match });
+      initial.list.insertBefore(initial.list.children[1], initial.list.children[0]);
+
+      await navigate('empty');
+      expect(empty.status.textContent).toBe('');
+      await navigate('match');
+      expect(match.orderValue()).toEqual([1, 2, 3, 4]);
+      expect(match.surface.hasAttribute('data-auto-rename-draft')).toBe(false);
+    });
+  });
+
+  it('restores selection by identity: hidden retained, deleted removed, new assets unselected', async () => {
+    const { initial, next, nextBoxes, windowObject } = scenario(
+      { ids: [1, 2, 3], selected: [1, 2, 3] },
+      { ids: [1, 9], membership: [1, 2, 9] },
+    );
+    windowObject.fetch.mockResolvedValueOnce(htmlResponse('next', PATH));
+    const result = await refreshProjectAssetsAfterMutation(initial.document);
+    expect(result.reconciliation.selection).toEqual({ restored: ['1'], retained: ['2'], removed: ['3'] });
+    expect(nextBoxes.get(1).checked).toBe(true);
+    expect(nextBoxes.get(9).checked).toBe(false);
+    expect(next.selectedCount.textContent).toContain('(1 more not shown)');
+    expect(retainedAssetSelectionIds(initial.document)).toEqual(['2']);
+  });
+
+  it('never infers deletion when the server sent no complete membership', async () => {
+    const { initial, windowObject } = scenario({ ids: [1, 2], selected: [2] }, { ids: [1] });
+    windowObject.fetch.mockResolvedValueOnce(htmlResponse('next', PATH));
+    const result = await refreshProjectAssetsAfterMutation(initial.document);
+    expect(result.reconciliation.selection.retained).toEqual(['2']);
+    expect(result.reconciliation.selection.removed).toEqual([]);
+  });
+
+  it('a retained hidden selection reappears on a later refresh and a user filter still resets it', async () => {
+    const { initial, next, windowObject } = scenario({ ids: [1, 2], selected: [2] }, { ids: [1], membership: [1, 2] });
+    const again = makePage({ withAssetSelection: true });
+    const againBoxes = withAssets(again, [1, 2], { membership: [1, 2] });
+    const filtered = makePage({ withAssetSelection: true });
+    withAssets(filtered, [1], { membership: [1, 2] });
+    windowObject.DOMParser = class { parseFromString(text) { return { next: next.document, again: again.document, filtered: filtered.document }[text]; } };
+    windowObject.fetch.mockResolvedValueOnce(htmlResponse('next', PATH));
+    await refreshProjectAssetsAfterMutation(initial.document);
+
+    windowObject.fetch.mockResolvedValueOnce(htmlResponse('again', PATH));
+    await refreshProjectAssetsAfterMutation(initial.document);
+    expect(againBoxes.get(2).checked).toBe(true);
+    expect(retainedAssetSelectionIds(initial.document)).toEqual([]);
+
+    windowObject.fetch.mockResolvedValueOnce(htmlResponse('filtered', `${PATH}?presence=missing`));
+    again.presenceAll.checked = false;
+    again.presenceMissing.checked = true;
+    initial.presenceMissing.dispatch('change');
+    await flush();
+    expect(retainedAssetSelectionIds(initial.document)).toEqual([]);
+  });
+
+  it('preserves the requested grid style instead of resetting to the rendered default', async () => {
+    const { initial, next, windowObject } = scenario(
+      { ids: [1], gridStyle: 'cropped' },
+      { ids: [1], gridStyle: 'uncropped' },
+    );
+    windowObject.fetch.mockResolvedValueOnce(htmlResponse('next', PATH));
+    await refreshProjectAssetsAfterMutation(initial.document);
+    expect(next.grid.getAttribute('data-grid-style')).toBe('cropped');
+  });
+
+  it('after a failed filter refreshes that request and commits its history, not the old view', async () => {
+    const { initial, next, windowObject } = scenario({ ids: [1] }, { ids: [1] });
+    windowObject.fetch.mockRejectedValueOnce(new Error('offline'));
+    initial.presenceAll.checked = false;
+    initial.presenceMissing.checked = true;
+    initial.presenceMissing.dispatch('change');
+    await flush();
+    const requested = windowObject.fetch.mock.calls[0][0];
+    expect(requested).toContain('presence=missing');
+
+    windowObject.fetch.mockResolvedValueOnce(htmlResponse('next', requested));
+    const result = await refreshProjectAssetsAfterMutation(initial.document);
+    expect(result.status).toBe('installed');
+    expect(windowObject.fetch.mock.calls[1][0]).toBe(requested);
+    expect(windowObject.history.pushes).toHaveLength(1);
+    expect(liveFailureNotice(initial.document)).toBeNull();
+    expect(next.region).toBe(initial.document.querySelector('[data-project-assets-live-region]'));
+  });
+
+  it('takes over an in-flight filter so its older response cannot install and its history survives', async () => {
+    const { initial, next, windowObject } = scenario({ ids: [1] }, { ids: [1] });
+    const old = deferred();
+    windowObject.fetch.mockReturnValueOnce(old.promise);
+    initial.presenceAll.checked = false;
+    initial.presenceMissing.checked = true;
+    initial.presenceMissing.dispatch('change');
+    await flush();
+    const requested = windowObject.fetch.mock.calls[0][0];
+
+    windowObject.fetch.mockResolvedValueOnce(htmlResponse('next', requested));
+    const result = await refreshProjectAssetsAfterMutation(initial.document);
+    expect(result.status).toBe('installed');
+    expect(windowObject.fetch.mock.calls[1][0]).toBe(requested);
+    expect(windowObject.history.pushes).toHaveLength(1);
+
+    const other = makePage({ withAssetSelection: true });
+    windowObject.DOMParser = class { parseFromString() { return other.document; } };
+    old.resolve(htmlResponse('other', requested));
+    await flush();
+    expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(next.region);
+  });
+
+  it('does not stack listeners over repeated refreshes', async () => {
+    const { initial, next, windowObject } = scenario({ ids: [1] }, { ids: [1] });
+    const changeListeners = () => initial.form.listeners.filter((listener) => listener.type === 'change').length;
+    const before = changeListeners();
+    const documentBefore = initial.document.listeners.length;
+    windowObject.fetch.mockImplementation(async () => htmlResponse('next', PATH));
+    await refreshProjectAssetsAfterMutation(initial.document);
+    await refreshProjectAssetsAfterMutation(initial.document);
+    await refreshProjectAssetsAfterMutation(initial.document);
+    expect(changeListeners()).toBe(before);
+    expect(initial.document.listeners.length).toBe(documentBefore);
+    expect(next.region.listeners.length).toBeLessThanOrEqual(1);
+  });
+
+  it('reports unavailable where no refresh can start, and the legacy call reports only that it started', async () => {
+    const empty = makeNode({ tagName: 'document' });
+    empty.nodeType = 9;
+    expect((await refreshProjectAssetsAfterMutation(empty)).status).toBe('unavailable');
+
+    const { initial, windowObject } = scenario({ ids: [1] }, { ids: [1] });
+    windowObject.fetch.mockReturnValueOnce(deferred().promise);
+    expect(refreshProjectAssetsLiveRegion(initial.document)).toBe(true);
   });
 });

@@ -72,6 +72,7 @@
 
       <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/tags" class="project-form" novalidate>
         <input type="hidden" name="_csrf" value="{{ _csrf }}">
+        <input type="hidden" name="{{ tagReviewField }}" value="{{ tagReview }}">
         <fieldset class="project-tag-choices asset-tag-choices"{% if errorMessages.length > 0 %} aria-describedby="asset-tag-errors"{% endif %}>
           <legend>Available tags</legend>
           {% for tag in tags %}

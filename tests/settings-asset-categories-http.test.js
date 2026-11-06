@@ -76,6 +76,11 @@ function makeFakeCategoryService(seed = []) {
   };
 }
 
+// WP11C-F7: the saved details a real details form carries (hidden fields).
+function reviewed(row) {
+  return { reviewedDisplayName: row.display_name, reviewedDirectorySlug: row.directory_slug };
+}
+
 async function createProject(agent, csrfToken, title) {
   const res = await agent
     .post('/projects')
@@ -239,7 +244,7 @@ describe('settings — asset category defaults HTTP', () => {
       expect(detailsForm).toMatch(/<noscript>[\s\S]*?>Save details<\/button>[\s\S]*?<\/noscript>/);
       const addForm = res.text.match(/<form method="post" action="\/settings\/asset-categories" class="project-form category-management-form" novalidate data-category-slug-autofill-form>[\s\S]*?<\/form>/)?.[0] || '';
       expect(res.text).toMatch(/<div class="settings-section category-management-section category-management-add settings-category-management-add">\s*<h3>Add category<\/h3>/);
-      expect(res.text).toContain('<h3>Current defaults</h3>');
+      expect(res.text).toContain('<h3 id="settings-category-defaults-heading" tabindex="-1">Current defaults</h3>');
       expect(res.text).toContain('>Add</button>');
       expect(res.text).not.toContain('>Add Default</button>');
       expect(addForm).toMatch(/id="add-displayName"[^>]*data-category-slug-autofill-display-name[^>]*aria-describedby="add-displayName-help"/);
@@ -303,7 +308,7 @@ describe('settings — asset category defaults HTTP', () => {
       expect(sections).toHaveLength(1);
       const section = res.text.slice(sections[0].index, res.text.indexOf('</section>', sections[0].index));
 
-      expect(section).toMatch(/^<section[^>]*>\s*<h3 id="asset-category-defaults-heading">Defaults<\/h3>\s*<div class="settings-asset-category-defaults-grid">\s*<div class="asset-browser-default-section settings-asset-category-preference" data-settings-asset-category-preference="browser-default">/);
+      expect(section).toMatch(/^<section[^>]*>\s*<h3 id="asset-category-defaults-heading">Defaults<\/h3>\s*<div class="settings-asset-category-defaults-grid">\s*<div class="asset-browser-default-section settings-asset-category-preference" data-settings-asset-category-preference="browser-default" data-settings-asset-category-preference-stored="wip">/);
       expect([...section.matchAll(/data-settings-asset-category-preference="([^"]+)"/g)].map((match) => match[1]))
         .toEqual(['browser-default', 'preview-category']);
       expect(section.match(/<h3\b/g)).toHaveLength(1);
@@ -742,7 +747,7 @@ describe('settings — asset category defaults HTTP', () => {
       const row = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('final');
 
       await agent.post(`/settings/asset-categories/${row.id}`).type('form')
-        .send({ displayName: 'Raw Footage', directorySlug: 'final', _csrf: csrfToken })
+        .send({ displayName: 'Raw Footage', directorySlug: 'final', ...reviewed(row), _csrf: csrfToken })
         .expect(302);
 
       const updated = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE id = ?').get(row.id);
@@ -756,7 +761,7 @@ describe('settings — asset category defaults HTTP', () => {
       const row = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('final');
 
       await agent.post(`/settings/asset-categories/${row.id}`).type('form')
-        .send({ displayName: 'Final', directorySlug: 'raw', _csrf: csrfToken })
+        .send({ displayName: 'Final', directorySlug: 'raw', ...reviewed(row), _csrf: csrfToken })
         .expect(302);
 
       const updated = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE id = ?').get(row.id);
@@ -770,7 +775,7 @@ describe('settings — asset category defaults HTTP', () => {
       const row = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('wip');
 
       const res = await agent.post(`/settings/asset-categories/${row.id}`).type('form')
-        .send({ displayName: 'WIP', directorySlug: 'FINAL', _csrf: csrfToken })
+        .send({ displayName: 'WIP', directorySlug: 'FINAL', ...reviewed(row), _csrf: csrfToken })
         .expect(422);
       expect(res.text).not.toContain('SQLITE_CONSTRAINT');
 
@@ -785,7 +790,7 @@ describe('settings — asset category defaults HTTP', () => {
       const row = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('final');
 
       const res = await agent.post(`/settings/asset-categories/${row.id}`).type('form')
-        .send({ displayName: '   ', directorySlug: 'bad slug', _csrf: csrfToken })
+        .send({ displayName: '   ', directorySlug: 'bad slug', ...reviewed(row), _csrf: csrfToken })
         .expect(422);
 
       const card = res.text.match(
@@ -816,7 +821,7 @@ describe('settings — asset category defaults HTTP', () => {
       const before = fs.readdirSync(ctx.projectsRoot, { recursive: true }).sort();
 
       await agent.post(`/settings/asset-categories/${finalDefault.id}`).type('form')
-        .send({ displayName: 'Renamed Final', directorySlug: 'renamed-final', _csrf: csrfToken })
+        .send({ displayName: 'Renamed Final', directorySlug: 'renamed-final', ...reviewed(finalDefault), _csrf: csrfToken })
         .expect(302);
 
       const projectCategoriesAfter = ctx.db.prepare('SELECT * FROM project_asset_categories WHERE project_id = ? ORDER BY id').all(projectId);
@@ -1388,6 +1393,218 @@ describe('settings — asset category defaults HTTP', () => {
       { event: 'settings.asset_browser_default.updated' },
       { event: 'settings.preview_category.updated' },
     ]);
+  });
+
+  // ─── WP11C-F7: stale details saves ───────────────────────────────────────
+  //
+  // Every details save carries the saved details its form showed
+  // (reviewedDisplayName / reviewedDirectorySlug, rendered from the database
+  // row). The write happens only while the row still holds them, in one
+  // conditional UPDATE, so an older request that runs after a newer save is
+  // refused and cannot overwrite it.
+
+  describe('WP11C-F7 stale details saves', () => {
+    const rowById = (id) => ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE id = ?').get(id);
+    const allRows = () => ctx.db.prepare('SELECT * FROM asset_category_defaults ORDER BY id').all();
+    const bySlug = (slug) => ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get(slug);
+    const cardOf = (html, id) => html.match(
+      new RegExp(`<article\\b[^>]*data-category-id="${id}"[\\s\\S]*?<\\/article>`),
+    )?.[0] || '';
+    const hiddenValue = (card, name) => card.match(new RegExp(`name="${name}" value="([^"]*)"`))?.[1];
+    const fieldValue = (card, name) => card.match(new RegExp(`name="${name}" value="([^"]*)" maxlength`))?.[1];
+
+    async function start() {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      return { app, agent, csrfToken };
+    }
+    const save = (agent, csrfToken, id, fields) => agent.post(`/settings/asset-categories/${id}`).type('form')
+      .send({ ...fields, _csrf: csrfToken });
+
+    it('H1 renders the saved details as the review fields and saves a current request', async () => {
+      const { agent, csrfToken } = await start();
+      const row = bySlug('final');
+      const page = await agent.get('/settings/asset-categories').expect(200);
+      const card = cardOf(page.text, row.id);
+      expect(hiddenValue(card, 'reviewedDisplayName')).toBe(row.display_name);
+      expect(hiddenValue(card, 'reviewedDirectorySlug')).toBe(row.directory_slug);
+
+      await save(agent, csrfToken, row.id, { displayName: '  Masters  ', directorySlug: 'masters', ...reviewed(row) }).expect(302);
+      expect(rowById(row.id)).toMatchObject({ display_name: 'Masters', directory_slug: 'masters' });
+      const after = cardOf((await agent.get('/settings/asset-categories').expect(200)).text, row.id);
+      expect(hiddenValue(after, 'reviewedDisplayName')).toBe('Masters');
+      expect(hiddenValue(after, 'reviewedDirectorySlug')).toBe('masters');
+    });
+
+    it('H2/H7 refuses an older name save after a newer save, natively, with 409 HTML and the current details', async () => {
+      const { agent, csrfToken } = await start();
+      const s0 = bySlug('final');
+      await save(agent, csrfToken, s0.id, { displayName: 'Newer Name', directorySlug: 'final', ...reviewed(s0) }).expect(302);
+      const s2 = rowById(s0.id);
+
+      const res = await save(agent, csrfToken, s0.id, { displayName: 'Older Name', directorySlug: 'final', ...reviewed(s0) }).expect(409);
+      expect(res.headers['content-type']).toMatch(/text\/html/);
+      expect(res.headers.location).toBeUndefined();
+      expect(rowById(s0.id)).toEqual(s2);
+      expect(rowById(s0.id).display_name).toBe('Newer Name');
+
+      const card = cardOf(res.text, s0.id);
+      expect(card).toContain('data-category-details-conflict="stale"');
+      expect(card).toContain('This category was changed somewhere else, so these details were not saved.');
+      expect(card).toContain('Saved now: “Newer Name” with directory slug “final”.');
+      // The refused draft stays in the fields; the review fields are the row now.
+      expect(fieldValue(card, 'displayName')).toBe('Older Name');
+      expect(hiddenValue(card, 'reviewedDisplayName')).toBe('Newer Name');
+      expect(hiddenValue(card, 'reviewedDirectorySlug')).toBe('final');
+      expect(res.text).not.toMatch(/SqliteError|SQLITE_/);
+    });
+
+    it('H3 refuses an older slug save after a newer slug save', async () => {
+      const { agent, csrfToken } = await start();
+      const s0 = bySlug('final');
+      await save(agent, csrfToken, s0.id, { displayName: s0.display_name, directorySlug: 'newer-slug', ...reviewed(s0) }).expect(302);
+      await save(agent, csrfToken, s0.id, { displayName: s0.display_name, directorySlug: 'older-slug', ...reviewed(s0) }).expect(409);
+      expect(rowById(s0.id).directory_slug).toBe('newer-slug');
+      expect(bySlug('older-slug')).toBeUndefined();
+    });
+
+    it('treats a change of case elsewhere as a change', async () => {
+      const { agent, csrfToken } = await start();
+      const s0 = bySlug('final');
+      ctx.db.prepare('UPDATE asset_category_defaults SET directory_slug = ? WHERE id = ?').run('FINAL', s0.id);
+      await save(agent, csrfToken, s0.id, { displayName: 'X', directorySlug: 'final', ...reviewed(s0) }).expect(409);
+      expect(rowById(s0.id)).toMatchObject({ display_name: s0.display_name, directory_slug: 'FINAL' });
+    });
+
+    it('H4 compares and writes in one locked statement: no write can land between them', async () => {
+      const { agent, csrfToken } = await start();
+      const s0 = bySlug('final');
+      ctx.db.pragma('busy_timeout = 50');
+      const other = openDatabase(ctx.databasePath);
+      try {
+        // Another connection is mid-write (its change not yet committed).
+        other.exec('BEGIN IMMEDIATE');
+        other.prepare('UPDATE asset_category_defaults SET display_name = ? WHERE id = ?').run('Other Writer', s0.id);
+        const blocked = await save(agent, csrfToken, s0.id, { displayName: 'Old Draft', directorySlug: 'final', ...reviewed(s0) });
+        expect(blocked.status).toBe(500);
+        other.exec('COMMIT');
+        expect(rowById(s0.id).display_name).toBe('Other Writer');
+        // Once that commits, the same old request is refused, not written.
+        await save(agent, csrfToken, s0.id, { displayName: 'Old Draft', directorySlug: 'final', ...reviewed(s0) }).expect(409);
+        expect(rowById(s0.id).display_name).toBe('Other Writer');
+      } finally {
+        if (other.inTransaction) other.exec('ROLLBACK');
+        closeDatabase(other);
+      }
+    });
+
+    it('H5 never reverts the field it was not changing', async () => {
+      const { agent, csrfToken } = await start();
+      const s0 = bySlug('final');
+      // Elsewhere only the slug changed; this older request changes only the name.
+      await save(agent, csrfToken, s0.id, { displayName: s0.display_name, directorySlug: 'moved', ...reviewed(s0) }).expect(302);
+      await save(agent, csrfToken, s0.id, { displayName: 'Renamed', directorySlug: s0.directory_slug, ...reviewed(s0) }).expect(409);
+      expect(rowById(s0.id)).toMatchObject({ display_name: s0.display_name, directory_slug: 'moved' });
+    });
+
+    it('H6/H8 refuses missing, malformed or duplicate review fields without writing', async () => {
+      const { agent, csrfToken } = await start();
+      const s0 = bySlug('final');
+      const before = allRows();
+      const attempts = [
+        { displayName: 'X', directorySlug: 'x' },
+        { displayName: 'X', directorySlug: 'x', reviewedDisplayName: s0.display_name },
+        { displayName: 'X', directorySlug: 'x', reviewedDirectorySlug: s0.directory_slug },
+      ];
+      for (const fields of attempts) {
+        const res = await save(agent, csrfToken, s0.id, fields).expect(400);
+        expect(cardOf(res.text, s0.id)).toContain('the request did not say which saved details it was based on. Nothing was changed.');
+      }
+      const token = encodeURIComponent(csrfToken);
+      const name = encodeURIComponent(s0.display_name);
+      await agent.post(`/settings/asset-categories/${s0.id}`).type('form')
+        .send(`displayName=X&directorySlug=x&reviewedDisplayName=${name}&reviewedDisplayName=Y&reviewedDirectorySlug=${s0.directory_slug}&_csrf=${token}`)
+        .expect(400);
+      await agent.post(`/settings/asset-categories/${s0.id}`).type('form')
+        .send(`displayName=X&directorySlug=x&reviewedDisplayName%5Ba%5D=1&reviewedDirectorySlug=${s0.directory_slug}&_csrf=${token}`)
+        .expect(400);
+      expect(allRows()).toEqual(before);
+    });
+
+    it('H9 cannot recreate or change a deleted default', async () => {
+      const { agent, csrfToken } = await start();
+      const s0 = bySlug('final');
+      await agent.post(`/settings/asset-categories/${s0.id}/delete`).type('form').send({ _csrf: csrfToken }).expect(302);
+      const before = allRows();
+      await save(agent, csrfToken, s0.id, { displayName: 'Back', directorySlug: 'final', ...reviewed(s0) }).expect(404);
+      await save(agent, csrfToken, s0.id, { displayName: 'Back', directorySlug: 'final' }).expect(404);
+      expect(allRows()).toEqual(before);
+      expect(rowById(s0.id)).toBeUndefined();
+    });
+
+    it('H10 keeps uniqueness validation for current requests; a stale one is refused before it', async () => {
+      const { agent, csrfToken } = await start();
+      const wip = bySlug('wip');
+      const res = await save(agent, csrfToken, wip.id, { displayName: 'WIP', directorySlug: 'final', ...reviewed(wip) }).expect(422);
+      expect(res.text).toContain('A category with this directory slug already exists.');
+      await save(agent, csrfToken, wip.id, { displayName: 'Wip Two', directorySlug: 'wip', ...reviewed(wip) }).expect(302);
+      await save(agent, csrfToken, wip.id, { displayName: 'WIP', directorySlug: 'final', ...reviewed(wip) }).expect(409);
+      expect(rowById(wip.id)).toMatchObject({ display_name: 'Wip Two', directory_slug: 'wip' });
+      // Ordinary validation still answers first for invalid input.
+      await save(agent, csrfToken, wip.id, { displayName: '  ', directorySlug: 'bad slug', ...reviewed(wip) }).expect(422);
+    });
+
+    it('H11/H12 a refusal changes no other row, order, status or timestamp', async () => {
+      const { agent, csrfToken } = await start();
+      const s0 = bySlug('final');
+      ctx.db.prepare('UPDATE asset_category_defaults SET display_name = ?, updated_at = ? WHERE id = ?').run('Elsewhere', '2001-01-01 00:00:00', s0.id);
+      const before = allRows();
+      const logsBefore = ctx.db.prepare('SELECT COUNT(*) AS c FROM application_logs').get().c;
+      await save(agent, csrfToken, s0.id, { displayName: 'Old', directorySlug: 'final', ...reviewed(s0) }).expect(409);
+      expect(allRows()).toEqual(before);
+      expect(ctx.db.prepare('SELECT COUNT(*) AS c FROM application_logs').get().c).toBe(logsBefore);
+    });
+
+    it("H13 a new intentional save from the refusal's current review fields is written", async () => {
+      const { agent, csrfToken } = await start();
+      const s0 = bySlug('final');
+      await save(agent, csrfToken, s0.id, { displayName: 'Newer', directorySlug: 'final', ...reviewed(s0) }).expect(302);
+      const refused = await save(agent, csrfToken, s0.id, { displayName: 'Mine', directorySlug: 'final', ...reviewed(s0) }).expect(409);
+      const card = cardOf(refused.text, s0.id);
+      await save(agent, csrfToken, s0.id, {
+        displayName: 'Mine',
+        directorySlug: 'final',
+        reviewedDisplayName: hiddenValue(card, 'reviewedDisplayName'),
+        reviewedDirectorySlug: hiddenValue(card, 'reviewedDirectorySlug'),
+      }).expect(302);
+      expect(rowById(s0.id).display_name).toBe('Mine');
+    });
+
+    it('H14 keeps authentication, CSRF and maintenance in front of the precondition', async () => {
+      ctx = setupTmp();
+      const maintenanceState = { active: false };
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG, maintenanceState });
+      const { agent, csrfToken } = await authenticate(app);
+      const s0 = bySlug('final');
+      const before = allRows();
+      const request = (await import('supertest')).default;
+      await request(app).post(`/settings/asset-categories/${s0.id}`).type('form')
+        .send({ displayName: 'X', directorySlug: 'x', ...reviewed(s0) }).expect(401);
+      await agent.post(`/settings/asset-categories/${s0.id}`).type('form')
+        .send({ displayName: 'X', directorySlug: 'x', ...reviewed(s0) }).expect(403);
+      await agent.post(`/settings/asset-categories/${s0.id}`).type('form')
+        .send({ displayName: 'X', directorySlug: 'x', ...reviewed(s0), _csrf: 'not-a-real-token' }).expect(403);
+      maintenanceState.active = true;
+      try {
+        await agent.post(`/settings/asset-categories/${s0.id}`).type('form')
+          .send({ displayName: 'X', directorySlug: 'x', ...reviewed(s0), _csrf: csrfToken }).expect(503);
+      } finally {
+        // The upload tracker keeps the last bound maintenance state.
+        maintenanceState.active = false;
+      }
+      expect(allRows()).toEqual(before);
+    });
   });
 
   describe('authentication and CSRF', () => {

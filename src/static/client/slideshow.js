@@ -691,7 +691,8 @@ export function enhanceSlideshow(scope = globalThis.document) {
 
   function closeSlideshow(options = {}) {
     const restoreFocus = options?.restoreFocus !== false;
-    const focusTarget = returnFocusElement || trigger;
+    // A region refresh may have replaced the element that opened the slideshow.
+    const focusTarget = returnFocusElement?.isConnected === false ? trigger : returnFocusElement || trigger;
     stopAutoplay();
     leaveOriginalSize();
     const wasFullscreen = isFullscreenActive();
@@ -760,23 +761,47 @@ export function enhanceSlideshow(scope = globalThis.document) {
     boundTrigger?.removeEventListener?.('click', openFromTrigger);
     boundTrigger = nextTrigger;
     trigger = nextTrigger;
+    if (isOpen) boundTrigger.setAttribute?.('aria-expanded', 'true');
     markEnhancementBound(boundTrigger, 'slideshowBound');
     boundTrigger.addEventListener?.('click', openFromTrigger);
   };
 
   const refreshSequence = (nextSequence) => {
+    const shown = sequence[currentIndex];
     normalSequence = Array.isArray(nextSequence) ? nextSequence : [];
-    if (!temporarySequenceActive) sequence = normalSequence;
+    const survivor = shown && normalSequence.find((candidate) => String(candidate?.id) === String(shown.id));
+    if (temporarySequenceActive) {
+      // The single asset opened from a preview closes once it is gone.
+      if (isOpen && !survivor) closeSlideshow();
+      else if (survivor) sequence = [survivor];
+      syncSequenceControls();
+      return normalSequence.length > 0 ? 1 : 0;
+    }
+    sequence = normalSequence;
     syncSequenceControls();
-    if (!normalSequence.length && !temporarySequenceActive) {
+    if (!normalSequence.length) {
       stopAutoplay();
       if (isOpen) closeSlideshow();
       if (originalSizeBtn) originalSizeBtn.disabled = true;
       return 0;
     }
-    currentIndex = Math.min(currentIndex, sequence.length - 1);
-    if (isOpen) renderItem(currentIndex);
-    else setOriginalSizeControl(false);
+    if (!isOpen) {
+      currentIndex = Math.min(currentIndex, sequence.length - 1);
+      setOriginalSizeControl(false);
+      return 1;
+    }
+    if (sequence.length < 2 && isPlaying) stopAutoplay();
+    if (survivor) {
+      // The asset stays on screen by identity, keeping playback and original size.
+      currentIndex = sequence.indexOf(survivor);
+      if (status) status.textContent = `${currentIndex + 1} of ${sequence.length}`;
+      if (!isOriginalMode) setOriginalSizeControl(false);
+      if (img && survivor.previewUrl !== shown.previewUrl) img.src = survivor.previewUrl;
+    } else {
+      // Its neighbor takes over rather than stale media of a removed asset.
+      leaveOriginalSize();
+      renderItem(Math.min(currentIndex, sequence.length - 1));
+    }
     return 1;
   };
 

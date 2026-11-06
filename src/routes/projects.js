@@ -1,5 +1,6 @@
 import express from 'express';
 import {
+  ProjectDeletionError,
   ProjectNotFoundError,
   ProjectValidationError,
 } from '../services/project-service.js';
@@ -392,6 +393,11 @@ export function createProjectsRouter({ appName, db, projectService, workflowQuer
 
   router.post('/:id/archive', (req, res, next) => {
     const id = parseId(req.params.id);
+    // The Edit Project dialog archives in place (Accept: application/json);
+    // any other request keeps the native redirect and error pages below.
+    if (isEnhancedProjectEditRequest(req)) {
+      return handleProjectArchiveJson(res, projectService, id);
+    }
     if (id === null) {
       return next(createNotFound());
     }
@@ -412,6 +418,11 @@ export function createProjectsRouter({ appName, db, projectService, workflowQuer
 
   router.post('/:id/delete', (req, res, next) => {
     const id = parseId(req.params.id);
+    // The Edit Project dialog deletes in place (Accept: application/json);
+    // any other request keeps the native redirect and error pages below.
+    if (isEnhancedProjectEditRequest(req)) {
+      return handleProjectDeleteJson(res, projectService, id);
+    }
     if (id === null) {
       return next(createNotFound());
     }
@@ -771,6 +782,200 @@ function sendProjectEditJsonError(res, status, code, message, extra = {}) {
 
 function sendProjectNotFoundJson(res) {
   return sendProjectEditJsonError(res, 404, 'PROJECT_NOT_FOUND', 'Project not found.');
+}
+
+// The confirmed archive state of a project record, for the Archive JSON
+// answers; nothing beyond what the record itself holds.
+function presentArchivedProject(project) {
+  return {
+    id: project.id,
+    title: project.title,
+    url: `/projects/${project.id}`,
+    archived: isProjectArchived(project),
+    archivedAt: project.archived_at ?? null,
+    status: project.status,
+  };
+}
+
+/**
+ * The enhanced Archive (Edit Project dialog). The service, its rules and its
+ * activity log are unchanged; this only says what happened:
+ * - 200 outcome 'archived': this request archived the project.
+ * - 409 PROJECT_ALREADY_ARCHIVED, outcome 'refused': it was archived before
+ *   this request (the service refuses a second archive); nothing changed.
+ * - 404 PROJECT_NOT_FOUND, outcome 'refused': no such project.
+ * - 500 PROJECT_ARCHIVE_FAILED, outcome 'failed': the service failed and the
+ *   record, read again in the same synchronous request, is still active, so
+ *   nothing was archived.
+ * - 500 PROJECT_ARCHIVE_UNKNOWN, outcome 'unknown': the service failed and
+ *   the record could not be shown to be unchanged.
+ * Messages never carry backend detail.
+ */
+function handleProjectArchiveJson(res, projectService, id) {
+  res.set('Cache-Control', 'no-store');
+  const refuse = (status, code, message, extra = {}) => sendProjectEditJsonError(res, status, code, message, {
+    outcome: 'refused', ...extra,
+  });
+  if (id === null) return refuse(404, 'PROJECT_NOT_FOUND', 'Project not found.');
+
+  let existing;
+  try {
+    existing = projectService.findById(id);
+  } catch {
+    // Nothing has been attempted yet.
+    return sendProjectEditJsonError(res, 500, 'PROJECT_ARCHIVE_FAILED', 'Project archive failed. Please try again.', { outcome: 'failed' });
+  }
+  if (!existing) return refuse(404, 'PROJECT_NOT_FOUND', 'Project not found.');
+  if (isProjectArchived(existing)) {
+    return refuse(409, 'PROJECT_ALREADY_ARCHIVED', 'This project was already archived. Nothing was changed.', {
+      projectId: existing.id,
+      project: presentArchivedProject(existing),
+    });
+  }
+
+  try {
+    const archived = projectService.archive(id);
+    if (!archived || !isProjectArchived(archived)) throw new Error('Archive returned no archived record.');
+    return res.json({
+      status: 'success',
+      outcome: 'archived',
+      message: `Project “${archived.title}” archived.`,
+      projectId: archived.id,
+      project: presentArchivedProject(archived),
+      urls: { project: `/projects/${archived.id}`, projects: '/projects' },
+      refreshRequired: true,
+    });
+  } catch (err) {
+    if (err instanceof ProjectNotFoundError) return refuse(404, 'PROJECT_NOT_FOUND', 'Project not found.');
+    // The service and its database are synchronous, so no other request ran
+    // between its failure and this read: a still-active record proves that
+    // nothing was archived. Anything else is not proof either way.
+    let current = null;
+    try { current = projectService.findById(id); } catch { current = null; }
+    if (current && !isProjectArchived(current)) {
+      return sendProjectEditJsonError(res, 500, 'PROJECT_ARCHIVE_FAILED',
+        'Project archive failed. Nothing was archived. Please try again.', { outcome: 'failed', projectId: current.id });
+    }
+    return sendProjectEditJsonError(res, 500, 'PROJECT_ARCHIVE_UNKNOWN',
+      'Could not confirm whether the project was archived.', { outcome: 'unknown', projectId: id });
+  }
+}
+
+// WP11A-2: the enhanced Project Delete (Edit Project dialog). The service,
+// its rules (any existing project, archived or not; its releases go with it;
+// the folder only through the ownership-verified quarantine) and its activity
+// log are unchanged. `outcome` says only what the service established, never
+// what an HTTP status alone suggests:
+//   deleted                     200 — the project row (and its releases)
+//                                     committed as deleted and the staged folder
+//                                     was removed (cleanup 'complete').
+//   refused                     404 PROJECT_NOT_FOUND / 409 PROJECT_OWNERSHIP —
+//                                     refused before anything was deleted; an
+//                                     ownership refusal leaves the folder where
+//                                     it was (or puts it back).
+//   failed                      500 PROJECT_DELETE_FAILED — nothing was
+//                                     deleted: staging failed before any move,
+//                                     or the folder was put back and the
+//                                     database deletion rolled back.
+//   deleted-cleanup-incomplete  500 PROJECT_DELETE_CLEANUP_INCOMPLETE — the
+//                                     project is deleted, but its staged folder
+//                                     could not be removed (recoveryRequired).
+//   recovery-required           500 PROJECT_DELETE_RECOVERY_REQUIRED — the
+//                                     project was not deleted, but its staged
+//                                     folder could not be put back.
+//   unknown                     500 PROJECT_DELETE_UNKNOWN — anything else.
+// Each service outcome is cross-checked against the project row, read again in
+// the same synchronous request (the service and the database are synchronous,
+// so no other request runs in between); a contradiction is 'unknown'.
+// Messages are fixed: no path, staging name, SQL or stack is ever sent.
+const PROJECT_DELETE_DESTINATION = '/projects';
+const PROJECT_DELETE_JSON_MESSAGES = Object.freeze({
+  missing: 'This project no longer exists. Nothing was deleted by this request.',
+  failed: 'The project could not be deleted. Nothing was deleted, and its folder is where it was. Please try again.',
+  cleanupIncomplete: 'was deleted, but its folder could not be fully removed from the projects folder. '
+    + 'It needs recovery: check the projects folder for a hidden leftover folder. Nothing will be retried automatically.',
+  recoveryRequired: 'The project was not deleted, but its folder could not be put back where it was after the deletion failed. '
+    + 'It needs recovery before this project can be changed. Nothing will be retried automatically.',
+  unknown: 'Could not confirm whether the project was deleted.',
+});
+
+/** 'present' | 'absent' | 'unknown' — a read-only observation of one project row. */
+function readProjectRowPresence(projectService, id) {
+  try {
+    return projectService.findById(id) ? 'present' : 'absent';
+  } catch {
+    return 'unknown';
+  }
+}
+
+function handleProjectDeleteJson(res, projectService, id) {
+  res.set('Cache-Control', 'no-store');
+  const send = (status, code, outcome, message, extra = {}) => sendProjectEditJsonError(res, status, code, message, {
+    outcome, ...extra,
+  });
+  const missing = () => send(404, 'PROJECT_NOT_FOUND', 'refused', PROJECT_DELETE_JSON_MESSAGES.missing);
+  if (id === null) return missing();
+
+  let existing;
+  try {
+    existing = projectService.findById(id);
+  } catch {
+    // Nothing has been attempted yet.
+    return send(500, 'PROJECT_DELETE_FAILED', 'failed', PROJECT_DELETE_JSON_MESSAGES.failed, { projectId: id });
+  }
+  if (!existing) return missing();
+  const title = existing.title;
+  const deletedProject = { id: existing.id, title, deleted: true };
+  const terminal = {
+    projectId: existing.id,
+    project: deletedProject,
+    // The project's own pages (Project Detail, Project Assets) no longer
+    // exist; this is the native Delete's own destination.
+    projectPagesRemain: false,
+    redirect: PROJECT_DELETE_DESTINATION,
+  };
+
+  try {
+    projectService.deleteProject(id);
+  } catch (err) {
+    const row = readProjectRowPresence(projectService, id);
+    const unknown = () => send(500, 'PROJECT_DELETE_UNKNOWN', 'unknown', PROJECT_DELETE_JSON_MESSAGES.unknown, { projectId: existing.id });
+    if (err instanceof ProjectNotFoundError) return row === 'absent' ? missing() : unknown();
+    if (err instanceof ProjectOwnershipError) {
+      return row === 'present'
+        ? send(err.status || 409, 'PROJECT_OWNERSHIP', 'refused', `${err.message} Nothing was deleted.`, { projectId: existing.id })
+        : unknown();
+    }
+    if (err instanceof ProjectDeletionError) {
+      if (err.outcome === 'cleanup_incomplete' && row === 'absent') {
+        return send(500, 'PROJECT_DELETE_CLEANUP_INCOMPLETE', 'deleted-cleanup-incomplete',
+          `Project “${title}” ${PROJECT_DELETE_JSON_MESSAGES.cleanupIncomplete}`, {
+            ...terminal, recoveryRequired: true, cleanup: 'incomplete',
+          });
+      }
+      if (err.outcome === 'recovery_required' && row === 'present') {
+        return send(500, 'PROJECT_DELETE_RECOVERY_REQUIRED', 'recovery-required',
+          PROJECT_DELETE_JSON_MESSAGES.recoveryRequired, { projectId: existing.id, recoveryRequired: true });
+      }
+      if ((err.outcome === 'restored' || err.outcome === 'not_changed') && row === 'present') {
+        return send(500, 'PROJECT_DELETE_FAILED', 'failed', PROJECT_DELETE_JSON_MESSAGES.failed, { projectId: existing.id });
+      }
+    }
+    return unknown();
+  }
+
+  // The service returned normally only after the database deletion committed
+  // and any staged folder was removed.
+  if (readProjectRowPresence(projectService, id) !== 'absent') {
+    return send(500, 'PROJECT_DELETE_UNKNOWN', 'unknown', PROJECT_DELETE_JSON_MESSAGES.unknown, { projectId: existing.id });
+  }
+  return res.json({
+    status: 'success',
+    outcome: 'deleted',
+    message: `Project “${title}” deleted.`,
+    cleanup: 'complete',
+    ...terminal,
+  });
 }
 
 // Validation (including the archived-project refusal) keeps its field and

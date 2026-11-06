@@ -579,6 +579,7 @@
       }
       .field-error input, .field-error textarea, .field-error select { border-color: var(--danger); }
       .field-error-message { font-size: 0.875rem; color: var(--danger); }
+      .processing-refresh-status[data-state="failed"], .processing-refresh-status[data-state="unavailable"] { color: var(--danger); }
       .help-text { display: block; font-size: 0.75rem; color: var(--muted); margin-top: 0.125rem; }
       .required { color: var(--danger); }
       .error-summary {
@@ -7780,6 +7781,11 @@
       /* ── Project summary on detail page ── */
       .project-summary {
         margin-bottom: var(--space-xl);
+      }
+
+      /* Refresh regions for the archived heading and notice; they add no box. */
+      .project-detail-archive-state {
+        display: contents;
       }
 
       /* ── Project detail hero (primary image + summary) ── */
@@ -16569,6 +16575,10 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   z-index: 5;
 }
 
+[data-live-filter-retry] {
+  margin-inline-start: var(--space-sm);
+}
+
 /* Dismiss sits at the far right of its feedback, whatever wraps beside it. */
 .app-dialog-feedback > [data-dialog-feedback-text]:has(> :is([data-release-create-dismiss], [data-book-create-dismiss], [data-chapter-feedback-dismiss])) {
   display: flow-root;
@@ -16606,4 +16616,65 @@ button[aria-disabled="true"] > .project-create-submit-icon {
 #chapter-edit-dialog .app-dialog-status:empty {
   min-height: 0;
   margin-top: 0;
+}
+
+/* Edit Asset: the in-place tag save reports in the dialog status. */
+#asset-edit-dialog .app-dialog-status[data-asset-tags-state="error"] {
+  color: var(--danger);
+}
+#asset-edit-dialog .app-dialog-status [data-asset-tags-retry] {
+  margin-left: var(--space-sm);
+}
+
+/* Edit Asset: primary-image regions are refresh boundaries only; their
+   sections stay direct items of the dialog body's column layout. */
+#asset-edit-dialog .asset-edit-dialog-region {
+  display: contents;
+}
+/* The in-place primary-image actions report in the same dialog status, each
+   message on its own line after any tag message. */
+#asset-edit-dialog .app-dialog-status [data-asset-primary-image-status-text]:not(:empty) {
+  display: block;
+}
+#asset-edit-dialog .app-dialog-status[data-asset-primary-image-state="error"] [data-asset-primary-image-status-text] {
+  color: var(--danger);
+}
+#asset-edit-dialog .app-dialog-status [data-asset-primary-image-retry] {
+  margin-top: var(--space-sm);
+}
+#asset-edit-dialog .asset-action-form button[aria-disabled="true"] {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Asset detail: the filtered-out notice region is a refresh boundary only. */
+.asset-viewer-region {
+  display: contents;
+}
+/* Edit Asset: in-place Rename and Move report in the same dialog status, on
+   their own line; long filenames wrap instead of widening the dialog. */
+#asset-edit-dialog .app-dialog-status [data-asset-file-action-status-text]:not(:empty) {
+  display: block;
+  overflow-wrap: anywhere;
+}
+#asset-edit-dialog .app-dialog-status[data-asset-file-action-state="error"] [data-asset-file-action-status-text] {
+  color: var(--danger);
+}
+#asset-edit-dialog .app-dialog-status [data-asset-file-action-retry] {
+  margin-top: var(--space-sm);
+}
+
+/* Edit Asset: in-place Delete reports in the same dialog status, on its own
+   line; its Check again and Go to Project Assets controls follow it. */
+#asset-edit-dialog .app-dialog-status [data-asset-delete-status-text]:not(:empty) {
+  display: block;
+  overflow-wrap: anywhere;
+}
+#asset-edit-dialog .app-dialog-status[data-asset-delete-state="error"] [data-asset-delete-status-text] {
+  color: var(--danger);
+}
+#asset-edit-dialog .app-dialog-status [data-asset-delete-retry],
+#asset-edit-dialog .app-dialog-status [data-asset-delete-assets-link] {
+  margin-top: var(--space-sm);
+  margin-right: var(--space-sm);
 }

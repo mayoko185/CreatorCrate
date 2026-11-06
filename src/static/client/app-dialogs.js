@@ -214,8 +214,22 @@ function appDialogReturnLocation(state) {
   return appDialogValidatedLocalLocation(state.document?.defaultView || globalThis, candidate);
 }
 
+// Whether any registered veto (vetoAppDialogReturn) says this document must
+// survive the dismissal. Asked when the navigation would happen, so no answer
+// given earlier can lift a later one; a veto that throws counts as a veto.
+function appDialogReturnVetoed(state) {
+  for (const veto of state.returnVetoes || []) {
+    try {
+      if (veto()) return true;
+    } catch {
+      return true;
+    }
+  }
+  return false;
+}
+
 function appDialogNavigateToReturnLocation(state, returnLocation) {
-  if (!returnLocation) return;
+  if (!returnLocation || appDialogReturnVetoed(state)) return;
   const windowObject = state.document?.defaultView || globalThis;
   windowObject.location?.assign?.(returnLocation);
 }
@@ -1274,6 +1288,41 @@ export function setAppDialogBaseline(document, id, values) {
   return true;
 }
 
+/**
+ * The values a dialog form holds now, by field name (repeated checkboxes as
+ * arrays), in the shape its saved baseline uses. Reads only.
+ */
+export function readAppDialogValues(form) {
+  return appDialogValues(form);
+}
+
+/**
+ * Show draft values in a dialog form without touching its saved baseline:
+ * dismissal and the next confirmed save still restore to the baseline.
+ */
+export function applyAppDialogDraft(document, id, values) {
+  const state = document?.getElementById?.(id)?.__creatorCrateAppDialogState;
+  if (!state?.form || !values || typeof values !== 'object') return false;
+  appDialogApplyValues(state.form, values);
+  return true;
+}
+
+/**
+ * Register a predicate that, while it returns true, keeps a dismissal of this
+ * dialog from following its return location ([data-dialog-return-location],
+ * a deep link's returnTo): the dialog still closes, and the page stays. Each
+ * predicate is asked at every dismissal, so it should read live state rather
+ * than be toggled; none can lift another's veto. Registering the same
+ * predicate again changes nothing. Returns false without such a dialog.
+ */
+export function vetoAppDialogReturn(document, id, predicate) {
+  const state = document?.getElementById?.(id)?.__creatorCrateAppDialogState;
+  if (!state || typeof predicate !== 'function') return false;
+  state.returnVetoes ||= new Set();
+  state.returnVetoes.add(predicate);
+  return true;
+}
+
 export function enhanceAppDialogs(scope = globalThis.document) {
   const document = appDialogDocument(scope);
   if (!document || typeof document.querySelectorAll !== 'function') return 0;
@@ -1295,6 +1344,7 @@ export function enhanceAppDialogs(scope = globalThis.document) {
       closeRequest: null,
       backdropPointer: null,
       pendingReturnLocation: null,
+      returnVetoes: new Set(),
       beforeClose: null,
       preserveValuesOnError: false,
       submitLocked: null,

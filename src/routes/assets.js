@@ -1,8 +1,11 @@
+import crypto from 'node:crypto';
 import express from 'express';
 import { ProjectNotFoundError } from '../services/project-service.js';
 import { ProjectOwnershipError } from '../services/project-directory-ownership.js';
 import { ReleaseValidationError } from '../services/release-service.js';
 import { UNCATEGORIZED } from '../services/asset-action-service.js';
+import { assetDeleteReviewToken, assetReviewToken, isAssetDeleteReviewToken } from '../services/asset-delete-review.js';
+import { assetTagReviewToken } from '../services/asset-tag-service.js';
 import { PRIMARY_IMAGE_ERROR_CODES } from '../services/project-primary-image-service.js';
 import { BOOK_PRIMARY_IMAGE_ERROR_CODES } from '../services/book-primary-image-service.js';
 import { AUTO_RENAME_ERROR_CODES } from '../services/auto-rename-service.js';
@@ -32,6 +35,7 @@ import {
   buildBrowserRenderModel,
   buildCanonicalContextQuery,
   createNotFound,
+  describeAutoRenameSuccess,
   enrichProjectAssetsForRender,
   getNsfwFilterSettingsService,
   getOpenLocallySettingsService,
@@ -307,6 +311,9 @@ export function createAssetsRouter({
   if (!processingRecoveryEvidenceService || typeof processingRecoveryEvidenceService.reconcileAfterManualScan !== 'function') {
     throw new Error('createAssetsRouter requires a processingRecoveryEvidenceService dependency.');
   }
+  // What each reviewed plan's Apply actually did, kept for this process so an
+  // Apply whose answer never reached the page can be settled by a read.
+  const autoRenameAttempts = createAutoRenameAttempts();
 
   function logMissingAssetRemoval(projectId, result) {
     if (result.removedCount < 1) return;
@@ -366,22 +373,28 @@ export function createAssetsRouter({
   // POST /projects/:id/assets/remove-missing — Remove only eligible missing
   // asset records. The service owns project mutability, release protection,
   // transactional rechecks, and all database cleanup semantics.
+  // WP10B: the Project Assets confirmation submits this same form with
+  // Accept: application/json and receives the service's own result instead of
+  // a redirect. The scope is always the whole project, whatever the page shows.
   router.post('/:id/assets/remove-missing', (req, res, next) => {
     try {
-      const pageDefaultsService = getPageDefaultsService(req);
+      const enhanced = isEnhancedAssetRequest(req);
+      const pageDefaultsService = enhanced ? null : getPageDefaultsService(req);
       const id = parseId(req.params.id);
-      if (id === null) return next(createNotFound());
-
-      const project = projectService.findById(id);
-      if (!project) return next(createNotFound());
+      if (id === null || !projectService.findById(id)) {
+        return enhanced ? sendRemoveMissingAssetsJsonFailure(res, { code: 'PROJECT_NOT_FOUND' }) : next(createNotFound());
+      }
 
       let result;
       try {
         result = assetActionService.removeMissingAssets(id);
       } catch (err) {
+        if (enhanced) return sendRemoveMissingAssetsJsonFailure(res, err);
         return handleRemoveMissingAssetsFailure(err, next);
       }
       logMissingAssetRemoval(id, result);
+
+      if (enhanced) return res.json(buildRemoveMissingAssetsJson(id, result));
 
       return res.redirect(buildAssetsRedirectUrl(
         workflowQueryService,
@@ -511,10 +524,10 @@ export function createAssetsRouter({
     try {
       const pageDefaultsService = getPageDefaultsService(req);
       const projectId = parseId(req.params.projectId);
-      if (projectId === null) return next(createNotFound());
+      if (projectId === null) return refuseMissingAutoRenameProject(req, res, next);
 
       const project = projectService.findById(projectId);
-      if (!project) return next(createNotFound());
+      if (!project) return refuseMissingAutoRenameProject(req, res, next);
 
       const body = req.body || {};
       const categoryId = parseCanonicalPositiveId(body.categoryId);
@@ -528,6 +541,7 @@ export function createAssetsRouter({
           next,
           workflowQueryService,
           pageDefaultsService,
+          code: AUTO_RENAME_ERROR_CODES.CATEGORY_REQUIRED,
           status: AUTO_RENAME_ERROR_STATUS[AUTO_RENAME_ERROR_CODES.CATEGORY_REQUIRED],
           message: AUTO_RENAME_PREVIEW_MESSAGES[AUTO_RENAME_ERROR_CODES.CATEGORY_REQUIRED],
           returnContext: buildAutoRenameReturnContext(body),
@@ -545,6 +559,7 @@ export function createAssetsRouter({
           next,
           workflowQueryService,
           pageDefaultsService,
+          code: AUTO_RENAME_ERROR_CODES.ORDER_INVALID,
           status: AUTO_RENAME_ERROR_STATUS[AUTO_RENAME_ERROR_CODES.ORDER_INVALID],
           message: AUTO_RENAME_PREVIEW_MESSAGES[AUTO_RENAME_ERROR_CODES.ORDER_INVALID],
           returnContext: buildAutoRenameReturnContext({
@@ -565,6 +580,7 @@ export function createAssetsRouter({
           next,
           workflowQueryService,
           pageDefaultsService,
+          code: AUTO_RENAME_ERROR_CODES.ORDER_INVALID,
           status: AUTO_RENAME_ERROR_STATUS[AUTO_RENAME_ERROR_CODES.ORDER_INVALID],
           message: AUTO_RENAME_PREVIEW_MESSAGES[AUTO_RENAME_ERROR_CODES.ORDER_INVALID],
           returnContext: buildAutoRenameReturnContext({
@@ -586,9 +602,26 @@ export function createAssetsRouter({
           ...body,
           categoryId: String(categoryId),
         });
-        const planModel = buildAutoRenamePlanRenderModel(plan,
-          projectImageSettingsService && (projectImageSettingsService.getPresentationPolicy?.()
-            ?? projectImagePresentationPolicy(projectImageSettingsService.getPolicy())));
+        const planModel = {
+          ...buildAutoRenamePlanRenderModel(plan,
+            projectImageSettingsService && (projectImageSettingsService.getPresentationPolicy?.()
+              ?? projectImagePresentationPolicy(projectImageSettingsService.getPolicy()))),
+          // Every review is its own Apply attempt, even when an identical plan
+          // signs to the same token.
+          attemptId: autoRenameAttempts.issue(projectId, plan.token),
+        };
+        if (isEnhancedAssetRequest(req)) {
+          // The invoking page mounts the same confirmation; the token in it
+          // stays the only Apply authority.
+          return res.render('projects/auto-rename-confirmation-fragment.njk', {
+            project,
+            autoRenameConfirmationPlan: planModel,
+            autoRenameConfirmationContext: context,
+          }, (err, dialogHtml) => {
+            if (err) return next(err);
+            return res.json({ ...buildAutoRenamePreviewJson(projectId, planModel), dialogHtml });
+          });
+        }
         const cancelUrl = buildAssetsRedirectUrl(
           workflowQueryService,
           projectId,
@@ -641,20 +674,43 @@ export function createAssetsRouter({
     try {
       const pageDefaultsService = getPageDefaultsService(req);
       const projectId = parseId(req.params.projectId);
-      if (projectId === null) return next(createNotFound());
+      if (projectId === null) return refuseMissingAutoRenameProject(req, res, next);
 
       const project = projectService.findById(projectId);
-      if (!project) return next(createNotFound());
+      if (!project) return refuseMissingAutoRenameProject(req, res, next);
 
       const body = req.body || {};
       const token = typeof body.planToken === 'string'
         ? body.planToken
         : null;
 
+      // The reviewed attempt this POST claims. Every Apply, async or native,
+      // must name the attempt its Preview issued; without one nothing runs.
+      const claimed = autoRenameAttempts.claim(projectId, body.attemptId, token);
+      if (claimed.refusal) {
+        return renderAutoRenameBrowserError({
+          appName,
+          project,
+          projectId,
+          req,
+          res,
+          next,
+          workflowQueryService,
+          pageDefaultsService,
+          ...claimed.refusal,
+          returnContext: buildAutoRenameReturnContext(body),
+        });
+      }
+      const attempt = claimed.attempt;
+
       let result;
       try {
         result = autoRenameService.applyPlan(projectId, token);
       } catch (err) {
+        attempt.complete({
+          outcome: autoRenameApplyOutcome(err && err.code),
+          message: AUTO_RENAME_APPLY_MESSAGES[err && err.code] || 'Auto Rename could not be applied.',
+        });
         return handleAutoRenameFailure(err, {
           operation: 'apply',
           appName,
@@ -669,6 +725,15 @@ export function createAssetsRouter({
         });
       }
 
+      const applied = buildAutoRenameApplyJson(projectId, result);
+      attempt.complete({
+        outcome: 'committed',
+        message: applied.message,
+        renamed: applied.renamed,
+        unchanged: applied.unchanged,
+      });
+      if (isEnhancedAssetRequest(req)) return res.json({ ...applied, attemptId: attempt.id });
+
       return res.redirect(buildAssetsRedirectUrl(
         workflowQueryService,
         projectId,
@@ -680,6 +745,47 @@ export function createAssetsRouter({
         },
         pageDefaultsService,
       ));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // GET /projects/:projectId/assets/auto-rename/state — Read-only current
+  // membership and paths of one concrete category, JSON only. An Apply whose
+  // outcome is unknown is reconciled from this, so nothing is ever re-sent.
+  // The paths are database observations only; with ?attempt= the answer also
+  // says what that one reviewed Apply attempt did, if this process ran it.
+  router.get('/:projectId/assets/auto-rename/state', (req, res, next) => {
+    try {
+      const projectId = parseId(req.params.projectId);
+      const project = projectId === null ? null : projectService.findById(projectId);
+      if (!project) return sendAutoRenameJsonError(res, 404, AUTO_RENAME_ERROR_CODES.PROJECT_NOT_FOUND, 'Project not found.');
+
+      const categoryId = parseCanonicalPositiveId(req.query.categoryId);
+      if (categoryId === null) {
+        return sendAutoRenameJsonError(res, 422, AUTO_RENAME_ERROR_CODES.CATEGORY_REQUIRED,
+          AUTO_RENAME_PREVIEW_MESSAGES[AUTO_RENAME_ERROR_CODES.CATEGORY_REQUIRED]);
+      }
+      const attemptId = req.query.attempt;
+      if (attemptId !== undefined && !(typeof attemptId === 'string' && AUTO_RENAME_ATTEMPT_PATTERN.test(attemptId))) {
+        return sendAutoRenameJsonError(res, 422, 'AUTO_RENAME_ATTEMPT_INVALID', 'The Auto Rename attempt is invalid.');
+      }
+      const category = workflowQueryService.getProjectAutoRenameCategory(projectId, { category: String(categoryId) });
+      if (category?.effectiveCategory?.id !== categoryId) {
+        return sendAutoRenameJsonError(res, 422, AUTO_RENAME_ERROR_CODES.CATEGORY_INVALID,
+          AUTO_RENAME_PREVIEW_MESSAGES[AUTO_RENAME_ERROR_CODES.CATEGORY_INVALID]);
+      }
+      return res.json({
+        status: 'success',
+        projectId,
+        categoryId,
+        ...(attemptId === undefined ? {} : { operation: autoRenameAttempts.read(projectId, attemptId) }),
+        archived: isProjectArchived(project),
+        assets: (category.assets || []).map((asset) => ({
+          assetId: asset.id,
+          relativePath: safeDisplayRelativePath(asset.relative_path),
+        })),
+      });
     } catch (err) {
       next(err);
     }
@@ -699,7 +805,7 @@ export function createAssetsRouter({
         return next(createNotFound());
       }
 
-      const assetTagEditor = getAssetTagEditorData(req, data.asset.id);
+      const assetTagEditor = getAssetTagEditorData(req, data.asset);
 
       let primaryImage;
       try {
@@ -738,17 +844,58 @@ export function createAssetsRouter({
       const pageDefaultsService = getPageDefaultsService(req);
       const projectId = parseId(req.params.projectId);
       const assetId = parseId(req.params.assetId);
+      // WP10A3-B: the Edit Asset dialog submits this same form with
+      // Accept: application/json; the same service call runs once.
+      const enhanced = isEnhancedAssetRequest(req);
       if (projectId === null || assetId === null) {
-        return next(createNotFound());
+        return enhanced ? sendAssetFileIdentityRefusal(res, projectService, projectId) : next(createNotFound());
       }
 
+      // F2: the form carries the reviewed-state token the page rendered for
+      // the asset it showed. It is required here (no token, a malformed one or
+      // a repeated field is refused before the service runs) and the service
+      // compares it with the current row under the project lock, so a Delete
+      // confirmed against an earlier state of the asset never removes a later
+      // one. The token only ever confirms; it never locates a file.
+      const reviewToken = req.body?.[ASSET_DELETE_REVIEW_FIELD];
+      let result;
       try {
-        assetActionService.deleteAssets(projectId, [assetId]);
+        if (!isAssetDeleteReviewToken(reviewToken)) {
+          throw Object.assign(new Error('The Delete request carries no valid reviewed asset state.'), {
+            code: 'DELETE_REVIEW_INVALID',
+          });
+        }
+        result = assetActionService.deleteAssets(projectId, [assetId], {
+          reviewed: new Map([[assetId, reviewToken]]),
+        });
       } catch (err) {
+        if (enhanced) {
+          // Read in the same synchronous turn as the service's throw, with no
+          // await between: the service is synchronous and held the project
+          // lock until it threw, so nothing else can have changed this row.
+          const record = readAssetRecordPresence(db, projectId, assetId);
+          return sendAssetDeleteJsonFailure(res, err, {
+            projectId,
+            assetId,
+            record,
+            projectExists: Boolean(projectService.findById(projectId)),
+            assetsUrl: () => buildAssetsRedirectUrl(workflowQueryService, projectId, req.body, {}, pageDefaultsService),
+          });
+        }
         return handleAssetActionFailure(err, {
           appName, workflowQueryService, assetWorkflowMetadataService, projectPrimaryImageService, req, res, next,
           projectId, assetId, action: 'delete', previewProbe,
         }).catch(next);
+      }
+
+      if (enhanced) {
+        return res.json(buildAssetDeleteJson(projectId, assetId, result, () => buildAssetsRedirectUrl(
+          workflowQueryService,
+          projectId,
+          req.body,
+          { assets_deleted: 1 },
+          pageDefaultsService,
+        )));
       }
 
       return res.redirect(buildAssetsRedirectUrl(
@@ -769,19 +916,25 @@ export function createAssetsRouter({
     try {
       const projectId = parseId(req.params.projectId);
       const assetId = parseId(req.params.assetId);
+      const enhanced = isEnhancedAssetRequest(req);
       if (projectId === null || assetId === null) {
-        return next(createNotFound());
+        return enhanced ? sendPrimaryImageIdentityRefusal(res, projectId) : next(createNotFound());
       }
 
+      let stored;
       try {
-        await projectPrimaryImageService.setPrimaryImage(projectId, assetId);
+        stored = await projectPrimaryImageService.setPrimaryImage(projectId, assetId);
       } catch (err) {
+        if (enhanced) return sendProjectPrimaryImageJsonFailure(res, err);
         return handlePrimaryImageFailure(err, {
           appName, workflowQueryService, assetWorkflowMetadataService, projectPrimaryImageService, req, res, next,
           projectId, assetId, previewProbe,
         }).catch(next);
       }
 
+      if (enhanced) {
+        return res.json(buildProjectPrimaryImageJson('primary-image-set', projectId, assetId, stored?.asset_id ?? assetId));
+      }
       res.redirect(buildAssetViewerRedirectUrl(
         workflowQueryService,
         projectId,
@@ -800,19 +953,24 @@ export function createAssetsRouter({
     try {
       const projectId = parseId(req.params.projectId);
       const assetId = parseId(req.params.assetId);
+      const enhanced = isEnhancedAssetRequest(req);
       if (projectId === null || assetId === null) {
-        return next(createNotFound());
+        return enhanced ? sendPrimaryImageIdentityRefusal(res, projectId) : next(createNotFound());
       }
 
       try {
+        // The displayed asset is the expected selection: the service clears
+        // only a selection that still points at it (STALE_CLEAR otherwise).
         projectPrimaryImageService.clearPrimaryImage(projectId, assetId);
       } catch (err) {
+        if (enhanced) return sendProjectPrimaryImageJsonFailure(res, err);
         return handlePrimaryImageFailure(err, {
           appName, workflowQueryService, assetWorkflowMetadataService, projectPrimaryImageService, req, res, next,
           projectId, assetId, previewProbe,
         }).catch(next);
       }
 
+      if (enhanced) return res.json(buildProjectPrimaryImageJson('primary-image-removed', projectId, assetId, null));
       res.redirect(buildAssetViewerRedirectUrl(
         workflowQueryService,
         projectId,
@@ -831,28 +989,36 @@ export function createAssetsRouter({
     try {
       const projectId = parseId(req.params.projectId);
       const assetId = parseId(req.params.assetId);
+      const enhanced = isEnhancedAssetRequest(req);
       if (projectId === null || assetId === null) {
-        return next(createNotFound());
+        return enhanced ? sendPrimaryImageIdentityRefusal(res, projectId) : next(createNotFound());
       }
       if (!workflowQueryService.getProjectAssetViewer(projectId, assetId, req.body)) {
-        return next(createNotFound());
+        return enhanced
+          ? sendPrimaryImageIdentityRefusal(res, projectService?.findById?.(projectId) ? projectId : null)
+          : next(createNotFound());
       }
 
       const bookId = parseId(req.body?.bookId);
+      let stored;
       try {
         if (bookId === null) {
           const error = new Error('Invalid book primary image request.');
           error.code = BOOK_PRIMARY_IMAGE_ERROR_CODES.INVALID_ID;
           throw error;
         }
-        await bookPrimaryImageService.setPrimaryImage(bookId, assetId);
+        stored = await bookPrimaryImageService.setPrimaryImage(bookId, assetId);
       } catch (err) {
+        if (enhanced) return sendBookPrimaryImageJsonFailure(res, err);
         return handleBookPrimaryImageFailure(err, {
           appName, workflowQueryService, assetWorkflowMetadataService, projectPrimaryImageService, req, res, next,
           projectId, assetId, previewProbe,
         }).catch(next);
       }
 
+      if (enhanced) {
+        return res.json(buildBookPrimaryImageJson('book-primary-image-set', projectId, assetId, bookId, stored?.asset_id ?? assetId));
+      }
       return res.redirect(buildAssetViewerRedirectUrl(
         workflowQueryService,
         projectId,
@@ -871,11 +1037,14 @@ export function createAssetsRouter({
     try {
       const projectId = parseId(req.params.projectId);
       const assetId = parseId(req.params.assetId);
+      const enhanced = isEnhancedAssetRequest(req);
       if (projectId === null || assetId === null) {
-        return next(createNotFound());
+        return enhanced ? sendPrimaryImageIdentityRefusal(res, projectId) : next(createNotFound());
       }
       if (!workflowQueryService.getProjectAssetViewer(projectId, assetId, req.body)) {
-        return next(createNotFound());
+        return enhanced
+          ? sendPrimaryImageIdentityRefusal(res, projectService?.findById?.(projectId) ? projectId : null)
+          : next(createNotFound());
       }
 
       const bookId = parseId(req.body?.bookId);
@@ -885,14 +1054,20 @@ export function createAssetsRouter({
           error.code = BOOK_PRIMARY_IMAGE_ERROR_CODES.INVALID_ID;
           throw error;
         }
+        // The displayed asset is the expected selection: only a Book selection
+        // that still points at it is cleared (STALE_CLEAR otherwise).
         await bookPrimaryImageService.clearPrimaryImage(bookId, assetId);
       } catch (err) {
+        if (enhanced) return sendBookPrimaryImageJsonFailure(res, err);
         return handleBookPrimaryImageFailure(err, {
           appName, workflowQueryService, assetWorkflowMetadataService, projectPrimaryImageService, req, res, next,
           projectId, assetId, previewProbe,
         }).catch(next);
       }
 
+      if (enhanced) {
+        return res.json(buildBookPrimaryImageJson('book-primary-image-removed', projectId, assetId, bookId, null));
+      }
       return res.redirect(buildAssetViewerRedirectUrl(
         workflowQueryService,
         projectId,
@@ -914,18 +1089,22 @@ export function createAssetsRouter({
       const pageDefaultsService = getPageDefaultsService(req);
       const projectId = parseId(req.params.projectId);
       const assetId = parseId(req.params.assetId);
+      // WP10A3-A: the Edit Asset dialog submits this same form with
+      // Accept: application/json; the same checks and service call run.
+      const enhanced = isEnhancedAssetRequest(req);
       if (projectId === null || assetId === null) {
-        return next(createNotFound());
+        return enhanced ? sendAssetFileIdentityRefusal(res, projectService, projectId) : next(createNotFound());
       }
       const project = projectService.findById(projectId);
       if (!project) {
-        return next(createNotFound());
+        return enhanced ? sendAssetFileIdentityRefusal(res, projectService, null) : next(createNotFound());
       }
 
       const filename = req.body.filename;
       const origin = parseRenameOrigin(req.body.origin);
 
       if (origin === null) {
+        if (enhanced) return sendAssetFileJsonFailure(res, { code: 'INVALID_ORIGIN' }, 'rename');
         return handleAssetActionFailure({ code: 'INVALID_ORIGIN' }, {
           appName, workflowQueryService, assetWorkflowMetadataService, projectPrimaryImageService, req, res, next,
           pageDefaultsService,
@@ -937,10 +1116,18 @@ export function createAssetsRouter({
 
       let renamed;
       try {
+        // F2B: a viewer-origin Rename (the Asset detail form, or a direct
+        // caller of the legacy contract) always names the asset state it was
+        // made against; the service refuses a missing, malformed or repeated
+        // field (422) and, under the project lock, a state the asset no longer
+        // has (409) — before any file is touched. The token never locates a file.
         renamed = origin === 'assets'
           ? assetActionService.renameAssetBasename(projectId, assetId, filename)
-          : assetActionService.renameAsset(projectId, assetId, filename);
+          : assetActionService.renameAsset(projectId, assetId, filename, {
+            reviewed: req.body?.[ASSET_REVIEW_FIELD],
+          });
       } catch (err) {
+        if (enhanced) return sendAssetFileJsonFailure(res, err, 'rename');
         return handleAssetActionFailure(err, {
           appName, workflowQueryService, assetWorkflowMetadataService, projectPrimaryImageService, req, res, next,
           pageDefaultsService,
@@ -948,6 +1135,10 @@ export function createAssetsRouter({
           submittedFilename: typeof filename === 'string' ? filename : '',
           previewProbe,
         }).catch(next);
+      }
+
+      if (enhanced) {
+        return res.json(buildAssetFileActionJson('asset-renamed', projectId, renamed, origin, workflowQueryService, req.body));
       }
 
       const redirectUrl = origin === 'assets'
@@ -980,8 +1171,9 @@ export function createAssetsRouter({
     try {
       const projectId = parseId(req.params.projectId);
       const assetId = parseId(req.params.assetId);
+      const enhanced = isEnhancedAssetRequest(req);
       if (projectId === null || assetId === null) {
-        return next(createNotFound());
+        return enhanced ? sendAssetFileIdentityRefusal(res, projectService, projectId) : next(createNotFound());
       }
 
       const rawDestination = req.body.destinationCategory;
@@ -989,6 +1181,7 @@ export function createAssetsRouter({
       const submittedDestinationCategory = typeof rawDestination === 'string' ? rawDestination : '';
 
       if (!parsedDestination.ok) {
+        if (enhanced) return sendAssetFileJsonFailure(res, { code: 'DESTINATION_CATEGORY_MALFORMED' }, 'move');
         return handleAssetActionFailure({ code: 'DESTINATION_CATEGORY_MALFORMED' }, {
           appName, workflowQueryService, assetWorkflowMetadataService, projectPrimaryImageService, req, res, next,
           projectId, assetId, action: 'move',
@@ -998,13 +1191,22 @@ export function createAssetsRouter({
 
       let moved;
       try {
-        moved = assetActionService.moveAsset(projectId, assetId, parsedDestination.value);
+        // F2B: as for the viewer Rename, the reviewed asset state is required
+        // and compared with the current row under the project lock.
+        moved = assetActionService.moveAsset(projectId, assetId, parsedDestination.value, {
+          reviewed: req.body?.[ASSET_REVIEW_FIELD],
+        });
       } catch (err) {
+        if (enhanced) return sendAssetFileJsonFailure(res, err, 'move');
         return handleAssetActionFailure(err, {
           appName, workflowQueryService, assetWorkflowMetadataService, projectPrimaryImageService, req, res, next,
           projectId, assetId, action: 'move',
           submittedDestinationCategory, previewProbe,
         }).catch(next);
+      }
+
+      if (enhanced) {
+        return res.json(buildAssetFileActionJson('asset-moved', projectId, moved, 'viewer', workflowQueryService, req.body));
       }
 
       res.redirect(buildAssetViewerRedirectUrl(
@@ -1598,6 +1800,71 @@ function handleRemoveMissingAssetsFailure(err, next) {
 
 
 
+// Every count and id comes from the service's result for this request; the
+// outcome only names which of its cases occurred.
+function buildRemoveMissingAssetsJson(projectId, result) {
+  const removedCount = result.removedCount;
+  const protectedCount = result.protectedCount;
+  const candidates = result.totalMissingCandidates;
+  const plural = (count) => (count === 1 ? '' : 's');
+  let outcome;
+  let message;
+  if (candidates === 0) {
+    outcome = 'none-missing';
+    message = 'No asset records were marked missing, so nothing was removed.';
+  } else if (removedCount === 0) {
+    outcome = 'protected-only';
+    message = `Nothing was removed: ${protectedCount} missing asset record${plural(protectedCount)} ${protectedCount === 1 ? 'is' : 'are'} protected by published-release rules and ${protectedCount === 1 ? 'was' : 'were'} kept.`;
+  } else {
+    outcome = 'removed';
+    message = `Removed ${removedCount} of ${candidates} missing asset record${plural(candidates)}. No files were deleted.`;
+    if (protectedCount > 0) {
+      message += ` Kept ${protectedCount} missing asset record${plural(protectedCount)} protected by published-release rules.`;
+    }
+  }
+  return {
+    status: 'success',
+    outcome,
+    projectId,
+    removedCount,
+    protectedCount,
+    totalMissingCandidates: candidates,
+    removedAssetIds: [...result.removedAssetIds],
+    protectedAssetIds: [...result.protectedAssetIds],
+    message,
+    refresh: removedCount > 0,
+  };
+}
+
+// outcome 'refused': the service declined before changing anything.
+// outcome 'failed': the removal transaction rolled back, so nothing was removed.
+// outcome 'unknown': an unexpected error, which proves nothing either way; the
+// client treats it as unconfirmed. No error detail is ever sent.
+function sendRemoveMissingAssetsJsonFailure(res, err) {
+  const code = err && err.code;
+  const status = code === 'INVALID_PROJECT_ID' ? 404 : (code ? REMOVE_MISSING_ASSETS_ERROR_STATUS[code] : undefined);
+  if (status === undefined) {
+    return res.status(500).json({
+      status: 'error',
+      outcome: 'unknown',
+      code: 'REMOVE_MISSING_UNCONFIRMED',
+      message: 'Could not confirm whether missing asset records were removed.',
+    });
+  }
+  const failed = code === 'REMOVE_MISSING_DATABASE_OPERATION_FAILED';
+  const message = status === 404
+    ? 'Project not found. Nothing was removed.'
+    : failed
+      ? 'Missing asset records could not be removed. The change was rolled back, so nothing was removed.'
+      : `${REMOVE_MISSING_ASSETS_ERROR_MESSAGES[code]} Nothing was removed.`;
+  return res.status(status).json({
+    status: 'error',
+    outcome: failed ? 'failed' : 'refused',
+    code: status === 404 ? 'PROJECT_NOT_FOUND' : code,
+    message,
+  });
+}
+
 function sendAssetJsonError(res, status, code, message) {
   return res.status(status).json({ ok: false, error: { code, message } });
 }
@@ -1658,8 +1925,8 @@ function getAssetTagsForViewer(req, assetId) {
     .map((tag) => ({ id: tag.id, displayName: tag.display_name }));
 }
 
-function getAssetTagEditorData(req, assetId) {
-  const assetTags = getAssetTagsForViewer(req, assetId);
+function getAssetTagEditorData(req, asset) {
+  const assetTags = getAssetTagsForViewer(req, asset.id);
   return {
     assetTags,
     assetTagOptions: getTagService(req).listTags().map((tag) => ({
@@ -1668,6 +1935,13 @@ function getAssetTagEditorData(req, assetId) {
     })),
     selectedAssetTagIds: assetTags.map((tag) => String(tag.id)),
     confirmedAssetTagIds: assetTags.map((tag) => String(tag.id)),
+    // WP10A1-F3: the reviewed-state witness of the saved set read above (never
+    // of a submitted selection), carried back by every tag save.
+    assetTagReview: assetTagReviewToken({
+      projectId: asset.project_id,
+      assetId: asset.id,
+      tagIds: assetTags.map((tag) => tag.id),
+    }),
   };
 }
 
@@ -1709,7 +1983,7 @@ export async function buildAssetViewerTagFailureRenderModel({
   errors,
   previewProbe,
 } = {}) {
-  const assetTagEditor = getAssetTagEditorData(req, data.asset.id);
+  const assetTagEditor = getAssetTagEditorData(req, data.asset);
   const errorMessages = Object.values(errors || {});
   const viewerEligibility = await probePrimaryImageViewerEligibility(data, previewProbe);
 
@@ -2060,6 +2334,159 @@ export function buildAutoRenamePlanRenderModel(plan, policyFingerprint) {
   };
 }
 
+function sendAutoRenameJsonError(res, status, code, message, outcome = null) {
+  return res.status(status).json({
+    status: 'error',
+    code,
+    message,
+    ...(outcome ? { outcome, recoveryRequired: outcome === 'recovery-required' } : {}),
+  });
+}
+
+function refuseMissingAutoRenameProject(req, res, next) {
+  if (!isEnhancedAssetRequest(req)) return next(createNotFound());
+  return sendAutoRenameJsonError(res, 404, AUTO_RENAME_ERROR_CODES.PROJECT_NOT_FOUND, 'Project not found.', 'refused');
+}
+
+// What an Apply refusal establishes about the project. Only the service's own
+// restoration may be reported as nothing renamed; an error without a known
+// code proves nothing either way.
+function autoRenameApplyOutcome(code) {
+  if (code === AUTO_RENAME_ERROR_CODES.AUTO_RENAME_RECOVERY_REQUIRED) return 'recovery-required';
+  if (code === AUTO_RENAME_ERROR_CODES.AUTO_RENAME_FAILED) return 'restored';
+  return Object.hasOwn(AUTO_RENAME_ERROR_STATUS, code) ? 'refused' : 'unknown';
+}
+
+const AUTO_RENAME_ATTEMPT_LIMIT = 500;
+const AUTO_RENAME_ATTEMPT_PATTERN = /^[0-9a-f]{32}$/;
+const AUTO_RENAME_ATTEMPT_MESSAGES = Object.freeze({
+  required: 'This Auto Rename review cannot be identified. No files were renamed. Choose Auto Rename again to review the current files.',
+  unknown: 'This Auto Rename review is no longer available. No files were renamed. Choose Auto Rename again to review the current files.',
+  used: 'This Auto Rename review was already submitted, so it was not applied again. Check the project files before choosing Auto Rename again.',
+});
+
+function autoRenameTokenDigest(token) {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
+// One record per reviewed Apply attempt: a random, server-issued id bound to
+// its project and to the digest of the signed plan it reviewed. Identical
+// plans sign to identical tokens, so the token never names an attempt.
+//
+// issued -> applying -> completed, each attempt at most once. Only a completed
+// attempt carries a receipt. Bounded and in memory: a missing or evicted
+// attempt is reported as unknown, never as another attempt's result, and its
+// absence never proves an Apply did not, or will not, run.
+function createAutoRenameAttempts() {
+  const attempts = new Map();
+  const keyOf = (projectId, id) => `${projectId}:${id}`;
+  const refuse = (status, code, message, outcome = 'refused') => ({ refusal: { status, code, message, outcome } });
+  return {
+    issue(projectId, token) {
+      const id = crypto.randomBytes(16).toString('hex');
+      attempts.set(keyOf(projectId, id), {
+        projectId, tokenDigest: autoRenameTokenDigest(token), state: 'issued', receipt: null,
+      });
+      while (attempts.size > AUTO_RENAME_ATTEMPT_LIMIT) attempts.delete(attempts.keys().next().value);
+      return id;
+    },
+    // Moves an issued attempt to applying before the service runs, so the
+    // same attempt can never run twice. Any refusal here ran nothing.
+    claim(projectId, rawId, token) {
+      if (rawId === undefined || rawId === '') {
+        return refuse(422, 'AUTO_RENAME_ATTEMPT_REQUIRED', AUTO_RENAME_ATTEMPT_MESSAGES.required);
+      }
+      if (typeof rawId !== 'string' || !AUTO_RENAME_ATTEMPT_PATTERN.test(rawId)) {
+        return refuse(422, 'AUTO_RENAME_ATTEMPT_INVALID', AUTO_RENAME_ATTEMPT_MESSAGES.required);
+      }
+      const key = keyOf(projectId, rawId);
+      const record = attempts.get(key);
+      if (!record || record.projectId !== projectId || typeof token !== 'string' || token.length === 0
+        || !crypto.timingSafeEqual(Buffer.from(record.tokenDigest), Buffer.from(autoRenameTokenDigest(token)))) {
+        return refuse(409, 'AUTO_RENAME_ATTEMPT_UNKNOWN', AUTO_RENAME_ATTEMPT_MESSAGES.unknown);
+      }
+      // A repeated POST of this attempt runs nothing and records nothing; what
+      // the attempt did is only in its own receipt.
+      if (record.state !== 'issued') {
+        return refuse(409, 'AUTO_RENAME_ATTEMPT_USED', AUTO_RENAME_ATTEMPT_MESSAGES.used, 'unknown');
+      }
+      record.state = 'applying';
+      return {
+        attempt: {
+          id: rawId,
+          complete(receipt) {
+            record.state = 'completed';
+            record.receipt = Object.freeze({ ...receipt });
+            // Kept as recent evidence; a record already evicted stays unknown.
+            if (attempts.get(key) === record) {
+              attempts.delete(key);
+              attempts.set(key, record);
+            }
+          },
+        },
+      };
+    },
+    // What the server knows about exactly this attempt of this project.
+    read(projectId, id) {
+      const record = attempts.get(keyOf(projectId, id));
+      if (!record || record.projectId !== projectId) return { attemptId: id, state: 'unknown', recorded: false };
+      if (record.state !== 'completed') return { attemptId: id, state: record.state, recorded: false };
+      return { attemptId: id, state: 'completed', recorded: true, ...record.receipt };
+    },
+  };
+}
+
+// The reviewed operation, for the page that mounts the confirmation. Paths are
+// the render model's project-relative display values; the signed token is the
+// only Apply authority.
+function buildAutoRenamePreviewJson(projectId, planModel) {
+  return {
+    status: 'success',
+    projectId,
+    categoryId: planModel.categoryId,
+    category: {
+      id: planModel.category?.id ?? planModel.categoryId,
+      displayName: planModel.category?.displayName ?? null,
+    },
+    selectionMode: planModel.selectionMode,
+    orderedAssetIds: [...planModel.orderedAssetIds],
+    selectedAssetIds: Array.isArray(planModel.selectedAssetIds) ? [...planModel.selectedAssetIds] : [],
+    counts: { ...planModel.counts },
+    canApply: planModel.canApply === true,
+    planToken: planModel.token,
+    attemptId: planModel.attemptId,
+    items: planModel.items.map((item) => ({
+      assetId: item.assetId,
+      status: item.status,
+      currentRelativePath: item.currentRelativePath,
+      proposedRelativePath: item.proposedRelativePath,
+      currentFilename: item.currentFilename,
+      proposedFilename: item.proposedFilename,
+      blockedReason: item.blockedReason,
+    })),
+  };
+}
+
+function buildAutoRenameApplyJson(projectId, result) {
+  const renamed = Number.isSafeInteger(result?.renamed) ? result.renamed : 0;
+  const unchanged = Number.isSafeInteger(result?.unchanged) ? result.unchanged : 0;
+  return {
+    status: 'success',
+    outcome: 'committed',
+    message: describeAutoRenameSuccess(renamed, unchanged),
+    projectId,
+    renamed,
+    unchanged,
+    selected: Number.isSafeInteger(result?.selected) ? result.selected : renamed + unchanged,
+    items: (Array.isArray(result?.items) ? result.items : []).map((item) => ({
+      assetId: item.assetId,
+      status: item.status,
+      previousRelativePath: safeDisplayRelativePath(item.previousRelativePath),
+      relativePath: safeDisplayRelativePath(item.relativePath),
+    })),
+  };
+}
+
 async function renderAutoRenameBrowserError({
   appName,
   project,
@@ -2069,10 +2496,13 @@ async function renderAutoRenameBrowserError({
   next,
   workflowQueryService,
   pageDefaultsService,
+  code = null,
+  outcome = null,
   status,
   message,
   returnContext,
 }) {
+  if (isEnhancedAssetRequest(req)) return sendAutoRenameJsonError(res, status, code, message, outcome);
   if (status === 404) return next(createNotFound());
 
   let data;
@@ -2130,13 +2560,14 @@ function handleAutoRenameFailure(err, {
 }) {
   const code = err && err.code;
   const status = code ? AUTO_RENAME_ERROR_STATUS[code] : undefined;
-  if (status === 404) return next(createNotFound());
+  if (status === 404 && !isEnhancedAssetRequest(req)) return next(createNotFound());
 
   const messages = operation === 'preview' ? AUTO_RENAME_PREVIEW_MESSAGES : AUTO_RENAME_APPLY_MESSAGES;
   const message = messages[code]
     || (operation === 'preview'
       ? 'Auto Rename preview could not be generated. Please try again.'
       : 'Auto Rename could not be applied. Please try again.');
+  const outcome = operation === 'apply' ? autoRenameApplyOutcome(code) : null;
 
   return renderAutoRenameBrowserError({
     appName,
@@ -2147,6 +2578,8 @@ function handleAutoRenameFailure(err, {
     next,
     workflowQueryService,
     pageDefaultsService,
+    code: status ? code : 'AUTO_RENAME_UNEXPECTED',
+    outcome,
     status: status || 500,
     message,
     returnContext,
@@ -2259,6 +2692,109 @@ const PRIMARY_IMAGE_ERROR_MESSAGES = Object.freeze({
   [PRIMARY_IMAGE_ERROR_CODES.DATABASE_ERROR]: 'The primary image operation could not be completed. Please try again.',
 });
 
+// ─── WP10A2: enhanced (Accept: application/json) primary-image actions ───
+// The Edit Asset dialog on the Asset detail page submits the four existing
+// Project/Book primary-image forms with Accept: application/json so the
+// document stays mounted. The same identity checks and service calls run as
+// for the native forms; only the answer differs. A refusal ('refused') is a
+// route or service decision taken before anything was stored (the service
+// throws it ahead of, or inside and rolling back, its transaction). Anything
+// else may or may not have committed: it reports 'unknown' and claims neither.
+
+const PRIMARY_IMAGE_JSON_MESSAGES = Object.freeze({
+  projectMissing: 'This project no longer exists.',
+  assetMissing: 'This asset no longer exists in this project.',
+  bookMissing: 'This Book no longer exists.',
+  projectUnknown: 'The primary image change could not be confirmed.',
+  bookUnknown: 'The book primary image change could not be confirmed.',
+});
+
+function sendPrimaryImageJsonError(res, status, code, message, outcome = 'refused') {
+  return res.status(status).json({ status: 'error', code, outcome, message });
+}
+
+// A malformed, unknown or foreign identity in the URL. `knownProjectId` is the
+// project when it exists (so it is the asset that is missing from it).
+function sendPrimaryImageIdentityRefusal(res, knownProjectId) {
+  return knownProjectId === null
+    ? sendPrimaryImageJsonError(res, 404, PRIMARY_IMAGE_ERROR_CODES.PROJECT_NOT_FOUND, PRIMARY_IMAGE_JSON_MESSAGES.projectMissing)
+    : sendPrimaryImageJsonError(res, 404, PRIMARY_IMAGE_ERROR_CODES.ASSET_NOT_FOUND, PRIMARY_IMAGE_JSON_MESSAGES.assetMissing);
+}
+
+const PROJECT_PRIMARY_IMAGE_JSON_REFUSALS = new Set([
+  PRIMARY_IMAGE_ERROR_CODES.PROJECT_ARCHIVED,
+  PRIMARY_IMAGE_ERROR_CODES.ASSET_MISSING,
+  PRIMARY_IMAGE_ERROR_CODES.ASSET_UNSUPPORTED,
+  PRIMARY_IMAGE_ERROR_CODES.STALE_CLEAR,
+]);
+
+function sendProjectPrimaryImageJsonFailure(res, err) {
+  const code = err?.code;
+  if (code === PRIMARY_IMAGE_ERROR_CODES.PROJECT_NOT_FOUND) {
+    return sendPrimaryImageJsonError(res, 404, code, PRIMARY_IMAGE_JSON_MESSAGES.projectMissing);
+  }
+  // The service reports an asset of another project as not found.
+  if (code === PRIMARY_IMAGE_ERROR_CODES.ASSET_NOT_FOUND || code === PRIMARY_IMAGE_ERROR_CODES.INVALID_ID) {
+    return sendPrimaryImageJsonError(res, 404, PRIMARY_IMAGE_ERROR_CODES.ASSET_NOT_FOUND, PRIMARY_IMAGE_JSON_MESSAGES.assetMissing);
+  }
+  if (PROJECT_PRIMARY_IMAGE_JSON_REFUSALS.has(code)) {
+    return sendPrimaryImageJsonError(res, PRIMARY_IMAGE_ERROR_STATUS[code], code, PRIMARY_IMAGE_ERROR_MESSAGES[code]);
+  }
+  // A database or unexpected error: no detail leaves the server.
+  return sendPrimaryImageJsonError(res, 500, 'PRIMARY_IMAGE_FAILED', PRIMARY_IMAGE_JSON_MESSAGES.projectUnknown, 'unknown');
+}
+
+const BOOK_PRIMARY_IMAGE_JSON_REFUSALS = new Set([
+  BOOK_PRIMARY_IMAGE_ERROR_CODES.INVALID_ID,
+  BOOK_PRIMARY_IMAGE_ERROR_CODES.ASSET_MISSING,
+  BOOK_PRIMARY_IMAGE_ERROR_CODES.ASSET_UNSUPPORTED,
+  BOOK_PRIMARY_IMAGE_ERROR_CODES.STALE_CLEAR,
+]);
+
+function sendBookPrimaryImageJsonFailure(res, err) {
+  const code = err?.code;
+  if (code === BOOK_PRIMARY_IMAGE_ERROR_CODES.BOOK_NOT_FOUND) {
+    return sendPrimaryImageJsonError(res, 404, code, PRIMARY_IMAGE_JSON_MESSAGES.bookMissing);
+  }
+  if (code === BOOK_PRIMARY_IMAGE_ERROR_CODES.ASSET_NOT_FOUND) {
+    return sendPrimaryImageJsonError(res, 404, code, PRIMARY_IMAGE_JSON_MESSAGES.assetMissing);
+  }
+  if (BOOK_PRIMARY_IMAGE_JSON_REFUSALS.has(code)) {
+    return sendPrimaryImageJsonError(res, BOOK_PRIMARY_IMAGE_ERROR_STATUS[code], code, BOOK_PRIMARY_IMAGE_ERROR_MESSAGES[code]);
+  }
+  return sendPrimaryImageJsonError(res, 500, 'BOOK_PRIMARY_IMAGE_FAILED', PRIMARY_IMAGE_JSON_MESSAGES.bookUnknown, 'unknown');
+}
+
+// What the service acknowledged: the selection as its commit left it (the
+// stored asset after a set; none after a matching clear). Eligibility and the
+// dialog's controls are server rendered, so the page re-reads them by GET.
+function buildProjectPrimaryImageJson(action, projectId, assetId, primaryAssetId) {
+  return {
+    status: 'success',
+    outcome: 'committed',
+    action,
+    message: ASSET_ACTION_NOTICE_MESSAGES[action],
+    projectId,
+    assetId,
+    primaryImage: { projectId, assetId: primaryAssetId },
+    refreshRequired: true,
+  };
+}
+
+function buildBookPrimaryImageJson(action, projectId, assetId, bookId, primaryAssetId) {
+  return {
+    status: 'success',
+    outcome: 'committed',
+    action,
+    message: ASSET_ACTION_NOTICE_MESSAGES[action],
+    projectId,
+    assetId,
+    bookId,
+    primaryImage: { bookId, assetId: primaryAssetId },
+    refreshRequired: true,
+  };
+}
+
 async function handlePrimaryImageFailure(err, {
   appName, workflowQueryService, assetWorkflowMetadataService, projectPrimaryImageService, req, res, next,
   projectId, assetId, previewProbe,
@@ -2294,7 +2830,7 @@ async function handlePrimaryImageFailure(err, {
         projectPrimaryImageService.getPrimaryImage(projectId),
         viewerEligibility,
       );
-      assetTagEditor = getAssetTagEditorData(req, data.asset.id);
+      assetTagEditor = getAssetTagEditorData(req, data.asset);
     }
   } catch (renderErr) {
     return next(renderErr);
@@ -2361,7 +2897,7 @@ async function handleBookPrimaryImageFailure(err, {
         projectPrimaryImageService.getPrimaryImage(projectId),
         viewerEligibility,
       );
-      assetTagEditor = getAssetTagEditorData(req, data.asset.id);
+      assetTagEditor = getAssetTagEditorData(req, data.asset);
     }
   } catch (renderErr) {
     return next(renderErr);
@@ -2464,6 +3000,12 @@ const DELETE_ASSET_ACTION_ERROR_STATUS = {
   PROJECT_DIRECTORY_UNSAFE: 500,
 };
 
+// The Asset detail Delete form's reviewed-state field (asset-delete-review.js).
+const ASSET_DELETE_REVIEW_FIELD = 'deleteReview';
+// The Asset detail Rename and Move forms' reviewed-state field (F2B): the same
+// token, for the asset state those forms were rendered (or refreshed) from.
+const ASSET_REVIEW_FIELD = 'assetReview';
+
 const DELETE_ASSET_ACTION_ERROR_MESSAGES = {
   NO_ASSETS_SELECTED: 'Select at least one asset to delete.',
   INVALID_ASSET_SELECTION: 'Invalid asset selection.',
@@ -2528,9 +3070,23 @@ const ASSET_ACTION_ERROR_STATUS = {
   // Permanent deletion reuses the same viewer failure renderer as rename and
   // move, but its service exposes batch-specific codes.
   ...DELETE_ASSET_ACTION_ERROR_STATUS,
+
+  // Asset detail Delete only (F2): the request named no valid reviewed state
+  // (422, never sent to the service), or the asset was renamed, moved or
+  // replaced after that review (409, refused under the lock before anything
+  // was touched).
+  DELETE_REVIEW_INVALID: 422,
+  DELETE_STALE_ASSET: 409,
+
+  // Asset detail Rename and Move (F2B): the same two refusals. Neither is a
+  // filesystem failure; both are decided before anything is touched.
+  ASSET_REVIEW_INVALID: 422,
+  ASSET_REVIEW_STALE: 409,
 };
 
 const ASSET_ACTION_ERROR_MESSAGES = {
+  DELETE_REVIEW_INVALID: 'This Delete request does not identify the asset version you reviewed, so nothing was deleted. Reload the page and try again.',
+  DELETE_STALE_ASSET: 'This asset was renamed, moved or replaced after the deletion was reviewed, so it was not deleted. Review the asset as it is now and delete it again if you still want to.',
   INVALID_FILENAME: 'Enter a valid filename.',
   INVALID_ORIGIN: 'The requested action origin is not supported.',
   DESTINATION_CATEGORY_MALFORMED: 'Choose a valid destination.',
@@ -2568,6 +3124,12 @@ function describeAssetActionError(code, action) {
   if (code === 'UNCHANGED_LOCATION') {
     return action === 'move' ? 'That destination is unchanged.' : 'That filename is unchanged.';
   }
+  if (code === 'ASSET_REVIEW_INVALID') {
+    return `This request does not identify the asset version you reviewed, so the file was not ${action === 'move' ? 'moved' : 'renamed'}. Reload the page and try again.`;
+  }
+  if (code === 'ASSET_REVIEW_STALE') {
+    return `This asset was renamed, moved or replaced after this change was reviewed, so it was not ${action === 'move' ? 'moved' : 'renamed'}. Review the asset as it is now and submit the change again if you still want to.`;
+  }
   if (action === 'delete' && code === 'DELETE_PUBLISHED_RELEASE_ASSET') {
     return 'This asset is associated with a published release and cannot be permanently deleted.';
   }
@@ -2595,6 +3157,241 @@ function parseDestinationCategoryField(raw) {
   const id = parseId(raw);
   if (id === null) return { ok: false, value: null };
   return { ok: true, value: id };
+}
+
+// ─── WP10A3-A: enhanced (Accept: application/json) Rename and Move ───────
+// The Edit Asset dialog submits the existing Rename and Move forms with
+// Accept: application/json so the Asset detail document stays mounted. The
+// same parsing, identity checks and assetActionService calls run as for the
+// native forms; only the answer differs. Rename and Move update the same asset
+// row in place (same id, same project), so the Asset detail URL stays valid.
+//
+// `outcome` says what the server knows happened:
+//   committed          — the file and its record were updated (200).
+//   refused            — refused before any file was touched (4xx).
+//   failed             — an operational failure the service raises before the
+//                        file moved (its rename call failed, or a path check
+//                        ran first): nothing changed (500).
+//   recovery-required  — the file moved on disk but its record could not be
+//                        updated; the database still shows the old location (500).
+//   unknown            — anything else: it may or may not have changed (500).
+// No service message, path or stack leaves the server: messages are the fixed
+// ones the native viewer renders.
+
+const ASSET_FILE_FAILED_CODES = new Set([
+  'FILESYSTEM_OPERATION_FAILED',
+  'PROJECT_DIRECTORY_UNSAFE',
+  'SOURCE_PATH_UNSAFE',
+]);
+
+const ASSET_FILE_JSON_MESSAGES = Object.freeze({
+  projectMissing: 'This project no longer exists.',
+  assetMissing: 'This asset no longer exists in this project.',
+  ownership: 'CreatorCrate could not verify that the project folder belongs to this project.',
+  renameUnknown: 'The rename could not be confirmed.',
+  moveUnknown: 'The move could not be confirmed.',
+});
+
+function sendAssetFileJsonError(res, status, code, message, outcome) {
+  return res.status(status).json({
+    status: 'error',
+    code,
+    outcome,
+    message,
+    ...(outcome === 'recovery-required' ? { recoveryRequired: true } : {}),
+  });
+}
+
+// A malformed, unknown or foreign identity in the URL. The project is named
+// missing only when it does not exist; otherwise it is the asset.
+function sendAssetFileIdentityRefusal(res, projectService, projectId) {
+  const projectExists = projectId !== null && Boolean(projectService?.findById?.(projectId));
+  return projectExists
+    ? sendAssetFileJsonError(res, 404, 'ASSET_NOT_FOUND', ASSET_FILE_JSON_MESSAGES.assetMissing, 'refused')
+    : sendAssetFileJsonError(res, 404, 'PROJECT_NOT_FOUND', ASSET_FILE_JSON_MESSAGES.projectMissing, 'refused');
+}
+
+function sendAssetFileJsonFailure(res, err, action) {
+  const code = err?.code;
+  // The ownership verifier fails closed before any file is touched.
+  if (err instanceof ProjectOwnershipError) {
+    return sendAssetFileJsonError(res, 409, 'PROJECT_OWNERSHIP_UNAVAILABLE', ASSET_FILE_JSON_MESSAGES.ownership, 'refused');
+  }
+  const status = typeof code === 'string' && Object.hasOwn(ASSET_ACTION_ERROR_STATUS, code)
+    ? ASSET_ACTION_ERROR_STATUS[code]
+    : undefined;
+  if (status === 404) {
+    // The service reports an asset of another project as not found.
+    return code === 'PROJECT_NOT_FOUND'
+      ? sendAssetFileJsonError(res, 404, code, ASSET_FILE_JSON_MESSAGES.projectMissing, 'refused')
+      : sendAssetFileJsonError(res, 404, 'ASSET_NOT_FOUND', ASSET_FILE_JSON_MESSAGES.assetMissing, 'refused');
+  }
+  if (code === 'RECOVERY_REQUIRED') {
+    return sendAssetFileJsonError(res, 500, code, describeAssetActionError(code, action), 'recovery-required');
+  }
+  if (status !== undefined && status < 500) {
+    return sendAssetFileJsonError(res, status, code, describeAssetActionError(code, action), 'refused');
+  }
+  if (ASSET_FILE_FAILED_CODES.has(code)) {
+    return sendAssetFileJsonError(res, 500, code, describeAssetActionError(code, action), 'failed');
+  }
+  return sendAssetFileJsonError(
+    res,
+    500,
+    'ASSET_ACTION_FAILED',
+    action === 'move' ? ASSET_FILE_JSON_MESSAGES.moveUnknown : ASSET_FILE_JSON_MESSAGES.renameUnknown,
+    'unknown',
+  );
+}
+
+// What the service acknowledged: the updated record as its commit left it.
+// The rest of the page (location, preview URLs, filter context) is server
+// rendered, so the page re-reads it with a GET of its own URL.
+function buildAssetFileActionJson(action, projectId, asset, origin, workflowQueryService, rawContext) {
+  let viewerUrl = null;
+  try {
+    viewerUrl = buildAssetViewerRedirectUrl(workflowQueryService, projectId, asset.id, rawContext);
+  } catch {
+    // The change has committed; a context that cannot be normalized now only
+    // omits the canonical URL, it never turns the success into an error.
+  }
+  const categoryId = asset.category_id ?? null;
+  return {
+    status: 'success',
+    outcome: 'committed',
+    action,
+    message: ASSET_ACTION_NOTICE_MESSAGES[action],
+    projectId,
+    assetId: asset.id,
+    ...(action === 'asset-renamed' ? { origin } : {}),
+    asset: {
+      id: asset.id,
+      filename: asset.filename,
+      extension: asset.extension ?? null,
+      categoryId,
+      destinationCategory: categoryId === null ? 'uncategorized' : String(categoryId),
+    },
+    viewerUrl,
+    refreshRequired: true,
+  };
+}
+
+// ─── WP10A3-B: enhanced (Accept: application/json) Delete ─────────────────
+// Unlike Rename and Move, a Delete removes the asset row, so its Asset detail
+// URL no longer names a surviving record. `outcome` says what the server knows:
+//   deleted                     — record removed and its staged file removed (200).
+//   refused                     — refused before any file was touched (4xx).
+//   failed                      — failed before anything was removed, or the
+//                                 service restored the file and rolled back the
+//                                 record: nothing changed (500).
+//   deleted-cleanup-incomplete  — the record was removed, but its file is left
+//                                 in the project's private deletion staging
+//                                 folder (500, recoveryRequired).
+//   recovery-required           — the record remains, but the service could not
+//                                 restore the file it had staged (500).
+//   unknown                     — anything else (500).
+// DELETE_RECOVERY_REQUIRED covers both of the recovery cases; they are told
+// apart by whether the row exists, read straight after the service threw.
+// Messages are fixed: no service message, path, staging name or stack is sent.
+
+const ASSET_DELETE_FAILED_CODES = new Set([
+  'DELETE_FILESYSTEM_OPERATION_FAILED',
+  'DELETE_DATABASE_OPERATION_FAILED',
+  'PROJECT_DIRECTORY_UNSAFE',
+]);
+
+const ASSET_DELETE_JSON_MESSAGES = Object.freeze({
+  deleted: 'The asset was deleted.',
+  missing: 'This asset no longer exists in this project. It may have been deleted elsewhere.',
+  DELETE_FILESYSTEM_OPERATION_FAILED: 'The file could not be deleted. Nothing was removed.',
+  DELETE_DATABASE_OPERATION_FAILED: 'The asset could not be deleted. Its file was restored and nothing was removed.',
+  PROJECT_DIRECTORY_UNSAFE: 'The asset could not be deleted. Nothing was removed.',
+  cleanupIncomplete: 'The asset was deleted from CreatorCrate, but its file could not be fully removed: it may remain in a hidden folder whose name starts with “.creatorcrate-delete-” in the project folder. Inspect the project folder before scanning.',
+  recoveryRequired: 'The asset was not deleted, but CreatorCrate could not safely put its file back after the deletion failed. The asset’s record remains. Inspect the project folder before scanning.',
+  unknown: 'The deletion could not be confirmed.',
+});
+
+/** 'present' | 'absent' | 'unknown' — a read-only observation of one asset row. */
+function readAssetRecordPresence(db, projectId, assetId) {
+  try {
+    const row = db.prepare('SELECT 1 AS present FROM assets WHERE id = ? AND project_id = ?').get(assetId, projectId);
+    return row ? 'present' : 'absent';
+  } catch {
+    return 'unknown';
+  }
+}
+
+// The Project Assets destination for a deleted asset, built by the same
+// canonical builder as the native redirect. A context that cannot be built
+// falls back to the bare Project Assets route; it never undoes the outcome.
+function safeAssetsUrl(build, projectId) {
+  try {
+    return build();
+  } catch {
+    return `/projects/${projectId}/assets`;
+  }
+}
+
+function buildAssetDeleteJson(projectId, assetId, result, buildUrl) {
+  return {
+    status: 'success',
+    outcome: 'deleted',
+    action: 'asset-deleted',
+    message: ASSET_DELETE_JSON_MESSAGES.deleted,
+    projectId,
+    assetId,
+    deletedAssetIds: Array.isArray(result?.deletedAssetIds) ? result.deletedAssetIds : [assetId],
+    cleanup: 'complete',
+    assetsUrl: safeAssetsUrl(buildUrl, projectId),
+  };
+}
+
+function sendAssetDeleteJsonFailure(res, err, {
+  projectId, assetId, record, projectExists, assetsUrl,
+}) {
+  const code = err?.code;
+  const send = (status, body) => res.status(status).json({ status: 'error', ...body });
+  if (err instanceof ProjectOwnershipError) {
+    return send(409, { code: 'PROJECT_OWNERSHIP_UNAVAILABLE', outcome: 'refused', message: ASSET_FILE_JSON_MESSAGES.ownership });
+  }
+  if (code === 'DELETE_RECOVERY_REQUIRED') {
+    if (record === 'absent') {
+      return send(500, {
+        code,
+        outcome: 'deleted-cleanup-incomplete',
+        recoveryRequired: true,
+        assetDeleted: true,
+        projectId,
+        assetId,
+        cleanup: 'incomplete',
+        message: ASSET_DELETE_JSON_MESSAGES.cleanupIncomplete,
+        assetsUrl: safeAssetsUrl(assetsUrl, projectId),
+      });
+    }
+    if (record === 'present') {
+      return send(500, {
+        code, outcome: 'recovery-required', recoveryRequired: true, message: ASSET_DELETE_JSON_MESSAGES.recoveryRequired,
+      });
+    }
+    return send(500, { code: 'ASSET_DELETE_UNCONFIRMED', outcome: 'unknown', message: ASSET_DELETE_JSON_MESSAGES.unknown });
+  }
+  if (code === 'PROJECT_NOT_FOUND' || !projectExists) {
+    return send(404, { code: 'PROJECT_NOT_FOUND', outcome: 'refused', message: ASSET_FILE_JSON_MESSAGES.projectMissing });
+  }
+  // The service folds an unknown or foreign asset into its precheck refusal.
+  if (code === 'DELETE_PRECHECK_FAILED' && record === 'absent') {
+    return send(404, { code: 'ASSET_NOT_FOUND', outcome: 'refused', message: ASSET_DELETE_JSON_MESSAGES.missing });
+  }
+  const status = typeof code === 'string' && Object.hasOwn(ASSET_ACTION_ERROR_STATUS, code)
+    ? ASSET_ACTION_ERROR_STATUS[code]
+    : undefined;
+  if (status !== undefined && status < 500) {
+    return send(status, { code, outcome: 'refused', message: describeAssetActionError(code, 'delete') });
+  }
+  if (ASSET_DELETE_FAILED_CODES.has(code)) {
+    return send(500, { code, outcome: 'failed', message: ASSET_DELETE_JSON_MESSAGES[code] });
+  }
+  return send(500, { code: 'ASSET_DELETE_UNCONFIRMED', outcome: 'unknown', message: ASSET_DELETE_JSON_MESSAGES.unknown });
 }
 
 async function probePrimaryImageViewerEligibility(data, previewProbe) {
@@ -2732,6 +3529,12 @@ export async function buildAssetViewerRenderModel(
     releaseNavigation: data.releaseNavigation,
     enabledCategories: data.enabledCategories,
     canMutate: data.canMutate,
+    // The Delete form's reviewed-state token for the row this page renders.
+    assetDeleteReviewField: ASSET_DELETE_REVIEW_FIELD,
+    assetDeleteReview: assetDeleteReviewToken(data.asset),
+    // The Rename and Move forms' reviewed-state token (F2B), for the same row.
+    assetReviewField: ASSET_REVIEW_FIELD,
+    assetReview: assetReviewToken(data.asset),
     canManageTags: !isProjectArchived(data.project),
     openLocallyUri: buildOpenLocallyUri({
       windowsRoot: req ? getOpenLocallySettingsService(req).getWindowsProjectsPath() : null,
@@ -2817,7 +3620,7 @@ async function handleAssetActionFailure(err, {
         projectPrimaryImageService.getPrimaryImage(projectId),
         viewerEligibility,
       );
-      assetTagEditor = getAssetTagEditorData(req, data.asset.id);
+      assetTagEditor = getAssetTagEditorData(req, data.asset);
     }
   } catch (renderErr) {
     return next(renderErr);

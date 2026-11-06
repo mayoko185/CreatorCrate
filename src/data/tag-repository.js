@@ -137,7 +137,7 @@ export function createTagRepository(db) {
     return listForProjectStmt.all(projectId);
   });
 
-  const replaceForAssetTx = db.transaction((assetId, tagIds) => {
+  const replaceForAssetTx = db.transaction((assetId, tagIds, precondition) => {
     if (!Array.isArray(tagIds)) {
       throw new TypeError('Asset tag IDs must be an array.');
     }
@@ -148,6 +148,10 @@ export function createTagRepository(db) {
 
     const desiredTagIds = [...new Set(tagIds)];
     const currentTagIds = listAssetTagIdsStmt.all(assetId).map((row) => row.tag_id);
+    // The caller's expectation of the stored set, checked against this
+    // transaction's own read before anything is written. Throwing aborts the
+    // transaction with no assignment changed.
+    if (typeof precondition === 'function') precondition([...currentTagIds]);
     const currentTagIdSet = new Set(currentTagIds);
     const desiredTagIdSet = new Set(desiredTagIds);
 
@@ -371,12 +375,17 @@ export function createTagRepository(db) {
      * that remain desired are not rewritten; foreign-key errors roll back the
      * complete transaction.
      *
+     * `options.precondition`, when given, is called inside the transaction
+     * with the asset's currently stored tag IDs before any assignment changes;
+     * it throws to refuse the replacement (WP10A1-F3 stale tag-set check).
+     *
      * @param {number} assetId
      * @param {number[]} tagIds
+     * @param {{ precondition?: (currentTagIds: number[]) => void }} [options]
      * @returns {TagRecord[]|undefined} resulting tags, or undefined if missing
      */
-    replaceForAsset(assetId, tagIds) {
-      return replaceForAssetTx(assetId, tagIds);
+    replaceForAsset(assetId, tagIds, { precondition } = {}) {
+      return replaceForAssetTx(assetId, tagIds, precondition);
     },
   };
 }

@@ -6,6 +6,7 @@ import { formatLocalDate, formatLocalTime, formatRelativeTime } from '../util/da
 import {
   AssetCategoryValidationError,
   AssetCategoryNotFoundError,
+  AssetCategoryStaleError,
 } from '../services/asset-category-service.js';
 import { AssetCategoryValidationError as PreferenceValidationError } from '../services/asset-browser-preference-service.js';
 import { buildGlobalAssetBrowserPreferenceModel } from '../services/asset-browser-preference-presenter.js';
@@ -1177,6 +1178,112 @@ function parseOrderedCategoryIds(raw) {
   return ids;
 }
 
+const CATEGORY_DEFAULTS_DESTINATION = '/settings/asset-categories';
+const CATEGORY_DEFAULT_DELETE_FAILED_MESSAGE = 'The asset category default could not be deleted. Nothing was deleted. Please try again.';
+
+function sendCategoryDefaultDeleteError(res, status, code, message, extra = {}) {
+  return res.status(status).json({ status: 'error', code, message, ...extra });
+}
+
+function readSettingValue(read) {
+  try {
+    const value = read();
+    return typeof value === 'string' ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * WP11C: the enhanced Delete of a global asset category default (Settings →
+ * Asset Categories). The service and its rules are unchanged: any existing
+ * default may be deleted (there are no built-in, required or in-use
+ * restrictions), by its stable AUTOINCREMENT id, which is never reused. The
+ * delete is one database statement: only the default row goes. Categories
+ * already copied into projects are independent rows and are untouched, as are
+ * their assets, files and release selections; surviving defaults keep their
+ * saved display_order. The global asset browser default and the preview
+ * category store a slug and are not rewritten: a slug naming the deleted
+ * default reads as unavailable afterward (the affects flags say so).
+ * This only says what happened:
+ * - 200 outcome 'deleted': this request deleted the default.
+ * - 404 ASSET_CATEGORY_DEFAULT_NOT_FOUND, outcome 'refused': no such default
+ *   (never existed, or already deleted); this request deleted nothing.
+ * - 500 ASSET_CATEGORY_DEFAULT_DELETE_FAILED, outcome 'failed': the delete
+ *   failed and the default, read again in the same synchronous request, still
+ *   exists, so nothing was deleted.
+ * - 500 ASSET_CATEGORY_DEFAULT_DELETE_UNKNOWN, outcome 'unknown': the delete
+ *   failed and the default could not be shown to still exist.
+ * Messages never carry backend detail.
+ */
+function handleCategoryDefaultDeleteJson(res, services, id) {
+  const { assetCategoryService, assetBrowserPreferenceService, previewCategorySettingsService } = services;
+  res.set('Cache-Control', 'no-store');
+  res.vary('Accept');
+  const notFound = (categoryId = id) => sendCategoryDefaultDeleteError(res, 404, 'ASSET_CATEGORY_DEFAULT_NOT_FOUND',
+    'This asset category default no longer exists. Nothing was deleted.', {
+      outcome: 'refused', ...(categoryId === null ? {} : { categoryId }),
+    });
+  const failed = (categoryId) => sendCategoryDefaultDeleteError(res, 500, 'ASSET_CATEGORY_DEFAULT_DELETE_FAILED',
+    CATEGORY_DEFAULT_DELETE_FAILED_MESSAGE, { outcome: 'failed', categoryId });
+  const findCurrent = () => assetCategoryService.listDefaults().find((row) => row.id === id) || null;
+  if (id === null) return notFound(null);
+
+  let existing;
+  try {
+    existing = findCurrent();
+  } catch {
+    // Nothing has been attempted yet.
+    return failed(id);
+  }
+  if (!existing) return notFound();
+  const slug = existing.directory_slug;
+  const browserDefault = readSettingValue(() => assetBrowserPreferenceService.getGlobalPreference()) === slug;
+  const previewCategory = readSettingValue(() => previewCategorySettingsService.getPreviewCategory()) === slug;
+
+  let deleted;
+  try {
+    deleted = assetCategoryService.deleteDefault(id);
+  } catch (err) {
+    if (err instanceof AssetCategoryNotFoundError) return notFound();
+    // The service and its database are synchronous, so no other request ran
+    // between its failure and this read: a default that still exists proves
+    // nothing was deleted. Anything else is not proof either way.
+    let current = null;
+    let readable = true;
+    try { current = findCurrent(); } catch { readable = false; }
+    if (readable && current) return failed(id);
+    return sendCategoryDefaultDeleteError(res, 500, 'ASSET_CATEGORY_DEFAULT_DELETE_UNKNOWN',
+      'Could not confirm whether the asset category default was deleted.', { outcome: 'unknown', categoryId: id });
+  }
+  if (deleted !== true) {
+    // No row removed: this request deleted nothing. Said as a refusal only
+    // when the default is shown to be gone (it went before the statement ran).
+    let current = null;
+    let readable = true;
+    try { current = findCurrent(); } catch { readable = false; }
+    if (readable && !current) return notFound();
+    return failed(id);
+  }
+  return res.json({
+    status: 'success',
+    outcome: 'deleted',
+    message: `Asset category default “${existing.display_name}” deleted.`,
+    categoryId: existing.id,
+    category: {
+      id: existing.id,
+      displayName: existing.display_name,
+      directorySlug: slug,
+      deleted: true,
+    },
+    // Saved settings that named this default by its slug; they keep that
+    // value, which now reads as unavailable.
+    affects: { browserDefault, previewCategory },
+    refresh: true,
+    redirect: CATEGORY_DEFAULTS_DESTINATION,
+  });
+}
+
 // Full order array with the given id swapped one position toward `direction`.
 // Returns null if the id isn't present; returns the unchanged order if
 // already at the boundary (a no-op move).
@@ -2106,6 +2213,7 @@ export function createSettingsRouter({
     editingId = null,
     editValues = null,
     editErrors = {},
+    editConflict = null,
     addValues = { enabled: true },
     addErrors = {},
     preferenceSubmittedValue,
@@ -2136,6 +2244,7 @@ export function createSettingsRouter({
       editingId,
       editValues,
       editErrors,
+      editConflict,
       addValues,
       addErrors,
       enabledControl,
@@ -2256,12 +2365,37 @@ export function createSettingsRouter({
     if (id === null) return next(createNotFound());
 
     const editValues = { displayName: req.body?.displayName, directorySlug: req.body?.directorySlug };
+    // WP11C-F7: the saved details this form showed (hidden fields rendered
+    // from the database row). Every details save is conditional on them; a
+    // request without exactly one of each is refused, never written blindly.
+    const reviewedDisplayName = req.body?.reviewedDisplayName;
+    const reviewedDirectorySlug = req.body?.reviewedDirectorySlug;
+    if (typeof reviewedDisplayName !== 'string' || typeof reviewedDirectorySlug !== 'string') {
+      if (!assetCategoryService.listDefaults().some((category) => category.id === id)) return next(createNotFound());
+      renderCategoriesPage(res, { status: 400, editingId: id, editValues, editConflict: { kind: 'review_invalid' } });
+      return;
+    }
     try {
-      assetCategoryService.editDefault(id, editValues);
+      assetCategoryService.editDefault(id, {
+        ...editValues,
+        expected: { displayName: reviewedDisplayName, directorySlug: reviewedDirectorySlug },
+      });
       res.redirect('/settings/asset-categories?notice=category_updated');
     } catch (err) {
       if (err instanceof AssetCategoryNotFoundError) {
         return next(createNotFound());
+      }
+      if (err instanceof AssetCategoryStaleError) {
+        renderCategoriesPage(res, {
+          status: 409,
+          editingId: id,
+          editValues,
+          editConflict: {
+            kind: 'stale',
+            current: { displayName: err.current.display_name, directorySlug: err.current.directory_slug },
+          },
+        });
+        return;
       }
       if (err instanceof AssetCategoryValidationError) {
         renderCategoriesPage(res, { status: 422, editingId: id, editValues, editErrors: err.errors });
@@ -2313,6 +2447,15 @@ export function createSettingsRouter({
 
   router.post('/asset-categories/:id/delete', (req, res, next) => {
     const id = parseCategoryId(req.params.id);
+    // Settings deletes in place (Accept: application/json); any other request
+    // keeps the native redirect and error pages below.
+    if (req.accepts(['html', 'json']) === 'json') {
+      return handleCategoryDefaultDeleteJson(res, {
+        assetCategoryService,
+        assetBrowserPreferenceService,
+        previewCategorySettingsService,
+      }, id);
+    }
     if (id === null) return next(createNotFound());
     try {
       assetCategoryService.deleteDefault(id);

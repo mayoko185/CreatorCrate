@@ -3,7 +3,11 @@ import {
   createAssetCategoryService,
   AssetCategoryValidationError,
   AssetCategoryNotFoundError,
+  AssetCategoryStaleError,
 } from '../src/services/asset-category-service.js';
+import { createAssetCategoryRepository } from '../src/data/asset-category-repository.js';
+import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
+import { fileURLToPath } from 'node:url';
 import { parseEnabledField } from '../src/services/asset-category-validation.js';
 
 function makeFakeRepository(overrides = {}) {
@@ -467,6 +471,90 @@ describe('asset category service', () => {
       expect(() => service.reorderDefaults([1, 1.5, 3])).toThrow(AssetCategoryValidationError);
       expect(() => service.reorderDefaults([1, Number.MAX_SAFE_INTEGER + 1, 3])).toThrow(AssetCategoryValidationError);
       expect(repo.reorderDefaults).not.toHaveBeenCalled();
+    });
+  });
+  // WP11C-F7: the details save's stale-write precondition, against SQLite.
+  describe('WP11C-F7 editDefault with the reviewed saved details', () => {
+    function realService() {
+      const db = openDatabase(':memory:');
+      runMigrations(db, fileURLToPath(new URL('../migrations', import.meta.url)));
+      const repository = createAssetCategoryRepository(db);
+      return { db, repository, service: createAssetCategoryService(repository) };
+    }
+    const rowOf = (db, id) => db.prepare('SELECT * FROM asset_category_defaults WHERE id = ?').get(id);
+
+    it('writes while the row still holds the reviewed details', () => {
+      const { db, service } = realService();
+      try {
+        const row = db.prepare("SELECT * FROM asset_category_defaults WHERE directory_slug = 'final'").get();
+        const saved = service.editDefault(row.id, {
+          displayName: ' Masters ', directorySlug: 'masters',
+          expected: { displayName: row.display_name, directorySlug: row.directory_slug },
+        });
+        expect(saved).toMatchObject({ id: row.id, display_name: 'Masters', directory_slug: 'masters' });
+      } finally { closeDatabase(db); }
+    });
+
+    it('refuses an older request after a newer save and writes nothing', () => {
+      const { db, service } = realService();
+      try {
+        const s0 = db.prepare("SELECT * FROM asset_category_defaults WHERE directory_slug = 'final'").get();
+        const expected = { displayName: s0.display_name, directorySlug: s0.directory_slug };
+        service.editDefault(s0.id, { displayName: 'Newer', directorySlug: 'final', expected });
+        const s2 = rowOf(db, s0.id);
+        let error;
+        try {
+          service.editDefault(s0.id, { displayName: 'Older', directorySlug: 'older', expected });
+        } catch (caught) { error = caught; }
+        expect(error).toBeInstanceOf(AssetCategoryStaleError);
+        expect(error.code).toBe('CATEGORY_DETAILS_STALE');
+        expect(error.current).toMatchObject({ id: s0.id, display_name: 'Newer', directory_slug: 'final' });
+        expect(rowOf(db, s0.id)).toEqual(s2);
+      } finally { closeDatabase(db); }
+    });
+
+    it('answers not found for a deleted row and never recreates it', () => {
+      const { db, service } = realService();
+      try {
+        const s0 = db.prepare("SELECT * FROM asset_category_defaults WHERE directory_slug = 'final'").get();
+        service.deleteDefault(s0.id);
+        expect(() => service.editDefault(s0.id, {
+          displayName: 'Back', directorySlug: 'final',
+          expected: { displayName: s0.display_name, directorySlug: s0.directory_slug },
+        })).toThrow(AssetCategoryNotFoundError);
+        expect(rowOf(db, s0.id)).toBeUndefined();
+      } finally { closeDatabase(db); }
+    });
+
+    it('compares in the update itself: no separate read before the write', () => {
+      const repo = makeFakeRepository({ updateDefaultNameSlugIfUnchanged: vi.fn(() => ({ id: 1 })) });
+      const service = createAssetCategoryService(repo);
+      service.editDefault(1, { displayName: 'A', directorySlug: 'a', expected: { displayName: 'Final', directorySlug: 'final' } });
+      expect(repo.updateDefaultNameSlugIfUnchanged).toHaveBeenCalledWith(
+        1, { displayName: 'A', directorySlug: 'a' }, { displayName: 'Final', directorySlug: 'final' },
+      );
+      expect(repo.findDefaultById).not.toHaveBeenCalled();
+      expect(repo.updateDefaultNameSlug).not.toHaveBeenCalled();
+    });
+
+    it.each([null, 'final', [], { displayName: 'Final' }, { displayName: 1, directorySlug: 'final' }])(
+      'rejects a malformed reviewed value %p without writing',
+      (expected) => {
+        const repo = makeFakeRepository({ updateDefaultNameSlugIfUnchanged: vi.fn() });
+        const service = createAssetCategoryService(repo);
+        expect(() => service.editDefault(1, { displayName: 'A', directorySlug: 'a', expected }))
+          .toThrow(AssetCategoryValidationError);
+        expect(repo.updateDefaultNameSlugIfUnchanged).not.toHaveBeenCalled();
+        expect(repo.updateDefaultNameSlug).not.toHaveBeenCalled();
+      },
+    );
+
+    it('keeps the unconditional write for internal callers that pass no reviewed details', () => {
+      const repo = makeFakeRepository({ updateDefaultNameSlugIfUnchanged: vi.fn() });
+      const service = createAssetCategoryService(repo);
+      service.editDefault(1, { displayName: 'A', directorySlug: 'a' });
+      expect(repo.updateDefaultNameSlug).toHaveBeenCalledTimes(1);
+      expect(repo.updateDefaultNameSlugIfUnchanged).not.toHaveBeenCalled();
     });
   });
 });

@@ -104,6 +104,29 @@ function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } =
       adopt(child);
       return child;
     },
+    insertBefore(child, reference) {
+      const previous = child.parentNode?.children;
+      if (previous) previous.splice(previous.indexOf(child), 1);
+      children.splice(children.indexOf(reference), 0, child);
+      child.parentNode = this;
+      child.parentElement = this;
+      const document = this.ownerDocument || (this.nodeType === 9 ? this : null);
+      const adopt = (current) => {
+        current.ownerDocument = document;
+        current.children.forEach(adopt);
+      };
+      adopt(child);
+      return child;
+    },
+    remove() {
+      const siblings = this.parentNode?.children;
+      if (siblings) siblings.splice(siblings.indexOf(this), 1);
+      this.parentNode = null;
+      this.parentElement = null;
+    },
+    createElement(tagName) {
+      return makeNode({ tagName });
+    },
     replaceChildren(...nextChildren) {
       children.forEach((child) => {
         child.parentNode = null;
@@ -518,6 +541,9 @@ function jsonResponse(payload, ok = true) {
   };
 }
 
+const liveFailureNotice = (document) => document.querySelector('[data-live-filter-failure]');
+const liveFailureRetries = (document) => document.querySelectorAll('[data-live-filter-retry]');
+
 async function flush() {
   for (let index = 0; index < 10; index += 1) await Promise.resolve();
 }
@@ -922,7 +948,7 @@ describe('Projects live filtering enhancement', () => {
     expect(restored.ready.checked).toBe(false);
   });
 
-  it('falls back without mutating history after a failed request, then recovers through a replacement', async () => {
+  it('stays local without mutating history after a failed request, then recovers through a replacement', async () => {
     const noFetchPage = makePage();
     const noFetchWindow = makeWindow(noFetchPage.document);
     noFetchWindow.fetch = undefined;
@@ -952,11 +978,12 @@ describe('Projects live filtering enhancement', () => {
     rejectRequest(new Error('network down'));
     await flush();
 
-    expect(failedPage.form.submit).toHaveBeenCalledTimes(1);
+    expect(failedPage.form.submit).not.toHaveBeenCalled();
     expect(failedPage.document.querySelector('[data-projects-live-region]')).toBe(failedPage.region);
     expect(failedPage.region.getAttribute('aria-busy')).toBeNull();
     expect(failedPage.region.getAttribute('data-projects-live-state')).toBe('error');
-    expect(failedPage.status.textContent).toBe('Projects are loading as a full page.');
+    expect(failedPage.status.textContent).toContain('The requested filters were not applied');
+    expect(liveFailureNotice(failedPage.document)).not.toBeNull();
     expect(failedWindow.history.pushes).toHaveLength(0);
     expect(failedWindow.history.replaces).toHaveLength(0);
 
@@ -965,12 +992,148 @@ describe('Projects live filtering enhancement', () => {
     await flush();
 
     expect(failedWindow.fetch).toHaveBeenCalledTimes(2);
+    expect(liveFailureNotice(failedPage.document)).toBeNull();
     expect(failedPage.document.querySelector('[data-projects-live-region]')).toBe(recoveredPage.region);
     expect(failedWindow.history.pushes).toEqual([
       expect.objectContaining({
         url: 'http://creatorcrate.test/projects?status=ready&status=planned&tag=2&tag=3&sort=title&order=asc&view=list',
       }),
     ]);
+  });
+
+  describe('failed filter recovery', () => {
+    const FILTERED = 'http://creatorcrate.test/projects?status=ready';
+
+    function failedFilter({ pages = new Map() } = {}) {
+      const page = makePage();
+      const windowObject = makeWindow(page.document, pages);
+      windowObject.location.assign = vi.fn();
+      windowObject.location.reload = vi.fn();
+      enhanceProjectsLiveFiltering(page.document);
+      return { page, windowObject };
+    }
+
+    function expectNoNavigation({ page, windowObject }) {
+      expect(page.form.submit).not.toHaveBeenCalled();
+      expect(windowObject.location.assign).not.toHaveBeenCalled();
+      expect(windowObject.location.reload).not.toHaveBeenCalled();
+    }
+
+    it('keeps results and inputs after a failed GET, then Retry repeats only that GET', async () => {
+      const recovered = makePage();
+      const context = failedFilter({ pages: new Map([['recovered', recovered.document]]) });
+      const { page, windowObject } = context;
+      const startHref = windowObject.location.href;
+      windowObject.fetch.mockRejectedValueOnce(new Error('offline'));
+      page.ready.checked = true;
+      page.form.dispatch('change', { target: page.ready });
+      await flush();
+
+      expectNoNavigation(context);
+      expect(page.document.querySelector('[data-projects-live-region]')).toBe(page.region);
+      expect(page.ready.checked).toBe(true);
+      expect(windowObject.location.href).toBe(startHref);
+      expect(windowObject.history.pushes).toHaveLength(0);
+      expect(liveFailureRetries(page.document)).toHaveLength(1);
+
+      const requested = windowObject.fetch.mock.calls[0][0];
+      windowObject.fetch.mockResolvedValueOnce(responseFor(recovered, 'recovered', requested));
+      liveFailureRetries(page.document)[0].dispatch('click');
+      expect(liveFailureNotice(page.document)).toBeNull();
+      await flush();
+
+      expect(windowObject.fetch).toHaveBeenCalledTimes(2);
+      expect(windowObject.fetch.mock.calls[1][0]).toBe(requested);
+      expect(windowObject.fetch.mock.calls[1][1].method).toBe('GET');
+      expect(windowObject.fetch.mock.calls[1][1].body).toBeUndefined();
+      expect(page.document.querySelector('[data-projects-live-region]')).toBe(recovered.region);
+      expect(liveFailureNotice(page.document)).toBeNull();
+      expect(windowObject.history.pushes.map((entry) => entry.url)).toEqual([requested]);
+      expectNoNavigation(context);
+    });
+
+    it('lets neither a stale Retry nor an older response overwrite a newer filter', async () => {
+      const newest = makePage();
+      const older = makePage();
+      const context = failedFilter({ pages: new Map([['newest', newest.document], ['older', older.document]]) });
+      const { page, windowObject } = context;
+      windowObject.fetch.mockRejectedValueOnce(new Error('offline'));
+      page.form.dispatch('change', { target: page.ready });
+      await flush();
+      const staleRetry = liveFailureRetries(page.document)[0];
+
+      let releaseB;
+      windowObject.fetch.mockImplementationOnce(() => new Promise((resolve) => { releaseB = resolve; }));
+      page.planned.checked = true;
+      page.form.dispatch('change', { target: page.planned });
+      expect(liveFailureNotice(page.document)).toBeNull();
+      staleRetry.dispatch('click');
+      expect(windowObject.fetch).toHaveBeenCalledTimes(2);
+
+      releaseB(responseFor(newest, 'newest', FILTERED));
+      await flush();
+      expect(page.document.querySelector('[data-projects-live-region]')).toBe(newest.region);
+      staleRetry.dispatch('click');
+      await flush();
+      expect(windowObject.fetch).toHaveBeenCalledTimes(2);
+      expect(page.document.querySelector('[data-projects-live-region]')).toBe(newest.region);
+      expect(windowObject.history.pushes).toHaveLength(1);
+    });
+
+    it('treats HTTP errors, malformed fragments and foreign redirects as local failures with one Retry', async () => {
+      const foreign = makePage();
+      const context = failedFilter({ pages: new Map([['foreign', foreign.document]]) });
+      const { page, windowObject } = context;
+      windowObject.fetch
+        .mockResolvedValueOnce({ ok: false, status: 500, url: FILTERED })
+        .mockResolvedValueOnce(responseFor(null, 'no region here', FILTERED))
+        .mockResolvedValueOnce(responseFor(foreign, 'foreign', 'http://creatorcrate.test/login'));
+      for (const expectedCalls of [1, 2, 3]) {
+        page.form.dispatch('change', { target: page.ready });
+        await flush();
+        expect(windowObject.fetch).toHaveBeenCalledTimes(expectedCalls);
+        expect(page.document.querySelector('[data-projects-live-region]')).toBe(page.region);
+        expect(liveFailureRetries(page.document)).toHaveLength(1);
+      }
+      expect(page.document.querySelectorAll('[data-live-filter-failure]')).toHaveLength(1);
+      expect(windowObject.history.pushes).toHaveLength(0);
+      expectNoNavigation(context);
+    });
+
+    it('does not report a cancelled request as a failure', async () => {
+      const context = failedFilter();
+      const { page, windowObject } = context;
+      windowObject.fetch.mockRejectedValueOnce(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+      page.form.dispatch('change', { target: page.ready });
+      await flush();
+      expect(liveFailureNotice(page.document)).toBeNull();
+      expect(page.region.getAttribute('data-projects-live-state')).toBeNull();
+      expect(page.region.getAttribute('aria-busy')).toBeNull();
+      expectNoNavigation(context);
+    });
+
+    it('keeps a failed Back local and retries the current history entry without new entries', async () => {
+      const recovered = makePage();
+      const context = failedFilter({ pages: new Map([['recovered', recovered.document]]) });
+      const { page, windowObject } = context;
+      windowObject.fetch.mockRejectedValueOnce(new Error('offline'));
+      windowObject.setLocation(FILTERED);
+      windowObject.dispatch('popstate');
+      await flush();
+
+      expect(page.document.querySelector('[data-projects-live-region]')).toBe(page.region);
+      expect(liveFailureNotice(page.document).children[0].textContent).toContain('may not match');
+      expect(windowObject.location.href).toBe(FILTERED);
+      expectNoNavigation(context);
+
+      windowObject.fetch.mockResolvedValueOnce(responseFor(recovered, 'recovered', FILTERED));
+      liveFailureRetries(page.document)[0].dispatch('click');
+      await flush();
+      expect(windowObject.fetch.mock.calls[1][0]).toBe(FILTERED);
+      expect(page.document.querySelector('[data-projects-live-region]')).toBe(recovered.region);
+      expect(windowObject.history.pushes).toHaveLength(0);
+      expect(windowObject.history.replaces).toHaveLength(0);
+    });
   });
 
   it('submits the NSFW state asynchronously, replaces the server-rendered region, and keeps history unchanged', async () => {

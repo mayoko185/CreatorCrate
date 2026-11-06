@@ -11,6 +11,7 @@
 {% import "partials/dropdown.njk" as dropdown %}
 {% import "partials/processing-actions.njk" as processingActions %}
 {% import "partials/processing-recovery-details.njk" as recoveryDetails %}
+{% import "partials/auto-rename-confirmation.njk" as autoRenameConfirmation %}
 
 {% macro renderContextFields(context, contextFields, disabled) %}
   {% for key in contextFields %}
@@ -387,9 +388,11 @@
   {% endif %}
 
   {% if isArchived %}
-    {% set noticeVariant = "warning" %}
-    {% set noticeText = "This project is archived. Asset browsing is read-only and scanning is not available." %}
-    {% include "partials/notice.njk" %}
+    <div data-project-assets-archived-notice>
+      {% set noticeVariant = "warning" %}
+      {% set noticeText = "This project is archived. Asset browsing is read-only and scanning is not available." %}
+      {% include "partials/notice.njk" %}
+    </div>
   {% endif %}
 
   {% if query.scan_result == 'ok' %}
@@ -519,9 +522,20 @@
   <div class="notice notice--success app-dialog-feedback" data-dialog-feedback role="status" hidden>
     <p data-dialog-feedback-text></p>
   </div>
+  {% if not isArchived %}
+  <div class="notice notice--warning app-dialog-feedback" data-remove-missing-pending role="status" hidden>
+    <p data-remove-missing-pending-text></p>
+    <button class="button button-small button-secondary" type="button" data-remove-missing-pending-check hidden>Check again</button>
+  </div>
+  <div class="notice notice--warning app-dialog-feedback" data-auto-rename-pending role="status" hidden>
+    <p data-auto-rename-pending-text></p>
+    <button class="button button-small button-secondary" type="button" data-auto-rename-pending-check hidden>Check again</button>
+  </div>
+  {% endif %}
 
   <div data-project-assets-live-region{% if projectAssetsGridSizeDefault %} data-project-assets-grid-size-default="{{ projectAssetsGridSizeDefault }}"{% endif %}{% if projectAssetsListSizeDefault %} data-project-assets-list-size-default="{{ projectAssetsListSizeDefault }}"{% endif %}>
     <span class="sr-only" data-project-assets-live-status aria-live="polite" aria-atomic="true"></span>
+    {% if projectAssetIdsJson and projectAssetIdsJson != 'null' %}<script type="application/json" data-project-assets-membership>{{ projectAssetIdsJson | safe }}</script>{% endif %}
 
   <div class="asset-browser-layout">
     <div class="asset-browser-content">
@@ -605,6 +619,7 @@
         {% if categoryCapabilities.canReorderCategory %}
           <section class="asset-auto-rename-surface" data-auto-rename-surface data-auto-rename-view="{{ filters.view }}"
                    data-auto-rename-base-order="{{ capabilityCategory.orderedAssetIdsJson }}"
+                   data-auto-rename-category-id="{{ capabilityCategory.categoryId }}"
                    data-category-membership-complete="{{ 'true' if categoryCapabilities.hasCompleteCategoryMembership else 'false' }}"
                    data-category-reorder-enabled="true"
                    data-auto-rename-enabled="{{ 'true' if categoryCapabilities.canAutoRename else 'false' }}"
@@ -1278,15 +1293,24 @@
   {% endcall %}
   {% if not isArchived and categoryNavigation.missingCount > 0 %}
     {% call dialog.render('remove-missing-assets-dialog', 'Remove missing assets', removeMissingAssetsDialogOpen, 'remove-missing-assets-description', 'remove-missing-assets-form') %}
+      {# WP10B: submitted in place (Accept: application/json) by
+         client/remove-missing-assets.js; without it the form posts natively. #}
       <form id="remove-missing-assets-form" method="post" action="/projects/{{ project.id }}/assets/remove-missing"
-            class="app-dialog-form" data-dialog-form data-dialog-async="false">
+            class="app-dialog-form" data-dialog-form data-dialog-async="true" data-remove-missing-assets-form
+            data-project-id="{{ project.id }}"
+            data-dialog-pending-message="Removing missing asset records…"
+            data-dialog-error-message="Missing asset records could not be removed."
+            data-dialog-network-error-message="Could not confirm whether missing asset records were removed.">
+        <div class="error-summary" role="alert" data-dialog-error hidden><p data-dialog-error-text></p></div>
         <div class="app-dialog-body">
           <p id="remove-missing-assets-description" class="app-dialog-description">
-            Only asset records currently marked missing will be removed. Files that are present will not be deleted.
+            Only asset records that are marked missing when the removal is processed will be removed. Files that are present will not be deleted.
           </p>
           <ul class="remove-missing-assets-scope">
+            <li data-remove-missing-assets-scope>This applies to every asset record in {{ project.title }} that is marked missing when the removal is processed, including any hidden by the current filters or category.</li>
+            <li data-remove-missing-assets-timing>A scan or another change may mark more records missing, or fewer, between now and then.</li>
             <li>Missing assets protected by published-release rules will remain.</li>
-            <li>This permanently removes eligible missing records and their associations. No files are deleted.</li>
+            <li>This permanently removes eligible missing database records and their associations. No files are deleted.</li>
           </ul>
         </div>
 
@@ -1297,108 +1321,17 @@
           <button class="button button-secondary" type="submit" formmethod="dialog" data-dialog-close>Cancel</button>
           <button class="button button-danger" type="submit" data-dialog-submit>Remove missing assets</button>
         </footer>
+        <div class="app-dialog-status" data-dialog-status role="status" aria-live="polite"></div>
       </form>
     {% endcall %}
   {% endif %}
+  {# A native Preview renders its confirmation open; otherwise the page holds an
+     empty mount for the async Preview fragment, outside the live region so a
+     Project Assets refresh never replaces an open review. #}
   {% if autoRenameConfirmationPlan %}
-    {% set autoRenameDialogPlan = autoRenameConfirmationPlan %}
-    {% set autoRenameDialogContext = autoRenameConfirmationContext or {} %}
-    {% set autoRenameSelectionMode = autoRenameDialogPlan.selectionMode == 'selected' %}
-    {% call dialog.render('auto-rename-confirmation-dialog', 'Auto Rename confirmation', autoRenameConfirmationDialogOpen, 'auto-rename-confirmation-description', 'auto-rename-confirmation-form') %}
-      <form id="auto-rename-confirmation-form" method="post" action="/projects/{{ project.id }}/assets/auto-rename/apply"
-            class="app-dialog-form auto-rename-confirmation-form" data-dialog-form data-dialog-async="false">
-        <p id="auto-rename-confirmation-description" class="app-dialog-description">
-          Review the server-generated names before changing files on disk.
-        </p>
-
-        {% if autoRenameDialogPlan.counts.blocked > 0 %}
-          <div class="notice notice--danger auto-rename-confirmation-notice" role="alert">
-            <p>Auto Rename cannot be applied because one or more {% if autoRenameSelectionMode %}selected{% else %}category{% endif %} assets are blocked.</p>
-          </div>
-        {% elseif autoRenameDialogPlan.counts.rename == 0 %}
-          <div class="notice notice--warning auto-rename-confirmation-notice" role="status">
-            <p>All {% if autoRenameSelectionMode %}selected{% else %}category{% endif %} assets are already named according to the rule. There are no changes to apply.</p>
-          </div>
-        {% endif %}
-
-        <input type="hidden" name="_csrf" value="{{ _csrf }}">
-        <input type="hidden" name="planToken" value="{{ autoRenameDialogPlan.token }}">
-        {% if autoRenameDialogContext.category is defined and autoRenameDialogContext.category is not none and autoRenameDialogContext.category != '' %}
-          <input type="hidden" name="categoryId" value="{{ autoRenameDialogContext.category }}">
-        {% endif %}
-        {# The dialog context is the allowlisted Auto Rename return context; its
-           category already travels as categoryId above. #}
-        {% for contextKey, contextValue in autoRenameDialogContext %}
-          {% if contextKey != 'category' %}{{ renderContextFields(autoRenameDialogContext, [contextKey], false) }}{% endif %}
-        {% endfor %}
-
-        <div class="app-dialog-body auto-rename-confirmation-body">
-          <p class="auto-rename-confirmation-summary">
-            {{ autoRenameDialogPlan.counts.selected }} asset{% if autoRenameDialogPlan.counts.selected != 1 %}s{% endif %}:
-            {{ autoRenameDialogPlan.counts.rename }} to rename,
-            {{ autoRenameDialogPlan.counts.unchanged }} unchanged{% if autoRenameDialogPlan.counts.blocked > 0 %},
-              {{ autoRenameDialogPlan.counts.blocked }} blocked{% endif %}.
-          </p>
-
-          <ol class="auto-rename-confirmation-list">
-            {% for item in autoRenameDialogPlan.items %}
-              {% set itemLabel = item.currentFilename %}
-              {% if not itemLabel or itemLabel == '—' %}{% set itemLabel = item.currentRelativePath %}{% endif %}
-              {% if not itemLabel or itemLabel == '—' %}{% set itemLabel = 'Asset ' ~ item.assetId %}{% endif %}
-              {% if item.status == 'rename' %}
-                {% set statusVariant = 'success' %}
-              {% elseif item.status == 'unchanged' %}
-                {% set statusVariant = 'neutral' %}
-              {% else %}
-                {% set statusVariant = 'danger' %}
-              {% endif %}
-              <li class="auto-rename-confirmation-item{% if item.status == 'blocked' %} auto-rename-confirmation-item--blocked{% endif %}">
-                <div class="auto-rename-confirmation-preview{% if item.previewKind == 'krita' %} asset-media--krita{% endif %}">
-                  {% if item.thumbnailUrl %}
-                    <img src="{{ item.thumbnailUrl }}" alt="Preview thumbnail for {{ itemLabel }}"
-                         width="56" height="56" loading="lazy" decoding="async">
-                  {% elif item.previewState == 'unsupported' %}
-                    <span class="auto-rename-confirmation-preview-placeholder">{{ item.typeLabel }}<span class="sr-only"> preview not supported</span></span>
-                  {% elif item.previewState == 'missing' %}
-                    <span class="auto-rename-confirmation-preview-placeholder">Missing<span class="sr-only"> at last scan</span></span>
-                  {% else %}
-                    <span class="auto-rename-confirmation-preview-placeholder">{{ item.typeLabel }}</span>
-                  {% endif %}
-                </div>
-                <div class="auto-rename-confirmation-copy">
-                  <div class="auto-rename-confirmation-names">
-                    <span class="auto-rename-confirmation-name auto-rename-confirmation-name--current">
-                      <span class="sr-only">Current name: </span><code>{{ item.currentFilename }}</code>
-                    </span>
-                    <span aria-hidden="true">&rarr;</span>
-                    <span class="auto-rename-confirmation-name auto-rename-confirmation-name--proposed">
-                      <span class="sr-only">Proposed name: </span><code>{% if item.proposedFilename %}{{ item.proposedFilename }}{% else %}&mdash;{% endif %}</code>
-                    </span>
-                  </div>
-                  <span class="status-badge status-badge--{{ statusVariant }}">Status: {{ item.statusLabel }}</span>
-                  {% if item.blockedReason %}
-                    <p class="auto-rename-block-reason"><strong>Blocked:</strong> {{ item.blockedReason }}</p>
-                  {% endif %}
-                </div>
-              </li>
-            {% endfor %}
-          </ol>
-
-          {% if autoRenameDialogPlan.canApply %}
-            <p class="auto-rename-confirmation-apply-note">Applying this signed review will rename the {% if autoRenameSelectionMode %}selected{% else %}category{% endif %} files on disk and update their asset records.</p>
-          {% elseif autoRenameDialogPlan.counts.blocked > 0 %}
-            <p class="auto-rename-confirmation-apply-note">Apply is unavailable until all blocked {% if autoRenameSelectionMode %}selected{% else %}category{% endif %} assets are resolved.</p>
-          {% else %}
-            <p class="auto-rename-confirmation-apply-note">There are no changes to apply because all {% if autoRenameSelectionMode %}selected{% else %}category{% endif %} assets are unchanged.</p>
-          {% endif %}
-        </div>
-
-        <footer class="app-dialog-footer">
-          <a class="button button-secondary" href="{{ autoRenameConfirmationReturnUrl }}">Cancel</a>
-          <button class="button button-primary" type="submit"{% if not autoRenameDialogPlan.canApply %} disabled aria-disabled="true"{% endif %}>Apply Auto Rename</button>
-        </footer>
-      </form>
-    {% endcall %}
+    {{ autoRenameConfirmation.render(project, autoRenameConfirmationPlan, autoRenameConfirmationContext or {}, autoRenameConfirmationReturnUrl, _csrf, autoRenameConfirmationDialogOpen, false) }}
+  {% elif not isArchived %}
+    <div data-auto-rename-dialog-mount></div>
   {% endif %}
   <div data-slideshow-scaffold class="slideshow-scaffold" hidden inert role="dialog" aria-modal="true" aria-label="Slideshow">
       <script type="application/json" data-slideshow-sequence>{{ slideshowSequenceJson | default('[]') | safe }}</script>

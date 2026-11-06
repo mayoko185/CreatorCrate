@@ -126,6 +126,29 @@ function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } =
       adopt(child);
       return child;
     },
+    insertBefore(child, reference) {
+      const previous = child.parentNode?.children;
+      if (previous) previous.splice(previous.indexOf(child), 1);
+      children.splice(children.indexOf(reference), 0, child);
+      child.parentNode = this;
+      child.parentElement = this;
+      const document = this.ownerDocument || (this.nodeType === 9 ? this : null);
+      const adopt = (current) => {
+        current.ownerDocument = document;
+        current.children.forEach(adopt);
+      };
+      adopt(child);
+      return child;
+    },
+    remove() {
+      const siblings = this.parentNode?.children;
+      if (siblings) siblings.splice(siblings.indexOf(this), 1);
+      this.parentNode = null;
+      this.parentElement = null;
+    },
+    createElement(tagName) {
+      return makeNode({ tagName });
+    },
     replaceChildren(...nextChildren) {
       children.forEach((child) => {
         child.parentNode = null;
@@ -601,6 +624,9 @@ function makeWindow(document, pages = new Map()) {
 function responseFor(text, url) {
   return { ok: true, url, text: vi.fn(async () => text) };
 }
+
+const liveFailureNotice = (document) => document.querySelector('[data-live-filter-failure]');
+const liveFailureRetries = (document) => document.querySelectorAll('[data-live-filter-retry]');
 
 async function flush() {
   for (let index = 0; index < 10; index += 1) await Promise.resolve();
@@ -1484,8 +1510,10 @@ describe('Releases live filtering enhancement', () => {
     expect(windowObject.location.assign).not.toHaveBeenCalled();
     expect(initial.document.querySelector('[data-release-assets-live-region]')).toBe(regionBeforeFailure);
     expect(regionBeforeFailure.hasAttribute('aria-busy')).toBe(false);
-    expect(restored.status.textContent).toBe('Could not update Release Assets. Change the filters to try again.');
+    expect(restored.status.textContent).toContain('The requested filters were not applied');
     expect(restored.region.getAttribute('data-release-assets-live-state')).toBe('error');
+    expect(restored.categoryFour.checked).toBe(true);
+    expect(liveFailureRetries(initial.document)).toHaveLength(1);
     expect(initial.dialog.open).toBe(true);
     expect(windowObject.history.pushes).toHaveLength(pushesBeforeFailure);
     expect(windowObject.history.replaces).toHaveLength(replacesBeforeFailure);
@@ -1499,6 +1527,35 @@ describe('Releases live filtering enhancement', () => {
     expect(initial.document.querySelector('[data-release-assets-live-region]')).toBe(retried.region);
     expect(initial.dialog.open).toBe(true);
     expect(windowObject.fetch).toHaveBeenCalledTimes(4);
+  });
+
+  it('retries a failed Release Assets filter with GET only, keeping the dialog and never saving', async () => {
+    const initial = makeReleaseAssetsPage({ dialogOpen: true });
+    const recovered = makeReleaseAssetsPage({ category: '4' });
+    const windowObject = makeWindow(initial.document, new Map([['recovered', recovered.document]]));
+    windowObject.location.href = 'http://creatorcrate.test/releases/7/assets';
+    windowObject.location.pathname = '/releases/7/assets';
+    windowObject.location.assign = vi.fn();
+    windowObject.fetch.mockRejectedValueOnce(new Error('offline'));
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+    initial.categoryThree.checked = false;
+    initial.categoryFour.checked = true;
+    initial.filter.dispatch('change', { target: initial.categoryFour });
+    await flush();
+
+    const requested = windowObject.fetch.mock.calls[0][0];
+    windowObject.fetch.mockResolvedValueOnce(responseFor('recovered', requested));
+    liveFailureRetries(initial.document)[0].dispatch('click');
+    await flush();
+
+    expect(windowObject.fetch).toHaveBeenCalledTimes(2);
+    expect(windowObject.fetch.mock.calls[1][0]).toBe(requested);
+    expect(windowObject.fetch.mock.calls[1][1].method).toBe('GET');
+    expect(windowObject.fetch.mock.calls[1][1].body).toBeUndefined();
+    expect(initial.document.querySelector('[data-release-assets-live-region]')).toBe(recovered.region);
+    expect(liveFailureNotice(initial.document)).toBeNull();
+    expect(initial.dialog.open).toBe(true);
+    expect(windowObject.location.assign).not.toHaveBeenCalled();
   });
 
   it('serializes Schedule All by removing an active Schedule parameter', async () => {
@@ -1777,6 +1834,21 @@ describe('Releases live filtering enhancement', () => {
     enhanceReleasesLiveFiltering(failed.document);
     failed.form.dispatch('change', { target: failed.schedule });
     await flush();
-    expect(failed.form.submit).toHaveBeenCalledTimes(1);
+    expect(failed.form.submit).not.toHaveBeenCalled();
+    expect(failed.document.querySelector('[data-releases-live-region]')).toBe(failed.region);
+    expect(liveFailureRetries(failed.document)).toHaveLength(1);
+
+    const recovered = makePage();
+    const retryWindow = makeWindow(failed.document, new Map([['recovered', recovered.document]]));
+    const requested = failedWindow.fetch.mock.calls[0][0];
+    failed.document.__creatorCrateReleasesLiveFiltering.window.fetch = retryWindow.fetch;
+    failed.document.__creatorCrateReleasesLiveFiltering.window.DOMParser = retryWindow.DOMParser;
+    retryWindow.fetch.mockResolvedValueOnce(responseFor('recovered', requested));
+    liveFailureRetries(failed.document)[0].dispatch('click');
+    await flush();
+    expect(retryWindow.fetch.mock.calls[0][0]).toBe(requested);
+    expect(retryWindow.fetch.mock.calls[0][1].method).toBe('GET');
+    expect(failed.document.querySelector('[data-releases-live-region]')).toBe(recovered.region);
+    expect(liveFailureNotice(failed.document)).toBeNull();
   });
 });

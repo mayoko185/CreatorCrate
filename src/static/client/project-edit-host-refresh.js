@@ -1,6 +1,11 @@
 import { isEnhancementBound, markEnhancementBound } from './dom.js';
-import { beginProjectsDefaultsLiveRefresh, refreshProjectsLiveRegion } from './live-regions.js';
-import { PROJECT_EDIT_SAVED_EVENT } from './project-edit-dialog.js';
+import {
+  beginProjectsDefaultsLiveRefresh,
+  refreshProjectAssetsAfterMutation,
+  refreshProjectsLiveRegion,
+} from './live-regions.js';
+import { PROJECT_ARCHIVED_EVENT, PROJECT_DELETED_EVENT, PROJECT_EDIT_SAVED_EVENT } from './project-edit-dialog.js';
+import { PROJECT_DELETED_HOST_ATTRIBUTE } from './project-delete.js';
 import { removeStatusRetry, showStatusRetry } from './status-retry.js';
 
 // Projects and Project Assets keep their page after an Edit Project save
@@ -12,6 +17,17 @@ import { removeStatusRetry, showStatusRetry } from './status-retry.js';
 // asset selection, pending order and every other draft on the page are left
 // alone. Project Detail and the Dashboard refresh
 // themselves (project-detail-refresh.js, dashboard.js).
+// An Archive in place (PROJECT_ARCHIVED_EVENT, project-archive.js) refreshes
+// Projects the same way, under the Archive's own messages (an archived
+// project leaves an active-only filter, and focus lost with its row goes to
+// the main content), and re-reads an archived Project Assets with the shared
+// state-preserving mutation refresh, which installs its read-only region,
+// heading and archived notice.
+// A Delete in place (PROJECT_DELETED_EVENT, project-delete.js) refreshes
+// Projects the same way (GET only), under the Delete's own messages, so the
+// deleted project's row leaves the List while filters, view and page stay.
+// Project Assets cannot survive its project: project-delete.js retires it, and
+// this module only stops its own reads from reporting into the retired page.
 const PROJECTS_REGION_SELECTOR = '[data-projects-live-region]';
 const PROJECT_ASSETS_TITLE_SOURCE_SELECTOR = '[data-project-assets-project-title]';
 const PROJECT_ASSETS_REGION_SELECTOR = '[data-project-assets-live-region]';
@@ -28,6 +44,48 @@ const PROJECTS_REFRESHING_MESSAGE = 'Project saved. Refreshing Projects…';
 const PROJECTS_STALE_MESSAGE = 'Project saved, but Projects could not refresh. The information shown may be out of date.';
 const OPEN_LOCALLY_REFRESHING_MESSAGE = 'Project saved. Refreshing Open locally…';
 const OPEN_LOCALLY_STALE_MESSAGE = 'Project saved, but Open locally could not refresh. It is unavailable until it refreshes.';
+const SAVE_MESSAGES = Object.freeze({
+  done: SAVED_MESSAGE,
+  refreshing: PROJECTS_REFRESHING_MESSAGE,
+  stale: PROJECTS_STALE_MESSAGE,
+});
+
+// After an Archive (project-archive.js) the result message leads, and the
+// host's refresh outcome follows it. Only GETs are ever sent from here.
+function archiveMessages(detail, host) {
+  const lead = typeof detail?.message === 'string' && detail.message ? detail.message : 'Project archived.';
+  return {
+    done: lead,
+    // Only an Archive this page confirmed reads as a success.
+    tone: detail?.confirmed === true ? 'success' : 'error',
+    refreshing: `${lead} Refreshing ${host}…`,
+    stale: `${lead} ${host} could not refresh, so the information shown may be out of date.`,
+  };
+}
+
+// After a Delete (project-delete.js): the result message leads; only a clean
+// deletion this page confirmed reads as a success.
+function deleteMessages(detail, host) {
+  const lead = typeof detail?.message === 'string' && detail.message ? detail.message : 'Project deleted.';
+  return {
+    done: lead,
+    tone: detail?.confirmed === true && detail?.cleanupComplete === true ? 'success' : 'error',
+    refreshing: `${lead} Refreshing ${host}…`,
+    stale: `${lead} ${host} could not refresh, so the information shown may be out of date.`,
+  };
+}
+
+// The page's own project was deleted and its content retired.
+function pageRetired(document) {
+  return Boolean(document.getElementById('main-content')?.hasAttribute(PROJECT_DELETED_HOST_ATTRIBUTE));
+}
+
+function focusMainIfLost(document) {
+  const active = document.activeElement;
+  if (!active || active === document.body || !active.isConnected) {
+    document.getElementById('main-content')?.focus?.({ preventScroll: true });
+  }
+}
 
 // tone: 'success', 'error' or 'pending' (neither).
 function setFeedback(document, message, tone = 'success') {
@@ -63,20 +121,20 @@ function restoreInfoCardFocus(document) {
   (replacement || document.getElementById('main-content'))?.focus?.({ preventScroll: true });
 }
 
-function refreshProjectsAfterSave(document, { focusResult = false } = {}) {
+function refreshProjectsAfterSave(document, { focusResult = false, messages = SAVE_MESSAGES } = {}) {
   const state = hostState(document);
   removeStatusRetry(state, RETRY_KEY);
   const fail = () => {
     // The project is saved; only the List is stale, so Retry repeats the GET.
-    const notice = setFeedback(document, PROJECTS_STALE_MESSAGE, 'error');
+    const notice = setFeedback(document, messages.stale, 'error');
     const retry = notice ? showStatusRetry({
       state,
       status: notice,
       attribute: 'data-projects-edit-refresh-retry',
       key: RETRY_KEY,
       onRetry: ({ wasFocused }) => {
-        setFeedback(document, PROJECTS_REFRESHING_MESSAGE, 'pending');
-        refreshProjectsAfterSave(document, { focusResult: wasFocused });
+        setFeedback(document, messages.refreshing, 'pending');
+        refreshProjectsAfterSave(document, { focusResult: wasFocused, messages });
       },
     }) : null;
     if (focusResult) retry?.focus?.();
@@ -87,8 +145,9 @@ function refreshProjectsAfterSave(document, { focusResult = false } = {}) {
     failureMessage: '',
     onError: fail,
     onSuccess: () => {
-      setFeedback(document, SAVED_MESSAGE);
+      setFeedback(document, messages.done, messages.tone || 'success');
       restoreInfoCardFocus(document);
+      if (messages !== SAVE_MESSAGES) focusMainIfLost(document);
       if (focusResult) document.getElementById('main-content')?.focus?.({ preventScroll: true });
     },
   });
@@ -139,7 +198,7 @@ function refreshProjectAssetsOpenLocally(document, source, { focusResult = false
   link.setAttribute('aria-disabled', 'true');
   const windowObject = document.defaultView || globalThis;
   const fail = () => {
-    if (generation !== state.openLocallyGeneration || !link.isConnected) return;
+    if (generation !== state.openLocallyGeneration || !link.isConnected || pageRetired(document)) return;
     const notice = setFeedback(document, OPEN_LOCALLY_STALE_MESSAGE, 'error');
     const retry = notice ? showStatusRetry({
       state,
@@ -174,7 +233,7 @@ function refreshProjectAssetsOpenLocally(document, source, { focusResult = false
     .then((html) => {
       // A newer refresh owns the link, or the region was re-rendered after
       // the save and already shows the server's current link.
-      if (generation !== state.openLocallyGeneration || !link.isConnected) return;
+      if (generation !== state.openLocallyGeneration || !link.isConnected || pageRetired(document)) return;
       const parsed = new windowObject.DOMParser().parseFromString(html, 'text/html');
       const projectId = source.getAttribute('data-project-edit-id');
       const parsedSource = parsed.querySelector(PROJECT_ASSETS_TITLE_SOURCE_SELECTOR);
@@ -195,6 +254,32 @@ function refreshProjectAssetsOpenLocally(document, source, { focusResult = false
       if (focusResult) link.focus?.({ preventScroll: true });
     })
     .catch(fail);
+}
+
+// An archived project's Project Assets becomes read-only: the region, the
+// heading actions and the archived notice are re-read with the shared
+// state-preserving mutation refresh (a GET; its own Retry refresh repeats only
+// the GET). The page feedback says what was archived and whether the page
+// caught up.
+function refreshProjectAssetsAfterArchive(document, detail) {
+  const messages = archiveMessages(detail, 'Project Assets');
+  const settled = (result) => {
+    // A Delete retired the page meanwhile; its own message stands.
+    if (pageRetired(document)) return;
+    if (result?.status === 'installed') {
+      setFeedback(document, messages.done, messages.tone);
+      focusMainIfLost(document);
+      return;
+    }
+    // A newer load took over; it reconciles the same state and reports through
+    // onRecovered, or shows the shared Retry refresh if it fails.
+    if (result?.status === 'superseded') return;
+    setFeedback(document, messages.stale, 'error');
+  };
+  setFeedback(document, messages.refreshing, 'pending');
+  return refreshProjectAssetsAfterMutation(document, {
+    onRecovered: () => settled({ status: 'installed' }),
+  }).then(settled);
 }
 
 export function enhanceProjectEditHostRefresh(scope = globalThis.document) {
@@ -218,6 +303,25 @@ export function enhanceProjectEditHostRefresh(scope = globalThis.document) {
     if (String(event.detail?.projectId) !== assetsSource.getAttribute('data-project-edit-id')) return;
     applyProjectAssetsTitle(document, assetsSource, event.detail?.project?.title);
     refreshProjectAssetsOpenLocally(document, assetsSource);
+  });
+  document.addEventListener(PROJECT_ARCHIVED_EVENT, (event) => {
+    if (projects) {
+      refreshProjectsAfterSave(document, { messages: archiveMessages(event.detail, 'Projects') });
+      return;
+    }
+    if (String(event.detail?.projectId) !== assetsSource.getAttribute('data-project-edit-id')) return;
+    void refreshProjectAssetsAfterArchive(document, event.detail);
+  });
+  document.addEventListener(PROJECT_DELETED_EVENT, (event) => {
+    if (projects) {
+      refreshProjectsAfterSave(document, { messages: deleteMessages(event.detail, 'Projects') });
+      return;
+    }
+    if (String(event.detail?.projectId) !== assetsSource.getAttribute('data-project-edit-id')) return;
+    // Any Open locally read still in flight is for a project that is gone.
+    const state = hostState(document);
+    state.openLocallyGeneration = (state.openLocallyGeneration || 0) + 1;
+    removeStatusRetry(state, OPEN_LOCALLY_RETRY_KEY);
   });
   return true;
 }

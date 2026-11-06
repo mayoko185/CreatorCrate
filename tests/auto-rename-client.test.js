@@ -3,6 +3,11 @@ import {
   enhanceAssetAutoRenameOrdering,
   enhanceAssetSelection,
 } from '../src/static/creatorcrate.js';
+import {
+  captureAutoRenameOrderDraft,
+  reconcileAutoRenameOrder,
+  restoreAutoRenameOrderDraft,
+} from '../src/static/client/asset-ordering.js';
 
 function toDatasetKey(name) {
   return name.slice(5).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
@@ -1242,5 +1247,122 @@ describe('Assets-page Auto Rename ordering with hidden category assets', () => {
     item.dispatch('keydown', { key: 'ArrowDown' });
     item.dispatch('keydown', { key: 'Enter' });
     expect(next.orderInput.value).toBe('[1,4,3,2]');
+  });
+});
+
+describe('Unsaved category order across an authoritative refresh', () => {
+  const draftOn = (options = {}) => {
+    const page = makeAssetPage({ ids: [1, 3], baseOrder: [1, 2, 3, 4], ...options });
+    page.surface.setAttribute('data-auto-rename-category-id', '7');
+    enhanceAssetAutoRenameOrdering(page.document);
+    return page;
+  };
+  const dragDraft = (page) => {
+    dragTo(page, 1, { clientX: 0, clientY: 50 });
+    expect(page.orderInput.value).toBe('[3,2,1,4]');
+    return captureAutoRenameOrderDraft(page.document);
+  };
+
+  it('merges removals and additions while keeping the relative pending order', () => {
+    expect(reconcileAutoRenameOrder([3, 2, 1, 4], [1, 2, 3, 4]))
+      .toEqual({ order: [3, 2, 1, 4], added: [], removed: [] });
+    expect(reconcileAutoRenameOrder([3, 2, 1, 4], [1, 3, 4]))
+      .toEqual({ order: [3, 1, 4], added: [], removed: [2] });
+    // 5 follows its server predecessor 2 wherever the draft placed 2.
+    expect(reconcileAutoRenameOrder([3, 2, 1, 4], [1, 2, 5, 3, 4]))
+      .toEqual({ order: [3, 2, 5, 1, 4], added: [5], removed: [] });
+    expect(reconcileAutoRenameOrder([3, 1], [9, 1, 3]))
+      .toEqual({ order: [9, 3, 1], added: [9], removed: [] });
+  });
+
+  it('captures nothing until the complete order differs from the saved order', () => {
+    const page = draftOn({ view: 'grid' });
+    expect(captureAutoRenameOrderDraft(page.document)).toBeNull();
+    expect(dragDraft(page)).toEqual({ categoryId: '7', order: [3, 2, 1, 4], review: false });
+  });
+
+  it('restores C, B, A, D with hidden positions and keeps the saved baseline', () => {
+    const draft = dragDraft(draftOn({ view: 'grid' }));
+    const next = draftOn({ view: 'grid' });
+    expect(restoreAutoRenameOrderDraft(next.document, draft).status).toBe('restored');
+    expect(next.order()).toEqual(['3', '1']);
+    expect(next.orderInput.value).toBe('[3,2,1,4]');
+    expect(next.surface.getAttribute('data-auto-rename-base-order')).toBe('[1,2,3,4]');
+    expect(next.surface.getAttribute('data-auto-rename-draft')).toBe('true');
+    // Still a draft for the next refresh, not a new baseline.
+    expect(captureAutoRenameOrderDraft(next.document).order).toEqual([3, 2, 1, 4]);
+  });
+
+  it('keeps hidden positions when a different subset is visible after the refresh', () => {
+    const draft = dragDraft(draftOn({ view: 'grid' }));
+    const next = makeAssetPage({ ids: [1, 2, 3, 4], baseOrder: [1, 2, 3, 4], view: 'grid' });
+    next.surface.setAttribute('data-auto-rename-category-id', '7');
+    enhanceAssetAutoRenameOrdering(next.document);
+    restoreAutoRenameOrderDraft(next.document, draft);
+    expect(next.order()).toEqual(['3', '2', '1', '4']);
+    expect(next.orderInput.value).toBe('[3,2,1,4]');
+  });
+
+  it('drops confirmed-removed identities without requiring review', () => {
+    const draft = dragDraft(draftOn({ view: 'grid' }));
+    const next = makeAssetPage({ ids: [1, 3], baseOrder: [1, 3, 4], view: 'grid' });
+    next.surface.setAttribute('data-auto-rename-category-id', '7');
+    enhanceAssetAutoRenameOrdering(next.document);
+    const result = restoreAutoRenameOrderDraft(next.document, draft);
+    expect(result).toMatchObject({ status: 'restored', removed: [2] });
+    expect(next.orderInput.value).toBe('[3,1,4]');
+  });
+
+  it('blocks Auto Rename until a membership addition is reviewed, and never submits', () => {
+    const draft = dragDraft(draftOn({ view: 'grid' }));
+    const next = makeAssetPage({ ids: [1, 3], baseOrder: [1, 2, 3, 4, 5], view: 'grid' });
+    next.surface.setAttribute('data-auto-rename-category-id', '7');
+    enhanceAssetAutoRenameOrdering(next.document);
+    enhanceAssetSelection(next.document);
+    next.assets[0].checkbox.checked = true;
+    next.assets[0].checkbox.dispatch('change');
+    const result = restoreAutoRenameOrderDraft(next.document, draft);
+    expect(result).toMatchObject({ status: 'review', added: [5] });
+    expect(next.submit.disabled).toBe(true);
+    expect(next.form.dispatch('submit').defaultPrevented).toBe(true);
+    expect(next.orderInput.value).toBe('[3,2,1,4,5]');
+  });
+
+  it('keeps a draft another category or a missing surface cannot show', () => {
+    const draft = dragDraft(draftOn({ view: 'grid' }));
+    const other = makeAssetPage({ ids: [1, 3], baseOrder: [1, 2, 3, 4], view: 'grid' });
+    other.surface.setAttribute('data-auto-rename-category-id', '8');
+    enhanceAssetAutoRenameOrdering(other.document);
+    expect(restoreAutoRenameOrderDraft(other.document, draft).status).toBe('retained');
+    expect(other.orderInput.value).toBe('[1,2,3,4]');
+  });
+
+  it('stays the same unsaved draft through repeated restores, and carries a pending review', () => {
+    let draft = dragDraft(draftOn({ view: 'grid' }));
+    for (let round = 0; round < 3; round += 1) {
+      const next = draftOn({ view: 'grid' });
+      expect(restoreAutoRenameOrderDraft(next.document, draft).status).toBe('restored');
+      expect(next.surface.getAttribute('data-auto-rename-base-order')).toBe('[1,2,3,4]');
+      draft = captureAutoRenameOrderDraft(next.document);
+      expect(draft).toEqual({ categoryId: '7', order: [3, 2, 1, 4], review: false });
+    }
+
+    const grown = draftOn({ view: 'grid', baseOrder: [1, 2, 3, 4, 5] });
+    expect(restoreAutoRenameOrderDraft(grown.document, draft).status).toBe('review');
+    const pending = captureAutoRenameOrderDraft(grown.document);
+    expect(pending).toEqual({ categoryId: '7', order: [3, 2, 1, 4, 5], review: true });
+
+    const again = draftOn({ view: 'grid', baseOrder: [1, 2, 3, 4, 5] });
+    expect(restoreAutoRenameOrderDraft(again.document, pending).status).toBe('review');
+    expect(again.submit.disabled).toBe(true);
+  });
+
+  it('clears a draft the server order now matches', () => {
+    const draft = dragDraft(draftOn({ view: 'grid' }));
+    const next = makeAssetPage({ ids: [3, 1], baseOrder: [3, 2, 1, 4], view: 'grid' });
+    next.surface.setAttribute('data-auto-rename-category-id', '7');
+    enhanceAssetAutoRenameOrdering(next.document);
+    expect(restoreAutoRenameOrderDraft(next.document, draft).status).toBe('cleared');
+    expect(next.surface.hasAttribute('data-auto-rename-draft')).toBe(false);
   });
 });

@@ -17,6 +17,7 @@ import {
   openAppDialogById,
   setAppDialogBaseline,
 } from '../src/static/creatorcrate.js';
+import { vetoAppDialogReturn } from '../src/static/client/app-dialogs.js';
 import {
   markProjectAssetsDefaultsRendered,
   projectAssetsDefaultsGridStyleOnlyChange,
@@ -1208,6 +1209,81 @@ describe('Reusable app dialog enhancement', () => {
 
     expect(page.dialog.open).toBe(true);
     expect(assign).not.toHaveBeenCalled();
+  });
+
+  describe('WP11A-F1 — return vetoes (vetoAppDialogReturn)', () => {
+    function vetoPage() {
+      const page = makeDialogPage();
+      page.form.appendChild(makeElement('input', {
+        type: 'hidden',
+        name: 'returnTo',
+        value: '/projects/7/assets?view=list',
+        'data-dialog-return-location': '',
+      }));
+      const assign = vi.fn();
+      page.windowObject.location = {
+        href: 'http://creatorcrate.local/projects/7?edit=1',
+        origin: 'http://creatorcrate.local',
+        pathname: '/projects/7',
+        search: '?edit=1',
+        hash: '',
+        assign,
+      };
+      enhanceAppDialogs(page.document);
+      return { page, assign };
+    }
+
+    it('a vetoed dismissal closes the dialog but stays on the page; the veto is read at every dismissal', () => {
+      const { page, assign } = vetoPage();
+      const held = { value: true };
+      expect(vetoAppDialogReturn(page.document, page.dialog.id, () => held.value)).toBe(true);
+
+      for (let round = 0; round < 3; round += 1) {
+        openAppDialogById(page.document, page.dialog.id, page.trigger);
+        page.close.dispatch('click');
+        expect(page.dialog.open).toBe(false);
+      }
+      expect(assign).not.toHaveBeenCalled();
+
+      // Once the predicate no longer holds, the established return is back.
+      held.value = false;
+      openAppDialogById(page.document, page.dialog.id, page.trigger);
+      page.close.dispatch('click');
+      expect(assign).toHaveBeenCalledOnce();
+      expect(assign).toHaveBeenCalledWith('/projects/7/assets?view=list');
+    });
+
+    it('vetoes are independent: one that releases cannot lift another, and a throwing veto vetoes', () => {
+      const { page, assign } = vetoPage();
+      const archive = { held: true };
+      const remove = { held: true };
+      const archiveVeto = () => archive.held;
+      vetoAppDialogReturn(page.document, page.dialog.id, archiveVeto);
+      vetoAppDialogReturn(page.document, page.dialog.id, archiveVeto);
+      vetoAppDialogReturn(page.document, page.dialog.id, () => remove.held);
+      expect(page.dialog.__creatorCrateAppDialogState.returnVetoes.size).toBe(2);
+
+      archive.held = false;
+      openAppDialogById(page.document, page.dialog.id, page.trigger);
+      page.close.dispatch('click');
+      expect(assign).not.toHaveBeenCalled();
+
+      remove.held = false;
+      vetoAppDialogReturn(page.document, page.dialog.id, () => { throw new Error('unreadable'); });
+      openAppDialogById(page.document, page.dialog.id, page.trigger);
+      page.close.dispatch('click');
+      expect(page.dialog.open).toBe(false);
+      expect(assign).not.toHaveBeenCalled();
+    });
+
+    it('a dialog without vetoes, or an unknown dialog id, keeps the established return', () => {
+      const { page, assign } = vetoPage();
+      expect(vetoAppDialogReturn(page.document, 'no-such-dialog', () => true)).toBe(false);
+      expect(vetoAppDialogReturn(page.document, page.dialog.id, null)).toBe(false);
+      openAppDialogById(page.document, page.dialog.id, page.trigger);
+      page.close.dispatch('click');
+      expect(assign).toHaveBeenCalledOnce();
+    });
   });
 
   it('does not turn an unrelated native close lifecycle into return navigation', () => {

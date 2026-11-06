@@ -50,6 +50,8 @@ const ASSET_CARD_INTERACTIVE_SELECTOR = [
 ].join(', ');
 const ASSET_RENAME_TRIGGER_SELECTOR = '[data-asset-rename-trigger]';
 const ASSET_RENAME_EDITOR_SELECTOR = '[data-asset-rename-editor]';
+const RETAINED_ASSET_SELECTION_KEY = '__creatorCrateRetainedAssetSelection';
+const AUTO_RENAME_REVIEW_ATTRIBUTE = 'data-auto-rename-order-review';
 
 function autoRenameSurfaceItems(surface) {
   return Array.from(surface?.querySelectorAll?.(AUTO_RENAME_ASSET_SELECTOR) || []);
@@ -195,7 +197,7 @@ function autoRenameSync(state) {
   if (state.selectionInput) {
     state.selectionInput.value = JSON.stringify(selectedIds);
   }
-  state.canSubmit = state.autoRenameEnabled && valid && selectionValid;
+  state.canSubmit = state.autoRenameEnabled && valid && selectionValid && !state.reviewRequired;
   autoRenameSetDisabled(button, !state.canSubmit);
 
   const items = autoRenameSurfaceItems(state.surface);
@@ -786,7 +788,11 @@ function autoRenameBindSurface(state) {
   });
 
   state.form.addEventListener?.('submit', (event) => {
-    if (!autoRenameSync(state)) {
+    if (state.reviewRequired) {
+      autoRenameSync(state);
+      event.preventDefault?.();
+      autoRenameLiveMessage(state, 'Review the changed category order first. No preview was submitted.');
+    } else if (!autoRenameSync(state)) {
       event.preventDefault?.();
       autoRenameLiveMessage(state, 'The complete category order is invalid. No preview was submitted.');
     } else if (!state.canSubmit) {
@@ -867,6 +873,161 @@ export function enhanceAssetAutoRenameOrdering(scope = globalThis.document) {
   return initialized;
 }
 
+// A refresh reconciles an unsaved order against the server's complete category
+// order: confirmed-gone identities leave, the pending relative order stays, and
+// each new identity enters right after its predecessor in the server order.
+export function reconcileAutoRenameOrder(draftOrder, serverOrder) {
+  const server = new Set(serverOrder);
+  const draft = new Set(draftOrder);
+  const order = draftOrder.filter((id) => server.has(id));
+  const added = [];
+  serverOrder.forEach((id, index) => {
+    if (draft.has(id)) return;
+    added.push(id);
+    order.splice(index === 0 ? 0 : order.indexOf(serverOrder[index - 1]) + 1, 0, id);
+  });
+  return { order, added, removed: draftOrder.filter((id) => !server.has(id)) };
+}
+
+// The complete pending order of the rendered surface, or null when nothing is
+// pending. Hidden and off-page assets are included through the composed order.
+export function captureAutoRenameOrderDraft(scope) {
+  const surface = scope?.querySelector?.(AUTO_RENAME_SURFACE_SELECTOR);
+  const state = surface?.autoRenameOrderingState;
+  if (!state || !autoRenameMembershipIsValid(state)) return null;
+  const order = autoRenameComposeOrder(state.baseOrder, autoRenameOrder(surface));
+  const saved = autoRenameParseOrderJson(surface.getAttribute?.('data-auto-rename-base-order'));
+  if (!order || !saved || autoRenameSameOrder(order, saved)) return null;
+  return {
+    categoryId: surface.getAttribute?.('data-auto-rename-category-id') ?? null,
+    order,
+    review: state.reviewRequired === true,
+  };
+}
+
+function autoRenameRequireReview(state, onCheckAgain) {
+  const document = state.surface.ownerDocument;
+  state.reviewRequired = true;
+  if (state.surface.querySelector?.(`[${AUTO_RENAME_REVIEW_ATTRIBUTE}]`)) return;
+  const notice = document?.createElement?.('div');
+  if (!notice) return;
+  notice.className = 'notice notice--warning';
+  notice.setAttribute?.('role', 'status');
+  notice.setAttribute?.(AUTO_RENAME_REVIEW_ATTRIBUTE, '');
+  const text = document.createElement('p');
+  text.textContent = 'This category changed while your order was unsaved. New assets were placed using the saved order. Review the order before using Auto Rename.';
+  notice.appendChild?.(text);
+  const button = (label, onClick) => {
+    const control = document.createElement('button');
+    control.type = 'button';
+    control.className = 'button button-small button-secondary';
+    control.textContent = label;
+    control.addEventListener?.('click', onClick);
+    notice.appendChild?.(control);
+    return control;
+  };
+  button('Keep this order', () => {
+    state.reviewRequired = false;
+    notice.remove?.();
+    autoRenameSync(state);
+    autoRenameFocusWithoutScroll(autoRenameSurfaceItems(state.surface)[0]);
+  });
+  if (onCheckAgain) button('Check again', () => onCheckAgain());
+  state.surface.prepend?.(notice);
+}
+
+// Applies a captured order to a newly rendered surface. The server's order stays
+// the saved baseline in data-auto-rename-base-order; only the working order the
+// visible arrangement merges into changes, and nothing is submitted. Status:
+// 'restored', 'review' (needs the user's confirmation before Auto Rename),
+// 'retained' (this view cannot show it, so the caller keeps it) or 'cleared'.
+export function restoreAutoRenameOrderDraft(scope, draft, { onCheckAgain = null } = {}) {
+  const surface = scope?.querySelector?.(AUTO_RENAME_SURFACE_SELECTOR);
+  if (!surface || surface.getAttribute?.('data-auto-rename-category-id') !== draft.categoryId) {
+    return { status: 'retained', added: [], removed: [] };
+  }
+  const state = surface.autoRenameOrderingState;
+  const saved = autoRenameParseOrderJson(surface.getAttribute?.('data-auto-rename-base-order'));
+  if (!state || !saved) return { status: 'retained', added: [], removed: [] };
+
+  const { order, added, removed } = reconcileAutoRenameOrder(draft.order, saved);
+  if (added.length === saved.length || autoRenameSameOrder(order, saved)) {
+    return { status: 'cleared', added, removed };
+  }
+  state.baseOrder = order;
+  autoRenameSurfaceItems(surface)
+    .sort((left, right) => order.indexOf(autoRenameAssetId(left)) - order.indexOf(autoRenameAssetId(right)))
+    .forEach((item) => (item.parentElement || item.parentNode)?.appendChild?.(item));
+  surface.setAttribute?.('data-auto-rename-draft', 'true');
+  const review = draft.review || added.length > 0;
+  if (review) autoRenameRequireReview(state, onCheckAgain);
+  autoRenameSync(state);
+  return { status: review ? 'review' : 'restored', added, removed };
+}
+
+export function retainedAssetSelectionIds(document) {
+  return [...(document?.[RETAINED_ASSET_SELECTION_KEY] || [])];
+}
+
+export function clearRetainedAssetSelection(document) {
+  if (document) document[RETAINED_ASSET_SELECTION_KEY] = [];
+}
+
+// Selected identities, rendered or already retained from an earlier refresh.
+export function captureAssetSelection(scope) {
+  const selected = Array.from(scope?.querySelectorAll?.(ASSET_SELECTION_CHECKBOX_SELECTOR) || [])
+    .filter((checkbox) => checkbox.checked)
+    .map((checkbox) => String(checkbox.value));
+  return [...new Set([...selected, ...retainedAssetSelectionIds(scope?.ownerDocument)])];
+}
+
+// membership is the complete set of project asset ids, or null if unknown: an
+// asset the view does not render is removed only when membership excludes it,
+// or when the view renders it as no longer selectable (missing at last scan).
+// Retained ids are never submitted: bulk forms send rendered checkboxes only.
+export function restoreAssetSelection(scope, selectedIds, membership = null) {
+  const document = scope?.ownerDocument;
+  const form = scope?.querySelector?.(ASSET_SELECTION_FORM_SELECTOR);
+  const result = { restored: [], retained: [], removed: [] };
+  const checkboxes = new Map(Array.from(scope?.querySelectorAll?.(ASSET_SELECTION_CHECKBOX_SELECTOR) || [])
+    .map((checkbox) => [String(checkbox.value), checkbox]));
+  selectedIds.forEach((id) => {
+    const checkbox = checkboxes.get(id);
+    if (!form || (!checkbox && (scope.querySelector?.(`[data-asset-id="${id}"]`) || (membership && !membership.has(id))))) {
+      result.removed.push(id);
+    } else if (!checkbox) {
+      result.retained.push(id);
+    } else {
+      checkbox.checked = true;
+      updateAssetCardState(checkbox.closest?.(ASSET_CARD_SELECTOR), true);
+      result.restored.push(id);
+    }
+  });
+  if (document) document[RETAINED_ASSET_SELECTION_KEY] = result.retained;
+  if (form) updateAssetSelectionState(form, scope);
+  return result;
+}
+
+export function captureAssetRenameDrafts(scope) {
+  return Array.from(scope?.querySelectorAll?.(ASSET_RENAME_EDITOR_SELECTOR) || [])
+    .filter((editor) => editor.hidden !== true)
+    .map((editor) => ({
+      assetId: editor.closest?.('[data-asset-id]')?.getAttribute?.('data-asset-id') ?? null,
+      value: editor.querySelector?.('[data-asset-rename-input]')?.value ?? '',
+    }))
+    .filter((draft) => draft.assetId !== null);
+}
+
+export function restoreAssetRenameDrafts(scope, drafts) {
+  drafts.forEach(({ assetId, value }) => {
+    const editor = scope?.querySelector?.(`[data-asset-id="${assetId}"] ${ASSET_RENAME_EDITOR_SELECTOR}`);
+    if (!editor?.assetRenameSetEditing) return;
+    editor.assetRenameSetEditing(true);
+    const input = editor.querySelector?.('[data-asset-rename-input]');
+    if (input) input.value = value;
+  });
+}
+
 function getAssetSelectionCheckboxes(form, scope = form) {
   const candidates = Array.from(scope.querySelectorAll(ASSET_SELECTION_CHECKBOX_SELECTOR))
     .filter((candidate) => candidate && typeof candidate.addEventListener === 'function');
@@ -910,7 +1071,8 @@ export function updateAssetSelectionState(form, scope = form) {
     const totalCount = Number.isSafeInteger(renderedTotal) && renderedTotal >= 0
       ? renderedTotal
       : checkboxes.length;
-    countEl.textContent = `${selectedCount} of ${totalCount} selected`;
+    const retainedCount = retainedAssetSelectionIds(form.ownerDocument).length;
+    countEl.textContent = `${selectedCount} of ${totalCount} selected${retainedCount > 0 ? ` (${retainedCount} more not shown)` : ''}`;
   }
 
   const releaseSelect = form.querySelector('[data-release-select]');
@@ -968,6 +1130,7 @@ export function enhanceAssetSelection(scope = globalThis.document) {
     const clearButton = getAssetSelectionControl(form, scope, '[data-clear-selection]');
     if (clearButton) {
       clearButton.addEventListener('click', () => {
+        clearRetainedAssetSelection(form.ownerDocument);
         checkboxes.forEach((checkbox) => { checkbox.checked = false; });
         checkboxes.forEach((checkbox) => updateAssetCardState(checkbox.closest?.(ASSET_CARD_SELECTOR), false));
         updateAssetSelectionState(form, scope);
@@ -1066,6 +1229,7 @@ export function enhanceAssetRenames(scope = globalThis.document) {
     }
 
     markEnhancementBound(trigger, 'assetRenameBound');
+    editor.assetRenameSetEditing = setEditing;
 
     const closeEditor = () => {
       setEditing(false);

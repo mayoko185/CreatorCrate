@@ -1,0 +1,4 @@
+{# The closed async Auto Rename confirmation alone, mounted by the Project
+   Assets page that requested the Preview. #}
+{% import "partials/auto-rename-confirmation.njk" as autoRenameConfirmation %}
+{{ autoRenameConfirmation.render(project, autoRenameConfirmationPlan, autoRenameConfirmationContext, null, _csrf, false, true) }}

@@ -9,11 +9,18 @@ import {
   enhanceProjectCards,
 } from './preview.js';
 import {
+  captureAssetRenameDrafts,
+  captureAssetSelection,
+  captureAutoRenameOrderDraft,
+  clearRetainedAssetSelection,
   enhanceAssetAutoRenameOrdering,
   enhanceAssetRenames,
   enhanceAssetSelection,
+  restoreAssetRenameDrafts,
+  restoreAssetSelection,
+  restoreAutoRenameOrderDraft,
 } from './asset-ordering.js';
-import { enhanceAutoSubmit } from './app-dialogs.js';
+import { enhanceAppDialogs, enhanceAutoSubmit } from './app-dialogs.js';
 import {
   PROJECT_ASSET_CATEGORIES_CHANGED,
   syncProjectAssetCategoryConsumers,
@@ -32,6 +39,7 @@ import {
   enhanceDropdowns,
   enhanceProjectAssetCategoryFilter,
   initializeCreatorCrateDropdown,
+  syncCreatorCrateDropdownFromNative,
 } from './dropdowns.js';
 import {
   enhanceAssetGridSize,
@@ -46,7 +54,7 @@ import {
   SLIDESHOW_SEQUENCE_SELECTOR,
 } from './slideshow.js';
 import { enhanceNotesCodeBlocks } from './notes-editor.js';
-import { RELEASE_EDIT_SAVED_EVENT } from './release-edit-dialog.js';
+import { RELEASE_ARCHIVED_EVENT, RELEASE_DELETED_EVENT, RELEASE_EDIT_SAVED_EVENT } from './release-edit-dialog.js';
 import { removeStatusRetry, showStatusRetry } from './status-retry.js';
 const PROJECTS_LIVE_REGION_SELECTOR = '[data-projects-live-region]';
 const PROJECTS_FILTER_SELECTOR = '#project-filters';
@@ -178,6 +186,18 @@ function enhanceProjectsLiveRegion(region) {
   enhanceDashboardTitleInfoCards(region);
 }
 
+function liveFilterFailureMessage(label) {
+  return (_state, _url, historyMode) => {
+    if (historyMode === 'none') return `${label} couldn't be refreshed. The results shown may be out of date.`;
+    if (historyMode === 'replace') return `${label} couldn't be loaded for this address. The previous results are still displayed and may not match it.`;
+    return `${label} couldn't be updated. The requested filters were not applied, and the previous results are still displayed.`;
+  };
+}
+
+function sameResponsePath(finalUrl, requestedUrl) {
+  return finalUrl.pathname === requestedUrl.pathname;
+}
+
 export function createLiveRegionEngine(config) {
   const {
     regionSelector,
@@ -209,6 +229,8 @@ export function createLiveRegionEngine(config) {
     onFormChange = null,
     transformParams = null,
     isCurrentUrl = () => true,
+    loadFailureMessage = null,
+    responseMatches = null,
   } = config || {};
 
   function regionFor(scope) {
@@ -348,6 +370,14 @@ export function createLiveRegionEngine(config) {
   }
 
   function replaceRegion(state, responseText, requestedUrl, historyMode) {
+    if (loadFailureMessage) {
+      // A redirect to another page or record must not install its fragment.
+      const finalUrl = responseUrl(state.response, requestedUrl, state.window);
+      const matches = responseMatches
+        ? responseMatches(finalUrl, requestedUrl, state)
+        : isCurrentUrl(finalUrl, state);
+      if (!matches) throw new Error(missingRegionMessage);
+    }
     const parser = new state.window.DOMParser();
     const parsed = parser.parseFromString(responseText, 'text/html');
     const nextRegion = parsed.querySelector?.(regionSelector);
@@ -368,10 +398,89 @@ export function createLiveRegionEngine(config) {
     navigate(state.window, requestedUrl);
   }
 
+  function topOpenDialog(state) {
+    return Array.from(state.document.querySelectorAll?.('dialog[open]') || []).at(-1) || null;
+  }
+
+  function placeLoadFailureNotice(state) {
+    const notice = state.loadFailure?.notice;
+    if (!notice) return;
+    // A modal makes the page inert, so Retry stays with the open dialog and
+    // returns above the results when that dialog closes.
+    const anchor = topOpenDialog(state)?.querySelector?.('form') || regionFor(state.document);
+    if (anchor?.parentNode && anchor.previousElementSibling !== notice) {
+      anchor.parentNode.insertBefore?.(notice, anchor);
+    }
+  }
+
+  function clearLoadFailure(state) {
+    if (!state.loadFailure) return;
+    removeStatusRetry(state, 'loadFailureRetryButton');
+    state.loadFailure.notice?.remove?.();
+    state.loadFailure = null;
+  }
+
+  // The last valid results stay installed and the requested controls stay as
+  // chosen. state.loadFailure owns the request Retry repeats until any newer
+  // load or filter change supersedes it; only a successful install commits it.
+  function reportLoadFailure(state, url, historyMode) {
+    const region = regionFor(state.document);
+    const message = loadFailureMessage(state, url, historyMode);
+    region?.removeAttribute?.('aria-busy');
+    status(region, message, 'error');
+    clearLoadFailure(state);
+
+    const notice = state.document.createElement?.('div');
+    if (!notice) return;
+    notice.className = 'notice notice--error app-dialog-feedback app-dialog-feedback--pinned';
+    // The region's live status is inert behind a modal, so the notice speaks there.
+    if (topOpenDialog(state)) notice.setAttribute?.('role', 'alert');
+    notice.setAttribute?.('data-live-filter-failure', '');
+    const text = state.document.createElement?.('p');
+    text.textContent = message;
+    notice.appendChild?.(text);
+    const failure = { url, historyMode, notice };
+    state.loadFailure = failure;
+    placeLoadFailureNotice(state);
+
+    const retry = showStatusRetry({
+      state,
+      status: notice,
+      mount: text,
+      attribute: 'data-live-filter-retry',
+      key: 'loadFailureRetryButton',
+      label: 'Retry',
+      onRetry: ({ wasFocused }) => {
+        if (state.loadFailure !== failure) return;
+        if (state.timer) state.window.clearTimeout?.(state.timer);
+        state.timer = null;
+        invalidate(state);
+        load(state, failure.url, failure.historyMode, null);
+        if (!wasFocused) return;
+        state.loadFailureFocusRetry = true;
+        const target = topOpenDialog(state)?.querySelector?.('input:not([type="hidden"]), select, summary, button')
+          || state.document.getElementById?.('main-content');
+        target?.focus?.({ preventScroll: true });
+      },
+    });
+    if (state.loadFailureFocusRetry) retry?.focus?.();
+    state.loadFailureFocusRetry = false;
+  }
+
   function loadError(state, generation, error, form, url, historyMode) {
     if (generation !== state.generation) return;
     state.controller = null;
     if (onLoadError?.(state, generation, error, form, url, historyMode, engine) === true) return;
+    if (loadFailureMessage) {
+      if (error?.name === 'AbortError') {
+        const region = regionFor(state.document);
+        region?.removeAttribute?.('aria-busy');
+        status(region, '', null);
+        return;
+      }
+      reportLoadFailure(state, url, historyMode);
+      return;
+    }
     if (error?.name === 'AbortError') return;
     const region = regionFor(state.document);
     region?.removeAttribute?.('aria-busy');
@@ -379,13 +488,20 @@ export function createLiveRegionEngine(config) {
     fallback(state, form, url, historyMode === 'replace');
   }
 
-  function load(state, url, historyMode, form) {
+  function load(state, url, requestedHistoryMode, form) {
     const generation = state.generation;
     const currentRegion = regionFor(state.document);
     if (!currentRegion) return;
+    // A refresh of a failed request still owes that request's history entry.
+    const historyMode = requestedHistoryMode === 'none' && state.loadFailure?.url?.href === url.href
+      ? state.loadFailure.historyMode
+      : requestedHistoryMode;
+    clearLoadFailure(state);
+    state.loadFailureFocusRetry = false;
     state.region = currentRegion;
     state.response = null;
     state.requestedUrl = url;
+    state.requestedHistoryMode = historyMode;
     onLoadStart?.(state, generation, url, historyMode, engine);
     state.controller = controller(state.window);
     status(currentRegion, loadingMessage, 'loading');
@@ -441,6 +557,7 @@ export function createLiveRegionEngine(config) {
 
     if (state.timer) windowObject.clearTimeout?.(state.timer);
     state.timer = null;
+    clearLoadFailure(state);
     invalidate(state);
 
     const start = () => {
@@ -556,12 +673,23 @@ export function createLiveRegionEngine(config) {
         generation: 0,
         response: null,
         requestedUrl: null,
+        requestedHistoryMode: null,
+        loadFailure: null,
+        loadFailureRetryButton: null,
+        loadFailureFocusRetry: false,
         engine,
       };
       document[stateKey] = state;
       enhanceRegion(region, state);
       onCreate?.(state, region, engine);
       windowObject.addEventListener?.('popstate', () => handlePopstate(state));
+      if (loadFailureMessage) {
+        const relocate = (event) => {
+          if (event.target?.tagName === 'DIALOG') placeLoadFailureNotice(state);
+        };
+        document.addEventListener?.('toggle', relocate, true);
+        document.addEventListener?.('close', relocate, true);
+      }
     }
 
     return bindForm(state);
@@ -717,6 +845,14 @@ const calendarLiveEngine = createLiveRegionEngine({
   isCurrentUrl(url) {
     return url.pathname === '/calendar';
   },
+  loadFailureMessage(state, url, historyMode) {
+    const displayedMonth = calendarLiveEngine.getRegion(state.document)?.getAttribute?.('data-calendar-month');
+    const requestedMonth = url.searchParams.get('month');
+    if (requestedMonth && displayedMonth && requestedMonth !== displayedMonth) {
+      return "The requested month couldn't be loaded. The previously displayed month is still shown.";
+    }
+    return liveFilterFailureMessage('Calendar')(state, url, historyMode);
+  },
 });
 
 export function enhanceCalendarLiveFiltering(scope = globalThis.document) {
@@ -735,9 +871,11 @@ export function enhanceCalendarLiveFiltering(scope = globalThis.document) {
   let enterCommittedYear = false;
   dialogState.onOpen = () => {
     enterCommittedYear = false;
-    const displayedMonth = calendarLiveEngine.getRegion(document)?.getAttribute?.('data-calendar-month');
-    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(displayedMonth || '')) return;
-    const [year, month] = displayedMonth.split('-');
+    // A month that failed to load stays the pending choice until it resolves.
+    const shownMonth = document.__creatorCrateCalendarLiveFiltering?.loadFailure?.url?.searchParams?.get?.('month')
+      || calendarLiveEngine.getRegion(document)?.getAttribute?.('data-calendar-month');
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(shownMonth || '')) return;
+    const [year, month] = shownMonth.split('-');
     dropdown?.querySelectorAll?.('input[type="radio"]').forEach((option) => {
       option.checked = option.value === month;
     });
@@ -762,7 +900,8 @@ export function enhanceCalendarLiveFiltering(scope = globalThis.document) {
     if (!/^(0[1-9]|1[0-2])$/.test(month || '')) return;
     const selectedMonth = `${year}-${month}`;
     const region = calendarLiveEngine.getRegion(document);
-    if (selectedMonth === region?.getAttribute?.('data-calendar-month')) return;
+    if (selectedMonth === region?.getAttribute?.('data-calendar-month')
+      && !document.__creatorCrateCalendarLiveFiltering?.loadFailure) return;
     const filterForm = calendarLiveEngine.getForm(region);
     const monthField = filterForm?.querySelector?.('input[name="month"]');
     if (!monthField || !filterForm?.requestSubmit) return;
@@ -821,7 +960,7 @@ export function refreshCalendarLiveRegion(
   if (!region || !state || !calendarLiveEngine.capabilities(state.window)) return 'unavailable';
   if (state.generation !== authorityGeneration) return 'superseded';
 
-  const inFlight = Boolean(state.controller && state.requestedUrl);
+  const inFlight = Boolean((state.controller || state.loadFailure) && state.requestedUrl);
   const url = inFlight
     ? new URL(state.requestedUrl.href)
     : new URL(state.window.location.href);
@@ -845,9 +984,54 @@ export function refreshCalendarLiveRegion(
   return 'started';
 }
 
-const CALENDAR_EDIT_SAVED_MESSAGE = 'Release updated.';
-const CALENDAR_EDIT_STALE_MESSAGE = 'Release saved, but Calendar could not refresh. The calendar shown may be out of date.';
-const CALENDAR_EDIT_REFRESHING_MESSAGE = 'Release saved. Refreshing Calendar…';
+const CALENDAR_EDIT_MESSAGES = Object.freeze({
+  saved: 'Release updated.',
+  stale: 'Release saved, but Calendar could not refresh. The calendar shown may be out of date.',
+  refreshing: 'Release saved. Refreshing Calendar…',
+  savedError: false,
+});
+
+// An archived release leaves the Calendar (it lists active releases only).
+// A confirmed Archive reports its own message; one this page only observed
+// keeps that report, never in a success tone.
+function calendarArchiveMessages({ message, confirmed }) {
+  if (confirmed === true) {
+    return {
+      saved: message || 'Release archived.',
+      stale: 'Release archived, but Calendar could not refresh. The calendar shown may be out of date.',
+      refreshing: 'Release archived. Refreshing Calendar…',
+      savedError: false,
+    };
+  }
+  const prefix = message ? `${message} ` : '';
+  return {
+    saved: message || 'Calendar refreshed.',
+    stale: `${prefix}Calendar could not refresh, so it may still show this release.`,
+    refreshing: `${prefix}Refreshing Calendar…`,
+    savedError: Boolean(message),
+  };
+}
+
+// A deleted release leaves the Calendar the same way. A confirmed Delete
+// reports its own message; a release this page only found gone keeps that
+// report, never in a success tone.
+function calendarDeleteMessages({ message, confirmed }) {
+  if (confirmed === true) {
+    return {
+      saved: message || 'Release deleted.',
+      stale: 'Release deleted, but Calendar could not refresh. The calendar shown may be out of date.',
+      refreshing: 'Release deleted. Refreshing Calendar…',
+      savedError: false,
+    };
+  }
+  const prefix = message ? `${message} ` : '';
+  return {
+    saved: message || 'Calendar refreshed.',
+    stale: `${prefix}Calendar could not refresh, so it may still show this release.`,
+    refreshing: `${prefix}Refreshing Calendar…`,
+    savedError: Boolean(message),
+  };
+}
 
 // Edit Release save feedback uses the page's dialog feedback notice, which
 // sits outside the live region so it survives refreshes.
@@ -870,17 +1054,17 @@ function setCalendarEditFeedback(document, message, error) {
  * newer refresh or navigation supersedes an older one through the live
  * engine's generation, and any later completed load clears the stale notice.
  */
-function refreshCalendarAfterReleaseEdit(document, { focusResult = false } = {}) {
+function refreshCalendarAfterReleaseEdit(document, { focusResult = false, messages = CALENDAR_EDIT_MESSAGES } = {}) {
   // A stale notice from an earlier failure stays armed: this refresh, or any
   // later completed load, clears it.
   removeStatusRetry(document.__creatorCrateCalendarLiveFiltering, 'calendarEditRetryButton');
   const fail = () => {
     const current = document.__creatorCrateCalendarLiveFiltering;
-    const notice = setCalendarEditFeedback(document, CALENDAR_EDIT_STALE_MESSAGE, true);
+    const notice = setCalendarEditFeedback(document, messages.stale, true);
     if (!current || !notice) return;
     current.calendarStaleNoticeClear = () => {
       removeStatusRetry(current, 'calendarEditRetryButton');
-      setCalendarEditFeedback(document, CALENDAR_EDIT_SAVED_MESSAGE, false);
+      setCalendarEditFeedback(document, messages.saved, messages.savedError);
     };
     const retry = showStatusRetry({
       state: current,
@@ -888,8 +1072,8 @@ function refreshCalendarAfterReleaseEdit(document, { focusResult = false } = {})
       attribute: 'data-calendar-edit-refresh-retry',
       key: 'calendarEditRetryButton',
       onRetry: ({ wasFocused }) => {
-        setCalendarEditFeedback(document, CALENDAR_EDIT_REFRESHING_MESSAGE, false);
-        refreshCalendarAfterReleaseEdit(document, { focusResult: wasFocused });
+        setCalendarEditFeedback(document, messages.refreshing, messages.savedError);
+        refreshCalendarAfterReleaseEdit(document, { focusResult: wasFocused, messages });
       },
     });
     if (focusResult) retry?.focus?.();
@@ -913,6 +1097,15 @@ function enhanceCalendarReleaseEditRefresh(document) {
   if (!root || isEnhancementBound(root, 'calendarReleaseEditRefreshBound')) return;
   markEnhancementBound(root, 'calendarReleaseEditRefreshBound');
   document.addEventListener?.(RELEASE_EDIT_SAVED_EVENT, () => refreshCalendarAfterReleaseEdit(document));
+  // An archived release (release-archive.js) leaves the Calendar through the
+  // same GET-only refresh, keeping the month, view and filters.
+  document.addEventListener?.(RELEASE_ARCHIVED_EVENT, (event) => {
+    refreshCalendarAfterReleaseEdit(document, { messages: calendarArchiveMessages(event.detail ?? {}) });
+  });
+  // A deleted release (release-delete.js) leaves it the same way.
+  document.addEventListener?.(RELEASE_DELETED_EVENT, (event) => {
+    refreshCalendarAfterReleaseEdit(document, { messages: calendarDeleteMessages(event.detail ?? {}) });
+  });
 }
 
 function submitProjectsNsfwToggle(state, form, event) {
@@ -926,7 +1119,7 @@ function submitProjectsNsfwToggle(state, form, event) {
   try {
     if (state.timer) state.window.clearTimeout?.(state.timer);
     state.timer = null;
-    refreshUrl = state.controller && state.requestedUrl
+    refreshUrl = (state.controller || state.loadFailure) && state.requestedUrl
       ? new URL(state.requestedUrl.href, state.window.location?.href || state.requestedUrl.href)
       : projectsLiveEngine.url(
         projectsLiveEngine.getForm(projectsLiveEngine.getRegion(state.document)),
@@ -1145,6 +1338,7 @@ const projectsLiveEngine = createLiveRegionEngine({
   isCurrentUrl(url) {
     return url.pathname === '/projects';
   },
+  loadFailureMessage: liveFilterFailureMessage('Projects'),
 });
 
 function enhanceReleasesLiveRegion(region) {
@@ -1222,6 +1416,7 @@ const releasesLiveEngine = createLiveRegionEngine({
   isCurrentUrl(url) {
     return url.pathname === '/releases' || url.pathname === '/release-management';
   },
+  loadFailureMessage: liveFilterFailureMessage('Releases'),
 });
 
 function releaseAssetId(control) {
@@ -1735,18 +1930,13 @@ const releaseAssetsLiveEngine = createLiveRegionEngine({
   },
   onLoadError(state) {
     if (state.releaseAssetsSelection) state.releaseAssetsSelection.pendingFormAction = null;
-    const region = releaseAssetsLiveEngine.getRegion(state.document);
-    region?.removeAttribute?.('aria-busy');
-    releaseAssetsLiveEngine.status(
-      region,
-      'Could not update Release Assets. Change the filters to try again.',
-      'error',
-    );
-    return true;
+    return false;
   },
   isCurrentUrl(url) {
     return /^\/releases\/[1-9]\d*\/assets$/.test(url.pathname);
   },
+  responseMatches: sameResponsePath,
+  loadFailureMessage: liveFilterFailureMessage('Release Assets'),
 });
 
 const PROJECT_ASSETS_LIVE_REGION_SELECTOR = '[data-project-assets-live-region]';
@@ -1806,7 +1996,7 @@ function submitProjectAssetsNsfwToggle(state, form, event) {
   try {
     if (state.timer) state.window.clearTimeout?.(state.timer);
     state.timer = null;
-    refreshUrl = state.controller && state.requestedUrl
+    refreshUrl = (state.controller || state.loadFailure) && state.requestedUrl
       ? new URL(state.requestedUrl.href, state.window.location?.href || state.requestedUrl.href)
       : projectAssetsLiveEngine.url(
         projectAssetsLiveEngine.getForm(projectAssetsLiveEngine.getRegion(state.document)),
@@ -1900,6 +2090,8 @@ function submitProjectAssetsNsfwToggle(state, form, event) {
       updateProjectAssetsNsfwControls(region, enabledState);
       region?.removeAttribute?.('aria-busy');
       projectAssetsLiveEngine.status(region, 'Could not update the NSFW filter. The previous setting was kept.', 'error');
+      // The POST superseded a mutation refresh that still has to happen.
+      if (state.projectAssetsRefreshOwed) refreshProjectAssetsLiveRegion(state.document);
     });
 
   return true;
@@ -1958,6 +2150,199 @@ function reconcileProjectAssetsManualScanContext(state, parsed) {
   else currentForm.prepend?.(...nextInputs);
 }
 
+const PROJECT_ASSETS_MEMBERSHIP_SELECTOR = '[data-project-assets-membership]';
+const PROJECT_ASSETS_TOOLBAR_FOCUS_SELECTOR = '.asset-viewer-display-controls a, .asset-viewer-display-controls button';
+const PROJECT_ASSETS_SCROLLER_SELECTOR = '.asset-list-scroll';
+const PROJECT_ASSETS_FORM_DRAFT_SELECTORS = ['[data-release-select]', 'select[name="destinationCategory"]'];
+const PROJECT_ASSETS_ARCHIVED_NOTICE_SELECTOR = '[data-project-assets-archived-notice]';
+const PROJECT_ASSETS_REMOVE_MISSING_DIALOG_ID = 'remove-missing-assets-dialog';
+
+function projectAssetsMembership(region) {
+  try {
+    const parsed = JSON.parse(region?.querySelector?.(PROJECT_ASSETS_MEMBERSHIP_SELECTOR)?.textContent ?? 'null');
+    return Array.isArray(parsed) ? new Set(parsed.map(String)) : null;
+  } catch {
+    return null;
+  }
+}
+
+function projectAssetIdOf(element) {
+  const owner = element?.closest?.('[data-asset-id], [data-auto-rename-asset-id]');
+  return owner?.getAttribute?.('data-asset-id') ?? owner?.getAttribute?.('data-auto-rename-asset-id') ?? null;
+}
+
+// What a post-mutation install must carry over. Taken immediately before the
+// replacement, so changes made while the GET was pending are included.
+function captureProjectAssetsTransientState(state, region) {
+  const document = state.document;
+  const active = document.activeElement;
+  const focusInRegion = Boolean(active && active !== region && region?.contains?.(active));
+  return {
+    selection: captureAssetSelection(region),
+    renameDrafts: captureAssetRenameDrafts(region),
+    gridStyle: region?.querySelector?.('.asset-grid')?.getAttribute?.('data-grid-style') ?? null,
+    formDrafts: PROJECT_ASSETS_FORM_DRAFT_SELECTORS.map((selector) => ({
+      selector,
+      value: region?.querySelector?.(selector)?.value ?? null,
+    })),
+    openDetails: Array.from(region?.querySelectorAll?.('[data-asset-id] details') || [])
+      .filter((details) => details.open === true)
+      .map((details) => {
+        const card = details.closest?.('[data-asset-id]');
+        return {
+          assetId: card?.getAttribute?.('data-asset-id'),
+          index: Array.from(card?.querySelectorAll?.('details') || []).indexOf(details),
+        };
+      }),
+    focus: focusInRegion ? {
+      assetId: projectAssetIdOf(active),
+      label: active.getAttribute?.('aria-label') || '',
+      isOrderItem: Boolean(active.matches?.('[data-auto-rename-asset]')),
+      control: liveRegionCaptureState(region, document).focus,
+      visibleIds: Array.from(region?.querySelectorAll?.('[data-asset-id]') || [])
+        .map((card) => card.getAttribute?.('data-asset-id')),
+    } : null,
+    scrollX: state.window.scrollX,
+    scrollY: state.window.scrollY,
+    scrollers: Array.from(region?.querySelectorAll?.(PROJECT_ASSETS_SCROLLER_SELECTOR) || [])
+      .map((element) => ({ left: element.scrollLeft ?? 0, top: element.scrollTop ?? 0 })),
+  };
+}
+
+// Unsaved orders by category, each held until its own surface renders again. A
+// page reload ends them, and so does moving the order back to the saved one.
+function retainProjectAssetsOrderDraft(state, region) {
+  const draft = captureAutoRenameOrderDraft(region);
+  if (draft) state.projectAssetsOrderDrafts.set(draft.categoryId, draft);
+}
+
+function restoreProjectAssetsOrderDrafts(state, region) {
+  let order = { status: 'none', added: [], removed: [] };
+  state.projectAssetsOrderDrafts.forEach((draft, categoryId) => {
+    const result = restoreAutoRenameOrderDraft(region, draft, {
+      onCheckAgain: () => refreshProjectAssetsLiveRegion(state.document),
+    });
+    if (result.status !== 'retained') state.projectAssetsOrderDrafts.delete(categoryId);
+    if (result.status !== 'retained' || order.status === 'none') order = result;
+  });
+  return order;
+}
+
+function projectAssetFocusTarget(region, assetId, focus) {
+  const card = region?.querySelector?.(`[data-asset-id="${assetId}"]`);
+  if (!card) return null;
+  const orderItem = region.querySelector?.(`[data-auto-rename-asset-id="${assetId}"]`);
+  if (focus.isOrderItem && orderItem) return orderItem;
+  const labelled = focus.label
+    ? Array.from(card.querySelectorAll?.('[aria-label]') || [])
+      .find((control) => control.getAttribute?.('aria-label') === focus.label)
+    : null;
+  return labelled || orderItem || card.querySelector?.('input[type="checkbox"]:not(:disabled), a[href], button:not(:disabled)') || card;
+}
+
+// Focus follows the same asset or control. A removed asset passes it to the next
+// or previous shown asset, then the toolbar; a dialog opened since keeps its own.
+function restoreProjectAssetsFocus(state, region, focus) {
+  if (!focus || state.document.querySelector?.('dialog[open]')) return;
+  if (liveRegionFindFocus(region, focus.control)) return;
+  let target = null;
+  if (focus.assetId) {
+    target = projectAssetFocusTarget(region, focus.assetId, focus);
+    const position = focus.visibleIds.indexOf(focus.assetId);
+    const neighbors = [...focus.visibleIds.slice(position + 1), ...focus.visibleIds.slice(0, Math.max(position, 0)).reverse()];
+    for (const assetId of neighbors) {
+      if (target) break;
+      target = projectAssetFocusTarget(region, assetId, { isOrderItem: focus.isOrderItem, label: '' });
+    }
+  } else if (focus.label) {
+    target = Array.from(region.querySelectorAll?.('[aria-label]') || [])
+      .find((control) => control.getAttribute?.('aria-label') === focus.label);
+  }
+  (target || region.querySelector?.(PROJECT_ASSETS_TOOLBAR_FOCUS_SELECTOR))?.focus?.({ preventScroll: true });
+}
+
+function restoreProjectAssetsTransientState(state, region, snapshot) {
+  const membership = projectAssetsMembership(region);
+  const grid = region.querySelector?.('.asset-grid');
+  if (grid && snapshot.gridStyle) grid.setAttribute?.('data-grid-style', snapshot.gridStyle);
+  snapshot.formDrafts.forEach(({ selector, value }) => {
+    const select = region.querySelector?.(selector);
+    if (!select || !value || !Array.from(select.options || []).some((option) => option.value === value && !option.disabled)) return;
+    select.value = value;
+    syncCreatorCrateDropdownFromNative(select);
+  });
+  const selection = restoreAssetSelection(region, snapshot.selection, membership);
+  restoreAssetRenameDrafts(region, snapshot.renameDrafts);
+  snapshot.openDetails.forEach(({ assetId, index }) => {
+    const details = region.querySelector?.(`[data-asset-id="${assetId}"]`)?.querySelectorAll?.('details')?.[index];
+    if (details) details.open = true;
+  });
+
+  const order = restoreProjectAssetsOrderDrafts(state, region);
+
+  restoreProjectAssetsFocus(state, region, snapshot.focus);
+  Array.from(region.querySelectorAll?.(PROJECT_ASSETS_SCROLLER_SELECTOR) || []).forEach((element, index) => {
+    const position = snapshot.scrollers[index];
+    if (!position) return;
+    element.scrollLeft = position.left;
+    element.scrollTop = position.top;
+  });
+  state.window.scrollTo?.(snapshot.scrollX, snapshot.scrollY);
+  return { selection, order };
+}
+
+function adoptProjectAssetsRemoveMissingDialog(document, parsed) {
+  const current = document.getElementById?.(PROJECT_ASSETS_REMOVE_MISSING_DIALOG_ID);
+  const rendered = parsed.querySelector?.(`#${PROJECT_ASSETS_REMOVE_MISSING_DIALOG_ID}`);
+  if (current && rendered) {
+    const returnTo = current.querySelector?.('input[name="returnTo"]');
+    const renderedReturnTo = rendered.querySelector?.('input[name="returnTo"]');
+    if (returnTo && renderedReturnTo) returnTo.value = renderedReturnTo.value;
+  } else if (current && !current.open) {
+    // An open dialog stays until dismissed; the server guards its submission.
+    current.remove?.();
+  } else if (rendered) {
+    const sibling = document.getElementById?.('project-assets-filter-dialog');
+    if (sibling?.parentNode) {
+      sibling.parentNode.insertBefore?.(rendered, sibling);
+      enhanceAppDialogs(document);
+    }
+  }
+}
+
+// Mutation results shown outside the region: the heading actions (including
+// Remove missing assets), its dialog, and the archived notice. Filter and
+// processing category counts are handled by their existing reconcilers.
+function reconcileProjectAssetsDependents(state, parsed) {
+  const document = state.document;
+  const heading = document.querySelector?.('.page-heading');
+  const renderedHeading = parsed.querySelector?.('.page-heading');
+  if (heading && renderedHeading && !heading.isEqualNode?.(renderedHeading)) {
+    const active = document.activeElement;
+    const focusLabel = heading.contains?.(active) ? active.getAttribute?.('aria-label') : null;
+    heading.replaceWith?.(renderedHeading);
+    if (focusLabel) {
+      (Array.from(renderedHeading.querySelectorAll?.('[aria-label]') || [])
+        .find((control) => control.getAttribute?.('aria-label') === focusLabel)
+        || renderedHeading.querySelector?.('a, button'))?.focus?.({ preventScroll: true });
+    }
+  }
+  const archivedNotice = document.querySelector?.(PROJECT_ASSETS_ARCHIVED_NOTICE_SELECTOR);
+  const renderedArchivedNotice = parsed.querySelector?.(PROJECT_ASSETS_ARCHIVED_NOTICE_SELECTOR);
+  if (archivedNotice && !renderedArchivedNotice) archivedNotice.remove?.();
+  else if (!archivedNotice && renderedArchivedNotice) {
+    document.querySelector?.('.page-heading')?.after?.(renderedArchivedNotice);
+  }
+  adoptProjectAssetsRemoveMissingDialog(document, parsed);
+}
+
+function settleProjectAssetsRefresh(state, status, details = {}) {
+  const waiter = state.projectAssetsRefreshWaiter;
+  if (!waiter) return;
+  state.projectAssetsRefreshWaiter = null;
+  waiter.resolve({ status, url: waiter.url.href, ...details });
+}
+
 const PROJECT_ASSETS_DEFAULTS_REFRESH_ERROR_MESSAGE = 'Defaults were saved, but Project Assets could not refresh. Refresh the page to see the saved defaults.';
 
 // An in-place restyle reconciles the presentation, so a Defaults-refresh error
@@ -2012,9 +2397,19 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
   },
   transformParams: omitInheritedProjectAssetsFiltersForCategory,
   onResponseParsed(state, parsed) {
+    const region = projectAssetsLiveEngine.getRegion(state.document);
+    retainProjectAssetsOrderDraft(state, region);
+    if (state.projectAssetsRefreshOwed) {
+      state.projectAssetsSnapshot = captureProjectAssetsTransientState(state, region);
+      state.projectAssetCategoriesNeedSync = true;
+    } else {
+      // A user's filter navigation starts a new selection, as always.
+      clearRetainedAssetSelection(state.document);
+    }
     if (state.projectAssetCategoriesNeedSync) state.projectAssetCategoriesPage = parsed;
     reconcileExternalFilterForm(state, parsed, '#asset-filters');
     reconcileProjectAssetsManualScanContext(state, parsed);
+    if (state.projectAssetsRefreshOwed) reconcileProjectAssetsDependents(state, parsed);
 
     const currentResetForm = state.document?.querySelector?.(PROJECT_ASSETS_RESET_FORM_SELECTOR);
     const nextResetForm = parsed?.querySelector?.(PROJECT_ASSETS_RESET_FORM_SELECTOR);
@@ -2050,12 +2445,21 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
     state.assetNsfwRefreshGeneration = null;
     state.assetNsfwRegionReplaced = false;
     state.assetNsfwEnabled = projectAssetsRenderedNsfwEnabled(region);
+    state.projectAssetsRefreshOwed = false;
+    state.projectAssetsRefreshWaiter = null;
+    state.projectAssetsRefreshRecoveries = [];
+    state.projectAssetsSnapshot = null;
+    state.projectAssetsReconciliation = null;
+    state.projectAssetsOrderDrafts = new Map();
     enhanceDropdowns(state.document);
   },
   onBindRegion(state, region) {
     bindProjectAssetsNsfwForm(state, region);
   },
   onInvalidate(state) {
+    // The caller learns its GET lost. projectAssetsRefreshOwed stays set, so
+    // the next install (rendered after the mutation) reconciles and clears it.
+    settleProjectAssetsRefresh(state, 'superseded');
     if (state.projectAssetsDefaultsRefreshGeneration !== null) {
       state.projectAssetsDefaultsRefreshGeneration = null;
       state.projectAssetsDefaultsRefreshError = null;
@@ -2084,6 +2488,14 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
     if (refreshesNsfw) state.assetNsfwRefreshGeneration = generation;
   },
   onRegionReplaced(state, nextRegion) {
+    const snapshot = state.projectAssetsSnapshot;
+    state.projectAssetsSnapshot = null;
+    if (snapshot) {
+      state.projectAssetsReconciliation = restoreProjectAssetsTransientState(state, nextRegion, snapshot);
+    } else {
+      state.projectAssetsReconciliation = null;
+      restoreProjectAssetsOrderDrafts(state, nextRegion);
+    }
     if (!state.assetNsfwSubmitting) return;
     state.assetNsfwRegionReplaced = true;
     const renderedEnabled = projectAssetsRenderedNsfwEnabled(nextRegion);
@@ -2094,9 +2506,30 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
     const Event = state.window?.Event || globalThis.Event;
     if (typeof Event === 'function') state.document.dispatchEvent?.(new Event(PROJECT_ASSETS_REGION_LOADED_EVENT));
     if (state.projectAssetCategoriesNeedSync && state.projectAssetCategoriesPage) {
-      syncProjectAssetCategoryConsumers(state.document, state.projectAssetCategoriesPage);
+      // The region is installed by now, so a consumer's error is not a failed load.
+      try {
+        syncProjectAssetCategoryConsumers(state.document, state.projectAssetCategoriesPage);
+      } catch { /* its options stay as they were */ }
       state.projectAssetCategoriesPage = null;
       state.projectAssetCategoriesNeedSync = false;
+    }
+    // Each install starts with an empty status, so this ends once none is held.
+    if (state.projectAssetsOrderDrafts.size > 0) {
+      projectAssetsLiveEngine.status(region, 'Your unsaved category order was kept, but it cannot be shown in this view.', null);
+    }
+    if (state.projectAssetsRefreshOwed) {
+      const reconciliation = state.projectAssetsReconciliation;
+      const recoveries = state.projectAssetsRefreshRecoveries;
+      state.projectAssetsRefreshOwed = false;
+      state.projectAssetsRefreshRecoveries = [];
+      state.projectAssetsReconciliation = null;
+      if (state.projectAssetsRefreshWaiter?.generation === generation) {
+        settleProjectAssetsRefresh(state, 'installed', { reconciliation });
+      }
+      // Each refresh that reported 'failed' or 'superseded' learns it is satisfied.
+      recoveries.forEach((recovery) => {
+        if (recovery.generation !== generation) recovery.onRecovered(reconciliation);
+      });
     }
     if (state.projectAssetsDefaultsRefreshGeneration === generation) {
       const notifyRefreshComplete = state.projectAssetsDefaultsRefreshComplete;
@@ -2112,7 +2545,10 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
     state.assetNsfwEnabled = projectAssetsRenderedNsfwEnabled(region);
     updateProjectAssetsNsfwControls(region, state.assetNsfwEnabled);
   },
-  onLoadError(state, generation) {
+  onLoadError(state, generation, error) {
+    if (state.projectAssetsRefreshWaiter?.generation === generation) {
+      settleProjectAssetsRefresh(state, 'failed', { error: error?.message || 'Project Assets refresh failed.' });
+    }
     if (state.projectAssetsDefaultsRefreshGeneration === generation) {
       const notifyRefreshError = state.projectAssetsDefaultsRefreshError;
       state.projectAssetsDefaultsRefreshGeneration = null;
@@ -2122,7 +2558,8 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
       region?.removeAttribute?.('aria-busy');
       projectAssetsLiveEngine.status(region, PROJECT_ASSETS_DEFAULTS_REFRESH_ERROR_MESSAGE, 'error');
       notifyRefreshError?.();
-      return true;
+      // An owed mutation refresh keeps the shared GET-only Retry.
+      return !state.projectAssetsRefreshOwed;
     }
     if (state.assetNsfwRefreshGeneration !== generation) return false;
     state.assetNsfwRefreshGeneration = null;
@@ -2133,11 +2570,13 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
     updateProjectAssetsNsfwControls(region, state.assetNsfwEnabled);
     region?.removeAttribute?.('aria-busy');
     projectAssetsLiveEngine.status(region, 'NSFW filter changed, but Project Assets could not refresh. Refresh the page to see updated previews.', 'error');
-    return true;
+    return !state.projectAssetsRefreshOwed;
   },
   isCurrentUrl(url) {
     return /^\/projects\/[1-9]\d*\/assets$/.test(url.pathname);
   },
+  responseMatches: sameResponsePath,
+  loadFailureMessage: liveFilterFailureMessage('Project Assets'),
 });
 
 export function enhanceProjectAssetsLiveFiltering(scope = globalThis.document) {
@@ -2154,35 +2593,76 @@ export function enhanceProjectAssetsLiveFiltering(scope = globalThis.document) {
   return enhanced;
 }
 
-/**
- * Reload the Project Assets live region using its active filter form. This is
- * intentionally shared with non-browser callers that mutate project files,
- * so the current query and presentation state remain authoritative.
- */
-export function refreshProjectAssetsLiveRegion(scope = globalThis.document) {
+function startProjectAssetsMutationRefresh(scope, onRecovered = null) {
   const document = liveRegionDocument(scope);
   const region = projectAssetsLiveEngine.getRegion(document);
-  if (!document || !region) return false;
+  if (!document || !region) return null;
 
   projectAssetsLiveEngine.enhance(document);
   const state = document.__creatorCrateProjectAssetsLiveFiltering;
   const form = projectAssetsLiveEngine.getForm(region);
-  if (!state || !form || !projectAssetsLiveEngine.capabilities(state.window)) return false;
+  if (!state || !form || !projectAssetsLiveEngine.capabilities(state.window)) return null;
 
+  // The refresh keeps the latest intended view: a debounced filter still owes
+  // its navigation, an in-flight filter keeps its history mode, and load()
+  // promotes a failed filter's. An idle page keeps its view and history entry.
   let url;
+  let historyMode = 'none';
   try {
+    if (state.timer) {
+      url = projectAssetsLiveEngine.url(form, state.window);
+      historyMode = 'push';
+    } else if ((state.controller || state.loadFailure) && state.requestedUrl) {
+      url = new URL(state.requestedUrl.href, state.window.location?.href || state.requestedUrl.href);
+      if (state.controller) historyMode = state.requestedHistoryMode || 'none';
+    } else {
+      url = projectAssetsLiveEngine.url(form, state.window, { preservePage: true });
+    }
     if (state.timer) state.window.clearTimeout?.(state.timer);
     state.timer = null;
-    url = state.controller && state.requestedUrl
-      ? new state.window.URL(state.requestedUrl.href, state.window.location?.href || state.requestedUrl.href)
-      : projectAssetsLiveEngine.url(form, state.window, { preservePage: true });
   } catch {
-    return false;
+    return null;
   }
 
   projectAssetsLiveEngine.invalidate(state);
-  projectAssetsLiveEngine.load(state, url, 'none', form);
-  return true;
+  state.projectAssetsRefreshOwed = true;
+  if (typeof onRecovered === 'function') {
+    state.projectAssetsRefreshRecoveries.push({ generation: state.generation, onRecovered });
+  }
+  const completion = new Promise((resolve) => {
+    state.projectAssetsRefreshWaiter = { generation: state.generation, url, resolve };
+  });
+  projectAssetsLiveEngine.load(state, url, historyMode, form);
+  return completion;
+}
+
+/**
+ * Reload the Project Assets live region using its active filter form. This is
+ * intentionally shared with non-browser callers that mutate project files,
+ * so the current query and presentation state remain authoritative.
+ * Returns whether the GET started, never whether content installed; a caller
+ * that reports synchronization uses refreshProjectAssetsAfterMutation.
+ */
+export function refreshProjectAssetsLiveRegion(scope = globalThis.document) {
+  return startProjectAssetsMutationRefresh(scope) !== null;
+}
+
+/**
+ * Re-read Project Assets after an acknowledged mutation, keeping the user's
+ * transient state by asset identity. Only ever issues GETs. Resolves once with
+ * { status, url, ... }, never rejects:
+ * - 'installed': this GET's region is installed, state reconciled, controls
+ *   bound; { reconciliation: { selection, order } } says what survived.
+ * - 'failed': the page is unchanged and shows the shared GET-only Retry.
+ * - 'superseded': a newer load took over. The next load to install satisfies
+ *   the refresh and reconciles the same state; a failure there shows Retry.
+ * - 'unavailable': no refresh could start on this page.
+ * onRecovered(reconciliation) runs if a later Retry or newer load satisfies a
+ * refresh that had reported 'failed' or 'superseded'.
+ */
+export function refreshProjectAssetsAfterMutation(scope = globalThis.document, { onRecovered = null } = {}) {
+  return startProjectAssetsMutationRefresh(scope, onRecovered)
+    || Promise.resolve({ status: 'unavailable', url: null });
 }
 
 export function isProjectAssetsLoadInFlight(scope = globalThis.document) {
@@ -2284,7 +2764,7 @@ export function refreshProjectsLiveRegion(
 
   // A null destination keeps the Projects view as shown, taking over a
   // pending filter navigation rather than reverting it.
-  const current = destination === null && state.controller && state.requestedUrl
+  const current = destination === null && (state.controller || state.loadFailure) && state.requestedUrl
     ? state.requestedUrl.href
     : destination ?? state.window.location?.href;
   let url;
@@ -2345,7 +2825,7 @@ export function refreshReleasesLiveRegion(
 
   // A null destination keeps the Releases view as shown, taking over a
   // pending filter navigation rather than reverting it.
-  const current = destination === null && state.controller && state.requestedUrl
+  const current = destination === null && (state.controller || state.loadFailure) && state.requestedUrl
     ? state.requestedUrl.href
     : destination ?? state.window.location?.href;
   let url;
@@ -2430,7 +2910,7 @@ function submitAssetLibraryNsfwToggle(state, form, event) {
   try {
     if (state.timer) state.window.clearTimeout?.(state.timer);
     state.timer = null;
-    refreshUrl = state.controller && state.requestedUrl
+    refreshUrl = (state.controller || state.loadFailure) && state.requestedUrl
       ? new URL(state.requestedUrl.href, state.window.location?.href || state.requestedUrl.href)
       : assetLibraryLiveEngine.url(
         assetLibraryLiveEngine.getForm(assetLibraryLiveEngine.getRegion(state.document)),
@@ -2682,6 +3162,7 @@ const assetLibraryLiveEngine = createLiveRegionEngine({
   isCurrentUrl(url) {
     return url.pathname === '/asset-viewer';
   },
+  loadFailureMessage: liveFilterFailureMessage('Asset Viewer'),
 });
 
 export function enhanceAssetLibraryLiveFiltering(scope = globalThis.document) {

@@ -657,6 +657,11 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
   // POST /releases/:id/archive — Archive a release
   router.post('/:id/archive', (req, res, next) => {
     const id = parseId(req.params.id);
+    // The Edit Release dialog archives in place (Accept: application/json);
+    // any other request keeps the native redirect and error pages below.
+    if (wantsJson(req)) {
+      return handleReleaseArchiveJson(res, releaseService, projectService, id);
+    }
     if (id === null) {
       return next(createNotFound());
     }
@@ -774,6 +779,11 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
   // POST /releases/:id/delete — Permanently delete a release
   router.post('/:id/delete', (req, res, next) => {
     const id = parseId(req.params.id);
+    // The Edit Release dialog deletes in place (Accept: application/json);
+    // any other request keeps the native redirect and error pages below.
+    if (wantsJson(req)) {
+      return handleReleaseDeleteJson(res, releaseService, projectService, id);
+    }
     if (id === null) {
       return next(createNotFound());
     }
@@ -1970,6 +1980,226 @@ function sendReleaseEditJsonError(res, status, code, message, extra = {}) {
 
 function sendReleaseNotFoundJson(res) {
   return sendReleaseEditJsonError(res, 404, 'RELEASE_NOT_FOUND', 'Release not found.');
+}
+
+// The confirmed archive state of a release record, for the Archive JSON
+// answers; nothing beyond what the record itself holds.
+function presentArchivedRelease(release) {
+  return {
+    id: release.id,
+    projectId: release.project_id,
+    title: release.title,
+    url: `/releases/${release.id}`,
+    archived: Boolean(release.archived_at),
+    archivedAt: release.archived_at ?? null,
+    published: release.published_date != null,
+    publishedDate: release.published_date ?? null,
+    plannedDate: release.planned_date ?? null,
+  };
+}
+
+/**
+ * WP11B-1: the enhanced Release Archive (Edit Release dialog). The service,
+ * its rules (an existing release, not already archived, in a project that is
+ * not archived) and its activity log are unchanged; this only says what
+ * happened:
+ * - 200 outcome 'archived': this request archived the release.
+ * - 409 RELEASE_ALREADY_ARCHIVED, outcome 'refused': it was archived before
+ *   this request (the service refuses a second archive); nothing changed.
+ * - 409 PROJECT_ARCHIVED, outcome 'refused': the parent project is archived,
+ *   so the release is read-only; nothing changed.
+ * - 404 RELEASE_NOT_FOUND, outcome 'refused': no such release.
+ * - 500 RELEASE_ARCHIVE_FAILED, outcome 'failed': the service failed and the
+ *   record, read again in the same synchronous request, is still active, so
+ *   nothing was archived.
+ * - 500 RELEASE_ARCHIVE_UNKNOWN, outcome 'unknown': the service failed and
+ *   the record could not be shown to be unchanged.
+ * Messages never carry backend detail.
+ */
+function handleReleaseArchiveJson(res, releaseService, projectService, id) {
+  res.set('Cache-Control', 'no-store');
+  res.vary('Accept');
+  const refuse = (status, code, message, extra = {}) => sendReleaseEditJsonError(res, status, code, message, {
+    outcome: 'refused', ...extra,
+  });
+  if (id === null) return refuse(404, 'RELEASE_NOT_FOUND', 'Release not found.');
+
+  let existing;
+  let project;
+  try {
+    existing = releaseService.findRelease(id);
+    project = existing ? projectService.findById(existing.project_id) : null;
+  } catch {
+    // Nothing has been attempted yet.
+    return sendReleaseEditJsonError(res, 500, 'RELEASE_ARCHIVE_FAILED',
+      'Release archive failed. Nothing was archived. Please try again.', { outcome: 'failed' });
+  }
+  if (!existing) return refuse(404, 'RELEASE_NOT_FOUND', 'Release not found.');
+  if (existing.archived_at) {
+    return refuse(409, 'RELEASE_ALREADY_ARCHIVED', 'This release was already archived. Nothing was changed.', {
+      releaseId: existing.id,
+      projectId: existing.project_id,
+      release: presentArchivedRelease(existing),
+    });
+  }
+  if (isProjectArchived(project)) {
+    return refuse(409, 'PROJECT_ARCHIVED',
+      'The parent project is archived, so this release is read-only. Nothing was archived.', {
+        releaseId: existing.id,
+        projectId: existing.project_id,
+      });
+  }
+
+  try {
+    const archived = releaseService.archiveRelease(id);
+    if (!archived?.archived_at) throw new Error('Archive returned no archived record.');
+    return res.json({
+      status: 'success',
+      outcome: 'archived',
+      message: `Release “${archived.title}” archived.`,
+      releaseId: archived.id,
+      projectId: archived.project_id,
+      release: presentArchivedRelease(archived),
+      urls: {
+        release: `/releases/${archived.id}`,
+        releases: '/releases',
+        project: `/projects/${archived.project_id}`,
+      },
+      refreshRequired: true,
+    });
+  } catch (err) {
+    // The service re-reads the release itself, so its own refusals still say
+    // exactly what held.
+    if (err instanceof ReleaseNotFoundError) return refuse(404, 'RELEASE_NOT_FOUND', 'Release not found.');
+    if (err instanceof ReleaseParentArchivedError) {
+      return refuse(409, 'PROJECT_ARCHIVED',
+        'The parent project is archived, so this release is read-only. Nothing was archived.', {
+          releaseId: id, projectId: existing.project_id,
+        });
+    }
+    // The service and its database are synchronous, so no other request ran
+    // between its failure and this read: a still-active record proves that
+    // nothing was archived. Anything else is not proof either way.
+    let current = null;
+    try { current = releaseService.findRelease(id); } catch { current = null; }
+    if (err instanceof ReleaseArchivedError && current?.archived_at) {
+      return refuse(409, 'RELEASE_ALREADY_ARCHIVED', 'This release was already archived. Nothing was changed.', {
+        releaseId: current.id, projectId: current.project_id, release: presentArchivedRelease(current),
+      });
+    }
+    if (current && !current.archived_at) {
+      return sendReleaseEditJsonError(res, 500, 'RELEASE_ARCHIVE_FAILED',
+        'Release archive failed. Nothing was archived. Please try again.', { outcome: 'failed', releaseId: current.id });
+    }
+    return sendReleaseEditJsonError(res, 500, 'RELEASE_ARCHIVE_UNKNOWN',
+      'Could not confirm whether the release was archived.', { outcome: 'unknown', releaseId: id });
+  }
+}
+
+// Where the native Delete redirects, and the only destination the enhanced
+// Delete reports.
+const RELEASE_DELETE_DESTINATION = '/releases';
+
+/**
+ * WP11B-2: the enhanced Release Delete (Edit Release dialog). The service,
+ * its rules (an existing release, not archived, in a project that is not
+ * archived; a published release may be deleted) and its activity log are
+ * unchanged. Delete is database-only: the release row goes, and the
+ * existing ON DELETE CASCADE foreign keys remove its asset selections, social
+ * preparation and notification rows; project assets and files are untouched.
+ * This only says what happened:
+ * - 200 outcome 'deleted': this request deleted the release.
+ * - 404 RELEASE_NOT_FOUND, outcome 'refused': no such release (never
+ *   existed, or already deleted); this request deleted nothing.
+ * - 409 RELEASE_ARCHIVED, outcome 'refused': archived releases cannot be
+ *   deleted; nothing changed.
+ * - 409 PROJECT_ARCHIVED, outcome 'refused': the parent project is archived,
+ *   so the release is read-only; nothing changed.
+ * - 500 RELEASE_DELETE_FAILED, outcome 'failed': the service failed and the
+ *   release, read again in the same synchronous request, still exists, so
+ *   nothing was deleted (the delete is a single statement).
+ * - 500 RELEASE_DELETE_UNKNOWN, outcome 'unknown': the service failed and the
+ *   release could not be shown to still exist.
+ * Messages never carry backend detail.
+ */
+function handleReleaseDeleteJson(res, releaseService, projectService, id) {
+  res.set('Cache-Control', 'no-store');
+  res.vary('Accept');
+  const refuse = (status, code, message, extra = {}) => sendReleaseEditJsonError(res, status, code, message, {
+    outcome: 'refused', ...extra,
+  });
+  const notFound = () => refuse(404, 'RELEASE_NOT_FOUND', 'Release not found. Nothing was deleted.');
+  const archivedRelease = (release) => refuse(409, 'RELEASE_ARCHIVED',
+    'Archived releases cannot be deleted. Nothing was deleted.', {
+      releaseId: release.id, projectId: release.project_id,
+    });
+  const archivedProject = (release) => refuse(409, 'PROJECT_ARCHIVED',
+    'The parent project is archived, so this release is read-only. Nothing was deleted.', {
+      releaseId: release.id, projectId: release.project_id,
+    });
+  if (id === null) return notFound();
+
+  let existing;
+  let project;
+  try {
+    existing = releaseService.findRelease(id);
+    project = existing ? projectService.findById(existing.project_id) : null;
+  } catch {
+    // Nothing has been attempted yet.
+    return sendReleaseEditJsonError(res, 500, 'RELEASE_DELETE_FAILED',
+      'Release delete failed. Nothing was deleted. Please try again.', { outcome: 'failed' });
+  }
+  if (!existing) return notFound();
+  // The service checks the project first; so does this answer.
+  if (isProjectArchived(project)) return archivedProject(existing);
+  if (existing.archived_at) return archivedRelease(existing);
+
+  let deleted;
+  try {
+    deleted = releaseService.deleteRelease(id);
+  } catch (err) {
+    // The service re-reads the release itself, so its own refusals still say
+    // exactly what held.
+    if (err instanceof ReleaseNotFoundError) return notFound();
+    if (err instanceof ReleaseParentArchivedError) return archivedProject(existing);
+    if (err instanceof ReleaseArchivedError) return archivedRelease(existing);
+    // The service and its database are synchronous, so no other request ran
+    // between its failure and this read: a release that still exists proves
+    // nothing was deleted. Anything else is not proof either way.
+    let current = null;
+    try { current = releaseService.findRelease(id); } catch { current = null; }
+    if (current) {
+      return sendReleaseEditJsonError(res, 500, 'RELEASE_DELETE_FAILED',
+        'Release delete failed. Nothing was deleted. Please try again.', { outcome: 'failed', releaseId: current.id });
+    }
+    return sendReleaseEditJsonError(res, 500, 'RELEASE_DELETE_UNKNOWN',
+      'Could not confirm whether the release was deleted.', { outcome: 'unknown', releaseId: id });
+  }
+  // No row removed: this request deleted nothing. Said as a refusal only when
+  // the release is shown to be gone (it went before the statement ran).
+  if (!deleted) {
+    let current = null;
+    let readable = true;
+    try { current = releaseService.findRelease(id); } catch { readable = false; }
+    if (readable && !current) return notFound();
+    return sendReleaseEditJsonError(res, 500, 'RELEASE_DELETE_FAILED',
+      'Release delete failed. Nothing was deleted. Please try again.', { outcome: 'failed', releaseId: id });
+  }
+  return res.json({
+    status: 'success',
+    outcome: 'deleted',
+    message: `Release “${existing.title}” deleted.`,
+    releaseId: existing.id,
+    projectId: existing.project_id,
+    release: {
+      id: existing.id,
+      projectId: existing.project_id,
+      title: existing.title,
+      deleted: true,
+    },
+    redirect: RELEASE_DELETE_DESTINATION,
+    refreshRequired: true,
+  });
 }
 
 // HTML form posts no longer edit releases (there is no page-level Edit form

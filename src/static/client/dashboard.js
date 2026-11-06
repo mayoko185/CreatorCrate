@@ -12,8 +12,8 @@ import {
 import { createLiveRegionEngine } from './live-regions.js';
 import { DATE_PICKER_SELECT_EVENT, enhanceDatePickers } from './pickers.js';
 import { enhancePreviewMedia } from './preview.js';
-import { RELEASE_EDIT_SAVED_EVENT } from './release-edit-dialog.js';
-import { PROJECT_EDIT_SAVED_EVENT } from './project-edit-dialog.js';
+import { RELEASE_ARCHIVED_EVENT, RELEASE_DELETED_EVENT, RELEASE_EDIT_SAVED_EVENT } from './release-edit-dialog.js';
+import { PROJECT_ARCHIVED_EVENT, PROJECT_DELETED_EVENT, PROJECT_EDIT_SAVED_EVENT } from './project-edit-dialog.js';
 import {
   openReleasePublishDialog,
   RELEASE_PUBLISH_DIALOG_ID,
@@ -1270,6 +1270,7 @@ const RECOVERY_MESSAGES = Object.freeze({
   paused: 'Scheduling is paused until the dashboard refreshes.',
   publishingPaused: 'Scheduling and publishing are paused until the dashboard refreshes.',
   stillFailing: 'Try again, or reload the page.',
+  observedArchived: 'This release or its project is archived now, so the release is read-only. This page did not confirm archiving it.',
   companionUnverified: 'We couldn’t check whether this action is still available, so it’s turned off for now.',
 });
 
@@ -1334,6 +1335,26 @@ function reconciledMessage(followUp, region) {
   return `${lead} ${name} isn’t listed on the dashboard right now. Open the release to check its schedule.`;
 }
 
+/**
+ * What a release-archived event (release-archive.js, release-delete.js) lets
+ * the Dashboard say. The event name is no evidence of an Archive: only an
+ * acknowledged Archive (confirmed: true, outcome 'archived') is reported as
+ * archived. A release found gone stays 'missing'. Anything else (an Archive
+ * refused because it already was, a Delete refused because the release or
+ * its project is archived, a Check again that observed it) is 'observed' and
+ * keeps the controller's own message.
+ */
+export function releaseArchivedAttribution(detail = {}) {
+  if (detail?.outcome === 'missing') return { archived: 'missing', message: '' };
+  if (detail?.confirmed === true && detail.outcome === 'archived') return { archived: true, message: '' };
+  return { archived: 'observed', message: typeof detail?.message === 'string' ? detail.message : '' };
+}
+
+/** The blocked-recovery message for a follow-up whose refresh did not install. */
+export function dashboardRecoveryMessage(followUp, outcome) {
+  return blockedMessage(followUp, outcome);
+}
+
 function blockedMessage(followUp, outcome) {
   const problem = refreshProblem(outcome);
   // A failed check says nothing about what the helper itself did.
@@ -1350,7 +1371,15 @@ function blockedMessage(followUp, outcome) {
   }
   if (followUp.kind === 'edited') {
     const record = followUp.record === 'project' ? 'project' : 'release';
-    const outcome = followUp.created ? 'created' : 'saved';
+    if (followUp.archived === 'observed') {
+      // Nothing here archived it: report what the controller observed.
+      const lead = followUp.message || RECOVERY_MESSAGES.observedArchived;
+      const problemSentence = `${problem.charAt(0).toUpperCase()}${problem.slice(1)}`;
+      return `${lead} ${problemSentence}, so counts and lists may be out of date. ${RECOVERY_MESSAGES.paused}`;
+    }
+    const outcome = followUp.deleted ? (followUp.deleted === 'missing' ? 'not found' : 'deleted')
+      : followUp.archived ? (followUp.archived === 'missing' ? 'not found' : 'archived')
+        : (followUp.created ? 'created' : 'saved');
     return `The ${record} was ${outcome}, but ${problem}, so counts and lists may be out of date. ${RECOVERY_MESSAGES.paused}`;
   }
   if (followUp.kind === 'saved') {
@@ -1520,13 +1549,21 @@ function createScheduleRecovery(doc, ui) {
     // which already reflects the saved record and reports its own outcome. A
     // refresh that settles the dashboard also settles a pending recovery,
     // including one this refresh interrupted.
-    async editSaved(detail, record = 'release', { created = false } = {}) {
+    // An archived project (project-archive.js) leaves the active Projects
+    // table and its releases leave the release lists; the same GET-only
+    // refresh shows that, and the same recovery holds if it fails.
+    // A deleted project (project-delete.js) leaves them the same way.
+    // An archived state this page only observed (archived: 'observed') carries
+    // the controller's message, never an Archive this page made.
+    async editSaved(detail, record = 'release', {
+      created = false, archived = false, deleted = false, message = '',
+    } = {}) {
       const releaseId = detail?.releaseId ?? null;
       const outcome = await refreshDashboard(doc, { releaseId });
       if (outcome.status === 'refreshed') {
         if (pending) settle(pending.followUp);
       } else if (outcome.status !== 'superseded') {
-        block({ kind: 'edited', record, created, releaseId }, outcome);
+        block({ kind: 'edited', record, created, archived, deleted, message, releaseId }, outcome);
       }
     },
     // A settled Review & Publish refreshes the same way (GET only). Until a
@@ -1941,7 +1978,34 @@ export function enhanceDashboardScheduling(scope = globalThis.document, { reques
     if (!isEnhancementBound(doc.documentElement, EDIT_SAVED_BOUND_KEY)) {
       markEnhancementBound(doc.documentElement, EDIT_SAVED_BOUND_KEY);
       doc.addEventListener(RELEASE_EDIT_SAVED_EVENT, (event) => { void recovery.editSaved(event.detail); });
+      // An archived release (release-archive.js) leaves the release lists
+      // through the same GET-only refresh and the same recovery if it fails.
+      // Only an Archive this page confirmed is reported as archived; an event
+      // that only observed an archived release or project (a refused Delete
+      // or Archive, a Check again) keeps the controller's own message.
+      doc.addEventListener(RELEASE_ARCHIVED_EVENT, (event) => {
+        const detail = event.detail ?? {};
+        void recovery.editSaved(detail, 'release', releaseArchivedAttribution(detail));
+      });
+      // A deleted release (release-delete.js) leaves them the same way; one
+      // this page only found gone is reported as not found, never deleted.
+      doc.addEventListener(RELEASE_DELETED_EVENT, (event) => {
+        void recovery.editSaved(event.detail, 'release', {
+          deleted: event.detail?.confirmed === true ? true : 'missing',
+        });
+      });
       doc.addEventListener(PROJECT_EDIT_SAVED_EVENT, (event) => { void recovery.editSaved(event.detail, 'project'); });
+      doc.addEventListener(PROJECT_ARCHIVED_EVENT, (event) => {
+        void recovery.editSaved({ releaseId: null }, 'project', {
+          archived: event.detail?.outcome === 'missing' ? 'missing' : true,
+        });
+      });
+      doc.addEventListener(PROJECT_DELETED_EVENT, (event) => {
+        const outcome = event.detail?.outcome;
+        void recovery.editSaved({ releaseId: null }, 'project', {
+          deleted: outcome === 'missing' || outcome === 'observed-missing' ? 'missing' : true,
+        });
+      });
       // A New Release created from the Dashboard dialog refreshes the same
       // way; preventDefault tells the dialog the refresh is handled here.
       doc.addEventListener(DASHBOARD_RELEASE_CREATED_EVENT, (event) => {

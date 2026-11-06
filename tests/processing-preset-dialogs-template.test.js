@@ -355,6 +355,8 @@ describe('Processing dialog preset-management markup', () => {
       expect(result).toMatch(/data-processing-result hidden/);
       expect(result).toContain('data-processing-result-body');
       expect(result).toMatch(/<button type="button" class="button button-small button-secondary" data-processing-refresh>Refresh assets<\/button>/);
+      // WP12B: Refresh assets reports in its own local status, not by reloading.
+      expect(result).toMatch(/<p class="help-text processing-refresh-status" data-processing-refresh-status role="status" aria-live="polite" hidden><\/p>/);
     }
   });
 

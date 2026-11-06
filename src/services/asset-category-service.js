@@ -25,6 +25,27 @@ export class AssetCategoryNotFoundError extends Error {
   }
 }
 
+// WP11C-F7: the category no longer holds the saved details a details save was
+// based on (another page saved newer details first). Nothing was written.
+// `current` is the row as it is now.
+export class AssetCategoryStaleError extends Error {
+  constructor(id, current) {
+    super(`Asset category ${id} changed since its details were reviewed`);
+    this.name = 'AssetCategoryStaleError';
+    this.code = 'CATEGORY_DETAILS_STALE';
+    this.status = 409;
+    this.current = current;
+  }
+}
+
+function assertExpectedDetails(expected) {
+  if (expected === null || typeof expected !== 'object' || Array.isArray(expected)
+    || typeof expected.displayName !== 'string' || typeof expected.directorySlug !== 'string') {
+    throw new AssetCategoryValidationError({ expected: 'The reviewed saved details must be a display name and a directory slug.' });
+  }
+  return { displayName: expected.displayName, directorySlug: expected.directorySlug };
+}
+
 const REORDER_VALIDATION_CODES = new Set([
   'INVALID_INPUT',
   'INVALID_SEQUENCE_LENGTH',
@@ -93,12 +114,26 @@ export function createAssetCategoryService(repository) {
       return repository.addDefault({ displayName, directorySlug, displayOrder, enabled });
     },
 
+    // WP11C-F7: `input.expected` ({ displayName, directorySlug }) is the
+    // saved details the request was based on. With it, the write happens only
+    // while the row still holds them, in one conditional statement; otherwise
+    // AssetCategoryStaleError (row changed) or AssetCategoryNotFoundError (row
+    // gone) and nothing is written. The Settings HTTP route always supplies
+    // it; without it (internal callers) the write is unconditional as before.
     editDefault(id, input) {
       assertPositiveIntegerId(id, 'id');
       assertPlainObject(input, 'input');
       const { displayName, directorySlug } = validateCategoryInput(input);
-      requireDefault(id);
-      return repository.updateDefaultNameSlug(id, { displayName, directorySlug });
+      if (input.expected === undefined) {
+        requireDefault(id);
+        return repository.updateDefaultNameSlug(id, { displayName, directorySlug });
+      }
+      const expected = assertExpectedDetails(input.expected);
+      const updated = repository.updateDefaultNameSlugIfUnchanged(id, { displayName, directorySlug }, expected);
+      if (updated) return updated;
+      const current = repository.findDefaultById(id);
+      if (!current) throw new AssetCategoryNotFoundError(id);
+      throw new AssetCategoryStaleError(id, current);
     },
 
     setDefaultEnabled(id, enabled) {

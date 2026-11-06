@@ -48,6 +48,27 @@ export class ProjectNotFoundError extends Error {
   }
 }
 
+/**
+ * A Project Delete failure whose filesystem/database state the service
+ * itself established (WP11A-2). The message is the service's existing one;
+ * outcome names that state, so a caller never has to infer it from text:
+ * - 'not_changed': nothing was moved and nothing was deleted.
+ * - 'restored': the folder was staged, the database deletion rolled back,
+ *   and the folder was put back where it was.
+ * - 'recovery_required': the database deletion did not commit, but the
+ *   staged folder could not be put back; it needs recovery.
+ * - 'cleanup_incomplete': the database deletion committed (the project is
+ *   gone), but the staged folder could not be removed; it needs recovery.
+ */
+export class ProjectDeletionError extends Error {
+  constructor(message, outcome) {
+    super(message);
+    this.name = 'ProjectDeletionError';
+    this.outcome = outcome;
+    this.databaseDeleted = outcome === 'cleanup_incomplete';
+  }
+}
+
 const TITLE_MIN = 1;
 const TITLE_MAX = 200;
 const DESCRIPTION_MAX = 4000;
@@ -804,7 +825,10 @@ export function createProjectService(
             removeQuarantinedProjectDir(staged);
           } catch (cleanupErr) {
             logDeletionCleanupProblem(id, cleanupErr.message);
-            throw new Error('Project was deleted, but filesystem cleanup requires recovery.');
+            throw new ProjectDeletionError(
+              'Project was deleted, but filesystem cleanup requires recovery.',
+              'cleanup_incomplete',
+            );
           }
           staged = null;
         }
@@ -817,7 +841,10 @@ export function createProjectService(
 
         if (staged && !restoreQuarantinedProjectDir(staged)) {
           logDeletionCleanupProblem(id, 'project directory could not be restored after deletion failure');
-          throw new Error('Project deletion failed and filesystem recovery is required.');
+          throw new ProjectDeletionError(
+            'Project deletion failed and filesystem recovery is required.',
+            'recovery_required',
+          );
         }
 
         if (err instanceof ProjectNotFoundError) {
@@ -828,7 +855,14 @@ export function createProjectService(
           `[CreatorCrate] Project deletion failed for project ${id}: ${err.message}`
         );
         if (err instanceof ProjectOwnershipError) throw err;
-        throw new Error('Project deletion failed. Please try again.');
+        // Staging itself reported a folder it could not put back.
+        if (err instanceof ProjectDeletionError) throw err;
+        // Either nothing was staged (staging failed before any move), or the
+        // staged folder was put back above and the transaction rolled back.
+        throw new ProjectDeletionError(
+          'Project deletion failed. Please try again.',
+          staged ? 'restored' : 'not_changed',
+        );
       }
     },
 
@@ -1198,7 +1232,7 @@ function quarantineProjectDirForDeletion(project, { ownershipVerifier, ownership
   } catch (err) {
     if (!restoreQuarantinedProjectDir(staged)) {
       logDeletionCleanupProblem(project.id, 'project directory could not be restored after verification failure');
-      throw new Error('Project directory cleanup requires recovery.');
+      throw new ProjectDeletionError('Project directory cleanup requires recovery.', 'recovery_required');
     }
     throw err;
   }

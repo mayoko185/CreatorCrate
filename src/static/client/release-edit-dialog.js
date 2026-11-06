@@ -15,6 +15,15 @@ export const RELEASE_EDIT_DIALOG_ID = 'release-edit-dialog';
 // Hosts refresh their own views from it; a refresh failure is the host's to
 // report, since the release itself is already saved.
 export const RELEASE_EDIT_SAVED_EVENT = 'release-edit-saved';
+// Dispatched on the document by release-archive.js once a release is known to
+// be archived (detail: { releaseId, projectId, release, message, outcome,
+// confirmed }). Hosts re-read their own views from it with a GET only.
+export const RELEASE_ARCHIVED_EVENT = 'release-archived';
+// Dispatched on the document by release-delete.js once a release is known to
+// be gone (detail: { releaseId, projectId, title, message, outcome,
+// confirmed, hostRetired }). Surviving hosts re-read their own views from it
+// with a GET only; Release Detail of that release is retired instead.
+export const RELEASE_DELETED_EVENT = 'release-deleted';
 
 const EDIT_TRIGGER_SELECTOR = '[data-release-edit-id]';
 const DEEP_LINK_ATTRIBUTE = 'data-release-edit-deep-link';
@@ -374,10 +383,14 @@ function createController(document, dialog) {
       if (!response.ok || payload?.status !== 'success'
         || String(payload.release?.id) !== releaseId || !payload.actions?.update) {
         setStatus(dialog, payload?.message || LOAD_FAILURE_MESSAGE, true);
+        // An action holding state for this release (Archive) may read the
+        // authoritative refusal; the form stays unloaded either way.
+        controller.onLoadRefused?.(releaseId, response.status, payload);
         return;
       }
       hydrate(payload);
       setReady(true);
+      controller.onLoaded?.(releaseId);
     }).catch(() => {
       if (generation !== controller.generation || !dialog.open) return;
       controller.abort = null;

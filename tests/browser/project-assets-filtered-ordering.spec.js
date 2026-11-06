@@ -235,27 +235,33 @@ test('grid: filtered selection enables Auto Rename, drag merges hidden slots, Pr
   };
   const { dialog: firstDialog } = await expectPreview();
 
-  // 6. Cancel returns to the same filtered category in Grid; nothing renamed.
-  await Promise.all([
-    page.waitForURL((url) => url.pathname === `/projects/${f.id}/assets` && url.searchParams.has('extension')),
-    firstDialog.getByRole('link', { name: 'Cancel', exact: true }).click(),
-  ]);
+  // 6. Cancel closes the review in place: same document and filtered Grid URL,
+  // the selection and the unsaved drag order survive, nothing is renamed.
+  await page.evaluate(() => { window.__sameDocument = true; });
+  const filteredUrl = page.url();
+  await firstDialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(firstDialog).toHaveCount(0);
+  await expect(h.submit).toBeFocused();
+  expect(page.url()).toBe(filteredUrl);
+  expect(await page.evaluate(() => window.__sameDocument)).toBe(true);
   let url = new URL(page.url());
   expect(url.searchParams.get('category')).toBe(String(f.categoryId));
   expect(url.searchParams.getAll('extension')).toEqual(['png']);
   expect(url.searchParams.has('inheritedFilterDefaults')).toBe(false);
   expect(url.searchParams.get('view') ?? 'grid').toBe('grid');
   await expect(h.surface).toHaveAttribute('data-auto-rename-view', 'grid');
-  expect(await h.renderedNames()).toEqual(visible);
+  expect(await h.renderedNames()).toEqual(['07-draft.png', '01-draft.png', '03-draft.png', '06-ref.png']);
+  expect((await h.selectedNames()).sort()).toEqual(['01-draft.png', '03-draft.png', '07-draft.png']);
+  expect(await h.baseNames()).toEqual(FILES);
   expect(f.files()).toEqual([...FILES].sort());
 
-  // 5. Apply a fresh signed Preview.
-  await selectAndDrag();
+  // 5. Apply a fresh signed Preview of the kept state, without navigating.
   const { dialog, proposed } = await expectPreview();
-  await Promise.all([
-    page.waitForURL((u) => u.searchParams.get('notice') === 'auto-rename-success'),
-    dialog.getByRole('button', { name: 'Apply Auto Rename', exact: true }).click(),
-  ]);
+  await dialog.getByRole('button', { name: 'Apply Auto Rename', exact: true }).click();
+  await expect(page.locator('[data-dialog-feedback]')).toHaveText('Renamed 3 assets. Skipped 0 unchanged assets.');
+  await expect(dialog).toHaveCount(0);
+  expect(page.url()).toBe(filteredUrl);
+  expect(await page.evaluate(() => window.__sameDocument)).toBe(true);
   url = new URL(page.url());
   expect(url.searchParams.get('category')).toBe(String(f.categoryId));
   expect(url.searchParams.getAll('extension')).toEqual(['png']);
@@ -341,17 +347,18 @@ test('list: keyboard reorder merges hidden slots, Escape restores, Apply keeps s
   expect(proposed[0]).toMatch(/-wip-01\.png$/);
   expect(proposed[1]).toMatch(/-wip-02\.png$/);
   expect(proposed[2]).toMatch(/-wip-03\.jpg$/);
-  const cancelHref = new URL(await dialog.getByRole('link', { name: 'Cancel', exact: true }).getAttribute('href'), baseURL);
-  expect(cancelHref.searchParams.get('search')).toBe('draft');
-  expect(cancelHref.searchParams.get('view')).toBe('list');
-  expect(cancelHref.searchParams.get('category')).toBe(String(f.categoryId));
+  await expect(dialog.getByRole('button', { name: 'Cancel', exact: true })).toBeVisible();
 
-  // 5/6. Apply redirects back to the searched List view; renamed assets no
-  // longer match "draft", so only the unselected 03-draft.png remains visible.
-  await Promise.all([
-    page.waitForURL((u) => u.searchParams.get('notice') === 'auto-rename-success'),
-    dialog.getByRole('button', { name: 'Apply Auto Rename', exact: true }).click(),
-  ]);
+  // 5/6. Apply stays on the searched List view and refreshes it in place;
+  // renamed assets no longer match "draft", so only the unselected
+  // 03-draft.png remains visible.
+  await page.evaluate(() => { window.__sameDocument = true; });
+  const searchedUrl = page.url();
+  await dialog.getByRole('button', { name: 'Apply Auto Rename', exact: true }).click();
+  await expect(page.locator('[data-dialog-feedback]')).toHaveText('Renamed 3 assets. Skipped 0 unchanged assets.');
+  await expect.poll(h.renderedNames).toEqual(['03-draft.png']);
+  expect(page.url()).toBe(searchedUrl);
+  expect(await page.evaluate(() => window.__sameDocument)).toBe(true);
   const url = new URL(page.url());
   expect(url.searchParams.get('search')).toBe('draft');
   expect(url.searchParams.get('view')).toBe('list');
@@ -384,14 +391,18 @@ test('live navigation re-initializes the base order; restrictions and stale orde
     '04-ref.jpg', '06-ref.png', '07-draft.png', '05-draft.jpg',
   ]);
 
-  // Grid → List replaces the surface; the base order comes from the server.
+  // Grid → List replaces the surface; the saved base comes from the server and
+  // the unsaved order follows onto it.
   await page.getByRole('link', { name: 'List view', exact: true }).click();
   await expect(page).toHaveURL(/view=list/);
   await h.settled();
   await expect(h.surface).toHaveAttribute('data-auto-rename-view', 'list');
-  await expect.poll(h.renderedNames).toEqual(jpgs);
+  await expect.poll(h.renderedNames).toEqual(['08-ref.jpg', '02-ref.jpg', '04-ref.jpg', '05-draft.jpg']);
   expect(await h.baseNames()).toEqual(FILES);
-  expect(await h.orderNames()).toEqual(FILES);
+  expect(await h.orderNames()).toEqual([
+    '01-draft.png', '08-ref.jpg', '03-draft.png', '02-ref.jpg',
+    '04-ref.jpg', '06-ref.png', '07-draft.png', '05-draft.jpg',
+  ]);
   expect(new URL(page.url()).searchParams.getAll('extension')).toEqual(['jpg']);
 
   // Keyboard still works on the replaced surface.
@@ -399,24 +410,27 @@ test('live navigation re-initializes the base order; restrictions and stale orde
   await page.keyboard.press('Space');
   await page.keyboard.press('ArrowUp');
   await page.keyboard.press('Space');
-  expect(await h.renderedNames()).toEqual(['04-ref.jpg', '02-ref.jpg', '05-draft.jpg', '08-ref.jpg']);
-  expect(await h.orderNames()).toEqual([
-    '01-draft.png', '04-ref.jpg', '03-draft.png', '02-ref.jpg',
-    '05-draft.jpg', '06-ref.png', '07-draft.png', '08-ref.jpg',
-  ]);
+  const moved = [
+    '01-draft.png', '08-ref.jpg', '03-draft.png', '04-ref.jpg',
+    '02-ref.jpg', '06-ref.png', '07-draft.png', '05-draft.jpg',
+  ];
+  expect(await h.renderedNames()).toEqual(['08-ref.jpg', '04-ref.jpg', '02-ref.jpg', '05-draft.jpg']);
+  expect(await h.orderNames()).toEqual(moved);
 
-  // Back/Forward re-render from the server with fresh base orders.
+  // Back/Forward re-render from the server and keep the unsaved order.
   await page.goBack();
   await expect(page).not.toHaveURL(/view=list/);
   await h.settled();
   await expect(h.surface).toHaveAttribute('data-auto-rename-view', 'grid');
-  await expect.poll(h.renderedNames).toEqual(jpgs);
-  expect(await h.orderNames()).toEqual(FILES);
+  await expect.poll(h.renderedNames).toEqual(['08-ref.jpg', '04-ref.jpg', '02-ref.jpg', '05-draft.jpg']);
+  expect(await h.baseNames()).toEqual(FILES);
+  expect(await h.orderNames()).toEqual(moved);
   await page.goForward();
   await expect(page).toHaveURL(/view=list/);
   await h.settled();
   await expect(h.surface).toHaveAttribute('data-auto-rename-view', 'list');
-  expect(await h.orderNames()).toEqual(FILES);
+  expect(await h.baseNames()).toEqual(FILES);
+  expect(await h.orderNames()).toEqual(moved);
 
   // Restoring the complete category view.
   await h.openFilters();
@@ -425,12 +439,13 @@ test('live navigation re-initializes the base order; restrictions and stale orde
   await h.closeFilters();
   await expect(h.items).toHaveCount(FILES.length);
   await expect(h.surface).toHaveAttribute('data-category-membership-complete', 'true');
-  expect(await h.orderNames()).toEqual(FILES);
+  expect(await h.baseNames()).toEqual(FILES);
+  expect(await h.orderNames()).toEqual(moved);
   await h.item('02-ref.jpg').focus();
   await page.keyboard.press('Space');
   await page.keyboard.press('ArrowUp');
   await page.keyboard.press('Space');
-  expect((await h.orderNames()).slice(0, 2)).toEqual(['02-ref.jpg', '01-draft.png']);
+  expect((await h.orderNames()).slice(3, 5)).toEqual(['02-ref.jpg', '04-ref.jpg']);
 
   // 8. Invalid or stale orders cannot bypass server validation. The client
   // rewrites its own input from the base order, so post the form directly.

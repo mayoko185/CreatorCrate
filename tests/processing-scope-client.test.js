@@ -603,6 +603,10 @@ describe('Processing background-job polling', () => {
     expect(fixture.result.hidden).toBe(false);
     expect(fixture.resultBody.children[0].textContent).toContain('Converted 1 of 1 asset');
     expect(calls).toContain('/projects/1/scan');
+    // WP12B: no Project Assets region installed here, so the post-Apply scan
+    // never reports the assets as refreshed.
+    expect(calls.filter((url) => url === '/projects/1/scan')).toHaveLength(1);
+    expect(fixture.status.textContent).toBe('Applied, but the asset browser could not refresh. Reload the page to see current assets.');
   });
 
   it('lets only the first succeeded poll own completion while its rescan is pending across reopen', async () => {

@@ -504,7 +504,9 @@ test('Archive becomes available after a published release is unpublished, withou
     await archive.locator('button[type="submit"]').click();
     const confirmation = page.locator('#app-confirmation-dialog');
     await expect(confirmation).toBeVisible();
-    await expect(confirmation).toContainText('Archive this release? This cannot be undone.');
+    // WP11B-1: the confirmation names the release and what Archive does.
+    await expect(confirmation).toContainText('Archive “Alpha release”? It keeps its details, selected assets and any publication record, but becomes archived and read-only');
+    await expect(confirmation).toContainText('This cannot be undone.');
     await page.keyboard.press('Escape');
     await expect(confirmation).toBeHidden();
     expect(releaseService.findRelease(alpha.id).archived_at ?? null).toBeNull();
@@ -528,7 +530,9 @@ test('Archive becomes available after a published release is unpublished, withou
     await remove.locator('summary').click();
     await remove.locator('button[type="submit"]').click();
     await expect(confirmation).toBeVisible();
-    await expect(confirmation).toContainText('Delete this release permanently?');
+    // WP11B-2: the confirmation names the release and what Delete removes.
+    await expect(confirmation).toContainText('Delete “Alpha release” permanently?');
+    await expect(confirmation).toContainText('This cannot be undone.');
     await page.keyboard.press('Escape');
     await expect(confirmation).toBeHidden();
     expect(releaseService.findRelease(alpha.id)).toBeTruthy();

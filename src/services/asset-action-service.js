@@ -34,6 +34,7 @@ import { isProjectOwnershipMarkerName } from '../storage/project-ownership-marke
 import { mimeFromExtension, deriveExtensionFromFilename } from './asset-metadata.js';
 import { ProjectOperationError } from './project-operation-coordinator.js';
 import { isProjectArchived } from './project-state.js';
+import { assetDeleteReviewMatches, assetReviewMatches, isAssetReviewToken } from './asset-delete-review.js';
 
 /**
  * Stable sentinel identifying the "move to Uncategorized" destination.
@@ -264,6 +265,31 @@ export function createAssetActionService({
       throw new AssetActionError(`Asset ${assetId} not found.`, { code: 'ASSET_NOT_FOUND' });
     }
     return asset;
+  }
+
+  // F2B: a Rename or Move made against one reviewed state of the asset
+  // (asset-delete-review.js) runs only while the row loaded under the lock
+  // still has that state. Called before any path is resolved, staged or moved,
+  // so a stale request changes nothing and is never a filesystem failure.
+  function assertReviewedState(asset, reviewed) {
+    if (!assetReviewMatches(asset, reviewed)) {
+      throw new AssetActionError(
+        `Asset ${asset.id} changed after this action was reviewed.`,
+        { code: 'ASSET_REVIEW_STALE' }
+      );
+    }
+  }
+
+  // The explicit reviewed-state option of renameAsset/moveAsset: absent means
+  // the caller reviewed no particular state (legacy contract); present means
+  // it must be one well-formed token, or the request is refused before the
+  // lock is taken (ASSET_REVIEW_INVALID).
+  function readReviewedOption(options) {
+    if (!options || typeof options !== 'object' || !Object.hasOwn(options, 'reviewed')) return undefined;
+    if (!isAssetReviewToken(options.reviewed)) {
+      throw new AssetActionError('The request carries no valid reviewed asset state.', { code: 'ASSET_REVIEW_INVALID' });
+    }
+    return options.reviewed;
   }
 
   function requirePresentAsset(projectId, assetId, action = 'moved or renamed') {
@@ -684,7 +710,7 @@ export function createAssetActionService({
   // Prepares the authoritative single-file rename. Public mutations call it
   // under runLocked; the capability-gated queued executor calls it only while
   // ProcessingJobService already owns this project's runAsync coordination.
-  function prepareRenameAsset(projectId, assetId, filename, resolvedAsset = null, ownership = undefined) {
+  function prepareRenameAsset(projectId, assetId, filename, resolvedAsset = null, ownership = undefined, reviewed = undefined) {
       let newFilename;
       try {
         newFilename = assertValidAssetFilename(filename);
@@ -697,6 +723,7 @@ export function createAssetActionService({
 
       const project = requireMutableProject(projectId);
       const asset = resolvedAsset || requirePresentAsset(projectId, assetId);
+      if (reviewed !== undefined) assertReviewedState(asset, reviewed);
 
       const oldRelativePath = asset.relative_path;
       const segments = oldRelativePath.split('/');
@@ -734,8 +761,8 @@ export function createAssetActionService({
       };
   }
 
-  function renameAssetLocked(projectId, assetId, filename) {
-      return performMoveAndUpdate(prepareRenameAsset(projectId, assetId, filename));
+  function renameAssetLocked(projectId, assetId, filename, reviewed = undefined) {
+      return performMoveAndUpdate(prepareRenameAsset(projectId, assetId, filename, null, undefined, reviewed));
   }
 
   function prepareRenameAssetBasename(projectId, assetId, basename, ownership) {
@@ -1067,7 +1094,14 @@ export function createAssetActionService({
   // asset and source path is preflighted before any source is moved into the
   // private staging area. The indexed rows are deleted transactionally after
   // staging; staged files are physically removed only after that commit.
-  function deleteAssetsLocked(projectId, assetIds) {
+  //
+  // `reviewed` (Map assetId → reviewed-state token, see asset-delete-review.js)
+  // is supplied only by callers whose confirmation reviewed one specific state
+  // of each asset (Asset detail Delete). Each row is compared with it here,
+  // under the lock and before any path is resolved or staged: a row that has
+  // been renamed, moved or replaced since that review is refused as
+  // DELETE_STALE_ASSET and nothing is touched.
+  function deleteAssetsLocked(projectId, assetIds, reviewed = null) {
     const requestedCount = assetIds.length;
     const idSet = new Set(assetIds);
     if (idSet.size !== assetIds.length) {
@@ -1089,6 +1123,12 @@ export function createAssetActionService({
     for (const assetId of assetIds) {
       try {
         const asset = requirePresentAsset(projectId, assetId, 'permanently deleted');
+        if (reviewed && !assetDeleteReviewMatches(asset, reviewed.get(assetId))) {
+          throw new AssetActionError(
+            `Asset ${assetId} changed after its deletion was reviewed.`,
+            { code: 'DELETE_STALE_ASSET' }
+          );
+        }
         const sourceAbsPath = resolveContained(projectDir, asset.relative_path, 'SOURCE_PATH_UNSAFE', 'Source');
         const sourceStats = inspectSource(sourceAbsPath);
         preflightItems.push({
@@ -1098,6 +1138,7 @@ export function createAssetActionService({
           sourceIdentity: { dev: sourceStats.dev, ino: sourceStats.ino },
         });
       } catch (err) {
+        if (err instanceof AssetActionError && err.code === 'DELETE_STALE_ASSET') throw err;
         if (err instanceof AssetActionError) {
           throw new AssetActionError(err.message, { code: 'DELETE_PRECHECK_FAILED' });
         }
@@ -1187,9 +1228,10 @@ export function createAssetActionService({
     };
   }
 
-  function moveAssetLocked(projectId, assetId, destinationCategoryIdOrUncategorized) {
+  function moveAssetLocked(projectId, assetId, destinationCategoryIdOrUncategorized, reviewed = undefined) {
       const project = requireMutableProject(projectId);
       const asset = requirePresentAsset(projectId, assetId);
+      if (reviewed !== undefined) assertReviewedState(asset, reviewed);
 
       const projectDir = resolveProjectAbsPath(project);
 
@@ -1286,13 +1328,21 @@ export function createAssetActionService({
      * @param {number} projectId
      * @param {number} assetId
      * @param {string} filename - New filename (basename only).
+     * @param {{ reviewed?: string }} [options]
+     *   reviewed (F2B): the reviewed-state token (asset-delete-review.js) of the
+     *   asset state the request was made against. When the key is present it
+     *   must be a well-formed token (else ASSET_REVIEW_INVALID) and the row
+     *   loaded under the lock must still match it (else ASSET_REVIEW_STALE),
+     *   both before anything is touched. The Asset detail route always passes
+     *   it; callers without such a review omit the key.
      * @returns {import('../data/asset-repository.js').AssetRecord}
      * @throws {AssetActionError}
      */
-    renameAsset(projectId, assetId, filename) {
+    renameAsset(projectId, assetId, filename, options = {}) {
       assertPositiveInteger(projectId, 'INVALID_PROJECT_ID', 'projectId');
       assertPositiveInteger(assetId, 'INVALID_ASSET_ID', 'assetId');
-      const renamed = runLocked(projectId, () => renameAssetLocked(projectId, assetId, filename));
+      const reviewed = readReviewedOption(options);
+      const renamed = runLocked(projectId, () => renameAssetLocked(projectId, assetId, filename, reviewed));
       logActivity('asset.renamed', projectId);
       return renamed;
     },
@@ -1327,13 +1377,15 @@ export function createAssetActionService({
      * @param {number} projectId
      * @param {number} assetId
      * @param {number|typeof UNCATEGORIZED} destinationCategoryIdOrUncategorized
+     * @param {{ reviewed?: string }} [options] reviewed: as for renameAsset (F2B).
      * @returns {import('../data/asset-repository.js').AssetRecord}
      * @throws {AssetActionError}
      */
-    moveAsset(projectId, assetId, destinationCategoryIdOrUncategorized) {
+    moveAsset(projectId, assetId, destinationCategoryIdOrUncategorized, options = {}) {
       assertPositiveInteger(projectId, 'INVALID_PROJECT_ID', 'projectId');
       assertPositiveInteger(assetId, 'INVALID_ASSET_ID', 'assetId');
-      const moved = runLocked(projectId, () => moveAssetLocked(projectId, assetId, destinationCategoryIdOrUncategorized));
+      const reviewed = readReviewedOption(options);
+      const moved = runLocked(projectId, () => moveAssetLocked(projectId, assetId, destinationCategoryIdOrUncategorized, reviewed));
       logActivity('asset.moved', projectId, { destinationCategoryId: moved.category_id ?? null });
       return moved;
     },
@@ -1437,14 +1489,21 @@ export function createAssetActionService({
      *
      * @param {number} projectId
      * @param {number[]} assetIds - Non-empty array of positive-integer asset IDs.
+     * @param {{ reviewed?: Map<number, string> }} [options]
+     *   reviewed: the reviewed-state token (asset-delete-review.js) of every
+     *   asset in `assetIds`, for a Delete confirmed against one specific state
+     *   of each asset. When given, each current row must still match its token
+     *   under the lock, or nothing is deleted (DELETE_STALE_ASSET). Omitted by
+     *   callers without such a review (Project Assets bulk delete).
      * @returns {{ deletedCount: number, requestedCount: number, deletedAssetIds: number[] }}
      * @throws {AssetActionError} codes: NO_ASSETS_SELECTED, INVALID_ASSET_SELECTION,
+     *   DELETE_REVIEW_INVALID, DELETE_STALE_ASSET,
      *   DELETE_PUBLISHED_RELEASE_ASSET, DELETE_PRECHECK_FAILED,
      *   DELETE_FILESYSTEM_OPERATION_FAILED,
      *   DELETE_DATABASE_OPERATION_FAILED, DELETE_RECOVERY_REQUIRED,
      *   PROJECT_NOT_FOUND, PROJECT_ARCHIVED, PROJECT_BUSY, PROJECT_DIRECTORY_UNSAFE
      */
-    deleteAssets(projectId, assetIds) {
+    deleteAssets(projectId, assetIds, { reviewed } = {}) {
       assertPositiveInteger(projectId, 'INVALID_PROJECT_ID', 'projectId');
       if (!Array.isArray(assetIds)) {
         throw new AssetActionError('assetIds must be an array.', { code: 'INVALID_ASSET_SELECTION' });
@@ -1457,7 +1516,12 @@ export function createAssetActionService({
           throw new AssetActionError('assetIds must contain only positive integer IDs.', { code: 'INVALID_ASSET_SELECTION' });
         }
       }
-      const result = runLocked(projectId, () => deleteAssetsLocked(projectId, assetIds));
+      if (reviewed !== undefined
+        && (!(reviewed instanceof Map) || reviewed.size !== assetIds.length
+          || !assetIds.every((id) => typeof reviewed.get(id) === 'string'))) {
+        throw new AssetActionError('Every reviewed asset needs exactly one reviewed state.', { code: 'DELETE_REVIEW_INVALID' });
+      }
+      const result = runLocked(projectId, () => deleteAssetsLocked(projectId, assetIds, reviewed ?? null));
       if (result.deletedCount > 0) {
         logActivity(result.requestedCount === 1 ? 'asset.deleted' : 'asset.bulk_deleted', projectId, { assetCount: result.deletedCount });
       }

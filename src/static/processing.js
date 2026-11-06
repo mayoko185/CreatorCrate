@@ -1,6 +1,6 @@
 import {
   enhanceNumberInputs,
-  refreshProjectAssetsLiveRegion,
+  refreshProjectAssetsAfterMutation,
   requestAppConfirmation,
   syncCreatorCrateDropdownFromNative,
 } from './creatorcrate.js';
@@ -504,8 +504,14 @@ async function processingFetchJson(url, { method = 'POST', csrf, body } = {}) {
   return parseEnvelope(response);
 }
 
+/**
+ * Posts the one automatic post-Apply scan, then starts the WP09A GET refresh.
+ * Resolves after the scan with { installation }, a promise of the refresh's
+ * { status } ('installed' | 'failed' | 'superseded' | 'unavailable'), so the
+ * Apply lifecycle never waits on the GET and only an install reports success.
+ */
 export async function rescanProjectAssetsAfterApply(root, {
-  refreshAssets = refreshProjectAssetsLiveRegion,
+  refreshAssets = refreshProjectAssetsAfterMutation,
   refreshUrl,
 } = {}) {
   const projectId = root?.dataset?.projectId;
@@ -519,9 +525,92 @@ export async function rescanProjectAssetsAfterApply(root, {
     csrf: root.dataset.csrf,
     body: { trigger: PROCESSING_REFRESH_SCAN_TRIGGER },
   });
-  if (!refreshAssets(liveDocument(root))) {
-    throw new ProcessingRequestError('Could not refresh the asset browser.');
-  }
+  const installation = refreshAssets(liveDocument(root));
+  if (!installation) throw new ProcessingRequestError('Could not refresh the asset browser.');
+  return { installation: Promise.resolve(installation) };
+}
+
+// ─── Refresh assets (GET only) ──────────────────────────────────────────
+
+const ASSET_REFRESH_MESSAGES = Object.freeze({
+  pending: 'Refreshing assets…',
+  installed: 'Assets refreshed.',
+  failed: 'Assets could not be refreshed. This result is unchanged. Use Retry to try again.',
+  superseded: 'A newer asset view is loading. Assets update when it finishes.',
+  unavailable: 'Assets could not be refreshed on this page. Reload the page to see current assets.',
+});
+
+function refreshOutcome(refresh) {
+  const status = refresh?.status;
+  return Object.hasOwn(ASSET_REFRESH_MESSAGES, status) && status !== 'pending' ? status : 'unavailable';
+}
+
+function setAssetRefreshFeedback(root, state) {
+  const feedback = root.querySelector('[data-processing-refresh-status]');
+  if (!feedback) return;
+  feedback.textContent = state ? ASSET_REFRESH_MESSAGES[state] : '';
+  feedback.hidden = !state;
+  if (state) feedback.setAttribute('data-state', state);
+  else feedback.removeAttribute('data-state');
+}
+
+function setAssetRefreshPending(root, pending) {
+  const button = root.querySelector('[data-processing-refresh]');
+  if (!button) return;
+  button.disabled = pending;
+  button.setAttribute('aria-disabled', String(pending));
+  if (pending) button.setAttribute('aria-busy', 'true');
+  else button.removeAttribute('aria-busy');
+}
+
+// After a failure the same button offers Retry, which is the same GET: the
+// shared WP09A Retry can sit behind this modal when the dialog has no form.
+function setAssetRefreshRetry(root, retry) {
+  const button = root.querySelector('[data-processing-refresh]');
+  if (!button) return;
+  button.textContent = retry ? 'Retry' : 'Refresh assets';
+}
+
+function reportAssetRefresh(root, state) {
+  setAssetRefreshFeedback(root, state);
+  setAssetRefreshRetry(root, state === 'failed');
+}
+
+// A new or cleared result owns no earlier refresh report; a GET still in
+// flight keeps the button locked until it settles.
+function forgetAssetRefreshReport(root) {
+  root.__ccAssetRefreshReport = null;
+  reportAssetRefresh(root, null);
+}
+
+/**
+ * The result's Refresh assets: one WP09A GET while pending (repeat clicks
+ * join it), never Apply, a job or a scan. Only an installed region reports
+ * success; a failed or superseded GET reports success only if a later Retry
+ * or newer load installs it (onRecovered).
+ */
+export function refreshAssetsFromResult(root, { refreshAssets = refreshProjectAssetsAfterMutation } = {}) {
+  if (root.__ccAssetRefresh) return root.__ccAssetRefresh.promise;
+  const attempt = {};
+  root.__ccAssetRefresh = attempt;
+  root.__ccAssetRefreshReport = attempt;
+  setAssetRefreshPending(root, true);
+  reportAssetRefresh(root, 'pending');
+  const onRecovered = () => {
+    if (root.__ccAssetRefreshReport === attempt) reportAssetRefresh(root, 'installed');
+  };
+  attempt.promise = Promise.resolve()
+    .then(() => refreshAssets(liveDocument(root), { onRecovered }))
+    .catch(() => null)
+    .then((refresh) => {
+      if (root.__ccAssetRefresh === attempt) {
+        root.__ccAssetRefresh = null;
+        setAssetRefreshPending(root, false);
+      }
+      if (root.__ccAssetRefreshReport === attempt) reportAssetRefresh(root, refreshOutcome(refresh));
+      return refresh || { status: 'unavailable', url: null };
+    });
+  return attempt.promise;
 }
 
 // ─── Scope resolution (read live at Preview/Apply time — never cached) ─
@@ -883,6 +972,7 @@ function clearPlan(root) {
   if (plan) plan.hidden = true;
   const result = root.querySelector('[data-processing-result]');
   if (result) result.hidden = true;
+  forgetAssetRefreshReport(root);
 }
 
 function clearWatermarkVisualPreview(root) {
@@ -1304,6 +1394,7 @@ function renderResult(root, operation, result) {
   if (!resultEl || !body) return;
   body.innerHTML = '';
   resultEl.hidden = false;
+  forgetAssetRefreshReport(root);
   (RESULT_RENDERERS[operation] || (() => {}))(body, result || {});
 }
 
@@ -2157,14 +2248,41 @@ function processingJobStatus(job) {
   return '';
 }
 
+const POST_APPLY_REFRESH_STATUS = Object.freeze({
+  pending: 'Applied. Refreshing assets…',
+  installed: 'Applied. Assets refreshed.',
+  failed: 'Applied, but the asset browser could not refresh. Use Refresh assets to try again.',
+  superseded: 'Applied. A newer asset view is loading.',
+  unavailable: 'Applied, but the asset browser could not refresh. Reload the page to see current assets.',
+});
+
+// Only this Apply's own refresh text may change: a newer Apply, Preview or
+// reset owns the status otherwise.
+function reportPostApplyRefresh(root, report, outcome) {
+  const status = root.querySelector('[data-processing-status]');
+  if (!status || root.__ccPostApplyRefreshReport !== report || status.textContent !== report.text) return;
+  report.text = POST_APPLY_REFRESH_STATUS[outcome];
+  status.textContent = report.text;
+}
+
 async function completeApply(root, { result, refreshUrl } = {}) {
   renderResult(root, root.dataset.processingOperation, result);
   invalidatePreview(root);
   if (AUTO_RESCAN_OPERATIONS.has(root.dataset.processingOperation)) {
     setStatus(root, 'Processing completed. Refreshing the asset index…');
+    const report = { text: POST_APPLY_REFRESH_STATUS.pending };
+    root.__ccPostApplyRefreshReport = report;
     try {
-      await rescanProjectAssetsAfterApply(root, { refreshUrl });
-      setStatus(root, 'Applied. Assets refreshed.');
+      // The one automatic scan is awaited as before; the GET is not, and only
+      // its install (or a later recovery of it) reports assets refreshed.
+      const { installation } = await rescanProjectAssetsAfterApply(root, {
+        refreshUrl,
+        refreshAssets: (document) => refreshProjectAssetsAfterMutation(document, {
+          onRecovered: () => reportPostApplyRefresh(root, report, 'installed'),
+        }),
+      });
+      setStatus(root, report.text);
+      void installation.then((refresh) => reportPostApplyRefresh(root, report, refreshOutcome(refresh)));
     } catch {
       setStatus(root, 'Processing completed, but CreatorCrate could not refresh the asset index.');
     }
@@ -2366,10 +2484,8 @@ function bindPreviewApply(root) {
   }
   if (refreshButton && !isBound(refreshButton, 'refresh')) {
     markBound(refreshButton, 'refresh');
-    refreshButton.addEventListener('click', () => {
-      const window = liveDocument(root)?.defaultView || globalThis;
-      window.location.reload();
-    });
+    // A read of Project Assets only: never Apply, a job, a scan or a reload.
+    refreshButton.addEventListener('click', () => { void refreshAssetsFromResult(root); });
   }
 }
 

@@ -5,6 +5,7 @@ import { closePickersWithin, enhanceDatePickers } from './pickers.js';
 import {
   beginReleaseLinkCheck,
   finishReleaseLinkCheck,
+  RELEASE_ARCHIVED_EVENT,
   RELEASE_EDIT_SAVED_EVENT,
 } from './release-edit-dialog.js';
 import {
@@ -63,6 +64,27 @@ const PUBLISH_MESSAGES = Object.freeze({
   stale: 'Release published, but Release Detail could not refresh. The information shown may be out of date.',
   deferred: 'Release published. Some Release Detail sections will refresh when the open dialog closes or the publishing companion request finishes.',
 });
+// An Archive (release-archive.js): a confirmed one reports its own message;
+// an Archive this page only observed (or found refused because the release or
+// its project was archived) keeps that report, never in a success tone.
+// Release Detail survives Archive: the refresh adopts the archived render,
+// which withdraws the editing controls.
+function archiveMessages(message, confirmed) {
+  const lead = message || (confirmed ? 'Release archived.' : null);
+  const prefix = lead ? `${lead} ` : '';
+  return {
+    done: lead,
+    doneTone: confirmed ? 'success' : 'error',
+    // An outcome this page could not confirm stays an error while it waits.
+    deferredTone: confirmed ? 'pending' : 'error',
+    refreshing: confirmed ? 'Release archived. Refreshing Release Detail…' : `${prefix}Refreshing Release Detail…`,
+    stale: confirmed
+      ? 'Release archived, but Release Detail could not refresh. The information shown may be out of date.'
+      : `${prefix}Release Detail could not refresh, so its archive state may be out of date.`,
+    deferred: `${confirmed ? 'Release archived. ' : prefix}Some Release Detail sections will refresh when the open dialog closes or the publishing companion request finishes.`,
+  };
+}
+
 // A dismissed Review & Publish whose outcome or state could not be trusted: the
 // refreshed page itself shows what is true, so only a server's report is added.
 const PUBLISH_STALE_MESSAGES = Object.freeze({
@@ -256,6 +278,8 @@ function refreshState(document) {
  */
 export function refreshReleaseDetail(document, releaseId, { staleDialogMessage = STALE_DIALOG_MESSAGE } = {}) {
   const state = refreshState(document);
+  // A retired page (its release is gone) never reads or adopts a render again.
+  if (state.retired) return Promise.resolve('superseded');
   state.current = fetchReleaseDetail(document, releaseId, staleDialogMessage);
   return state.current;
 }
@@ -307,6 +331,29 @@ async function fetchReleaseDetail(document, releaseId, staleDialogMessage) {
   return outcome;
 }
 
+/**
+ * WP11B-2: Release Detail whose release is gone (release-delete.js). Every
+ * refresh in flight is superseded and none starts again (after a save, a
+ * dialog close, a companion return or a Retry), so no later answer can adopt
+ * a render or bring the release's controls back. Returns false when the page
+ * was already retired.
+ */
+export function retireReleaseDetailRefresh(document) {
+  const state = refreshState(document);
+  if (state.retired) return false;
+  state.retired = true;
+  state.generation += 1;
+  state.abort?.abort();
+  state.abort = null;
+  state.loading = false;
+  state.current = null;
+  state.deferred = false;
+  removeStatusRetry(state, RETRY_KEY);
+  state.returnListeners?.abort();
+  state.returnListeners = null;
+  return true;
+}
+
 // While the page could not be refreshed it must not offer Review & Publish
 // again for a release that has left the state it was rendered in.
 function withdrawPublishAction(document) {
@@ -334,7 +381,7 @@ async function refreshAfterSave(document, releaseId, {
   state.deferred = outcome === 'deferred' ? 'save' : false;
   state.returnNotice = false;
   if (outcome === 'deferred') {
-    setFeedback(document, messages.deferred, 'pending');
+    setFeedback(document, messages.deferred, messages.deferredTone || 'pending');
     return;
   }
   if (outcome === 'refreshed') {
@@ -369,7 +416,7 @@ async function refreshAfterSave(document, releaseId, {
 // in flight adopts whatever is free when it lands, so none is added.
 function reconcileDeferred(document, releaseId) {
   const state = refreshState(document);
-  if (!state.deferred) return;
+  if (!state.deferred || state.retired) return;
   const stale = Array.from(document.querySelectorAll(`${REGION_SELECTOR}[${STALE_ATTRIBUTE}]`));
   // A settled companion re-enables its action; it stays disabled while stale.
   stale.forEach((region) => {
@@ -525,6 +572,20 @@ export function enhanceReleaseDetailRefresh(scope = globalThis.document) {
   document.addEventListener(RELEASE_EDIT_SAVED_EVENT, (event) => {
     if (String(event.detail?.releaseId ?? '') !== releaseId) return;
     void refreshAfterSave(document, releaseId);
+  });
+  document.addEventListener(RELEASE_ARCHIVED_EVENT, (event) => {
+    const { outcome, message, confirmed } = event.detail ?? {};
+    if (String(event.detail?.releaseId ?? '') !== releaseId) return;
+    // A release that no longer exists has no Release Detail to refresh; the
+    // page says so and offers nothing that would act on it.
+    if (outcome === 'missing') {
+      withdrawPublishAction(document);
+      setFeedback(document, message || 'This release no longer exists.', 'error');
+      return;
+    }
+    const messages = archiveMessages(message, confirmed === true);
+    setFeedback(document, messages.refreshing, refreshingTone(messages));
+    void refreshAfterSave(document, releaseId, { messages, withdrawPublish: true });
   });
   document.addEventListener(RELEASE_PUBLISH_SETTLED_EVENT, (event) => {
     const { outcome, message, archived, socialPreparationAvailable } = event.detail ?? {};

@@ -19,6 +19,29 @@ import { createReleaseService } from '../src/services/release-service.js';
 import { ASSET_BROWSER_SORT_VALUES } from '../src/services/workflow-query-service.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { AssetActionError, UNCATEGORIZED } from '../src/services/asset-action-service.js';
+import { assetDeleteReviewToken } from '../src/services/asset-delete-review.js';
+
+// F2B: the Asset detail Rename and Move forms carry the reviewed state of the
+// asset they show (assetReview). These tests submit from a page showing the
+// asset as it is when they send, so a viewer Rename/Move without the field gets
+// the current row's token (an absent row a well-formed placeholder, so the
+// not-found answers are still exercised). The stale-review tests live in
+// asset-file-actions-http.test.js and send an earlier review explicitly.
+let assetReviewDb = null;
+const sendWithoutAssetReview = request.Test.prototype.send;
+request.Test.prototype.send = function sendWithAssetReview(data) {
+  const match = /^\/projects\/\d+\/assets\/(\d+)\/(rename|move)$/.exec(new URL(this.url, 'http://x').pathname);
+  if (match && assetReviewDb && this.method === 'POST' && data && typeof data === 'object'
+    && !Object.hasOwn(data, 'assetReview') && !(match[2] === 'rename' && data.origin === 'assets')) {
+    const row = assetReviewDb.prepare('SELECT * FROM assets WHERE id = ?').get(Number(match[1]));
+    data = { ...data, assetReview: row ? assetDeleteReviewToken(row) : PLACEHOLDER_DELETE_REVIEW };
+  }
+  return sendWithoutAssetReview.call(this, data);
+};
+
+// F2: Asset detail Delete requires the reviewed state the page rendered. A
+// well-formed token for requests refused before (or regardless of) that check.
+const PLACEHOLDER_DELETE_REVIEW = `v1.${'A'.repeat(43)}`;
 import { PAGE_DEFAULT_DEFINITIONS } from '../src/services/page-defaults-service.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
 import { makeZip } from './helpers/zip-fixture.js';
@@ -404,6 +427,7 @@ describe('asset browser HTTP workflow', () => {
     const dbPath = path.join(tmpDir, 'test.db');
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
+    assetReviewDb = db;
     assetRepo = createAssetRepository(db);
     assetCategoryRepo = createAssetCategoryRepository(db);
     assetBrowserPreferenceRepo = createAssetBrowserPreferenceRepository(db);
@@ -7489,11 +7513,12 @@ describe('asset browser HTTP workflow', () => {
           .type('form')
           .send({
             category: 'all', unknown: 'strip-me', _csrf: deleteCsrf,
+            deleteReview: assetDeleteReviewToken(assetRepo.findById(asset.id)),
           })
           .expect(302);
 
         expect(deleteAssets).toHaveBeenCalledTimes(1);
-        expect(deleteAssets).toHaveBeenCalledWith(id, [asset.id]);
+        expect(deleteAssets).toHaveBeenCalledWith(id, [asset.id], { reviewed: expect.any(Map) });
 
         const location = new URL(res.headers.location, 'http://localhost');
         expect(location.pathname).toBe(`/projects/${id}/assets`);
@@ -7519,10 +7544,10 @@ describe('asset browser HTTP workflow', () => {
         const res = await deleteAgent
           .post(`/projects/${id}/assets/${asset.id}/delete`)
           .type('form')
-          .send({ category: 'all', search: 'published', _csrf: deleteCsrf })
+          .send({ category: 'all', search: 'published', _csrf: deleteCsrf, deleteReview: PLACEHOLDER_DELETE_REVIEW })
           .expect(409);
 
-        expect(deleteAssets).toHaveBeenCalledWith(id, [asset.id]);
+        expect(deleteAssets).toHaveBeenCalledWith(id, [asset.id], { reviewed: expect.any(Map) });
         expect(res.text).toContain('This asset is associated with a published release and cannot be permanently deleted.');
         expect(res.text).not.toContain('Internal path');
         expect(res.text).not.toContain('C:\\secret');
@@ -7534,7 +7559,7 @@ describe('asset browser HTTP workflow', () => {
 
         for (const [action, body] of [
           ['move', { destinationCategory: 'uncategorized' }],
-          ['delete', {}],
+          ['delete', { deleteReview: PLACEHOLDER_DELETE_REVIEW }],
         ]) {
           await agent
             .post(`/projects/invalid/assets/${asset.id}/${action}`)
@@ -7575,7 +7600,7 @@ describe('asset browser HTTP workflow', () => {
         const res = await agent
           .post(`/projects/${id}/assets/${asset.id}/delete`)
           .type('form')
-          .send({ category: 'all', _csrf: csrfToken })
+          .send({ category: 'all', _csrf: csrfToken, deleteReview: assetDeleteReviewToken(assetRepo.findById(asset.id)) })
           .expect(422);
 
         expect(res.text).toContain('This asset cannot be deleted because it is missing or inaccessible.');
@@ -7732,7 +7757,7 @@ describe('asset browser HTTP workflow', () => {
       it('rejects direct Viewer Move and Delete requests for archived projects without mutation', async () => {
         for (const [action, body] of [
           ['move', { destinationCategory: 'uncategorized' }],
-          ['delete', {}],
+          ['delete', { deleteReview: PLACEHOLDER_DELETE_REVIEW }],
         ]) {
           const { id, projectDir, asset } = await setupProjectWithAsset(`Viewer Archived ${action}`, 'a.png');
           await agent.post(`/projects/${id}/archive`).type('form').send({ _csrf: csrfToken }).expect(302);
@@ -7759,7 +7784,7 @@ describe('asset browser HTTP workflow', () => {
           .send({ destinationCategory: 'uncategorized', _csrf: stubCsrf })
           .expect(409);
 
-        expect(moveAsset).toHaveBeenCalledWith(id, asset.id, UNCATEGORIZED);
+        expect(moveAsset).toHaveBeenCalledWith(id, asset.id, UNCATEGORIZED, { reviewed: assetDeleteReviewToken(assetRepo.findById(asset.id)) });
         expect(res.text).toContain('Another project operation is already in progress. Try again.');
         expect(res.text).not.toContain('busy details');
         expect(res.text).not.toContain('C:\\secret');
@@ -7767,7 +7792,7 @@ describe('asset browser HTTP workflow', () => {
 
       it.each([
         ['move', { destinationCategory: 'uncategorized' }, 'moveAsset'],
-        ['delete', {}, 'deleteAssets'],
+        ['delete', { deleteReview: PLACEHOLDER_DELETE_REVIEW }, 'deleteAssets'],
       ])('hides unexpected single-asset %s failures behind the generic error page', async (action, body, method) => {
         const { id, asset } = await setupProjectWithAsset(`Unexpected ${action}`);
         const actionServiceStub = {

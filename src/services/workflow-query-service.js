@@ -2233,6 +2233,10 @@ function normalizeAssetBrowserQuery(
       preview_url: preview.urls.preview,
       original_url: buildAssetOriginalUrl(asset),
       ...buildAssetRowPresentation({ ...asset, release_usage: releaseUsage }),
+      // The source-instance counter the Asset detail forms' reviewed-state
+      // token names (asset-delete-review.js): without it the page renders the
+      // token of generation 0, which a replaced source can never match.
+      source_generation: asset.source_generation ?? 0,
     };
   }
 
@@ -2756,6 +2760,9 @@ function normalizeAssetBrowserQuery(
     getReleaseCalendar,
     getProjectAssetBrowser,
     getProjectAutoRenameCategory,
+    getProjectAssetIds(projectId) {
+      return assetRepository.findAssetIdsByProjectId(projectId);
+    },
     getProjectAssetBrowserContext,
     getProjectAssetViewer,
     normalizeListFilters,

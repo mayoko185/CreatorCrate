@@ -110,6 +110,29 @@ function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } =
       adopt(child);
       return child;
     },
+    insertBefore(child, reference) {
+      const previous = child.parentNode?.children;
+      if (previous) previous.splice(previous.indexOf(child), 1);
+      children.splice(children.indexOf(reference), 0, child);
+      child.parentNode = this;
+      child.parentElement = this;
+      const document = this.ownerDocument || (this.nodeType === 9 ? this : null);
+      const adopt = (current) => {
+        current.ownerDocument = document;
+        current.children.forEach(adopt);
+      };
+      adopt(child);
+      return child;
+    },
+    remove() {
+      const siblings = this.parentNode?.children;
+      if (siblings) siblings.splice(siblings.indexOf(this), 1);
+      this.parentNode = null;
+      this.parentElement = null;
+    },
+    createElement(tagName) {
+      return makeNode({ tagName });
+    },
     replaceChildren(...nextChildren) {
       children.forEach((child) => {
         child.parentNode = null;
@@ -528,6 +551,9 @@ function makeWindow(document, pages) {
   return windowObject;
 }
 
+const liveFailureNotice = (document) => document.querySelector('[data-live-filter-failure]');
+const liveFailureRetries = (document) => document.querySelectorAll('[data-live-filter-retry]');
+
 async function flush() {
   for (let index = 0; index < 10; index += 1) await Promise.resolve();
 }
@@ -851,8 +877,10 @@ describe('Asset Viewer Project live filtering enhancement', () => {
     expect(initial.region.hasAttribute('aria-busy')).toBe(false);
     expect(initial.region.getAttribute('data-asset-library-live-state')).toBe('error');
     expect(initial.region.querySelector('[data-asset-library-live-status]').textContent)
-      .toBe('Asset Viewer is loading as a full page.');
-    expect(initial.form.submit).toHaveBeenCalledTimes(1);
+      .toContain('The requested filters were not applied');
+    expect(initial.form.submit).not.toHaveBeenCalled();
+    expect(initial.alpha.checked).toBe(true);
+    expect(liveFailureRetries(initial.document)).toHaveLength(1);
     expect(windowObject.history.pushes).toHaveLength(beforeFailure.pushes);
     expect(windowObject.history.replaces).toHaveLength(beforeFailure.replaces);
     expect(windowObject.location.href).toBe(beforeFailure.href);
@@ -864,6 +892,30 @@ describe('Asset Viewer Project live filtering enhancement', () => {
     expect(initial.document.querySelector('[data-asset-library-live-region]')).toBe(recovered.region);
     expect(recovered.region.hasAttribute('aria-busy')).toBe(false);
     expect(recovered.region.getAttribute('data-asset-library-live-state')).toBe(null);
+  });
+
+  it('retries a failed filter with GET only and installs the requested results', async () => {
+    const initial = makePage();
+    const recovered = makePage();
+    const windowObject = makeWindow(initial.document, new Map([['recovered', recovered.document]]));
+    windowObject.fetch.mockRejectedValueOnce(new Error('offline'));
+    enhanceAssetLibraryLiveFiltering(initial.document);
+    initial.all.checked = false;
+    initial.alpha.checked = true;
+    initial.alpha.dispatch('change');
+    await flush();
+
+    const requested = windowObject.fetch.mock.calls[0][0];
+    windowObject.fetch.mockResolvedValueOnce({ ok: true, url: requested, text: async () => 'recovered' });
+    liveFailureRetries(initial.document)[0].dispatch('click');
+    await flush();
+
+    expect(windowObject.fetch.mock.calls[1][0]).toBe(requested);
+    expect(windowObject.fetch.mock.calls[1][1].method).toBe('GET');
+    expect(initial.document.querySelector('[data-asset-library-live-region]')).toBe(recovered.region);
+    expect(liveFailureNotice(initial.document)).toBeNull();
+    expect(windowObject.history.pushes).toHaveLength(1);
+    expect(initial.form.submit).not.toHaveBeenCalled();
   });
 
   it('re-enhances replaced Asset Viewer controls and preview links', async () => {

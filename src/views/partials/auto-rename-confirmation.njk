@@ -1,0 +1,138 @@
+{# Auto Rename confirmation, shared by the native Preview page and the JSON
+   Preview fragment. A native dialog keeps its navigation Cancel and native
+   Apply; an async one (asyncApply) is mounted on the invoking Project Assets
+   page, closes locally and applies through the shared async dialog binder. #}
+{% import "partials/dialog.njk" as dialog %}
+
+{% macro renderContextField(context, key) %}
+  {% set fieldValue = context[key] %}
+  {% if fieldValue is not none and fieldValue != '' %}
+    {% if fieldValue is iterable and fieldValue is not string %}
+      {% for value in fieldValue %}
+        {% if value is not none and value != '' %}
+          <input type="hidden" name="{{ key }}" value="{{ value }}">
+        {% endif %}
+      {% endfor %}
+    {% else %}
+      <input type="hidden" name="{{ key }}" value="{{ fieldValue }}">
+    {% endif %}
+  {% endif %}
+{% endmacro %}
+
+{% macro render(project, plan, context, returnUrl, csrfToken, open=false, asyncApply=false) %}
+  {% set autoRenameSelectionMode = plan.selectionMode == 'selected' %}
+  {% call dialog.render('auto-rename-confirmation-dialog', 'Auto Rename confirmation', open, 'auto-rename-confirmation-description', 'auto-rename-confirmation-form') %}
+    <form id="auto-rename-confirmation-form" method="post" action="/projects/{{ project.id }}/assets/auto-rename/apply"
+          class="app-dialog-form auto-rename-confirmation-form" data-dialog-form data-dialog-async="{{ 'true' if asyncApply else 'false' }}"{% if asyncApply %}
+          data-auto-rename-confirmation data-auto-rename-project-id="{{ project.id }}"
+          data-auto-rename-review-category="{{ context.category }}"
+          data-dialog-pending-message="Applying Auto Rename…"
+          data-dialog-error-message="Auto Rename was not applied."
+          data-dialog-network-error-message="Could not confirm whether Auto Rename was applied." novalidate{% endif %}>
+      <p id="auto-rename-confirmation-description" class="app-dialog-description">
+        Review the server-generated names before changing files on disk.
+      </p>
+
+      {% if asyncApply %}
+        <div class="error-summary" role="alert" data-dialog-error hidden><p data-dialog-error-text></p></div>
+      {% endif %}
+
+      {% if plan.counts.blocked > 0 %}
+        <div class="notice notice--danger auto-rename-confirmation-notice" role="alert">
+          <p>Auto Rename cannot be applied because one or more {% if autoRenameSelectionMode %}selected{% else %}category{% endif %} assets are blocked.</p>
+        </div>
+      {% elseif plan.counts.rename == 0 %}
+        <div class="notice notice--warning auto-rename-confirmation-notice" role="status">
+          <p>All {% if autoRenameSelectionMode %}selected{% else %}category{% endif %} assets are already named according to the rule. There are no changes to apply.</p>
+        </div>
+      {% endif %}
+
+      <input type="hidden" name="_csrf" value="{{ csrfToken }}">
+      <input type="hidden" name="planToken" value="{{ plan.token }}">
+      {% if plan.attemptId %}<input type="hidden" name="attemptId" value="{{ plan.attemptId }}">{% endif %}
+      {% if context.category is defined and context.category is not none and context.category != '' %}
+        <input type="hidden" name="categoryId" value="{{ context.category }}">
+      {% endif %}
+      {# The dialog context is the allowlisted Auto Rename return context; its
+         category already travels as categoryId above. #}
+      {% for contextKey, contextValue in context %}
+        {% if contextKey != 'category' %}{{ renderContextField(context, contextKey) }}{% endif %}
+      {% endfor %}
+
+      <div class="app-dialog-body auto-rename-confirmation-body">
+        <p class="auto-rename-confirmation-summary">
+          {{ plan.counts.selected }} asset{% if plan.counts.selected != 1 %}s{% endif %}:
+          {{ plan.counts.rename }} to rename,
+          {{ plan.counts.unchanged }} unchanged{% if plan.counts.blocked > 0 %},
+            {{ plan.counts.blocked }} blocked{% endif %}.
+        </p>
+
+        <ol class="auto-rename-confirmation-list">
+          {% for item in plan.items %}
+            {% set itemLabel = item.currentFilename %}
+            {% if not itemLabel or itemLabel == '—' %}{% set itemLabel = item.currentRelativePath %}{% endif %}
+            {% if not itemLabel or itemLabel == '—' %}{% set itemLabel = 'Asset ' ~ item.assetId %}{% endif %}
+            {% if item.status == 'rename' %}
+              {% set statusVariant = 'success' %}
+            {% elseif item.status == 'unchanged' %}
+              {% set statusVariant = 'neutral' %}
+            {% else %}
+              {% set statusVariant = 'danger' %}
+            {% endif %}
+            <li class="auto-rename-confirmation-item{% if item.status == 'blocked' %} auto-rename-confirmation-item--blocked{% endif %}">
+              <div class="auto-rename-confirmation-preview{% if item.previewKind == 'krita' %} asset-media--krita{% endif %}">
+                {% if item.thumbnailUrl %}
+                  <img src="{{ item.thumbnailUrl }}" alt="Preview thumbnail for {{ itemLabel }}"
+                       width="56" height="56" loading="lazy" decoding="async">
+                {% elif item.previewState == 'unsupported' %}
+                  <span class="auto-rename-confirmation-preview-placeholder">{{ item.typeLabel }}<span class="sr-only"> preview not supported</span></span>
+                {% elif item.previewState == 'missing' %}
+                  <span class="auto-rename-confirmation-preview-placeholder">Missing<span class="sr-only"> at last scan</span></span>
+                {% else %}
+                  <span class="auto-rename-confirmation-preview-placeholder">{{ item.typeLabel }}</span>
+                {% endif %}
+              </div>
+              <div class="auto-rename-confirmation-copy">
+                <div class="auto-rename-confirmation-names">
+                  <span class="auto-rename-confirmation-name auto-rename-confirmation-name--current">
+                    <span class="sr-only">Current name: </span><code>{{ item.currentFilename }}</code>
+                  </span>
+                  <span aria-hidden="true">&rarr;</span>
+                  <span class="auto-rename-confirmation-name auto-rename-confirmation-name--proposed">
+                    <span class="sr-only">Proposed name: </span><code>{% if item.proposedFilename %}{{ item.proposedFilename }}{% else %}&mdash;{% endif %}</code>
+                  </span>
+                </div>
+                <span class="status-badge status-badge--{{ statusVariant }}">Status: {{ item.statusLabel }}</span>
+                {% if item.blockedReason %}
+                  <p class="auto-rename-block-reason"><strong>Blocked:</strong> {{ item.blockedReason }}</p>
+                {% endif %}
+              </div>
+            </li>
+          {% endfor %}
+        </ol>
+
+        {% if plan.canApply %}
+          <p class="auto-rename-confirmation-apply-note">Applying this signed review will rename the {% if autoRenameSelectionMode %}selected{% else %}category{% endif %} files on disk and update their asset records.</p>
+        {% elseif plan.counts.blocked > 0 %}
+          <p class="auto-rename-confirmation-apply-note">Apply is unavailable until all blocked {% if autoRenameSelectionMode %}selected{% else %}category{% endif %} assets are resolved.</p>
+        {% else %}
+          <p class="auto-rename-confirmation-apply-note">There are no changes to apply because all {% if autoRenameSelectionMode %}selected{% else %}category{% endif %} assets are unchanged.</p>
+        {% endif %}
+      </div>
+
+      {% if asyncApply %}
+        <div class="app-dialog-status" data-dialog-status role="status" aria-live="polite"></div>
+      {% endif %}
+
+      <footer class="app-dialog-footer">
+        {% if asyncApply %}
+          <button class="button button-secondary" type="button" data-dialog-close>Cancel</button>
+          <button class="button button-primary" type="submit" data-dialog-submit{% if not plan.canApply %} disabled aria-disabled="true"{% endif %}>Apply Auto Rename</button>
+        {% else %}
+          <a class="button button-secondary" href="{{ returnUrl }}">Cancel</a>
+          <button class="button button-primary" type="submit"{% if not plan.canApply %} disabled aria-disabled="true"{% endif %}>Apply Auto Rename</button>
+        {% endif %}
+      </footer>
+    </form>
+  {% endcall %}
+{% endmacro %}

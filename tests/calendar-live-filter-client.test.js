@@ -103,6 +103,29 @@ function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } =
       adopt(child);
       return child;
     },
+    insertBefore(child, reference) {
+      const previous = child.parentNode?.children;
+      if (previous) previous.splice(previous.indexOf(child), 1);
+      children.splice(children.indexOf(reference), 0, child);
+      child.parentNode = this;
+      child.parentElement = this;
+      const document = this.ownerDocument || (this.nodeType === 9 ? this : null);
+      const adopt = (current) => {
+        current.ownerDocument = document;
+        current.children.forEach(adopt);
+      };
+      adopt(child);
+      return child;
+    },
+    remove() {
+      const siblings = this.parentNode?.children;
+      if (siblings) siblings.splice(siblings.indexOf(this), 1);
+      this.parentNode = null;
+      this.parentElement = null;
+    },
+    createElement(tagName) {
+      return makeNode({ tagName });
+    },
     replaceChildren(...nextChildren) {
       children.forEach((child) => {
         child.parentNode = null;
@@ -340,6 +363,9 @@ function attachMonthPicker(document) {
   } };
 }
 
+const liveFailureNotice = (document) => document.querySelector('[data-live-filter-failure]');
+const liveFailureRetries = (document) => document.querySelectorAll('[data-live-filter-retry]');
+
 async function flush() {
   for (let i = 0; i < 12; i += 1) await Promise.resolve();
 }
@@ -460,6 +486,57 @@ describe('Calendar shared live region', () => {
 
     expect(windowObject.fetch).toHaveBeenCalledTimes(2);
     expect(new URL(windowObject.fetch.mock.calls[1][0]).searchParams.get('month')).toBe('2027-09');
+  });
+
+  it('keeps a failed month pending in the picker and displayed Calendar until Retry loads it', async () => {
+    const { initial, windowObject } = environment({ month: '2026-09' });
+    const picker = attachMonthPicker(initial.document);
+    enhanceCalendarLiveFiltering(initial.document);
+    picker.open();
+    windowObject.fetch.mockImplementationOnce(() => Promise.reject(new Error('offline')));
+    picker.months['09'].checked = false;
+    picker.months['10'].checked = true;
+    picker.months['10'].dispatch('change');
+    await flush();
+
+    const liveRegion = () => initial.document.querySelector('[data-calendar-live-region]');
+    expect(liveRegion().getAttribute('data-calendar-month')).toBe('2026-09');
+    expect(liveFailureNotice(initial.document).children[0].textContent).toContain("requested month couldn't be loaded");
+    expect(windowObject.history.pushes).toHaveLength(0);
+    expect(windowObject.location.href).toBe('http://creatorcrate.test/calendar?month=2026-09');
+    expect(initial.document.querySelector('#calendar-filters input[name="month"]').value).toBe('2026-10');
+
+    picker.open();
+    expect(picker.months['10'].checked).toBe(true);
+    expect(picker.months['09'].checked).toBe(false);
+    expect(picker.year.value).toBe('2026');
+
+    liveFailureRetries(initial.document)[0].dispatch('click');
+    await flush();
+    expect(windowObject.fetch).toHaveBeenCalledTimes(2);
+    expect(new URL(windowObject.fetch.mock.calls[1][0]).searchParams.get('month')).toBe('2026-10');
+    expect(windowObject.fetch.mock.calls[1][1].method).toBe('GET');
+    expect(liveFailureNotice(initial.document)).toBeNull();
+    expect(windowObject.history.pushes).toHaveLength(1);
+  });
+
+  it('lets choosing the displayed month again resolve a failed month', async () => {
+    const { initial, windowObject } = environment({ month: '2026-09' });
+    const picker = attachMonthPicker(initial.document);
+    enhanceCalendarLiveFiltering(initial.document);
+    picker.open();
+    windowObject.fetch.mockImplementationOnce(() => Promise.reject(new Error('offline')));
+    picker.months['09'].checked = false;
+    picker.months['10'].checked = true;
+    picker.months['10'].dispatch('change');
+    await flush();
+
+    picker.months['10'].checked = false;
+    picker.months['09'].checked = true;
+    picker.months['09'].dispatch('change');
+    await flush();
+    expect(new URL(windowObject.fetch.mock.calls[1][0]).searchParams.get('month')).toBe('2026-09');
+    expect(liveFailureNotice(initial.document)).toBeNull();
   });
 
   it('does not navigate for the displayed month or an invalid year, and dismissal keeps Calendar state', async () => {

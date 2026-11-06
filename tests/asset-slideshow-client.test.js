@@ -2156,3 +2156,78 @@ describe('slideshow CSS — presentation contract', () => {
     expect(css).not.toMatch(/\.slideshow-header:focus-within|\.slideshow-controls:focus-within/);
   });
 });
+
+describe('enhanceSlideshow — refresh keeps the current asset by identity', () => {
+  const sequence = [
+    { id: 1, filename: 'first.png', previewUrl: '/p/1', viewerUrl: '/v/1' },
+    { id: 2, filename: 'second.png', previewUrl: '/p/2', viewerUrl: '/v/2' },
+    { id: 3, filename: 'third.png', previewUrl: '/p/3', viewerUrl: '/v/3' },
+  ];
+  const refresh = (page, next) => page.scaffold.__creatorCrateSlideshowState.refreshSequence(next);
+  const shownImage = (page) => page.preview.querySelector('img');
+
+  it('follows the asset when its index shifts, without restarting playback', () => {
+    vi.useFakeTimers();
+    try {
+      const page = makeSlideshowPage(sequence);
+      enhanceSlideshow(page.document);
+      page.trigger.dispatch('click');
+      page.nextBtn.dispatch('click');
+      page.playPauseBtn.dispatch('click');
+      expect(shownImage(page).src).toBe('/p/2');
+      const playing = page.playPauseBtn.hasAttribute('data-slideshow-playing');
+
+      refresh(page, [sequence[0], { id: 9, filename: 'new.png', previewUrl: '/p/9', viewerUrl: '/v/9' }, sequence[1], sequence[2]]);
+      expect(shownImage(page).src).toBe('/p/2');
+      expect(page.status.textContent).toBe('3 of 4');
+      expect(page.playPauseBtn.hasAttribute('data-slideshow-playing')).toBe(playing);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('moves to a surviving neighbor when the shown asset is removed', () => {
+    const page = makeSlideshowPage(sequence);
+    enhanceSlideshow(page.document);
+    page.trigger.dispatch('click');
+    page.nextBtn.dispatch('click');
+    refresh(page, [sequence[0], sequence[2]]);
+    expect(shownImage(page).src).toBe('/p/3');
+    expect(page.status.textContent).toBe('2 of 2');
+  });
+
+  it('closes when nothing remains and returns focus to a connected control', () => {
+    const page = makeSlideshowPage(sequence);
+    enhanceSlideshow(page.document);
+    page.trigger.dispatch('click');
+    refresh(page, []);
+    expect(page.scaffold.hidden).toBe(true);
+    expect(page.trigger.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('closes a single-asset view when its asset is gone, and keeps it when it survives', () => {
+    const page = makeProjectPreviewPage(sequence);
+    const state = page.scaffold.__creatorCrateSlideshowState;
+    expect(state.openSingleById(2, page.previewLinks[1])).toBe(true);
+    refresh(page, [sequence[0], sequence[1]]);
+    expect(page.scaffold.hidden).toBe(false);
+    expect(page.status.textContent).toBe('1 of 1');
+
+    const opener = page.previewLinks[1];
+    opener.isConnected = false;
+    refresh(page, [sequence[0]]);
+    expect(page.scaffold.hidden).toBe(true);
+  });
+
+  it('binds a replaced trigger once and marks it expanded while open', () => {
+    const page = makeSlideshowPage(sequence);
+    enhanceSlideshow(page.document);
+    page.trigger.dispatch('click');
+    const replacement = makeNode({ tagName: 'button', attrs: { 'data-slideshow-trigger': '' } });
+    page.scaffold.__creatorCrateSlideshowState.bindTrigger(replacement);
+    page.scaffold.__creatorCrateSlideshowState.bindTrigger(replacement);
+    expect(replacement.getAttribute('aria-expanded')).toBe('true');
+    expect(replacement.listeners.filter((listener) => listener.type === 'click')).toHaveLength(1);
+    expect(page.trigger.listeners.filter((listener) => listener.type === 'click')).toHaveLength(0);
+  });
+});

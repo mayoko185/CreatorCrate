@@ -173,8 +173,9 @@ it threw.
 threaded into every `buildApp` call *after* `...opts`, so a stray same-named
 key in the options object can never shadow it:
 
-- the **Auto Rename signing key**, so a database restore does not invalidate
-  outstanding plan tokens mid-session;
+- the **Auto Rename signing key**, so signatures on outstanding plan tokens
+  remain valid across rebuilds; route-local attempts/receipts have a separate
+  lifetime (§11);
 - the **project operation coordinator** and the **processing-job service**,
   so scanners and mutation services retain the same per-project exclusion and
   any later permitted rebuild keeps the same process-local job registry;
@@ -698,6 +699,27 @@ persisted scope. Scope toggles use the existing serialized autosave queue and li
 region engine, keeping the dialog open. Reloaded dialogs read persisted scope;
 query parameters do not select a defaults scope. Global saves preserve every
 project's stored Project-only values.
+
+**Category defaults and saved preferences.** Global rows in
+`asset_category_defaults` are templates: project creation copies the enabled
+rows into independent project-owned categories. Editing or deleting a global
+default does not change those copies, their files, assets or release selections.
+`assetCategoryService.deleteDefault()` deletes only that default; it does not
+rewrite saved Browser Default or Preview Category values. Those settings retain
+their stored slug and render as unavailable when it no longer names an enabled
+default. Browser Default then resolves to All Categories for inheriting projects;
+Preview Category retains its unavailable value for display.
+
+Category Details saves from Settings always carry `reviewedDisplayName` and
+`reviewedDirectorySlug`. `assetCategoryService.editDefault(id, { displayName,
+directorySlug, expected })` delegates to
+[`asset-category-repository.js`](src/data/asset-category-repository.js)'s
+`updateDefaultNameSlugIfUnchanged()`: one conditional `UPDATE ... RETURNING`
+compares both saved strings with binary collation. A changed row yields `409`
+without writing; a missing row yields `404`, and missing/malformed review fields
+are refused with `400`. Internal service callers omitting `expected` retain the
+unconditional contract. The client-side ownership of drafts and responses is
+covered in Settings category defaults in §16.
 
 **Configurable Project options.** Projects retain `status` and `project_type`
 as literal strings. Their configurable metadata lives in separate versioned
@@ -2046,9 +2068,44 @@ from scratch** inside the already-coordinated region. A plan is never trusted as
 authorization; it is a preview. Queued Rename invokes the established
 single-file basename primitive in deterministic planned order. If a later item
 fails, prior successful renames remain committed and the job fails; there is no
-unsafe batch rename-back compensation. Auto Rename adds a signed plan token on top of this — signed with
-the context-scoped key described in §4, so outstanding tokens survive a
-database restore — but the apply path still re-validates.
+unsafe batch rename-back compensation. Category Auto Rename uses its own
+signed-plan contract below rather than a Processing job.
+
+### Category Auto Rename
+
+[`auto-rename-service.js`](src/services/auto-rename-service.js) exposes
+`buildPlan(input)` and `applyPlan(projectId, planToken)`. Preview is read-only:
+it validates a complete concrete category and exact asset order, optionally
+with a selected subset to rename, then signs its snapshot with HMAC-SHA256.
+Apply accepts the signed token, not client-proposed paths. Under the shared
+project coordinator it authenticates the token, rebuilds the plan, compares the
+snapshot, and rechecks category membership, database/file identity, destinations
+and project-directory ownership before mutation. The signing key has the
+application-context lifetime described in §4; it is not a persisted receipt.
+
+[`assets.js`](src/routes/assets.js) owns
+`POST /projects/:projectId/assets/auto-rename/preview` and `/auto-rename/apply`.
+Each Preview also issues a separate attempt ID bound to its project and the
+signed-token digest. Apply claims that attempt before calling the service;
+the same attempt cannot run twice, even if two reviews have identical tokens.
+The router keeps at most 500 attempt records in memory, with an outcome receipt
+only after completion. These are bounded, context-local evidence, not durable
+operation history: router rebuilds and process restarts discard them even
+though the signing key survives an application-context rebuild.
+`GET /projects/:projectId/assets/auto-rename/state` with
+`categoryId` and optional `attempt` returns current indexed paths and that exact
+attempt's state/receipt. An absent receipt proves neither failure nor success.
+
+[`auto-rename-dialog.js`](src/static/client/auto-rename-dialog.js) mounts the
+server-rendered confirmation on Project Assets. Preview shows the proposed
+changes; Cancel performs no rename; Apply submits once and retires that review.
+A lost/unreadable Apply response holds further Auto Rename Applies for that
+project on this document, even across dialog dismissal. Check again uses only
+the state GET: a matching receipt can establish committed, refused, restored or
+recovery-required, while matching filenames alone cannot settle the request.
+Recovery-required keeps the hold. Confirmed changes use the state-preserving
+Project Assets installation contract in §16; refresh failure never repeats Apply.
+Native forms retain the server-rendered Preview and redirect flow.
 
 ### Stage, publish, roll back
 
@@ -2755,6 +2812,60 @@ helpers live in [`dom.js`](src/static/client/dom.js). Styling is one
 stylesheet, [`creatorcrate.css`](src/static/creatorcrate.css), built on CSS
 custom properties; inline presentation styles are actively tested against.
 
+**Local filter recovery.** The shared `createLiveRegionEngine()` in
+[`live-regions.js`](src/static/client/live-regions.js) keeps failures local for
+Projects, Releases, Project Assets, Release Assets and the Asset Library
+(`/asset-viewer`). A failed HTTP read, unreadable response, wrong response path
+or missing expected region leaves the last valid results mounted and the
+requested controls as chosen. A visible failure notice offers Retry; when a
+modal is open the notice moves beside its form so the action remains reachable.
+Retry repeats only the failed GET with its intended URL/history mode. A newer
+filter choice or read supersedes that request, and only the current generation
+may install content or report failure. Successful installation commits the
+navigation; recovery does not replay mutation POSTs. Native GET forms and links
+remain the fallback when enhancement is unavailable.
+
+**Project Assets refresh.** `refreshProjectAssetsAfterMutation(scope,
+{ onRecovered })`, exported from `live-regions.js` and re-exported by
+`creatorcrate.js`, is the shared GET-only installation interface. Auto Rename,
+Remove Missing, the Project Assets archive host and Processing use it. Its
+promise never rejects and resolves with `{ status, url, ... }`:
+
+| Status | Meaning |
+| --- | --- |
+| `installed` | The region is replaced, transient state reconciled, busy state cleared and controls bound; `reconciliation` describes selection/order survival. |
+| `failed` | The read failed; existing results stay mounted and the shared GET-only Retry remains available. |
+| `superseded` | A newer load owns the display; this result does not establish installation. |
+| `unavailable` | This document/capability could not start a refresh. |
+
+`refreshProjectAssetsLiveRegion(scope)` starts the same refresh but returns only
+whether it started. Callers reporting synchronization use the promise interface.
+An owed refresh survives failure or supersession: the next current installation
+reconciles it and invokes registered `onRecovered(reconciliation)` callbacks for
+the earlier failed/superseded requests. Generation invalidation prevents older
+reads from replacing a newer view. Refresh uses the latest intended filters,
+including a debounced, pending or failed filter navigation, and preserves its
+history obligation; an idle refresh keeps the current page/view context.
+
+Transient state is captured immediately before replacement, including edits
+made while the GET was pending. Reconciliation by asset ID preserves rendered
+selections, inline rename drafts, eligible form choices, open asset details,
+grid style, scroll and focus without taking focus from an open dialog.
+[`asset-ordering.js`](src/static/client/asset-ordering.js) retains selected IDs
+hidden by filters/pagination separately: they are restored when rendered again,
+never silently submitted as hidden bulk selections. IDs proven absent from the
+complete project membership, or rendered no longer selectable, are removed.
+Ordinary filter navigation without an owed refresh starts a new selection.
+
+Pending category-order drafts keep their relative order, remove departed IDs
+and merge new IDs from server order; additions require review before Auto
+Rename. A draft whose category surface is not shown stays in document memory
+until that surface returns or the page reloads. Neither refresh nor draft
+restoration saves order. The installed render also reconciles category consumers,
+slideshow data, heading actions, archived notice and manual-scan return context.
+Sorting changes presentation only: category capabilities use actual membership
+and business eligibility; filters matter when they omit category assets.
+
 Cross-page hosted-dialog return is an explicit, opt-in contract. An invoking
 link marked with `data-dialog-invocation` adds the live browser pathname,
 query, and fragment as `returnTo` at activation time; an opted-in submit
@@ -3107,6 +3218,168 @@ inside a host opens that host's dialog in place and never carries `returnTo`.
 A native `POST /projects/:id` still redirects to the validated `returnTo` or
 Project Detail.
 
+**Local Project and Release Archive/Delete.** The controllers
+[`project-archive.js`](src/static/client/project-archive.js),
+[`project-delete.js`](src/static/client/project-delete.js),
+[`release-archive.js`](src/static/client/release-archive.js) and
+[`release-delete.js`](src/static/client/release-delete.js) share the invoking
+page's Edit dialog and confirmation lifecycle. Project hosts are Dashboard,
+Projects, Project Detail and Project Assets; Release hosts are Dashboard,
+Calendar and Release Detail. Confirmation names the saved record and warns about
+unsaved edits; it never saves them. Pending mutations freeze the dialog and
+refuse overlapping actions rather than queueing them. One confirmation sends
+one POST with `Accept: application/json`; native forms keep their existing
+redirect/error behavior. The routers delegate business rules to the services
+and classify established outcomes separately from unknown ones.
+
+A clean refusal or established no-change failure preserves the draft. A
+confirmed archive closes the dialog and dispatches `PROJECT_ARCHIVED_EVENT` or
+`RELEASE_ARCHIVED_EVENT`; confirmed deletion uses the corresponding
+`PROJECT_DELETED_EVENT` or `RELEASE_DELETED_EVENT`. Host controllers refresh their
+own regions with GETs, retaining unrelated dialogs, filters and drafts. Project
+Assets archive adopts its read-only region through the shared refresh above.
+Dashboard, Projects and Calendar retain their host page; a clean confirmed
+deletion on the record's own detail/assets page retires its content and follows
+the server's list destination once. Failed host refresh offers GET-only Retry
+without repeating the mutation.
+
+A lost/unreadable answer keeps an entity-specific hold and its unsaved draft
+across dismissal/reopening. Check again reads `GET /projects/:id/edit` or
+`GET /releases/:id/edit`: an active/present result cannot release a request that
+may still run. An archived or missing result can establish the current terminal
+state, without attributing it to that request. Observed deletion retires the
+record's own page and offers navigation rather than leaving automatically.
+Project direct-link return navigation is additionally guarded by
+`vetoAppDialogReturn(document, id, predicate)` in `app-dialogs.js`, so dismissal
+cannot discard an unresolved/recovery hold or its draft. The shared Edit Release
+dialog has no return-location navigation. Release holds also block the affected
+record's Review & Publish and Dashboard scheduling; Delete holds block Posting
+Helper launch and scheduling Undo.
+
+The business boundaries remain distinct. Project Archive is a database-only
+operational transition preserving `project_dir`; it does not inspect or move the
+folder. Project Delete accepts an existing active or archived project, removes
+its releases and owned metadata transactionally, and uses identity-checked
+folder quarantine. A deleted row with incomplete folder cleanup remains a
+deletion with a warning and explicit destination link; failed restoration keeps
+a recovery hold that GETs cannot clear. Release Archive/Delete reject archived
+releases and archived parent projects. Published releases may still be archived
+or deleted when otherwise eligible; Release Delete removes the release and its
+asset associations, leaving project files/assets intact.
+
+**Asset Detail local actions.**
+[`asset-edit-dialog.js`](src/static/client/asset-edit-dialog.js) owns Tag Save,
+Project/Book primary-image Set/Remove, Rename, Move and Delete in the mounted
+Edit Asset dialog. Enhanced forms request JSON; native routes remain supported.
+A dialog-local coordinator refuses overlapping actions, captures each payload
+before freezing controls, and keeps drafts separate from saved baselines.
+Authentication, CSRF, project/asset ownership, archive eligibility, primary-image
+eligibility and file safety remain with the existing routes/services, not the
+browser. Rename and Move keep the asset ID, project and detail URL.
+
+`refreshAssetViewer(document, { projectId, assetId, regions })` in
+[`asset-viewer-refresh.js`](src/static/client/asset-viewer-refresh.js) reads the
+current detail URL with GET and installs only the requested `tags`,
+`primary-image` or `file` regions plus any regions still owed by an earlier
+failed/superseded read. It validates identity and all required regions before
+installation, returning `installed`, `failed`, `superseded`, `missing` or
+`unavailable`. Starting a mutation invalidates older reads. The dialog and other
+drafts stay mounted; file reconciliation updates metadata, links and media in
+place where possible, rebuilding media only when its kind changes. Saved
+baselines advance from acknowledged responses or authoritative GETs without
+overwriting unrelated drafts. Retry refresh and Check again repeat only GETs.
+
+Tag replacement calls `assetTagService.replaceAssetTags(assetId, tagIds,
+{ expectedReview })`: a digest binds project, asset and canonical saved tag set,
+and the repository compares that set inside the replacement transaction before
+any assignment changes (`TAG_SET_STALE`, `409`). Viewer Rename/Move pass
+`{ reviewed }`, and Delete calls `deleteAssets(projectId, assetIds, { reviewed })`
+with an asset-ID-to-token map. The witness from
+[`asset-delete-review.js`](src/services/asset-delete-review.js) binds project,
+asset, category, relative path and source generation; the action service checks
+it under the project lock before touching files. These are comparisons of
+recorded state, not additional monotonic tag/location revisions: returning to
+exactly the same witnessed state matches again. Primary-image Remove instead
+uses `clearPrimaryImage(..., expectedAssetId)` with an atomic match against the
+retained selection; Set retains its existing service eligibility checks.
+
+Lost Tag Save, Rename or Move answers keep all Edit Asset mutations held for the
+life of this document; a GET describes saved state but cannot settle those
+requests. Rename/Move recovery-required also keeps a hold pending folder
+inspection. Primary-image actions reconcile their displayed saved state through
+a GET and release refresh holds after installation, while still reporting that
+an uncertain POST was not confirmed. Delete requires the shared submit
+confirmation gate and leaves automatically only on clean server-confirmed
+deletion. Cleanup-incomplete deletion offers a link and warning; an uncertain
+Delete stays held, and a subsequent `404` retires the viewer without automatic
+navigation. No recovery path resends a mutation.
+
+**Project Assets Remove Missing.**
+[`remove-missing-assets.js`](src/static/client/remove-missing-assets.js) enhances
+the local confirmation for `POST /projects/:id/assets/remove-missing`.
+`assetActionService.removeMissingAssets(projectId)` runs under the project lock
+and removes eligible indexed missing records across the whole project,
+independent of displayed filters. Published-release assets remain protected;
+the repository transaction rechecks missing-record eligibility. This is database
+cleanup, not file deletion or a scan. The client takes counts/IDs from the
+acknowledged response and uses the shared Project Assets refresh. A lost answer
+keeps a document-local Remove Missing hold across dismissal and refreshed
+regions. There is no operation receipt: Check again can refresh observations
+but cannot settle that request or enable another removal on this document.
+
+**Settings category defaults.**
+[`settings-category-delete.js`](src/static/client/settings-category-delete.js)
+owns local Delete on Settings → Asset Categories. Confirmation uses saved name
+and slug and explains the global/project-copy boundary in §8. It gates direct
+submits as well as clicks, sends one JSON-requesting POST to
+`/settings/asset-categories/:id/delete`, and retains ownership by default ID
+while pending/unresolved. The affected row's Details/status/Delete, category
+reorder and native Add are held; unrelated settings/rows remain usable. Delete
+is also refused while its required list or save dependencies are busy/stale.
+Confirmed deletion removes the row, then refreshes the list and preference
+regions with GETs. A lost answer offers GET-only Check again: a present ID stays
+held, while an absent ID settles only that it is gone. Default IDs are never
+reused. Failed display refresh retains the confirmed outcome and offers Retry
+refresh, without repeating Delete.
+
+[`category-details.js`](src/static/client/category-details.js) autosaves the
+complete name/slug pair on change, serializing a latest queued payload behind
+an active save. It adopts only the matching details form, preserving text typed
+after submission and the focused control/caret. Queued saves following an
+acknowledged write use that write's saved pair as their review baseline; the
+server's atomic comparison (§8) remains authoritative. A stale refusal keeps
+the draft and exposes current saved details for explicit review. The host uses
+`setCategoryDetailsLifecycle(document, { requestStarted, answerInstalled })` to
+track what an answer can establish; receiving a replacement form alone does
+not make its whole-page render newer than an installed list GET.
+
+List reconciliation separates current category identity/eligibility from the
+saved pair against which an unsent draft was reviewed. Reads have sequence and
+local-change ownership: obsolete reads do not install, and current reads keep
+busy, changed or unsaved row bodies and preference regions. The current list's
+row metadata supplies authoritative ID/name/slug/enabled state unless a later
+Details answer establishes newer saved details. Historical response slugs are
+remembered as observations of that ID, not current choices; a new ID reusing a
+slug is judged independently. Only enabled current defaults are eligible
+Browser Default/Preview Category choices, enforced by their services. Removing
+or disabling a choice preserves stored unavailable values and unsaved selections
+with an accurate warning; reconciliation never saves a replacement preference.
+
+[`settings-asset-category-preferences-fetch-save.js`](src/static/client/settings-asset-category-preferences-fetch-save.js)
+acknowledges Save only from an OK redirected HTML response containing the
+initiating preference region. A login page or unrelated `200` cannot advance
+the acknowledged baseline. Before adopting a saved/refused render, the
+cancelable `ASSET_CATEGORY_PREFERENCE_ANSWER_EVENT` lets the category host reject
+obsolete category choices while retaining what the response establishes about
+the stored value. A list GET sent during a preference Save cannot roll back
+that Save's later acknowledgement. After a lost/unreadable or uninstalled answer,
+`ASSET_CATEGORY_PREFERENCE_SETTLED_EVENT` reconciles the retained options once
+the form is no longer busy. Lost/unreadable responses retain the last
+acknowledged stored value and report uncertainty. These events and GET
+refreshes never retry Save; only explicit
+user changes submit new values. Native preference and Details forms keep their
+POST/redirect or validation/conflict-render contracts.
+
 New Release forms omit Published date. The `POST /releases` route passes
 `publishedDate: null` to both creation service paths, so submitted form data
 cannot publish a release during creation. Publication remains available through
@@ -3123,6 +3396,27 @@ when it is known to be `running`. If close precedes the Apply `202`, the client
 makes the initial queued-cancellation attempt; a `409` means the job started in
 the race, so it is retained and polling resumes when the dialog reopens. No
 SSE/WebSocket transport is used for processing progress.
+
+**Processing result Refresh assets.**
+[`processing.js`](src/static/processing.js)'s `refreshAssetsFromResult()` binds
+the shared result control in
+[`processing-dialogs.njk`](src/views/partials/processing-dialogs.njk) for Rename,
+Convert, Image Workflow Editor, Watermark and Archives. It calls
+`refreshProjectAssetsAfterMutation()` only: the dialog, inputs and result remain
+mounted while filters, view style, selections (including hidden retained IDs)
+and order drafts follow the shared contract above. Repeated clicks join the
+pending refresh. Only `installed`, or a later owned `onRecovered` callback,
+reports success; failure offers the same GET as Retry, and supersession waits
+for the newer installation. A newer Preview/Apply/reset retires older refresh
+feedback ownership.
+
+Manual Refresh creates no Processing job, invokes no Apply and performs no
+filesystem scan. The separate `rescanProjectAssetsAfterApply()` behavior remains:
+completed Rename, Convert and Watermark run their existing automatic scan POST
+before starting the shared GET; Image Workflow Editor and Archives do not gain
+an automatic scan. Processing-triggered scans do not clear the manual-recovery
+gate. Refresh does not alter Apply eligibility, archived restrictions or recovery
+authority; it displays the server's current asset index.
 
 Dashboard Needs-a-date scheduling ([`dashboard.js`](src/static/client/dashboard.js))
 writes through the JSON-only `POST /releases/:id/schedule`, sending the

@@ -35,11 +35,15 @@
     </nav>
   {% endif %}
 
+  {# Re-installed by asset-viewer-refresh.js after a Rename or Move: an asset
+     moved or renamed out of the current filter stays shown, with this notice. #}
+  <div class="asset-viewer-region" data-asset-viewer-region="filter-notice" data-asset-viewer-filtered-out="{{ 'true' if filteredOut else 'false' }}">
   {% if filteredOut %}
     {% set noticeVariant = "warning" %}
     {% set noticeText = "This asset is outside the current asset-browser filters. Previous and Next links are unavailable for this filter context." %}
     {% include "partials/notice.njk" %}
   {% endif %}
+  </div>
 
   {% if notice %}
     {% set noticeVariant = "success" %}
@@ -55,7 +59,11 @@
 
   <section class="settings-section asset-preview-section" aria-labelledby="asset-preview-heading">
     <h2 id="asset-preview-heading">Preview</h2>
-    <div class="asset-preview-viewer">
+    {# The media host. asset-viewer-refresh.js identifies the page by these
+       IDs and never replaces it. After a Rename or Move it updates only what
+       the server now renders differently (the preview URL, labels, Previous/
+       Next); the media inside is rebuilt only when its kind changed. #}
+    <div class="asset-preview-viewer" data-asset-viewer-host data-asset-viewer-project-id="{{ project.id }}" data-asset-viewer-asset-id="{{ asset.id }}">
       {% if asset.preview.previewable and asset.preview_url %}
         <figure class="asset-preview-frame{% if asset.preview.kind == 'krita' %} asset-media--krita{% endif %}" data-preview-enhancement data-preview-state="loading">
           {% if asset.original_url %}
@@ -111,7 +119,12 @@
   <section class="settings-section asset-viewer-section asset-metadata-section" aria-labelledby="asset-metadata-heading">
     <h3 id="asset-metadata-heading">Metadata</h3>
     <div class="asset-viewer-section-body asset-metadata-section-body">
-      <dl class="detail-list asset-metadata asset-metadata--summary">
+      {# The saved file identity that Rename and Move reconcile against
+         (asset-viewer-refresh.js 'file' region). #}
+      <dl class="detail-list asset-metadata asset-metadata--summary" data-asset-viewer-region="file-summary"
+          data-asset-filename="{{ asset.filename }}"
+          data-asset-destination="{{ (asset.category_id if asset.category_id is not none else 'uncategorized') ~ '' }}"
+          data-asset-category-label="{{ asset.categoryLabel }}">
         <dt>Filename</dt>
         <dd><code>{{ asset.filename }}</code></dd>
 
@@ -121,7 +134,7 @@
 
       <section class="asset-metadata-group asset-metadata-group--panel" aria-labelledby="asset-metadata-file-details-heading">
         <h4 id="asset-metadata-file-details-heading" class="asset-metadata-group-title">File details</h4>
-        <dl class="detail-list asset-metadata">
+        <dl class="detail-list asset-metadata" data-asset-viewer-region="file-details">
           <dt>Category</dt>
           <dd>
             {{ asset.categoryLabel }}
@@ -203,7 +216,7 @@
 
   <section class="settings-section asset-viewer-section asset-tags-section" aria-labelledby="asset-tags-heading">
     <h3 id="asset-tags-heading">Tags</h3>
-    <div class="asset-viewer-section-body asset-tags-section-body">
+    <div class="asset-viewer-section-body asset-tags-section-body" data-asset-viewer-region="tags">
       {% if assetTags.length > 0 %}
         <ul class="tag-chip-list">
           {% for tag in assetTags %}

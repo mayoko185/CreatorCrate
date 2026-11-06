@@ -88,8 +88,13 @@
         </form>
       </div>
 
-      <div class="settings-section category-management-section category-management-list-section settings-category-management-section">
-        <h3>Current defaults</h3>
+      {# WP11C: Delete reports here, outside the list it refreshes. #}
+      <div class="notice notice--success app-dialog-feedback settings-category-delete-feedback" data-dialog-feedback role="status" hidden>
+        <p data-dialog-feedback-text></p>
+      </div>
+
+      <div class="settings-section category-management-section category-management-list-section settings-category-management-section" data-settings-category-defaults>
+        <h3 id="settings-category-defaults-heading" tabindex="-1">Current defaults</h3>
         {% if categories.length > 0 %}
           <form id="settings-category-reorder-form" method="post" action="/settings/asset-categories/reorder" class="category-reorder-form" data-category-reorder-form>
             <input type="hidden" name="_csrf" value="{{ _csrf }}">
@@ -114,8 +119,10 @@
               {% set rowEditErrors = {} %}
               {% set rowDisplayName = category.display_name %}
               {% set rowDirectorySlug = category.directory_slug %}
+              {% set rowEditConflict = null %}
               {% if editingId and editingId == category.id %}
                 {% set rowEditErrors = editErrors %}
+                {% set rowEditConflict = editConflict %}
                 {% set rowDisplayName = editValues.displayName %}
                 {% set rowDirectorySlug = editValues.directorySlug %}
               {% endif %}
@@ -128,6 +135,8 @@
                 role="listitem"
                 data-category-id="{{ category.id }}"
                 data-category-label="{{ category.display_name }}"
+                data-category-slug="{{ category.directory_slug }}"
+                data-category-enabled="{{ 'true' if category.enabled else 'false' }}"
                 data-category-reorder-item
                 draggable="true"
                 aria-posinset="{{ loop.index }}"
@@ -143,8 +152,20 @@
                 </button>
 
                 <div class="category-management-card-body">
-                  <form method="post" action="/settings/asset-categories/{{ category.id }}" class="category-details-form" novalidate data-category-details-form data-category-details-id="{{ category.id }}">
+                  <form method="post" action="/settings/asset-categories/{{ category.id }}" class="category-details-form" novalidate data-category-details-form data-category-details-id="{{ category.id }}"{% if rowEditConflict %} data-category-details-conflict="{{ rowEditConflict.kind }}"{% endif %}>
                     <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                    {# WP11C-F7: the saved details this form is based on, always from the database row (never the draft); the save is refused if they changed. #}
+                    <input type="hidden" name="reviewedDisplayName" value="{{ category.display_name }}" data-category-details-reviewed="displayName">
+                    <input type="hidden" name="reviewedDirectorySlug" value="{{ category.directory_slug }}" data-category-details-reviewed="directorySlug">
+                    {% if rowEditConflict and rowEditConflict.kind == 'stale' %}
+                      <div class="error-summary" role="alert" id="global-category-{{ category.id }}-details-errors">
+                        <p>This category was changed somewhere else, so these details were not saved. Saved now: “{{ rowEditConflict.current.displayName }}” with directory slug “{{ rowEditConflict.current.directorySlug }}”. Review the fields, then save again to replace the saved details.</p>
+                      </div>
+                    {% elif rowEditConflict %}
+                      <div class="error-summary" role="alert" id="global-category-{{ category.id }}-details-errors">
+                        <p>Could not save this category because the request did not say which saved details it was based on. Nothing was changed. Review the fields, then save again.</p>
+                      </div>
+                    {% endif %}
                     {% if rowEditErrors.displayName or rowEditErrors.directorySlug %}
                       <div class="error-summary" role="alert" id="global-category-{{ category.id }}-details-errors">
                         <p>Could not save this category. Fix the fields below and try again.</p>
@@ -191,9 +212,9 @@
                     </div>
 
                     <div class="category-management-actions">
-                      <form method="post" action="/settings/asset-categories/{{ category.id }}/delete" class="inline-form">
+                      <form method="post" action="/settings/asset-categories/{{ category.id }}/delete" class="inline-form" data-settings-category-delete-form data-category-delete-id="{{ category.id }}" data-confirm-submit-required>
                         <input type="hidden" name="_csrf" value="{{ _csrf }}">
-                        <button type="submit" class="button button-small button-danger" data-confirm="Delete this default category? Categories already copied into existing projects are not affected.">Delete</button>
+                        <button type="submit" class="button button-small button-danger" data-confirm="Delete this default category? Categories already copied into existing projects are not affected." data-confirm-dialog-title="Delete category default?" data-confirm-dialog-confirm-label="Delete default" aria-label="Delete {{ category.display_name }}">Delete</button>
                       </form>
                     </div>
                   </div>

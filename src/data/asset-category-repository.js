@@ -35,6 +35,17 @@ export function createAssetCategoryRepository(db) {
     WHERE id = ?
     RETURNING ${DEFAULT_COLUMNS.join(', ')}
   `);
+  // WP11C-F7: the details save with its stale-write precondition. One
+  // statement compares the row with the saved details the request was based
+  // on and writes only when they still match, so nothing can commit between
+  // the comparison and the write. BINARY: a change of case elsewhere is a
+  // change (the slug index itself is NOCASE).
+  const updateDefaultNameSlugIfUnchangedStmt = db.prepare(`
+    UPDATE asset_category_defaults
+    SET display_name = ?, directory_slug = ?, updated_at = datetime('now')
+    WHERE id = ? AND display_name = ? COLLATE BINARY AND directory_slug = ? COLLATE BINARY
+    RETURNING ${DEFAULT_COLUMNS.join(', ')}
+  `);
   const setDefaultEnabledStmt = db.prepare(`
     UPDATE asset_category_defaults
     SET enabled = ?, updated_at = datetime('now')
@@ -289,6 +300,18 @@ export function createAssetCategoryRepository(db) {
 
     updateDefaultNameSlug(id, { displayName, directorySlug }) {
       return updateDefaultNameSlugStmt.get(displayName, directorySlug, id);
+    },
+
+    /**
+     * WP11C-F7: writes the name and slug only while the row still holds
+     * `expected` (the saved details the request was based on). Returns the
+     * updated row, or undefined when the row is gone or no longer matches;
+     * nothing is written then.
+     */
+    updateDefaultNameSlugIfUnchanged(id, { displayName, directorySlug }, expected) {
+      return updateDefaultNameSlugIfUnchangedStmt.get(
+        displayName, directorySlug, id, expected.displayName, expected.directorySlug,
+      );
     },
 
     setDefaultEnabled(id, enabled) {
