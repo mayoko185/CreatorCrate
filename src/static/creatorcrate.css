@@ -10880,7 +10880,7 @@
 }
 /* In-body actions take the refined button sizing and variants; the footer
    already has them from the shared foundation. */
-.app-dialog--processing .processing-dialog-body .button,
+.app-dialog--processing .processing-dialog-body .button:not(.dashboard-create-action),
 .app-dialog--processing .processing-recovery-entry-point--dialog .button {
   gap: 0.375rem;
   min-height: var(--refined-control-height);
@@ -11104,6 +11104,74 @@
   gap: var(--space-sm);
   min-height: 1.5rem;
   cursor: pointer;
+}
+
+.app-dialog--processing-archive .processing-archive-entries,
+.app-dialog--processing-archive .processing-archive-naming-list,
+.app-dialog--processing-archive .processing-archive-entry-fields {
+  display: grid;
+  gap: var(--space-md);
+  min-width: 0;
+}
+.app-dialog--processing-archive .processing-archive-entry,
+.app-dialog--processing-archive .processing-archive-naming {
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-md);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.app-dialog--processing-archive :is(.processing-archive-entry, .processing-archive-naming) > legend {
+  padding-inline: var(--space-xs);
+  color: var(--text);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+.app-dialog--processing-archive .processing-archive-scope {
+  padding-bottom: var(--space-md);
+  border-bottom: 1px solid var(--border);
+}
+.app-dialog--processing-archive .processing-archive-scope > h3 {
+  margin-bottom: var(--space-sm);
+  font-size: 0.8125rem;
+}
+.app-dialog--processing-archive .processing-archive-names,
+.app-dialog--processing-archive .processing-archive-image-settings {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-md);
+  align-items: start;
+  min-width: 0;
+}
+.app-dialog--processing-archive .processing-archive-webp-settings {
+  display: grid;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+.app-dialog--processing-archive :is(.processing-archive-entry, .processing-archive-naming) .field {
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+}
+.app-dialog--processing-archive :is(input[type='text'], .cc-number-stepper, .processing-select-field, .cc-dropdown) {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+.app-dialog--processing-archive [data-archive-remove] {
+  justify-self: end;
+}
+.app-dialog--processing-archive [data-archive-add] {
+  align-self: start;
+}
+.app-dialog--processing-archive :is([data-archive-jpeg-options], [data-archive-webp-options], [data-archive-lossless-hint])[hidden] {
+  display: none;
+}
+@media (max-width: 600px) {
+  .app-dialog--processing-archive .processing-archive-names,
+  .app-dialog--processing-archive .processing-archive-image-settings {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .processing-watermark-thumb {

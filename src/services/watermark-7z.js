@@ -134,8 +134,12 @@ export async function create7zArchive(entries) {
     }
 
     module.FS.chdir('/input');
-    // Double dash stops 7z option parsing before untrusted entry names.
-    runCommand(module, ['a', '/output/archive.7z', '--', ...expected.keys()], 'creation');
+    // 7z sorts each new batch by name. Adding images individually copies existing
+    // blocks before the new member, preserving submitted order without renaming paths.
+    for (const name of expected.keys()) {
+      // Double dash stops 7z option parsing before untrusted entry names.
+      runCommand(module, ['a', '/output/archive.7z', '--', name], 'creation');
+    }
     const archive = Buffer.from(module.FS.readFile('/output/archive.7z'));
     assert7zSignature(archive);
 

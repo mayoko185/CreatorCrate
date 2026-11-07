@@ -36,7 +36,9 @@ function createRealPlannerForAsset(relativePath) {
   // Planning verifies ownership: give the fake project a bound marker.
   const ownershipToken = generateProjectOwnershipToken();
   createProjectOwnershipMarker(path.join(projectsRoot, projectDirectory), ownershipToken);
-  const asset = { id: 9, project_id: 1, relative_path: relativePath, is_present: 1 };
+  const assets = (Array.isArray(relativePath) ? relativePath : [relativePath]).map((value, index) => ({
+    id: 9 + index, project_id: 1, relative_path: value, is_present: 1,
+  }));
   const assetProcessingPlanner = createAssetProcessingPlanner({
     projectDirectoryOwnershipRepository: {
       findByProjectId: (projectId) => ({ projectId, token: ownershipToken, state: 'bound' }),
@@ -45,8 +47,8 @@ function createRealPlannerForAsset(relativePath) {
       resolveAssetProcessingScope: (_projectId, scope) => ({
         projectId: 1,
         scope,
-        assetIds: [asset.id],
-        assets: [asset],
+        assetIds: assets.map((asset) => asset.id),
+        assets,
       }),
     },
     projectRepository: {
@@ -57,10 +59,12 @@ function createRealPlannerForAsset(relativePath) {
       findPublishedReleaseAssetIds: () => [],
     },
     assetCategoryService: { listProjectCategories: () => [] },
+    generatedArtifactRepository: { findByProjectIdAndPath: () => null },
     projectsRoot,
   });
   return {
     assetProcessingPlanner,
+    projectDir: path.join(projectsRoot, projectDirectory),
     cleanup: () => fs.rmSync(projectsRoot, { recursive: true, force: true }),
   };
 }
@@ -175,6 +179,107 @@ function createHarness(overrides = {}) {
 }
 
 describe('processing HTTP routes', () => {
+  it.each([
+    { archives: [{ archiveFormat: 'cb7', imageFormat: 'png' }] },
+    { makeCbz: true },
+  ])('blocks case-insensitive converted members on Preview and Apply for %j', async (options) => {
+    const real = createRealPlannerForAsset(['Final/page.png', 'Final/PAGE.webp']);
+    try {
+      fs.mkdirSync(path.join(real.projectDir, 'Final'));
+      for (const filename of ['page.png', 'PAGE.webp']) {
+        fs.writeFileSync(path.join(real.projectDir, 'Final', filename), 'source bytes; planning does not render');
+      }
+      const { app, services } = createHarness({ assetProcessingPlanner: real.assetProcessingPlanner });
+      const enqueue = vi.spyOn(services.processingJobService, 'enqueue');
+      const reserve = vi.spyOn(services.processingJobService, 'reserveSubmission');
+      const body = { scope: { type: 'selected', assetIds: [9, 10] }, options };
+      const preview = await request(app).post('/projects/1/assets/processing/archive/plan').send(body).expect(200);
+      expect(preview.body.plan.operationBlockers).toContainEqual(expect.objectContaining({ code: 'ARCHIVE_ENTRY_COLLISION' }));
+      expect(preview.body.plan.archives).toEqual([]);
+      const apply = await request(app).post('/projects/1/assets/processing/archive/apply').send(body).expect(400);
+      expect(apply.body.error.code).toBe('ARCHIVE_ENTRY_COLLISION');
+      expect(enqueue).not.toHaveBeenCalled();
+      expect(reserve).toHaveBeenCalledOnce();
+      expect(services.alreadyCoordinatedProcessingExecutor.createArchives).not.toHaveBeenCalled();
+      expect(services.processingJobService.hasActiveJobs()).toBe(false);
+      expect(fs.readdirSync(path.join(real.projectDir, 'Final')).sort()).toEqual(['PAGE.webp', 'page.png']);
+    } finally {
+      real.cleanup();
+    }
+  });
+
+  it('previews explicit archives through the real planner and revalidates them on Apply before enqueue', async () => {
+    const real = createRealPlannerForAsset('source.png');
+    try {
+      fs.writeFileSync(path.join(real.projectDir, 'source.png'), 'source bytes; Preview does not render');
+      const planArchives = vi.spyOn(real.assetProcessingPlanner, 'planArchives');
+      const { app, services } = createHarness({ assetProcessingPlanner: real.assetProcessingPlanner });
+      const enqueue = vi.spyOn(services.processingJobService, 'enqueue');
+      const reserve = vi.spyOn(services.processingJobService, 'reserveSubmission');
+      const body = { scope: { type: 'selected', assetIds: [9] }, options: { archives: [
+        { archiveFormat: 'zip', imageFormat: 'jpeg', setName: 'First' },
+        { archiveFormat: 'cb7', imageFormat: 'png', setName: 'Second' },
+      ] } };
+      const preview = await request(app).post('/projects/1/assets/processing/archive/plan').send(body).expect(200);
+      expect(preview.body.plan).toMatchObject({ executionSupported: true, operationBlockers: [], archives: [
+        { configurationIndex: 0, filename: 'First_jpg_q80.zip', format: 'zip', imageFormat: 'jpeg', quality: 80, status: 'ready' },
+        { configurationIndex: 1, filename: 'Second_png.cb7', containerFormat: '7z', imageFormat: 'png', status: 'ready' },
+      ] });
+      const normalizedBody = { ...body, options: preview.body.plan.options };
+      const apply = await request(app).post('/projects/1/assets/processing/archive/apply').send(normalizedBody).expect(202);
+      expect(apply.body.jobId).toEqual(expect.any(String));
+      await services.processingJobService.waitForIdle();
+      expect(planArchives).toHaveBeenCalledTimes(2);
+      expect(reserve).toHaveBeenCalledTimes(1);
+      expect(services.processingJobService.hasActiveJobs()).toBe(false);
+      expect(enqueue).toHaveBeenCalledTimes(1);
+      expect(services.alreadyCoordinatedProcessingExecutor.createArchives).toHaveBeenCalledTimes(1);
+      expect(services.alreadyCoordinatedProcessingExecutor.createArchives).toHaveBeenCalledWith(
+        1, [9], preview.body.plan.options, expect.any(Function),
+      );
+
+      fs.writeFileSync(path.join(real.projectDir, 'First_jpg_q80.zip'), 'appeared after Preview');
+      const conflict = await request(app).post('/projects/1/assets/processing/archive/apply').send(normalizedBody).expect(409);
+      expect(conflict.body.error.code).toBe('ARCHIVE_DESTINATION_CONFLICT');
+      expect(planArchives).toHaveBeenCalledTimes(3);
+      expect(services.processingJobService.hasActiveJobs()).toBe(false);
+      expect(enqueue).toHaveBeenCalledTimes(1);
+    } finally {
+      real.cleanup();
+    }
+  });
+
+  it.each([
+    [{ archives: [] }, 'INVALID_ARCHIVE_ENTRIES'],
+    [{ archives: [{ archiveFormat: 'rar', imageFormat: 'jpeg' }] }, 'INVALID_ARCHIVE_FORMAT'],
+    [{ archives: [{ archiveFormat: 'zip', imageFormat: 'jpeg', quality: 0 }] }, 'INVALID_ARCHIVE_QUALITY'],
+    [{ archives: [{ archiveFormat: 'zip', imageFormat: 'png', lossless: false }] }, 'INVALID_ARCHIVE_LOSSLESS'],
+    [{ archives: [{ archiveFormat: 'zip', imageFormat: 'jpeg' }], makeArchives: true }, 'AMBIGUOUS_ARCHIVE_OPTIONS'],
+    [{ archives: [0, 1].map(() => ({ archiveFormat: 'zip', imageFormat: 'jpeg' })) }, 'INTRA_BATCH_COLLISION'],
+  ])('validates explicit archive requests on Preview and Apply: %j', async (options, code) => {
+    const real = createRealPlannerForAsset('source.png');
+    try {
+      fs.writeFileSync(path.join(real.projectDir, 'source.png'), 'source bytes');
+      const { app, services } = createHarness({ assetProcessingPlanner: real.assetProcessingPlanner });
+      const enqueue = vi.spyOn(services.processingJobService, 'enqueue');
+      for (const mode of ['plan', 'apply']) {
+        const response = await request(app).post(`/projects/1/assets/processing/archive/${mode}`)
+          .send({ scope: { type: 'selected', assetIds: [9] }, options });
+        if (mode === 'plan' && code === 'INTRA_BATCH_COLLISION') {
+          expect(response.status).toBe(200);
+          expect(response.body.plan.operationBlockers[0].code).toBe(code);
+        } else {
+          expect(response.status).toBe(400);
+          expect(response.body.error.code).toBe(code);
+        }
+      }
+      expect(enqueue).not.toHaveBeenCalled();
+      expect(services.processingJobService.hasActiveJobs()).toBe(false);
+    } finally {
+      real.cleanup();
+    }
+  });
+
   it.each([
     ['convert', { format: 'webp', quality: 85, originalHandling: 'keep' }],
     ['workflow-prompt', { positive: [], negative: [] }],

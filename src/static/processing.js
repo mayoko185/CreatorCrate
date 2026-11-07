@@ -9,6 +9,7 @@ import {
   initializeCreatorCrateDropdown,
 } from './client/dropdowns.js';
 import { RECOVERY_DETAILS_SYNC_EVENT } from './client/processing-recovery-details.js';
+import { collectArchiveOptions, initializeArchiveEditor, resetArchiveEditor, setArchiveEditorFrozen } from './client/archive-dialog.js';
 
 /**
  * Processing actions: Rename, Convert, Workflow Prompt Editor, Watermark, and Archives
@@ -911,6 +912,7 @@ function applyOptionsToForm(root, config) {
 
 function setBusy(root, busy) {
   root.__ccProcessingBusy = busy;
+  if (root.dataset.processingOperation === 'archive') setArchiveEditorFrozen(root, busy);
   root.querySelectorAll('[data-processing-preview], [data-processing-apply]').forEach((button) => {
     if (button.hasAttribute('data-processing-apply') && !root.__ccPreviewValid) return;
     button.disabled = busy;
@@ -921,7 +923,15 @@ function setBusy(root, busy) {
 }
 
 function invalidatePreview(root) {
+  const hadPreview = root.__ccPreviewValid;
   root.__ccPreviewValid = false;
+  if (root.dataset.processingOperation === 'archive') {
+    if (hadPreview || root.__ccArchivePreviewAttempt) setStatus(root, 'Archive configuration changed. Run Preview again.');
+    root.__ccArchivePreviewRevision = (root.__ccArchivePreviewRevision || 0) + 1;
+    root.__ccLastPreviewBody = null;
+    const plan = root.querySelector('[data-processing-plan]');
+    if (plan) plan.hidden = true;
+  }
   clearWatermarkVisualPreview(root);
   const applyButton = root.querySelector('[data-processing-apply]');
   if (applyButton) {
@@ -964,7 +974,9 @@ function showError(root, message) {
   }
   error.hidden = false;
   const text = error.querySelector('[data-processing-error-text]');
-  if (text) text.textContent = message;
+  if (text) text.textContent = root.dataset.processingOperation === 'archive'
+    ? message.replace(/archives\[(\d+)\]/g, (_, index) => `Archive ${Number(index) + 1}`)
+    : message;
 }
 
 function clearPlan(root) {
@@ -1283,20 +1295,27 @@ function renderRenameResult(body, result) {
   body.append(p);
 }
 
-const ARCHIVE_KIND_LABELS = {
-  'archive-jpg': 'JPEG archive',
-  'archive-webp': 'WebP archive',
-  'archive-cbz': 'CBZ',
-};
-
-function archiveKindLabel(kind) {
-  return ARCHIVE_KIND_LABELS[kind] || 'Archive';
-}
-
 function archiveContainerLabel(archive) {
   const format = String(archive.containerFormat || archive.format || '').toUpperCase();
+  if (archive.imageFormat) return `${String(archive.format || format).toUpperCase()} (${format} container)`;
   return archive.kind === 'archive-cbz' ? `CBZ (${format || 'ZIP'} container)` : (format || 'archive');
 }
+
+function archiveImageLabel(archive) {
+  const imageFormat = archive.imageFormat || (archive.kind === 'archive-webp' ? 'webp'
+    : archive.kind === 'archive-png' ? 'png' : 'jpeg');
+  if (imageFormat === 'png') return 'PNG';
+  if (imageFormat === 'webp' && archive.lossless) return 'WebP lossless';
+  return `${imageFormat === 'webp' ? 'WebP lossy' : 'JPEG'}, quality ${archive.quality ?? 'default'}`;
+}
+
+const ARCHIVE_OWNERSHIP_MESSAGES = {
+  'replace-disabled': 'Enable Replace existing archives to replace this CreatorCrate output.',
+  foreign: 'An existing file is not a CreatorCrate archive. Choose a different name.',
+  'invalid-provenance': 'Replacement ownership could not be verified. Inspect the existing output or choose a different name.',
+  'externally-replaced': 'The existing output has changed outside CreatorCrate. Inspect it or choose a different name.',
+  'creatorcrate-owned-replace': 'The existing CreatorCrate archive will be replaced.',
+};
 
 function renderArchivePlanDetails(root, plan) {
   const details = root.querySelector('[data-processing-archive-plan-details]');
@@ -1316,12 +1335,13 @@ function renderArchivePlanDetails(root, plan) {
     details.append(heading);
     const list = document.createElement('ul');
     list.className = 'processing-plan-items';
-    archives.forEach((archive) => {
+    archives.forEach((archive, index) => {
       const li = document.createElement('li');
       li.className = `processing-plan-item processing-plan-item--${archive.status || 'unknown'}`;
       const status = archive.status || 'unknown';
       const entryLabel = archive.entryCount === 1 ? 'entry' : 'entries';
-      li.textContent = `${archiveKindLabel(archive.kind)}: ${basename(archive.relativePath)} — ${archiveContainerLabel(archive)}, quality ${archive.quality}, ${archive.entryCount ?? 0} ${entryLabel}; ${status}.`;
+      li.textContent = `Archive ${(archive.configurationIndex ?? index) + 1}: ${archive.relativePath} — ${archiveContainerLabel(archive)}, ${archiveImageLabel(archive)}, ${archive.entryCount ?? 0} ${entryLabel}; ${status}.`;
+      if (ARCHIVE_OWNERSHIP_MESSAGES[archive.ownership]) li.append(` ${ARCHIVE_OWNERSHIP_MESSAGES[archive.ownership]}`);
       if (archive.reasonCode) {
         const reason = document.createElement('span');
         reason.className = 'processing-plan-item-reason';
@@ -1344,7 +1364,8 @@ function renderArchivePlanDetails(root, plan) {
       const li = document.createElement('li');
       li.className = 'processing-plan-item processing-plan-item--conflict';
       const target = blocker.relativePath ? ` (${basename(blocker.relativePath)})` : '';
-      li.textContent = `${blocker.reason || blocker.code || 'This plan cannot be applied.'}${target}`;
+      li.textContent = `${blocker.reason || blocker.code || 'This plan cannot be applied.'}${target}`
+        .replace(/archives\[(\d+)\]/g, (_, index) => `Archive ${Number(index) + 1}`);
       list.append(li);
     });
     details.append(list);
@@ -1369,11 +1390,12 @@ function renderArchiveResult(body, result) {
 
   if (artifacts.length > 0) {
     const list = document.createElement('ul');
-    artifacts.forEach((artifact) => {
+    const configurations = body.closest(ROOT_SELECTOR)?.__ccArchiveSubmittedBody?.options.archives || [];
+    artifacts.forEach((artifact, index) => {
       const li = document.createElement('li');
       const container = String(artifact.containerFormat || artifact.format || '').toUpperCase();
       const entryLabel = artifact.entryCount === 1 ? 'entry' : 'entries';
-      li.textContent = `${basename(artifact.relativePath)} — ${container || 'archive'} container, ${artifact.entryCount ?? 0} ${entryLabel}, quality ${artifact.quality ?? 'default'}.`;
+      li.textContent = `Archive ${index + 1}: ${artifact.relativePath} — ${String(artifact.format || container).toUpperCase()} (${container || 'archive'} container), ${archiveImageLabel({ ...configurations[index], ...artifact })}, ${artifact.entryCount ?? 0} ${entryLabel}.`;
       list.append(li);
     });
     body.append(list);
@@ -1741,7 +1763,7 @@ function bindDirtyTracking(root) {
       syncWatermarkProcessingState(root);
       return;
     }
-    if (!event.target.closest('[data-processing-field], [data-processing-scope], [data-processing-category-select], [data-processing-rule-row], [data-processing-rename-basename]')) return;
+    if (!event.target.closest('[data-processing-field], [data-processing-scope], [data-processing-category-select], [data-processing-rule-row], [data-processing-rename-basename], [data-archive-field], [data-archive-replace]')) return;
     if (event.target.closest('[data-processing-field="outputCategorySlug"]')) {
       root.__ccMissingPresetOutputCategory = false;
       syncWatermarkProcessingState(root);
@@ -1758,6 +1780,7 @@ function bindDirtyTracking(root) {
   root.addEventListener('change', (event) => {
     handleChange(event);
   });
+  root.addEventListener('cc:archive-configuration-change', () => invalidatePreview(root));
 }
 
 function bindScopeControls(root) {
@@ -2129,6 +2152,9 @@ function applyWorkflowRulesToForm(root, side, ruleList) {
 
 function buildRequestBody(root) {
   const operation = root.dataset.processingOperation;
+  if (operation === 'archive') {
+    return { scope: resolveScope(root), options: collectArchiveOptions(root) };
+  }
   if (operation === 'rename') {
     const selected = getSelectedRenameAssets(liveDocument(root));
     if (selected.length === 0) {
@@ -2185,6 +2211,9 @@ function buildRequestBody(root) {
 
 async function runPreview(root) {
   if (root.__ccProcessingBusy) return;
+  const archive = root.dataset.processingOperation === 'archive';
+  if (archive) invalidatePreview(root);
+  const revision = root.__ccArchivePreviewRevision;
   showError(root, '');
   clearPlan(root);
   let body;
@@ -2194,13 +2223,25 @@ async function runPreview(root) {
     showError(root, error.message);
     return;
   }
-  setBusy(root, true);
+  if (!archive) setBusy(root, true);
+  const attempt = {};
+  if (archive) root.__ccArchivePreviewAttempt = attempt;
+  const isCurrent = () => {
+    if (!archive) return true;
+    if (root.__ccArchivePreviewAttempt !== attempt || root.__ccArchivePreviewRevision !== revision) return false;
+    try { return JSON.stringify(buildRequestBody(root)) === JSON.stringify(body); } catch { return false; }
+  };
   setStatus(root, 'Loading preview…');
   try {
     const payload = await processingFetchJson(
       OPERATION_PLAN_PATH(root.dataset.projectId, root.dataset.processingOperation),
       { csrf: root.dataset.csrf, body },
     );
+    if (!isCurrent()) return;
+    if (archive && (payload.plan?.operation !== 'archive' || !Array.isArray(payload.plan.archives)
+      || !Array.isArray(payload.plan.items))) {
+      throw new ProcessingRequestError('The archive preview returned an unexpected response. Run Preview again.');
+    }
     const canApply = renderPlan(root, payload.plan);
     root.__ccPreviewValid = canApply;
     root.__ccLastPreviewBody = JSON.stringify(body);
@@ -2214,6 +2255,7 @@ async function runPreview(root) {
     }
     setStatus(root, canApply ? 'Preview ready.' : 'Preview ready, but conflicts or blockers must be resolved before Apply.');
   } catch (error) {
+    if (!isCurrent()) return;
     if (error.code === PROCESSING_RECOVERY_REQUIRED_CODE) {
       enterProcessingRecoveryRequired(root, error.message);
     } else {
@@ -2221,7 +2263,8 @@ async function runPreview(root) {
       setStatus(root, '');
     }
   } finally {
-    setBusy(root, false);
+    if (!archive) setBusy(root, false);
+    else if (root.__ccArchivePreviewAttempt === attempt) root.__ccArchivePreviewAttempt = null;
   }
 }
 
@@ -2319,6 +2362,7 @@ async function pollProcessingJob(root) {
     if (!nextJob || nextJob.id !== job.id || typeof nextJob.state !== 'string') {
       throw new ProcessingRequestError('The processing job returned an unexpected response. Try again.');
     }
+    if (root.dataset.processingOperation === 'archive') showError(root, '');
     job.state = nextJob.state;
     job.progress = nextJob.progress || null;
 
@@ -2408,6 +2452,7 @@ function bindProcessingJobLifecycle(root) {
   markBound(root, 'jobLifecycle');
   const dialog = root.closest?.('dialog');
   dialog?.addEventListener('close', () => {
+    if (root.dataset.processingOperation === 'archive') invalidatePreview(root);
     const submission = root.__ccProcessingSubmission;
     if (submission) submission.closed = true;
     const job = root.__ccProcessingJob;
@@ -2425,6 +2470,17 @@ async function runApply(root) {
   } catch (error) {
     showError(root, error.message);
     return;
+  }
+
+  const archive = root.dataset.processingOperation === 'archive';
+  if (archive && JSON.stringify(body) !== root.__ccLastPreviewBody) {
+    invalidatePreview(root);
+    showError(root, 'The archive configuration changed. Run Preview again before applying.');
+    return;
+  }
+  if (archive) {
+    root.__ccArchiveSubmittedBody = body;
+    invalidatePreview(root);
   }
 
   const submission = {
@@ -2452,10 +2508,18 @@ async function runApply(root) {
         startProcessingJobPolling(root, payload.jobId);
       }
     } else {
+      if (archive) throw new ProcessingRequestError('The server did not return an archive job ID.');
       await completeApply(root, payload);
     }
   } catch (error) {
     if (root.__ccProcessingSubmission !== submission) return;
+    if (archive && (!error.status || error.status >= 500)) {
+      submission.uncertain = true;
+      showError(root, 'The archive submission outcome is unknown. Do not submit again. Check the project outputs and processing recovery details before reloading.');
+      setStatus(root, 'Archive submission could not be confirmed. Configuration remains locked to prevent duplicate generation.');
+      requestRecoveryDetailsSync(root);
+      return;
+    }
     if (error.code === PROCESSING_RECOVERY_REQUIRED_CODE) {
       enterProcessingRecoveryRequired(root, error.message);
     } else {
@@ -2465,6 +2529,7 @@ async function runApply(root) {
     }
   } finally {
     if (root.__ccProcessingSubmission !== submission) return;
+    if (submission.uncertain) return;
     root.__ccProcessingSubmission = null;
     if (!root.__ccProcessingJob) setBusy(root, false);
   }
@@ -2510,8 +2575,17 @@ function bindWatermarkPreviewLifecycle(root) {
 function onDialogOpen(root) {
   const submission = root.__ccProcessingSubmission;
   if (submission && submission.generation === root.__ccProcessingSubmissionGeneration) submission.closed = false;
+  if (root.dataset.processingOperation === 'archive'
+    && (root.__ccProcessingJob || submission || root.__ccProcessingBusy)) {
+    if (root.__ccProcessingJob) {
+      setBusy(root, true);
+      void pollProcessingJob(root);
+    }
+    return;
+  }
   if (!root.__ccProcessingJob && !submission && !root.__ccProcessingBusy) {
     resetFields(root);
+    if (root.dataset.processingOperation === 'archive') resetArchiveEditor(root);
     if (root.dataset.processingOperation === 'workflow-prompt') {
       applyWorkflowRulesToForm(root, 'positive', null);
       applyWorkflowRulesToForm(root, 'negative', null);
@@ -2557,7 +2631,13 @@ function bindDialogOpenTriggers(document) {
 
   document.addEventListener('change', (event) => {
     if (!event.target.matches(ASSET_CHECKBOX_SELECTOR)) return;
-    document.querySelectorAll(ROOT_SELECTOR).forEach((root) => updateScopeDisplay(root));
+    document.querySelectorAll(ROOT_SELECTOR).forEach((root) => {
+      if (root.dataset.processingOperation === 'archive') {
+        if (root.__ccProcessingBusy) return;
+        invalidatePreview(root);
+      }
+      updateScopeDisplay(root);
+    });
   });
 }
 
@@ -2828,6 +2908,7 @@ export function enhanceProcessingDialogs(scope = globalThis.document) {
     bindWatermarkPreviewLifecycle(root);
     bindDeleteSourceWarning(root);
     bindRuleAdders(root);
+    initializeArchiveEditor(root);
     updateScopeDisplay(root);
     syncWatermarkFormatSettings(root);
     syncWatermarkProcessingState(root);

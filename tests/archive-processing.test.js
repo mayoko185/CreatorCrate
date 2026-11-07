@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
+import { encode as encodeBmp } from '@nktkas/bmp';
 import yauzl from 'yauzl';
 import { closeDatabase, openDatabase, runMigrations } from '../src/db.js';
 import { createAssetCategoryRepository } from '../src/data/asset-category-repository.js';
@@ -23,7 +24,10 @@ import { createAssetProcessingService } from '../src/services/asset-processing-s
 import { createApplicationLogger } from '../src/services/application-logger.js';
 import { createProjectOperationCoordinator } from '../src/services/project-operation-coordinator.js';
 import { createProcessingConcurrencyService } from '../src/services/processing-concurrency-service.js';
+import { createProcessingJobService } from '../src/services/processing-job-service.js';
+import { createProcessingRecoveryGateRepository } from '../src/data/processing-recovery-gate-repository.js';
 import { read7zArchiveEntries } from '../src/services/watermark-7z.js';
+import { read7zEntryNames } from './helpers/seven-zip.js';
 import { createProjectDirectoryOwnershipRepository } from '../src/data/project-directory-ownership-repository.js';
 import {
   replaceStageAfterClose,
@@ -574,12 +578,12 @@ describe('standalone archive processing', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  async function writeIndexedImage(relativePath, { format = 'png' } = {}) {
+  async function writeIndexedImage(relativePath, { format = 'png', buffer } = {}) {
     const normalized = relativePath.replace(/\\/g, '/');
     const filename = path.posix.basename(normalized);
     const target = path.join(projectDir, ...normalized.split('/'));
     fs.mkdirSync(path.dirname(target), { recursive: true });
-    const bytes = await makeImage({ width: 240, height: 120, format });
+    const bytes = buffer ?? await makeImage({ width: 240, height: 120, format });
     fs.writeFileSync(target, bytes);
     const stats = fs.statSync(target);
     return assetRepository.upsert(project.id, normalized, {
@@ -1283,6 +1287,410 @@ describe('standalone archive processing', () => {
     );
   });
 
+  it('previews independent archive configurations without rendering or mutation', async () => {
+    const source = await writeIndexedImage('Final/nested/preview.png');
+    const options = { archives: [
+      { archiveFormat: 'zip', imageFormat: 'jpeg', quality: 72, setName: 'JPEG' },
+      { archiveFormat: 'cb7', imageFormat: 'webp', lossless: true, setName: 'Lossless' },
+      { archiveFormat: 'cbz', imageFormat: 'png', setName: 'PNG' },
+    ] };
+    const scope = { type: 'selected', assetIds: [source.id] };
+    const plan = planner.planArchives(project.id, scope, options);
+    expect(plan).toMatchObject({ executionSupported: true, sourceCount: 1, entryCount: 3, operationBlockers: [] });
+    expect(plan.archives).toMatchObject([
+      { configurationIndex: 0, imageFormat: 'jpeg', quality: 72, relativePath: 'JPEG_jpg_q72.zip', status: 'ready' },
+      { configurationIndex: 1, imageFormat: 'webp', lossless: true, containerFormat: '7z', relativePath: 'Lossless_webp_lossless.cb7', status: 'ready' },
+      { configurationIndex: 2, imageFormat: 'png', containerFormat: 'zip', relativePath: 'PNG_png.cbz', status: 'ready' },
+    ]);
+    expect(plan.items[0].plannedDestination.formats).toEqual(['jpg', 'webp', 'png']);
+    expect(planner.planArchives(project.id, scope, JSON.parse(JSON.stringify(plan.options)))).toEqual(plan);
+    expect(generatedArtifactRepository.listByProjectId(project.id)).toEqual([]);
+    expect(stagingWorkspaces(projectDir, '.creatorcrate-watermark-')).toEqual([]);
+    expect(fs.existsSync(path.join(projectDir, 'JPEG_jpg_q72.zip'))).toBe(false);
+  });
+
+  describe('explicit archive batch execution', () => {
+    const configurations = () => [
+      { archiveFormat: 'zip', imageFormat: 'jpeg', quality: 61, setName: 'JPEG' },
+      { archiveFormat: '7z', imageFormat: 'webp', quality: 73, setName: 'WebP' },
+      { archiveFormat: 'cbz', imageFormat: 'png', setName: 'PNG' },
+      { archiveFormat: 'cb7', imageFormat: 'webp', lossless: true, quality: 1, setName: 'Lossless' },
+    ];
+    const evidence = () => createProcessingRecoveryEvidenceRepository(db);
+    const assertSettled = () => {
+      expect(evidence().listUnresolvedEvidenceByProject(project.id)).toEqual([]);
+      expect(evidence().listMutationGroupsByProject(project.id)).toEqual([]);
+      expect(stagingWorkspaces(projectDir, '.creatorcrate-watermark-')).toEqual([]);
+    };
+
+    it.each(['zip', 'cbz', '7z', 'cb7'])('keeps nonalphabetical selected order through planning and %s execution', async (archiveFormat) => {
+      const first = await writeIndexedImage('Final/page_01.png', { width: 11, height: 2 });
+      const second = await writeIndexedImage('Final/page_02.png', { width: 12, height: 2 });
+      const third = await writeIndexedImage('Final/page_03.png', { width: 13, height: 2 });
+      const selected = [third, first, second];
+      const names = selected.map((source) => source.relative_path);
+      const contents = selected.map((source) => fs.readFileSync(path.join(projectDir, source.relative_path)));
+      const scope = { type: 'selected', assetIds: selected.map((source) => source.id) };
+      const plan = planner.planArchives(project.id, scope, {
+        archives: [{ archiveFormat, imageFormat: 'png', setName: 'Selected' }],
+      });
+      expect(plan.assetIds).toEqual(scope.assetIds);
+      expect(plan.archives[0].entryNames).toEqual(names);
+      const result = await processingService.createArchives(project.id, plan.assetIds, plan.options);
+      expect(result.sources.map((source) => source.assetId)).toEqual(scope.assetIds);
+      const outputPath = path.join(projectDir, result.generatedPaths[0]);
+      const archive = fs.readFileSync(outputPath);
+      const sevenZip = archiveFormat === '7z' || archiveFormat === 'cb7';
+      const members = sevenZip ? await read7zArchiveEntries(archive)
+        : (await readZipEntries(outputPath)).map(({ name, data }) => ({ name, buffer: data }));
+      expect(sevenZip ? await read7zEntryNames(archive) : members.map((member) => member.name)).toEqual(names);
+      expect(members).toHaveLength(names.length);
+      for (const member of members) {
+        expect(member.buffer).toEqual(await sharp(contents[names.indexOf(member.name)]).rotate().png().toBuffer());
+      }
+      assertSettled();
+    });
+
+    it('generates all mixed configurations in one job and commits their records together', async () => {
+      const first = await writeIndexedImage('Final/z-last.png');
+      const second = await writeIndexedImage('Final/nested/a-first.png');
+      const scope = { type: 'selected', assetIds: [second.id, first.id] };
+      const before = [second, first].map((asset) => fs.readFileSync(path.join(projectDir, asset.relative_path)));
+      const plan = planner.planArchives(project.id, scope, {
+        archives: configurations(), outputDirectory: './Exports/nested/',
+      });
+      const snapshots = [];
+      const apply = assetRepository.applyAssetWatermarks.bind(assetRepository);
+      const persistence = vi.spyOn(assetRepository, 'applyAssetWatermarks').mockImplementation((...args) => {
+        expect(db.inTransaction).toBe(true);
+        expect(snapshots.at(-1)).toEqual({ completed: 4, total: 5 });
+        for (const archive of plan.archives) expect(fs.existsSync(path.join(projectDir, archive.relativePath))).toBe(true);
+        expect(args[1].artifactOutputs).toHaveLength(4);
+        return apply(...args);
+      });
+      const jobs = createProcessingJobService({ projectOperationCoordinator: createProjectOperationCoordinator() });
+      const execute = vi.fn(async ({ jobId, updateProgress }) => processingService.createArchives(
+        project.id, plan.assetIds, JSON.parse(JSON.stringify(plan.options)),
+        Object.assign((value) => { snapshots.push(value); updateProgress(value); }, { jobId }),
+      ));
+      const jobId = jobs.enqueue({ projectId: project.id, operation: 'archive', execute });
+      await jobs.waitForIdle();
+      persistence.mockRestore();
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(jobs.getJob(jobId)).toMatchObject({ state: 'succeeded', progress: { completed: 5, total: 5 },
+        result: { generatedCount: 4, sourceCount: 2, generatedPaths: plan.archives.map((archive) => archive.relativePath) } });
+      expect(snapshots.map((value) => value.completed)).toEqual([0, 1, 2, 3, 4, 5]);
+      const result = jobs.getJob(jobId).result;
+      expect(result.sources.map((source) => source.assetId)).toEqual(scope.assetIds);
+      expect(result.artifacts.map((artifact) => artifact.relativePath)).toEqual(plan.archives.map((archive) => archive.relativePath));
+      for (const [index, archive] of plan.archives.entries()) {
+        const outputPath = path.join(projectDir, archive.relativePath);
+        const output = fs.readFileSync(outputPath);
+        const members = archive.containerFormat === 'zip'
+          ? (await readZipEntries(outputPath)).map(({ name, data }) => ({ name, buffer: data }))
+          : await read7zArchiveEntries(output);
+        const expectedNames = result.sources.map((source) => source.entryPaths[index].relativePath);
+        expect(archive.containerFormat === 'zip' ? members.map((member) => member.name) : await read7zEntryNames(output))
+          .toEqual(expectedNames);
+        expect(members.map((member) => member.name).sort()).toEqual([...expectedNames].sort());
+        for (const member of members) {
+          const sourceIndex = expectedNames.indexOf(member.name);
+          const pipeline = sharp(before[sourceIndex], { animated: false }).rotate();
+          const expected = archive.imageFormat === 'jpeg' ? pipeline.jpeg({ quality: archive.quality })
+            : archive.imageFormat === 'png' ? pipeline.png()
+              : pipeline.webp(archive.lossless ? { lossless: true } : { quality: archive.quality, lossless: false });
+          expect(member.buffer).toEqual(await expected.toBuffer());
+        }
+        expect(generatedArtifactRepository.findByProjectIdAndPath(project.id, archive.relativePath)).toMatchObject({
+          id: result.artifacts[index].id, kind: archive.kind, generated_by: 'archives',
+          generated_mode: 'standalone', generated_watermark_id: null, sha256: sha256(output),
+          size_bytes: output.length, output_provenance: expect.any(String),
+        });
+      }
+      for (const [index, asset] of [second, first].entries()) {
+        expect(fs.readFileSync(path.join(projectDir, asset.relative_path))).toEqual(before[index]);
+      }
+      assertSettled();
+    });
+
+    it('executes one explicit entry and replaces equivalent legacy artifacts without changing kinds', async () => {
+      const source = await writeIndexedImage('Final/single.png');
+      const legacy = await processingService.createArchives(project.id, [source.id], { makeCbz: true });
+      const options = { archives: [
+        { archiveFormat: 'zip', imageFormat: 'jpeg' },
+        { archiveFormat: 'zip', imageFormat: 'webp' },
+        { archiveFormat: 'cbz', imageFormat: 'jpeg' },
+      ], replaceExistingArchives: true };
+      const replacement = await processingService.createArchives(project.id, [source.id], options);
+      expect(replacement.artifacts.map(({ id, kind, relativePath }) => ({ id, kind, relativePath })))
+        .toEqual(legacy.artifacts.map(({ id, kind, relativePath }) => ({ id, kind, relativePath })));
+      const single = await processingService.createArchives(project.id, [source.id], {
+        archives: [{ archiveFormat: 'cb7', imageFormat: 'png', prefix: 'one-', baseName: 'comic' }],
+      });
+      expect(single).toMatchObject({ generatedCount: 1, generatedPaths: ['one-comic_png.cb7'] });
+      expect((await read7zArchiveEntries(fs.readFileSync(path.join(projectDir, single.generatedPaths[0]))))
+        .map((entry) => entry.name)).toEqual(['Final/single.png']);
+      assertSettled();
+    });
+
+    it('keeps directory-scope repository order through planning and execution', async () => {
+      await writeIndexedImage('Final/z.png');
+      await writeIndexedImage('Final/a.png');
+      const scope = { type: 'directory', relativePath: 'Final', recursive: true };
+      const plan = planner.planArchives(project.id, scope, { archives: [configurations()[0]] });
+      const result = await processingService.createArchives(project.id, plan.assetIds, plan.options);
+      expect(result.sources.map((source) => source.assetId)).toEqual(plan.assetIds);
+      expect((await readZipEntries(path.join(projectDir, result.generatedPaths[0]))).map((entry) => entry.name))
+        .toEqual(plan.items.filter((item) => plan.assetIds.includes(item.assetId))
+          .map((item) => item.relativePath.replace(/\.png$/, '.jpg')));
+    });
+
+    it.each([
+      [{ archives: [] }, 'INVALID_ARCHIVE_ENTRIES'],
+      [{ archives: [{ archiveFormat: 'cbr', imageFormat: 'jpeg' }] }, 'INVALID_ARCHIVE_FORMAT'],
+      [{ archives: [{ archiveFormat: 'zip', imageFormat: 'bmp' }] }, 'INVALID_ARCHIVE_IMAGE_FORMAT'],
+      [{ archives: [{ archiveFormat: 'zip', imageFormat: 'jpeg', quality: 101 }] }, 'INVALID_ARCHIVE_QUALITY'],
+      [{ archives: [{ archiveFormat: 'zip', imageFormat: 'png', quality: 80 }] }, 'INVALID_ARCHIVE_QUALITY'],
+      [{ archives: [{ archiveFormat: 'zip', imageFormat: 'jpeg', lossless: true }] }, 'INVALID_ARCHIVE_LOSSLESS'],
+      [{ archives: [{ archiveFormat: 'zip', imageFormat: 'webp', lossless: 'true' }] }, 'INVALID_ARCHIVE_LOSSLESS'],
+      [{ archives: [configurations()[0], configurations()[0]] }, 'INTRA_BATCH_COLLISION'],
+      [{ archives: [configurations()[0]], makeArchives: true }, 'AMBIGUOUS_ARCHIVE_OPTIONS'],
+    ])('validates direct service options before staging: %j', async (options, code) => {
+      const source = await writeIndexedImage('Final/invalid.png');
+      await expect(processingService.createArchives(project.id, [source.id], options)).rejects.toMatchObject({ code });
+      expect(fs.existsSync(path.join(projectDir, '.creatorcrate-watermark-staging'))).toBe(false);
+      expect(generatedArtifactRepository.listByProjectId(project.id)).toEqual([]);
+      assertSettled();
+    });
+
+    it('rejects an empty direct selection before staging', async () => {
+      await expect(processingService.createArchives(project.id, [], { archives: configurations() }))
+        .rejects.toMatchObject({ code: 'NO_ASSETS_SELECTED' });
+      expect(fs.existsSync(path.join(projectDir, '.creatorcrate-watermark-staging'))).toBe(false);
+    });
+
+    it.runIf(process.platform === 'win32')('rejects case-insensitive direct destinations before staging', async () => {
+      const source = await writeIndexedImage('Final/case.png');
+      await expect(processingService.createArchives(project.id, [source.id], { archives: [
+        { archiveFormat: 'zip', imageFormat: 'jpeg', setName: 'Same' },
+        { archiveFormat: 'zip', imageFormat: 'jpeg', setName: 'same' },
+      ] })).rejects.toMatchObject({ code: 'INTRA_BATCH_COLLISION' });
+      expect(fs.existsSync(path.join(projectDir, '.creatorcrate-watermark-staging'))).toBe(false);
+    });
+
+    it.each(['disabled', 'foreign', 'modified'])('rejects %s replacement for the whole explicit batch before staging', async (mode) => {
+      const source = await writeIndexedImage('Final/conflict.png');
+      const options = { archives: [configurations()[0]] };
+      await processingService.createArchives(project.id, [source.id], options);
+      const target = path.join(projectDir, 'JPEG_jpg_q61.zip');
+      if (mode === 'foreign') replaceWithForeignFile(target, fs.readFileSync(target));
+      if (mode === 'modified') fs.writeFileSync(target, 'externally modified archive');
+      const before = fs.readFileSync(target);
+      const records = generatedArtifactRepository.listByProjectId(project.id);
+      const service = makeProcessingService({ sharpImplementation: () => { throw new Error('must not render'); } });
+      await expect(service.createArchives(project.id, [source.id], {
+        archives: [configurations()[2], configurations()[0]], replaceExistingArchives: mode !== 'disabled',
+      })).rejects.toMatchObject({ code: 'ARCHIVE_DESTINATION_CONFLICT' });
+      expect(fs.readFileSync(target)).toEqual(before);
+      expect(fs.existsSync(path.join(projectDir, 'PNG_png.cbz'))).toBe(false);
+      expect(generatedArtifactRepository.listByProjectId(project.id)).toEqual(records);
+      assertSettled();
+    });
+
+    it.each(['generation', 'publication', 'database'])('rolls back the entire explicit batch after later %s failure', async (phase) => {
+      const source = await writeIndexedImage('Final/rollback.png');
+      const options = { archives: configurations() };
+      const initial = await processingService.createArchives(project.id, [source.id], { archives: options.archives.slice(0, 2) });
+      const before = initial.generatedPaths.map((relativePath) => fs.readFileSync(path.join(projectDir, relativePath)));
+      const previousRows = generatedArtifactRepository.listByProjectId(project.id);
+      fs.writeFileSync(path.join(projectDir, source.relative_path), await makeImage({ width: 12, height: 18 }));
+      let renders = 0;
+      const service = makeProcessingService({ sharpImplementation: (...args) => {
+        if (++renders === 4 && phase === 'generation') throw new Error('private C:/tools/renderer.exe failure');
+        return sharp(...args);
+      } });
+      const realOpen = fs.openSync.bind(fs);
+      const open = vi.spyOn(fs, 'openSync').mockImplementation((target, flags, ...rest) => {
+        if (phase === 'publication' && path.resolve(String(target)) === path.join(projectDir, 'Lossless_webp_lossless.cb7') && flags === 'wx+') {
+          // All four stages exist before the first public create, including the failing destination.
+          expect(renders).toBe(4);
+          throw Object.assign(new Error('injected later publication failure'), { code: 'EIO' });
+        }
+        return realOpen(target, flags, ...rest);
+      });
+      const apply = assetRepository.applyAssetWatermarks.bind(assetRepository);
+      const persist = vi.spyOn(assetRepository, 'applyAssetWatermarks').mockImplementation((...args) => {
+        const result = apply(...args);
+        if (phase === 'database') {
+          expect(db.inTransaction).toBe(true);
+          expect(generatedArtifactRepository.listByProjectId(project.id)).toHaveLength(4);
+          throw new Error('injected after artifact records were written');
+        }
+        return result;
+      });
+      const progress = [];
+      let error;
+      try { error = await service.createArchives(project.id, [source.id], { ...options, replaceExistingArchives: true },
+        (value) => progress.push(value)).catch((failure) => failure); }
+      finally { open.mockRestore(); persist.mockRestore(); }
+      expect(error).toMatchObject({ code: phase === 'generation' ? 'ARCHIVE_BUILD_FAILED'
+        : phase === 'database' ? 'DATABASE_OPERATION_FAILED' : 'FILESYSTEM_OPERATION_FAILED' });
+      expect(progress.every(({ completed, total }) => completed < total)).toBe(true);
+      for (const [index, relativePath] of initial.generatedPaths.entries()) {
+        expect(fs.readFileSync(path.join(projectDir, relativePath))).toEqual(before[index]);
+      }
+      expect(fs.existsSync(path.join(projectDir, 'PNG_png.cbz'))).toBe(false);
+      expect(fs.existsSync(path.join(projectDir, 'Lossless_webp_lossless.cb7'))).toBe(false);
+      const restoredRows = generatedArtifactRepository.listByProjectId(project.id);
+      expect(restoredRows.map(({ output_provenance: _, ...row }) => row))
+        .toEqual(previousRows.map(({ output_provenance: _, ...row }) => row));
+      for (const row of restoredRows) expect(row.output_provenance).toBe(provenanceTupleOf(path.join(projectDir, row.relative_path)));
+      assertSettled();
+      await processingService.createArchives(project.id, [source.id], { ...options, replaceExistingArchives: true });
+    });
+
+    it('fails one job and retains the recovery gate when a later publication prevents verified rollback', async () => {
+      const source = await writeIndexedImage('Final/recovery.png');
+      const gate = createProcessingRecoveryGateRepository(db);
+      const jobs = createProcessingJobService({ projectOperationCoordinator: createProjectOperationCoordinator() });
+      const firstPath = path.join(projectDir, 'JPEG_jpg_q61.zip');
+      const realOpen = fs.openSync.bind(fs);
+      const open = vi.spyOn(fs, 'openSync').mockImplementation((target, flags, ...rest) => {
+        if (path.resolve(String(target)) === path.join(projectDir, 'PNG_png.cbz') && flags === 'wx+') {
+          replaceWithForeignFile(firstPath, Buffer.from('foreign archive'));
+          throw Object.assign(new Error('C:/private/tools/archive.exe\nsecret stack'), { code: 'EIO' });
+        }
+        return realOpen(target, flags, ...rest);
+      });
+      let executions = 0;
+      const jobId = jobs.enqueue({ projectId: project.id, execute: async ({ jobId, updateProgress }) => {
+        executions++;
+        const hold = gate.holdForProcessing(project.id);
+        try {
+          const result = await processingService.createArchives(project.id, [source.id], { archives: configurations() },
+            Object.assign(updateProgress, { jobId }));
+          hold.release();
+          return result;
+        } catch (error) {
+          if (error.code === 'RECOVERY_REQUIRED') hold.retain();
+          else hold.release();
+          throw error;
+        }
+      } });
+      try { await jobs.waitForIdle(); } finally { open.mockRestore(); }
+      expect(jobs.getJob(jobId)).toMatchObject({ state: 'failed', result: null,
+        error: { code: 'PROCESSING_RECOVERY_REQUIRED' }, progress: { completed: 4, total: 5 } });
+      expect(JSON.stringify(jobs.getJob(jobId))).not.toMatch(/private|archive\.exe|secret stack/);
+      expect(executions).toBe(1);
+      expect(gate.isRecoveryRequired(project.id)).toBe(true);
+      expect(fs.readFileSync(firstPath, 'utf8')).toBe('foreign archive');
+      expect(fs.existsSync(path.join(projectDir, 'WebP_webp_q73.7z'))).toBe(false);
+      expect(generatedArtifactRepository.listByProjectId(project.id)).toEqual([]);
+      expect(evidence().listUnresolvedEvidenceByProject(project.id)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ lifecycle: 'recovery-critical', artifactRole: 'archive-stage' }),
+      ]));
+    });
+
+    it('preserves every committed output on post-commit settlement failure without reporting rollback or success', async () => {
+      const source = await writeIndexedImage('Final/committed.png');
+      const repository = evidence();
+      const service = makeProcessingService({ ...processingRecoveryEvidenceDependencies(db, { repository: {
+        ...repository, clearMutationCheckpoint: () => { throw new Error('injected post-commit settlement failure'); },
+      } }) });
+      const progress = [];
+      await expect(service.createArchives(project.id, [source.id], { archives: configurations() },
+        (value) => progress.push(value))).rejects.toMatchObject({ code: 'RECOVERY_EVIDENCE_PERSISTENCE_FAILED' });
+      const records = generatedArtifactRepository.listByProjectId(project.id);
+      expect(records).toHaveLength(4);
+      for (const row of records) {
+        expect(sha256(fs.readFileSync(path.join(projectDir, row.relative_path)))).toBe(row.sha256);
+        expect(row.output_provenance).toBeTruthy();
+      }
+      expect(progress.at(-1)).toEqual({ completed: 4, total: 5 });
+      expect(evidence().listMutationGroupsByProject(project.id)).toHaveLength(4);
+      expect(evidence().listUnresolvedEvidenceByProject(project.id).filter((row) => row.artifactRole === 'archive-stage')
+        .every((row) => row.lifecycle === 'dispensable')).toBe(true);
+    });
+  });
+
+  it.each([
+    [['First', 'Second'], 0, 1, '1 and 2'],
+    [['First', 'Second', 'Third', 'Fourth'], 1, 3, '2 and 4'],
+  ])('blocks hard-linked archive destinations for %j with one-based display numbers', async (setNames, firstIndex, secondIndex, displayNumbers) => {
+    const source = await writeIndexedImage('Final/alias.png');
+    const first = path.join(projectDir, `${setNames[firstIndex]}_jpg_q80.zip`);
+    const second = path.join(projectDir, `${setNames[secondIndex]}_jpg_q80.zip`);
+    fs.writeFileSync(first, 'foreign archive');
+    fs.linkSync(first, second);
+    const plan = planner.planArchives(project.id, { type: 'selected', assetIds: [source.id] }, {
+      archives: setNames.map((setName) => ({ archiveFormat: 'zip', imageFormat: 'jpeg', setName })),
+      replaceExistingArchives: true,
+    });
+    expect(plan.archives.map((archive) => archive.configurationIndex)).toEqual(setNames.map((_, index) => index));
+    expect(plan.archives.map((archive) => archive.status))
+      .toEqual(setNames.map((_, index) => [firstIndex, secondIndex].includes(index) ? 'conflict' : 'ready'));
+    expect(plan.archives.map((archive) => archive.reasonCode))
+      .toEqual(setNames.map((_, index) => [firstIndex, secondIndex].includes(index) ? 'INTRA_BATCH_COLLISION' : null));
+    expect(plan.operationBlockers).toContainEqual(expect.objectContaining({
+      code: 'INTRA_BATCH_COLLISION', configurationIndex: secondIndex,
+      reason: `Archive configurations ${displayNumbers} target the same filesystem destination.`,
+    }));
+    await expect(processingService.createArchives(project.id, [source.id], plan.options))
+      .rejects.toMatchObject({ code: 'INTRA_BATCH_COLLISION' });
+    expect(fs.readFileSync(first, 'utf8')).toBe('foreign archive');
+    expect(fs.readFileSync(second, 'utf8')).toBe('foreign archive');
+  });
+
+  it('preserves existing replacement ownership checks for equivalent explicit entries', async () => {
+    const source = await writeIndexedImage('Final/owned.png');
+    await processingService.createArchives(project.id, [source.id], { setName: 'Owned' });
+    const scope = { type: 'selected', assetIds: [source.id] };
+    const options = { archives: [{ archiveFormat: 'zip', imageFormat: 'jpeg', setName: 'Owned' }] };
+    expect(planner.planArchives(project.id, scope, options).archives[0]).toMatchObject({
+      status: 'conflict', ownership: 'replace-disabled',
+    });
+    expect(planner.planArchives(project.id, scope, { ...options, replaceExistingArchives: true }).archives[0])
+      .toMatchObject({ status: 'ready', ownership: 'creatorcrate-owned-replace' });
+    fs.writeFileSync(path.join(projectDir, 'Owned_jpg_q80.zip'), 'foreign replacement');
+    expect(planner.planArchives(project.id, scope, { ...options, replaceExistingArchives: true }).archives[0])
+      .toMatchObject({ status: 'conflict', ownership: 'externally-replaced' });
+  });
+
+  it('reports duplicate destinations and converted member collisions as indexed planning blockers', async () => {
+    const source = await writeIndexedImage('Final/duplicate.png');
+    const scope = { type: 'selected', assetIds: [source.id] };
+    const entry = { archiveFormat: 'zip', imageFormat: 'jpeg' };
+    expect(planner.planArchives(project.id, scope, { archives: [entry, entry] }).operationBlockers)
+      .toContainEqual(expect.objectContaining({ code: 'INTRA_BATCH_COLLISION', reason: expect.stringContaining('archives[1]') }));
+    const other = await writeIndexedImage('Final/duplicate.webp', { format: 'webp' });
+    expect(planner.planArchives(project.id, { type: 'selected', assetIds: [source.id, other.id] }, { archives: [entry] }).operationBlockers)
+      .toContainEqual(expect.objectContaining({ code: 'ARCHIVE_ENTRY_COLLISION', reason: expect.stringContaining('archives[0]') }));
+  });
+
+  it.each([
+    { archives: [{ archiveFormat: 'cb7', imageFormat: 'png' }] },
+    { makeCbz: true },
+  ])('blocks case-insensitive converted members before staging for %j', async (options) => {
+    const first = await writeIndexedImage('Final/page.png');
+    const second = await writeIndexedImage('Final/PAGE.webp', { format: 'webp' });
+    const assetIds = [first.id, second.id];
+    const before = fs.readdirSync(projectDir, { recursive: true }).sort();
+    const sourceBytes = assetIds.map((id) => fs.readFileSync(path.join(projectDir, assetRepository.findById(id).relative_path)));
+    const plan = planner.planArchives(project.id, { type: 'selected', assetIds }, options);
+    expect(plan.operationBlockers).toContainEqual(expect.objectContaining({ code: 'ARCHIVE_ENTRY_COLLISION' }));
+    expect(plan.archives).toEqual([]);
+    await expect(processingService.createArchives(project.id, assetIds, options))
+      .rejects.toMatchObject({ code: 'ARCHIVE_ENTRY_COLLISION' });
+    expect(generatedArtifactRepository.listByProjectId(project.id)).toEqual([]);
+    expect(fs.readdirSync(projectDir, { recursive: true }).sort()).toEqual(before);
+    for (const [index, asset] of [first, second].entries()) {
+      expect(fs.readFileSync(path.join(projectDir, asset.relative_path))).toEqual(sourceBytes[index]);
+    }
+    const evidence = createProcessingRecoveryEvidenceRepository(db);
+    expect(evidence.listUnresolvedEvidenceByProject(project.id)).toEqual([]);
+    expect(evidence.listMutationGroupsByProject(project.id)).toEqual([]);
+  });
+
   it('plans selected and project scopes without mutation or WASM initialization', async () => {
     const selected = await writeIndexedImage('Final/nested/cover.png');
     const other = await writeIndexedImage('Final/other.webp', { format: 'webp' });
@@ -1340,10 +1748,11 @@ describe('standalone archive processing', () => {
     }, (snapshot) => progress.push(snapshot));
 
     expect(progress).toEqual([
-      { completed: 0, total: 3 },
-      { completed: 1, total: 3 },
-      { completed: 2, total: 3 },
-      { completed: 3, total: 3 },
+      { completed: 0, total: 4 },
+      { completed: 1, total: 4 },
+      { completed: 2, total: 4 },
+      { completed: 3, total: 4 },
+      { completed: 4, total: 4 },
     ]);
 
     expect(result).toMatchObject({
@@ -1461,7 +1870,7 @@ describe('standalone archive processing', () => {
     const result = await operation;
     const entries = await readZipEntries(path.join(projectDir, result.artifacts[0].relativePath));
 
-    expect(progress).toEqual([{ completed: 0, total: 1 }, { completed: 1, total: 1 }]);
+    expect(progress).toEqual([{ completed: 0, total: 2 }, { completed: 1, total: 2 }, { completed: 2, total: 2 }]);
     expect(entries.map((entry) => entry.name)).toEqual(['Final/first.jpg', 'Final/second.jpg']);
     expect(entries.map((entry) => entry.data.toString())).toEqual(['entry-0', 'entry-1']);
   });
@@ -1560,6 +1969,29 @@ describe('standalone archive processing', () => {
     expect(started).toEqual([0, 1]);
     expect(generatedArtifactRepository.listByProjectId(project.id)).toEqual([]);
     expect(fs.existsSync(path.join(projectDir, 'Failure_jpg_q85.cbz'))).toBe(false);
+  });
+
+  it('renders BMP through the shared decoder while preserving legacy defaults and source bytes', async () => {
+    const buffer = Buffer.from(encodeBmp({
+      width: 2, height: 2, channels: 3,
+      data: new Uint8Array([255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0]),
+    }, { bitsPerPixel: 24 }));
+    const source = await writeIndexedImage('Final/nested/source.bmp', { format: 'bmp', buffer });
+    const result = await processingService.createArchives(project.id, [source.id], { makeCbz: true });
+    expect(result.artifacts.map(({ relativePath }) => relativePath)).toEqual([
+      'archive_jpg_q80.zip', 'archive_webp_q90.zip', `archive_${project.slug}_jpg_q85.cbz`,
+    ]);
+    for (const [index, [format, quality]] of [['jpeg', 80], ['webp', 90], ['jpeg', 85]].entries()) {
+      const entries = await readZipEntries(path.join(projectDir, result.artifacts[index].relativePath));
+      expect(entries.map(({ name }) => name)).toEqual([`Final/nested/source.${format === 'jpeg' ? 'jpg' : 'webp'}`]);
+      const pipeline = sharp(Buffer.from([255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0]), {
+        raw: { width: 2, height: 2, channels: 3 },
+      }).rotate();
+      const expected = format === 'jpeg' ? pipeline.jpeg({ quality }) : pipeline.webp({ quality, lossless: false });
+      expect(entries[0].data).toEqual(await expected.toBuffer());
+    }
+    expect(fs.readFileSync(path.join(projectDir, 'Final/nested/source.bmp'))).toEqual(buffer);
+    expect(stagingWorkspaces(projectDir, '.creatorcrate-watermark-staging')).toEqual([]);
   });
 
   it('keeps ZIP and real 7z logical membership identical', async () => {

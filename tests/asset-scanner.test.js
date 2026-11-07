@@ -295,6 +295,8 @@ describe('asset scanner', () => {
     fs.writeFileSync(path.join(absPath, 'archive.zip'), 'zip data');
     fs.writeFileSync(path.join(absPath, 'comic.cbz'), 'cbz data');
     fs.writeFileSync(path.join(absPath, 'future.7z'), '7z data');
+    fs.writeFileSync(path.join(absPath, 'comic.cb7'), '7z data');
+    fs.writeFileSync(path.join(absPath, 'COMIC.CB7'), '7z data');
 
     const result = assetScanner.scanProjectAssets(project.id);
     expect(result.added).toBe(1);

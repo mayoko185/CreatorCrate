@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { create7zArchive } from './watermark-7z.js';
 import { validateArchiveNamePart } from './watermark-archive.js';
+import { pathKey } from './asset-processing-contracts.js';
 
 export const ARCHIVES_GENERATED_BY = 'archives';
 
@@ -35,7 +36,7 @@ function archiveOptionError(message, code, cause) {
   return new ArchiveProcessingError(message, { code, cause });
 }
 
-function normalizeOutputDirectory(value) {
+function normalizeOutputDirectory(value, { canonical = false } = {}) {
   if (typeof value !== 'string'
     || /[\u0000-\u001f\u007f]/.test(value)
     || value.startsWith('/')
@@ -47,7 +48,13 @@ function normalizeOutputDirectory(value) {
       'INVALID_OUTPUT_DIRECTORY',
     );
   }
-  return value.replace(/\\/g, '/').replace(/^\.\/?/, '').replace(/\/+$/, '');
+  const normalized = value.replace(/\\/g, '/');
+  if (canonical) {
+    const directory = path.posix.normalize(normalized || '.');
+    return directory === '.' ? '' : directory.replace(/\/+$/, '');
+  }
+  const directory = normalized.replace(/^(?:\.\/)+/, '').replace(/\/+$/, '');
+  return directory === '.' ? '' : directory;
 }
 
 function normalizeName(value, label, { allowEmpty = true } = {}) {
@@ -69,9 +76,100 @@ function archiveQuality(rawOptions, name, defaultValue) {
   return value;
 }
 
+const LEGACY_ARCHIVE_FIELDS = new Set([
+  'makeArchives', 'makeCbz', 'archiveFormat', 'zipJpgQuality', 'zipWebpQuality',
+  'cbzJpgQuality', 'setName', 'archivePrefix', 'zipBaseName', 'cbzPrefix',
+]);
+const ARCHIVE_ENTRY_FIELDS = new Set([
+  'archiveFormat', 'imageFormat', 'setName', 'prefix', 'baseName', 'quality', 'lossless',
+]);
+
+function normalizeEntryName(value, label, options) {
+  const name = normalizeName(value, label, options);
+  if (/[<>:"|?*]/.test(name)) {
+    throw archiveOptionError(`${label} must be a safe filename component.`, 'INVALID_ARCHIVE_NAME');
+  }
+  return name;
+}
+
+function normalizeArchiveEntry(entry, index) {
+  const field = `archives[${index}]`;
+  try {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw archiveOptionError('must be an archive configuration object.', 'INVALID_ARCHIVE_ENTRY');
+    }
+    for (const key of Object.keys(entry)) {
+      if (!ARCHIVE_ENTRY_FIELDS.has(key)) {
+        throw archiveOptionError(`contains an unsupported field: ${key}.`, 'INVALID_ARCHIVE_ENTRY');
+      }
+    }
+    const { archiveFormat, imageFormat } = entry;
+    if (!['zip', '7z', 'cbz', 'cb7'].includes(archiveFormat)) {
+      throw archiveOptionError('archiveFormat must be zip, 7z, cbz, or cb7.', 'INVALID_ARCHIVE_FORMAT');
+    }
+    if (!['jpeg', 'webp', 'png'].includes(imageFormat)) {
+      throw archiveOptionError('imageFormat must be jpeg, webp, or png.', 'INVALID_ARCHIVE_IMAGE_FORMAT');
+    }
+    if (Object.hasOwn(entry, 'lossless') && (imageFormat !== 'webp' || typeof entry.lossless !== 'boolean')) {
+      throw archiveOptionError('lossless must be a boolean and is valid only for WebP.', 'INVALID_ARCHIVE_LOSSLESS');
+    }
+    if (imageFormat === 'png' && Object.hasOwn(entry, 'quality')) {
+      throw archiveOptionError('quality is valid only for JPEG or WebP.', 'INVALID_ARCHIVE_QUALITY');
+    }
+    if (Object.hasOwn(entry, 'quality') && (!Number.isInteger(entry.quality) || entry.quality < 1 || entry.quality > 100)) {
+      throw archiveOptionError('quality must be an integer from 1 to 100.', 'INVALID_ARCHIVE_QUALITY');
+    }
+    const comic = archiveFormat === 'cbz' || archiveFormat === 'cb7';
+    return {
+      archiveFormat,
+      imageFormat,
+      setName: normalizeEntryName(entry.setName ?? '', 'setName'),
+      prefix: normalizeEntryName(entry.prefix ?? (comic ? 'archive_' : ''), 'prefix'),
+      ...(!comic || Object.hasOwn(entry, 'baseName') ? {
+        baseName: normalizeEntryName(entry.baseName ?? 'archive', 'baseName', { allowEmpty: false }),
+      } : {}),
+      ...(imageFormat !== 'png' ? {
+        quality: archiveQuality(entry, 'quality', imageFormat === 'webp' ? 90 : comic ? 85 : 80),
+      } : {}),
+      ...(imageFormat === 'webp' ? { lossless: entry.lossless ?? false } : {}),
+    };
+  } catch (cause) {
+    throw archiveOptionError(`${field}: ${cause.message}`, cause.code || 'INVALID_ARCHIVE_ENTRY', cause);
+  }
+}
+
 export function normalizeArchiveOptions(rawOptions = {}) {
   if (!rawOptions || typeof rawOptions !== 'object' || Array.isArray(rawOptions)) {
     throw archiveOptionError('Archive options are required.', 'INVALID_OPTIONS');
+  }
+
+  if (Object.hasOwn(rawOptions, 'archives')) {
+    if (!Array.isArray(rawOptions.archives) || rawOptions.archives.length === 0) {
+      throw archiveOptionError('archives must be a nonempty array.', 'INVALID_ARCHIVE_ENTRIES');
+    }
+    for (const key of Object.keys(rawOptions)) {
+      if (LEGACY_ARCHIVE_FIELDS.has(key)) {
+        throw archiveOptionError(`archives cannot be combined with legacy field ${key}.`, 'AMBIGUOUS_ARCHIVE_OPTIONS');
+      }
+      if (!['archives', 'outputDirectory', 'replaceExistingArchives'].includes(key)) {
+        throw archiveOptionError(`Archive options contain an unsupported field: ${key}.`, 'INVALID_ARCHIVE_OPTIONS');
+      }
+    }
+    const replaceExistingArchives = rawOptions.replaceExistingArchives ?? false;
+    if (typeof replaceExistingArchives !== 'boolean') {
+      throw archiveOptionError('replaceExistingArchives must be boolean.', 'INVALID_ARCHIVE_OPTIONS');
+    }
+    const outputDirectory = normalizeOutputDirectory(rawOptions.outputDirectory ?? '', { canonical: true });
+    if (outputDirectory.split('/').some((part) => /[<>:"|?*]|[. ]$/.test(part)
+      || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part))) {
+      throw archiveOptionError('The archive output directory must be a safe project-relative path.', 'INVALID_OUTPUT_DIRECTORY');
+    }
+    const options = {
+      archives: Array.from(rawOptions.archives, normalizeArchiveEntry),
+      outputDirectory,
+      replaceExistingArchives,
+    };
+    return options;
   }
 
   const makeArchives = rawOptions.makeArchives ?? true;
@@ -117,7 +215,7 @@ function normalizeEntryPath(value) {
     throw archiveOptionError('Archive source path is invalid.', 'ARCHIVE_ENTRY_UNSAFE');
   }
   const normalized = value.replace(/\\/g, '/');
-  if (normalized.startsWith('/')
+  if (normalized.startsWith('/') || /^[a-zA-Z]:/.test(normalized) || /[\u0000-\u001f\u007f]/.test(normalized)
     || normalized.split('/').some((part) => !part || part === '.' || part === '..')) {
     throw archiveOptionError('Archive entry path is unsafe.', 'ARCHIVE_ENTRY_UNSAFE');
   }
@@ -143,23 +241,34 @@ function cbzBase(options, projectSlug) {
   return options.setName.trim() || `${options.cbzPrefix}${projectSlug}`;
 }
 
-function addPlan(plans, { kind, format, containerFormat, quality, filename, extension, sources, options }) {
+function addPlan(plans, {
+  kind, format, containerFormat, quality, filename, extension, sources, options,
+  imageFormat, lossless, configurationIndex = plans.length,
+}) {
   const entries = sources.map((source) => ({
     name: replaceExtension(source.sourceRelativePath, extension),
     source,
   }));
-  const names = new Set();
+  const names = new Map();
   for (const entry of entries) {
-    if (names.has(entry.name)) {
-      throw archiveOptionError('Two archive sources would use the same entry name.', 'ARCHIVE_ENTRY_COLLISION');
+    // Archives must extract safely on case-insensitive filesystems on every host.
+    const key = entry.name.toLowerCase();
+    if (names.has(key)) {
+      throw archiveOptionError(
+        `Archive ${filename} has conflicting entry names: "${names.get(key)}" and "${entry.name}".`,
+        'ARCHIVE_ENTRY_COLLISION',
+      );
     }
-    names.add(entry.name);
+    names.set(key, entry.name);
   }
   plans.push({
     kind,
     format,
     containerFormat,
     quality,
+    configurationIndex,
+    imageFormat: imageFormat || (extension === 'jpg' ? 'jpeg' : extension),
+    ...(extension === 'webp' ? { lossless: lossless ?? false } : {}),
     relativePath: archiveRelativePath(options, filename),
     entries,
     variants: ['source'],
@@ -169,6 +278,43 @@ function addPlan(plans, { kind, format, containerFormat, quality, filename, exte
 export function deriveArchivePlans({ sources, options, projectSlug }) {
   if (!Array.isArray(sources)) {
     throw archiveOptionError('Archive sources are required.', 'INVALID_ARCHIVE_SOURCES');
+  }
+  if (options.archives) {
+    const plans = [];
+    const destinations = new Map();
+    for (const [configurationIndex, entry] of options.archives.entries()) {
+      try {
+        const { archiveFormat, imageFormat, quality, lossless } = entry;
+        const base = entry.setName.trim() || `${entry.prefix}${entry.baseName
+          ?? normalizeEntryName(String(projectSlug || 'project'), 'projectSlug', { allowEmpty: false })}`;
+        const extension = imageFormat === 'jpeg' ? 'jpg' : imageFormat;
+        const suffix = imageFormat === 'png' ? 'png'
+          : lossless ? 'webp_lossless' : `${extension}_q${quality}`;
+        const filename = `${base}_${suffix}.${archiveFormat}`;
+        if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(filename)) {
+          throw archiveOptionError('The archive filename must not use a reserved device name.', 'INVALID_ARCHIVE_NAME');
+        }
+        const relativePath = archiveRelativePath(options, filename);
+        const key = pathKey(relativePath);
+        if (destinations.has(key)) {
+          throw archiveOptionError(`destination ${relativePath} duplicates archives[${destinations.get(key)}].`, 'INTRA_BATCH_COLLISION');
+        }
+        destinations.set(key, configurationIndex);
+        addPlan(plans, {
+          configurationIndex,
+          kind: archiveFormat === 'cbz' && imageFormat === 'jpeg' ? STANDALONE_ARCHIVE_KINDS.cbz
+            : STANDALONE_ARCHIVE_KINDS[imageFormat === 'jpeg' ? 'jpg' : imageFormat] || `archive-${imageFormat}`,
+          format: archiveFormat,
+          containerFormat: archiveFormat === 'cbz' ? 'zip' : archiveFormat === 'cb7' ? '7z' : archiveFormat,
+          imageFormat, quality, lossless, filename,
+          extension,
+          sources, options,
+        });
+      } catch (cause) {
+        throw archiveOptionError(`archives[${configurationIndex}]: ${cause.message}`, cause.code || 'ARCHIVE_PRECHECK_FAILED', cause);
+      }
+    }
+    return plans;
   }
   if (!options.makeArchives && !options.makeCbz) return [];
 
@@ -253,7 +399,10 @@ async function writeZipArchive(filePath, entries, descriptor) {
  */
 export async function writeArchiveFile(filePath, format, entries, { descriptor } = {}) {
   try {
-    if (format === '7z') {
+    if (!['zip', '7z', 'cbz', 'cb7'].includes(format)) {
+      throw archiveOptionError('archiveFormat must be zip, 7z, cbz, or cb7.', 'INVALID_ARCHIVE_FORMAT');
+    }
+    if (format === '7z' || format === 'cb7') {
       const bytes = await create7zArchive(entries);
       if (descriptor === undefined) fs.writeFileSync(filePath, bytes, { flag: 'wx' });
       else fs.writeFileSync(descriptor, bytes);

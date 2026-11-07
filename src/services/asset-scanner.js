@@ -20,7 +20,7 @@ const SKIP_FILENAMES = new Set([
   'Thumbs.db',
   'desktop.ini',
 ]);
-const SKIP_EXTENSIONS = new Set(['zip', 'cbz', '7z']);
+const SKIP_EXTENSIONS = new Set(['zip', 'cbz', '7z', 'cb7']);
 
 /**
  * Check if a filename is a temporary manifest file (e.g., .{hex}.project.json.tmp).

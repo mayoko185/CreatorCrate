@@ -986,6 +986,9 @@ export function createAssetProcessingPlanner({
     const resolved = resolveScope(projectId, scope);
     const items = [];
     const sources = [];
+    const imageFormats = options.archives
+      ? [...new Set(options.archives.map((entry) => entry.imageFormat === 'jpeg' ? 'jpg' : entry.imageFormat))]
+      : ['jpg', 'webp'];
 
     for (const asset of resolved.assets) {
       let item = baseItem(asset);
@@ -1002,8 +1005,8 @@ export function createAssetProcessingPlanner({
         plannedDestination: {
           operation: 'archive',
           sourceRelativePath: item.relativePath,
-          formats: ['jpg', 'webp'],
-          cbz: options.makeCbz,
+          formats: imageFormats,
+          cbz: options.archives ? options.archives.some((entry) => entry.archiveFormat === 'cbz') : options.makeCbz,
         },
         sourceAction: {
           type: 'keep',
@@ -1026,7 +1029,7 @@ export function createAssetProcessingPlanner({
           status: 'ready',
           reasonCode: null,
           reason: null,
-          changed: options.makeArchives || options.makeCbz,
+          changed: Boolean(options.archives) || options.makeArchives || options.makeCbz,
         });
       } catch (err) {
         items.push(itemError(item, err, err.code || 'SOURCE_PATH_UNSAFE', 'The asset could not be planned for archiving.'));
@@ -1059,6 +1062,8 @@ export function createAssetProcessingPlanner({
     }
 
     const archives = [];
+    const destinationPaths = new Map();
+    const destinationIdentities = new Map();
     for (const plan of plans) {
       let status = 'ready';
       let reasonCode = null;
@@ -1066,8 +1071,29 @@ export function createAssetProcessingPlanner({
       try {
         const outputPath = resolveContained(resolved.projectDir, plan.relativePath, 'ARCHIVE_PATH_UNSAFE', 'Archive');
         const stats = inspectOptionalFile(outputPath, 'ARCHIVE_PATH_UNSAFE', 'Archive');
+        const destinationKey = pathKey(stats ? fs.realpathSync(outputPath) : outputPath);
+        const identity = stats ? fs.lstatSync(outputPath, { bigint: true }) : null;
+        const identityKey = identity?.ino > 0n ? `${identity.dev}:${identity.ino}` : null;
+        const prior = destinationPaths.get(destinationKey) ?? (identityKey ? destinationIdentities.get(identityKey) : undefined);
+        if (prior !== undefined) {
+          const previous = archives[prior];
+          previous.status = 'conflict';
+          previous.reasonCode = 'INTRA_BATCH_COLLISION';
+          status = 'conflict';
+          reasonCode = 'INTRA_BATCH_COLLISION';
+          operationBlockers.push({
+            code: reasonCode,
+            reason: `Archive configurations ${previous.configurationIndex + 1} and ${plan.configurationIndex + 1} target the same filesystem destination.`,
+            configurationIndex: plan.configurationIndex,
+            relativePath: plan.relativePath,
+          });
+        }
+        destinationPaths.set(destinationKey, archives.length);
+        if (identityKey) destinationIdentities.set(identityKey, archives.length);
         const artifact = generatedArtifactRepository?.findByProjectIdAndPath(projectId, plan.relativePath) || null;
-        if (!artifact && stats) {
+        if (reasonCode === 'INTRA_BATCH_COLLISION') {
+          ownership = 'aliased-destination';
+        } else if (!artifact && stats) {
           status = 'conflict';
           reasonCode = 'ARCHIVE_DESTINATION_CONFLICT';
           ownership = 'foreign';
@@ -1107,10 +1133,14 @@ export function createAssetProcessingPlanner({
       }
 
       const archive = {
+        configurationIndex: plan.configurationIndex,
         kind: plan.kind,
         format: plan.format,
         containerFormat: plan.containerFormat,
+        imageFormat: plan.imageFormat,
+        ...(plan.imageFormat === 'webp' ? { lossless: plan.lossless } : {}),
         relativePath: plan.relativePath,
+        filename: path.posix.basename(plan.relativePath),
         quality: plan.quality,
         entryCount: plan.entries.length,
         variants: plan.variants,
@@ -1135,6 +1165,7 @@ export function createAssetProcessingPlanner({
       entryCount: archives.reduce((total, archive) => total + archive.entryCount, 0),
       archives,
       operationBlockers,
+      executionSupported: true,
     };
   }
 

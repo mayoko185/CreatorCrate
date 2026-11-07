@@ -78,7 +78,7 @@ export const EVIDENCE_POLICY_CATALOG = Object.freeze({
     'published-output': PUBLIC_TRACKING,
   }),
   archive: Object.freeze({
-    'archive-stage': privateRole('archive', `archive-${INDEX}\\.(?:zip|7z|cbz)`, 'destinationPath'),
+    'archive-stage': privateRole('archive', `archive-${INDEX}\\.(?:zip|7z|cbz|cb7)`, 'destinationPath'),
     'destination-backup': privateRole('archive', `archive-${INDEX}\\.destination`, 'destinationPath'),
     'published-archive': PUBLIC_TRACKING,
   }),

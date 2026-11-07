@@ -45,7 +45,8 @@ function elementByClass(source, tag, className) {
 }
 
 function scopeSection(dialogBody) {
-  return dialogBody.match(/<section class="settings-section processing-dialog-section" data-processing-scope[\s\S]*?<\/section>/)?.[0] || '';
+  return elementByClass(dialogBody, 'div', 'processing-archive-scope')
+    || dialogBody.match(/<section class="settings-section processing-dialog-section" data-processing-scope[\s\S]*?<\/section>/)?.[0] || '';
 }
 
 function sectionByData(source, attribute) {
@@ -214,18 +215,23 @@ describe('Processing dialog preset-management markup', () => {
     ].forEach((field) => expect(watermarkBody).not.toContain(`data-processing-field="${field}"`));
     expect(body).toContain('data-processing-operation="archive"');
     expect(body).not.toContain('data-processing-preset-select');
-    expect(body).toContain('Create JPEG/WebP archive pair');
-    expect(body).toContain('data-processing-field="makeArchives"');
-    expect(body).toContain('data-processing-field="archiveFormat"');
+    expect(body).toContain('Create archives');
+    expect(body).toContain('<summary>Advanced options</summary>');
+    expect(body).not.toContain('data-processing-field="makeArchives"');
+    expect(body).toContain('data-archive-field="archiveFormat"');
     expect(body).toContain('>ZIP<');
-    expect(body).toContain('>7z<');
+    expect(body).toContain('>7Z<');
+    expect(body).toContain('>CBZ<');
+    expect(body).toContain('>CB7<');
+    expect(body).not.toContain('>CBR<');
     expect(body).toContain('Set name');
-    expect(body).toContain('Archive prefix');
+    expect(body).toContain('Set prefix');
     expect(body).toContain('Base name');
-    expect(body).toContain('data-processing-field="replaceExistingArchives"');
-    expect(body).toContain('Create CBZ');
-    expect(body).toContain('data-processing-field="cbzJpgQuality"');
-    expect(body).toContain('data-processing-field="cbzPrefix"');
+    expect(body).toContain('data-archive-replace');
+    expect(body).toContain('data-archive-entry-template');
+    expect(body).not.toContain('data-archive-integration-notice');
+    expect(body).not.toContain('Archive pair');
+    expect(body).not.toContain('Advanced naming');
     expect(body).not.toContain('watermark-resource-select');
     expect(body).not.toContain('watermark-scale-map-select');
     expect(body).not.toContain('data-processing-field="scale"');
@@ -385,7 +391,7 @@ describe('Processing dialog preset-management markup', () => {
     for (const dialogId of ['processing-convert-dialog', 'processing-workflow-dialog', 'processing-watermark-dialog', 'processing-archive-dialog']) {
       const dialog = dialogBody(res.text, dialogId);
       const scope = scopeSection(dialog);
-      expect(scope).toMatch(/class="settings-section processing-dialog-section"[^>]*data-processing-scope[^>]*role="radiogroup"/);
+      expect(scope).toMatch(/class="(?:settings-section processing-dialog-section|processing-archive-scope)"[^>]*data-processing-scope[^>]*role="radiogroup"/);
       expect((scope.match(/data-processing-scope-option="(?:selected|category|project)"/g) || [])).toHaveLength(3);
       expect(scope).toContain('processing-dialog-section-body processing-scope-body');
       expect(scope).toMatch(/class="field field--checkbox processing-scope-option(?:\s[^"]*)?"/);

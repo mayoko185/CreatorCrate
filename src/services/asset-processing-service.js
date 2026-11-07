@@ -61,7 +61,6 @@ import {
   ArchiveProcessingError,
   deriveArchivePlans,
   normalizeArchiveOptions,
-  STANDALONE_ARCHIVE_KINDS,
   writeArchiveFile,
 } from './archive-processing.js';
 import {
@@ -159,6 +158,27 @@ function decodeBmpForSharp(sourceBuffer, sharpImplementation) {
   return sharpImplementation(Buffer.from(data), {
     raw: { width, height, channels },
   });
+}
+
+export async function renderArchiveImage({
+  sourceBuffer, sourceExtension, imageFormat, quality, lossless = false,
+  sharpImplementation = sharp,
+}) {
+  if (!['jpeg', 'webp', 'png'].includes(imageFormat)) {
+    throw new ArchiveProcessingError('Archive imageFormat must be jpeg, webp, or png.', {
+      code: 'INVALID_ARCHIVE_IMAGE_FORMAT',
+    });
+  }
+  const pipeline = (sourceExtension === 'bmp'
+    ? decodeBmpForSharp(sourceBuffer, sharpImplementation)
+    : sharpImplementation(sourceBuffer, { animated: false })).rotate();
+  if (imageFormat === 'png') return pipeline.png().toBuffer();
+  if (imageFormat === 'webp') {
+    // Lossless output must not inherit the lossy quality setting from a plan.
+    return (lossless ? pipeline.webp({ lossless: true })
+      : pipeline.webp({ quality, lossless: false })).toBuffer();
+  }
+  return pipeline.jpeg({ quality }).toBuffer();
 }
 
 function encodeBmpFromSharp(rawResult) {
@@ -1225,7 +1245,7 @@ export function createAssetProcessingService({
   }
 
   function preflightArchivePlans(project, projectId, projectDir, sources, options, provenance = {}) {
-    if (!options.makeArchives && !options.makeCbz) return [];
+    if (!options.archives && !options.makeArchives && !options.makeCbz) return [];
     if (options.archiveResizedOnlyBlocked) {
       throw new AssetProcessingError(
         'Refusing to create archives from resized-only output unless resized archive inclusion is explicitly enabled.',
@@ -1256,11 +1276,25 @@ export function createAssetProcessingService({
     }
     if (plans.some((plan) => plan.entries.length === 0)) return [];
 
+    const destinationPaths = new Set();
+    const destinationIdentities = new Set();
     for (const plan of plans) {
       plan.outputAbsPath = resolveContained(projectDir, plan.relativePath, 'ARCHIVE_PATH_UNSAFE', 'Archive');
       plan.outputDirectoryAbsPath = path.dirname(plan.outputAbsPath);
       plan.artifact = generatedArtifactRepository.findByProjectIdAndPath(projectId, plan.relativePath) || null;
       plan.destinationStats = inspectOptionalDestination(plan.outputAbsPath);
+      const destinationKey = pathKey(plan.destinationStats ? fs.realpathSync(plan.outputAbsPath) : plan.outputAbsPath);
+      const identity = plan.destinationStats ? fs.lstatSync(plan.outputAbsPath, { bigint: true }) : null;
+      const identityKey = identity?.ino > 0n ? `${identity.dev}:${identity.ino}` : null;
+      if (destinationPaths.has(destinationKey) || (identityKey && destinationIdentities.has(identityKey))) {
+        throw new AssetProcessingError('Two archives target the same filesystem destination.', {
+          code: 'INTRA_BATCH_COLLISION',
+        });
+      }
+      destinationPaths.add(destinationKey);
+      if (identityKey) destinationIdentities.add(identityKey);
+    }
+    for (const plan of plans) {
       plan.destinationIdentity = plan.destinationStats
         ? { dev: plan.destinationStats.dev, ino: plan.destinationStats.ino }
         : null;
@@ -5688,7 +5722,8 @@ export function createAssetProcessingService({
     }
     staging.items = [];
     staging.artifacts = archivePlans;
-    const progress = createProgressReporter(archivePlans.length, onProgress);
+    // Reserve the final unit for publication, persistence and evidence settlement.
+    const progress = createProgressReporter(archivePlans.length + 1, onProgress);
 
     try {
       ensureWatermarkOutputDirectories(archivePlans, projectDir);
@@ -5700,11 +5735,14 @@ export function createAssetProcessingService({
           projectDir,
           async (entry, plan) => {
             const sourceBuffer = readSourceBytes(entry.source);
-            const pipeline = sharpImplementation(sourceBuffer, { animated: false }).rotate();
-            if (plan.kind === STANDALONE_ARCHIVE_KINDS.webp) {
-              return pipeline.webp({ quality: plan.quality, lossless: false }).toBuffer();
-            }
-            return pipeline.jpeg({ quality: plan.quality }).toBuffer();
+            return renderArchiveImage({
+              sourceBuffer,
+              sourceExtension: deriveExtensionFromFilename(entry.source.sourceRelativePath),
+              imageFormat: plan.imageFormat,
+              quality: plan.quality,
+              lossless: plan.lossless,
+              sharpImplementation,
+            });
           },
           'CreatorCrate could not build a standalone archive.',
         );

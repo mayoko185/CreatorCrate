@@ -2071,6 +2071,124 @@ fails, prior successful renames remain committed and the job fails; there is no
 unsafe batch rename-back compensation. Category Auto Rename uses its own
 signed-plan contract below rather than a Processing job.
 
+### Standalone archive request planning
+
+The Archive dialog has two configuration sections: Create archives (scope and
+independent entries), and Advanced options (collapsed on fresh idle openings,
+run-wide replacement and per-entry base names). `client/archive-dialog.js`
+owns entry identity, add/remove, conditional image controls and focus. It uses
+the shared dropdown and numeric-input enhancements. Idle openings reset to
+one ZIP/JPEG 80 entry; active-job openings retain configuration and status.
+`+ archive` adds a fresh ZIP/JPEG 80 entry using the Dashboard New Project
+button styling; removal retains at least one entry.
+Entry IDs stay stable when displayed numbers change; advanced naming groups
+refer to the same IDs. JPEG and WebP qualities are stored separately, and
+lossless WebP disables rather than clears its lossy quality.
+
+`client/archive-dialog.js` collects entries in display order into
+`options.archives[]`, pairing advanced names by stable entry ID. It submits only
+applicable quality/lossless fields and run-wide replacement/output options;
+empty naming inputs are omitted so server defaults remain authoritative.
+`static/processing.js` uses the shared Preview/Apply/job polling and result
+lifecycle. Archive previews are guarded by a revision, request identity and
+current payload comparison; configuration and source-selection changes invalidate
+them. Apply requires the exact previewed payload, then freezes both configuration
+sections until the job terminates. Running-job reopenings retain configuration and
+job identity; idle openings restore defaults. Only terminal server success renders
+batch results. Refresh assets and its retry use the shared GET-only refresh path.
+An unreadable or missing Apply acknowledgement retains a locked, uncertain
+submission rather than permitting a duplicate POST. The current API has no job
+lookup without the returned job ID, so the user must inspect outputs and recovery
+details before reloading. Other operations retain their existing submission paths.
+
+The Archive processing endpoints accept either the existing flat options or
+`options.archives`, a nonempty array of independent configurations. Each entry
+has required `archiveFormat` (`zip`, `7z`, `cbz`, `cb7`) and `imageFormat`
+(`jpeg`, `webp`, `png`), plus optional `setName`, `prefix`, `baseName`, `quality`,
+and `lossless`. Entry fields are closed: run-wide controls belong outside the
+array. `outputDirectory` is project-relative and `replaceExistingArchives`
+defaults to false; source scope remains in the request's separate `scope`.
+Explicit entries cannot be combined with any legacy generation/naming fields.
+Directory normalization is idempotent, including repeated leading `./`
+segments; leading dots in directory names are preserved.
+
+`setName`, trimmed when nonempty, overrides prefix/base naming. ZIP/7Z default
+to empty prefix and base `archive`; CBZ/CB7 default to prefix `archive_` and the
+project slug as base. A supplied `baseName` overrides that fallback. Names and
+prefixes are safe filename components. JPEG quality defaults to 80 for ZIP/7Z
+and 85 for CBZ/CB7; WebP defaults to 90. Explicit qualities must be integers
+from 1 through 100. PNG rejects quality. Only WebP accepts boolean `lossless`
+(default false); its quality is still validated when supplied, but does not
+affect the lossless filename.
+
+Destinations retain the existing `_jpg_qN` and `_webp_qN` conventions, adding
+`_png` and `_webp_lossless` suffixes. The requested archive format determines
+the file extension; CBZ uses the ZIP container and CB7 the 7z container. Members
+retain source-relative directories with converted extensions. Plans and all four
+containers retain source order, including submitted selected-asset order. The
+shared bundled 7z writer adds encoded images individually: existing compressed
+blocks are copied before each new member, avoiding 7z's name sorting within a
+new batch. This uses one compressed block per image and repeated archive copying
+rather than solid compression across images. Signature and extracted-content
+validation still run after creation. Extracted directory traversal may group
+interleaved paths; archive-index listing determines stored member order.
+Converted member names are compared case-insensitively on every host, including
+their source-relative directories, so extraction cannot overwrite another member
+on a case-insensitive filesystem. The planner rejects unsafe or colliding members
+and duplicate destinations, using the platform path-key convention plus real
+paths and available exact filesystem identities for existing destination aliases.
+Existing generated artifact provenance, replacement authorization, and project containment checks
+still apply. No destination is silently renamed.
+Filesystem-alias conflict messages use one-based archive numbers; API
+`configurationIndex` values and indexed validation fields remain zero-based.
+
+Preview archive rows expose zero-based `configurationIndex`, `filename`,
+`relativePath`, `format`, `containerFormat`, `imageFormat`, applicable `quality`
+and `lossless`, plus the existing status, ownership and blocker data. Valid array
+plans report `executionSupported: true`. Apply authoritatively re-plans before
+enqueueing one job with every normalized configuration; the direct processing
+service independently normalizes again and validates destinations under its
+existing project coordination. Flat requests retain `makeArchives: true`,
+`makeCbz: false` and ZIP defaults: a JPEG 80/WebP 90 pair, with optional CBZ
+JPEG 85. Their names, kinds and replacement provenance remain unchanged;
+the dialog's single-entry default does not change these server defaults.
+There is no RAR/CBR creation capability or external RAR writer requirement.
+
+The low-level archive writer dispatches `zip`/`cbz` to the existing ZIP writer
+and `7z`/`cb7` to the bundled, round-trip-verified 7z writer; unsupported formats
+are rejected. Standalone archive member rendering uses Sharp with first-frame
+input and automatic orientation. It accepts JPEG and lossy WebP quality, WebP
+lossless without lossy quality settings, and PNG with transparency and no quality
+setting. BMP input uses the same decoded raw-pixel path as image conversion.
+Archive conversion reads source bytes without rewriting or deleting the original
+images; only the archive members contain the converted representations.
+
+Standalone Archive executes every derived configuration through the same
+preflight, staging, publication and recovery paths used for legacy batches.
+Preflight rejects duplicate destinations and existing filesystem aliases before
+staging and verifies replacement ownership for the entire batch. All archives
+are staged before any publication. Descriptor-owned publication, verified
+replacement backups and final batch content/identity validation precede one
+SQLite transaction for all generated artifact records and committed evidence.
+Uncommitted failure removes verified new outputs and restores verified prior
+outputs with reconciled provenance; uncertain restoration retains evidence and
+the recovery-required gate. Post-commit settlement failure retains committed
+outputs and records and never invokes rollback. Progress counts each archive's
+staging plus one final unit, reached only after publication, required
+persistence and evidence settlement succeed.
+
+Successful results include every output in configuration order through
+`generatedPaths` and `artifacts`, with artifact IDs, paths, container formats,
+quality, member counts, sizes and hashes. The client combines those results with
+the submitted image settings to label each output. Archive uses the existing
+job cancellation contract above: only queued jobs can be cancelled; running
+generation completes or follows its failure and recovery path.
+
+The scanner excludes ZIP, 7Z, CBZ and CB7 files. Recovery cleanup accepts only
+these explicit archive-stage extensions in the existing private staging
+namespace; public archives remain tracking-only. Identity, content proof,
+lifecycle and checkpoint checks still govern cleanup authorization.
+
 ### Category Auto Rename
 
 [`auto-rename-service.js`](src/services/auto-rename-service.js) exposes

@@ -217,7 +217,7 @@ describe('processing recovery evidence service (WP7A)', () => {
       expect(listed).toMatchObject({ artifactClass: 'private', cleanupPolicyEligible: true });
     });
 
-    it.each(['zip', '7z', 'cbz'])('accepts the supported Archive stage format .%s', (extension) => {
+    it.each(['zip', '7z', 'cbz', 'cb7'])('accepts the supported Archive stage format .%s', (extension) => {
       const { row } = addEvidence(projectA, {
         operation: 'archive', artifactRole: 'archive-stage',
         artifactPath: `.creatorcrate-watermark-staging/${TOKEN}.archive-12.${extension}`,
@@ -226,7 +226,7 @@ describe('processing recovery evidence service (WP7A)', () => {
       expect(refreshOne(projectA, row.evidenceId)).toMatchObject({ observation: 'present', cleanupPolicyEligible: true });
     });
 
-    it.each(['txt', 'png', 'destination', 'foo'])('rejects the unsupported Archive stage lookalike .%s while listing and refreshing it', (extension) => {
+    it.each(['txt', 'png', 'destination', 'foo', 'cbr', 'rar'])('rejects the unsupported Archive stage lookalike .%s while listing and refreshing it', (extension) => {
       const { row } = addEvidence(projectA, {
         operation: 'archive', artifactRole: 'archive-stage',
         artifactPath: `.creatorcrate-watermark-staging/${TOKEN}.archive-0.${extension}`,

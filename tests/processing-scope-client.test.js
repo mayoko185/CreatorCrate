@@ -10,6 +10,16 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { enhanceDropdowns } from '../src/static/creatorcrate.js';
 import { enhanceProcessingDialogs } from '../src/static/processing.js';
 
+// The editor uses real template fragments; its behavior is covered in Chromium.
+vi.mock('../src/static/client/archive-dialog.js', () => ({
+  initializeArchiveEditor: vi.fn(),
+  resetArchiveEditor: vi.fn(),
+  setArchiveEditorFrozen: vi.fn(),
+  collectArchiveOptions: vi.fn(() => ({ archives: [
+    { archiveFormat: 'zip', imageFormat: 'jpeg', quality: 80 },
+  ], replaceExistingArchives: false })),
+}));
+
 // ─── Minimal DOM shim ─────────────────────────────────────────────────────
 
 function splitSelectorGroups(selector) {
@@ -499,6 +509,7 @@ describe('Processing dialog scope defaults', () => {
   });
 });
 
+// Shared job behavior is exercised through Convert; the Archive editor is covered in Chromium.
 describe('Processing background-job polling', () => {
   let doc;
   let fetchMock;
@@ -722,14 +733,14 @@ describe('Processing background-job polling', () => {
     vi.useFakeTimers();
     fetchMock = vi.fn(async (url) => {
       if (url.endsWith('/plan')) return ok({ ok: true, plan: { counts: { total: 1, eligible: 1 }, items: [] } });
-      if (url.endsWith('/apply')) return ok({ ok: true, operation: 'archive', jobId: 'job-failed' }, 202);
+      if (url.endsWith('/apply')) return ok({ ok: true, operation: 'workflow-prompt', jobId: 'job-failed' }, 202);
       if (url === '/processing/jobs/job-failed') {
         return ok(job('job-failed', 'failed', { error: { code: 'PROCESSING_FAILED', message: 'Processing could not be completed.' } }));
       }
       throw new Error(`Unhandled fetch: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
-    const fixture = buildDialogRoot(doc, { operation: 'archive' });
+    const fixture = buildDialogRoot(doc, { operation: 'workflow-prompt' });
 
     await previewAndApply(fixture);
 
@@ -743,7 +754,7 @@ describe('Processing background-job polling', () => {
     let polls = 0;
     fetchMock = vi.fn(async (url) => {
       if (url.endsWith('/plan')) return ok({ ok: true, plan: { counts: { total: 1, eligible: 1 }, items: [] } });
-      if (url.endsWith('/apply')) return ok({ ok: true, operation: 'archive', jobId: 'job-cancelled' }, 202);
+      if (url.endsWith('/apply')) return ok({ ok: true, operation: 'workflow-prompt', jobId: 'job-cancelled' }, 202);
       if (url === '/processing/jobs/job-cancelled') {
         polls += 1;
         return ok(job('job-cancelled', 'cancelled'));
@@ -751,7 +762,7 @@ describe('Processing background-job polling', () => {
       throw new Error(`Unhandled fetch: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
-    const fixture = buildDialogRoot(doc, { operation: 'archive' });
+    const fixture = buildDialogRoot(doc, { operation: 'workflow-prompt' });
 
     await previewAndApply(fixture);
 
@@ -766,7 +777,7 @@ describe('Processing background-job polling', () => {
     let polls = 0;
     fetchMock = vi.fn(async (url) => {
       if (url.endsWith('/plan')) return ok({ ok: true, plan: { counts: { total: 1, eligible: 1 }, items: [] } });
-      if (url.endsWith('/apply')) return ok({ ok: true, operation: 'archive', jobId: 'job-queued' }, 202);
+      if (url.endsWith('/apply')) return ok({ ok: true, operation: 'workflow-prompt', jobId: 'job-queued' }, 202);
       if (url === '/processing/jobs/job-queued') {
         polls += 1;
         return ok(job('job-queued', 'queued'));
@@ -775,7 +786,7 @@ describe('Processing background-job polling', () => {
       throw new Error(`Unhandled fetch: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
-    const fixture = buildDialogRoot(doc, { operation: 'archive' });
+    const fixture = buildDialogRoot(doc, { operation: 'workflow-prompt' });
 
     await previewAndApply(fixture);
     fixture.dialog.dispatch('close', { target: fixture.dialog });
@@ -791,13 +802,13 @@ describe('Processing background-job polling', () => {
     vi.useFakeTimers();
     fetchMock = vi.fn(async (url) => {
       if (url.endsWith('/plan')) return ok({ ok: true, plan: { counts: { total: 1, eligible: 1 }, items: [] } });
-      if (url.endsWith('/apply')) return ok({ ok: true, operation: 'archive', jobId: 'job-queued-race' }, 202);
+      if (url.endsWith('/apply')) return ok({ ok: true, operation: 'workflow-prompt', jobId: 'job-queued-race' }, 202);
       if (url === '/processing/jobs/job-queued-race') return ok(job('job-queued-race', 'queued'));
       if (url === '/processing/jobs/job-queued-race/cancel') return failed(409, 'Processing has already started.');
       throw new Error(`Unhandled fetch: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
-    const fixture = buildDialogRoot(doc, { operation: 'archive' });
+    const fixture = buildDialogRoot(doc, { operation: 'workflow-prompt' });
 
     await previewAndApply(fixture);
     fixture.dialog.dispatch('close', { target: fixture.dialog });
@@ -814,12 +825,12 @@ describe('Processing background-job polling', () => {
     vi.useFakeTimers();
     fetchMock = vi.fn(async (url) => {
       if (url.endsWith('/plan')) return ok({ ok: true, plan: { counts: { total: 1, eligible: 1 }, items: [] } });
-      if (url.endsWith('/apply')) return ok({ ok: true, operation: 'archive', jobId: 'job-running' }, 202);
+      if (url.endsWith('/apply')) return ok({ ok: true, operation: 'workflow-prompt', jobId: 'job-running' }, 202);
       if (url === '/processing/jobs/job-running') return ok(job('job-running', 'running', { progress: { completed: 1, total: 2 } }));
       throw new Error(`Unhandled fetch: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
-    const fixture = buildDialogRoot(doc, { operation: 'archive' });
+    const fixture = buildDialogRoot(doc, { operation: 'workflow-prompt' });
 
     await previewAndApply(fixture);
     fixture.dialog.dispatch('close', { target: fixture.dialog });
@@ -842,11 +853,11 @@ describe('Processing background-job polling', () => {
       throw new Error(`Unhandled fetch: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
-    const fixture = buildDialogRoot(doc, { operation: 'archive' });
+    const fixture = buildDialogRoot(doc, { operation: 'workflow-prompt' });
 
     await previewAndApply(fixture);
     fixture.dialog.dispatch('close', { target: fixture.dialog });
-    applyResponse.resolve(ok({ ok: true, operation: 'archive', jobId: 'job-after-close' }, 202));
+    applyResponse.resolve(ok({ ok: true, operation: 'workflow-prompt', jobId: 'job-after-close' }, 202));
     await flush();
 
     expect(fetchMock).toHaveBeenCalledWith('/processing/jobs/job-after-close/cancel', expect.objectContaining({ method: 'POST' }));
@@ -871,7 +882,7 @@ describe('Processing background-job polling', () => {
       throw new Error(`Unhandled fetch: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
-    const fixture = buildDialogRoot(doc, { operation: 'archive' });
+    const fixture = buildDialogRoot(doc, { operation: 'workflow-prompt' });
 
     await previewAndApply(fixture);
     const submission = fixture.root.__ccProcessingSubmission;
@@ -883,7 +894,7 @@ describe('Processing background-job polling', () => {
     expect(fixture.root.__ccProcessingSubmission).toBe(submission);
     expect(submission.closed).toBe(false);
 
-    applyResponse.resolve(ok({ ok: true, operation: 'archive', jobId: 'job-reopened' }, 202));
+    applyResponse.resolve(ok({ ok: true, operation: 'workflow-prompt', jobId: 'job-reopened' }, 202));
     await flush();
 
     expect(fetchMock).toHaveBeenCalledTimes(3);
@@ -920,11 +931,11 @@ describe('Processing background-job polling', () => {
       throw new Error(`Unhandled fetch: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
-    const fixture = buildDialogRoot(doc, { operation: 'archive' });
+    const fixture = buildDialogRoot(doc, { operation: 'workflow-prompt' });
 
     await previewAndApply(fixture);
     fixture.dialog.dispatch('close', { target: fixture.dialog });
-    applyResponse.resolve(ok({ ok: true, operation: 'archive', jobId: 'job-racing' }, 202));
+    applyResponse.resolve(ok({ ok: true, operation: 'workflow-prompt', jobId: 'job-racing' }, 202));
     await flush();
 
     expect(cancels).toBe(1);
@@ -954,7 +965,7 @@ describe('Processing background-job polling', () => {
     let polls = 0;
     fetchMock = vi.fn(async (url) => {
       if (url.endsWith('/plan')) return ok({ ok: true, plan: { counts: { total: 1, eligible: 1 }, items: [] } });
-      if (url.endsWith('/apply')) return ok({ ok: true, operation: 'archive', jobId: 'job-generation' }, 202);
+      if (url.endsWith('/apply')) return ok({ ok: true, operation: 'workflow-prompt', jobId: 'job-generation' }, 202);
       if (url === '/processing/jobs/job-generation') {
         polls += 1;
         if (polls === 1) return stalePoll.promise;
@@ -964,7 +975,7 @@ describe('Processing background-job polling', () => {
       throw new Error(`Unhandled fetch: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
-    const fixture = buildDialogRoot(doc, { operation: 'archive' });
+    const fixture = buildDialogRoot(doc, { operation: 'workflow-prompt' });
 
     await previewAndApply(fixture);
     expect(polls).toBe(1);
@@ -1001,14 +1012,14 @@ describe('Processing background-job polling', () => {
     vi.useFakeTimers();
     fetchMock = vi.fn(async (url) => {
       if (url.endsWith('/plan')) return ok({ ok: true, plan: { counts: { total: 1, eligible: 1 }, items: [] } });
-      if (url.endsWith('/apply')) return ok({ ok: true, operation: 'archive', jobId: 'job-evicted' }, 202);
+      if (url.endsWith('/apply')) return ok({ ok: true, operation: 'workflow-prompt', jobId: 'job-evicted' }, 202);
       if (url === '/processing/jobs/job-evicted') {
         return failed(404, 'Processing job not found.', 'PROCESSING_JOB_NOT_FOUND');
       }
       throw new Error(`Unhandled fetch: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
-    const fixture = buildDialogRoot(doc, { operation: 'archive' });
+    const fixture = buildDialogRoot(doc, { operation: 'workflow-prompt' });
 
     await previewAndApply(fixture);
 
@@ -1025,7 +1036,7 @@ describe('Processing background-job polling', () => {
     let polls = 0;
     fetchMock = vi.fn(async (url) => {
       if (url.endsWith('/plan')) return ok({ ok: true, plan: { counts: { total: 1, eligible: 1 }, items: [] } });
-      if (url.endsWith('/apply')) return ok({ ok: true, operation: 'archive', jobId: 'job-transient' }, 202);
+      if (url.endsWith('/apply')) return ok({ ok: true, operation: 'workflow-prompt', jobId: 'job-transient' }, 202);
       if (url === '/processing/jobs/job-transient') {
         polls += 1;
         throw new Error('Temporary network failure.');
@@ -1033,7 +1044,7 @@ describe('Processing background-job polling', () => {
       throw new Error(`Unhandled fetch: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
-    const fixture = buildDialogRoot(doc, { operation: 'archive' });
+    const fixture = buildDialogRoot(doc, { operation: 'workflow-prompt' });
 
     await previewAndApply(fixture);
 
@@ -1054,7 +1065,7 @@ describe('Processing background-job polling', () => {
   });
 
   it('reopens only the active pending submission generation', async () => {
-    const fixture = buildDialogRoot(doc, { operation: 'archive' });
+    const fixture = buildDialogRoot(doc, { operation: 'workflow-prompt' });
     const staleSubmission = { generation: 1, closed: true };
     const activeSubmission = { generation: 2, closed: true };
     fixture.root.__ccProcessingSubmissionGeneration = activeSubmission.generation;
@@ -1077,14 +1088,14 @@ describe('Processing background-job polling', () => {
       throw new Error(`Unhandled fetch: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
-    const fixture = buildDialogRoot(doc, { operation: 'archive' });
+    const fixture = buildDialogRoot(doc, { operation: 'workflow-prompt' });
 
     await previewAndApply(fixture);
     const newerJob = { id: 'job-newer', state: 'running', progress: null };
     fixture.root.__ccProcessingSubmissionGeneration = 2;
     fixture.root.__ccProcessingSubmission = { generation: 2, closed: false };
     fixture.root.__ccProcessingJob = newerJob;
-    applyResponse.resolve(ok({ ok: true, operation: 'archive', jobId: 'job-stale' }, 202));
+    applyResponse.resolve(ok({ ok: true, operation: 'workflow-prompt', jobId: 'job-stale' }, 202));
     await flush();
 
     expect(fixture.root.__ccProcessingJob).toBe(newerJob);
@@ -1346,117 +1357,42 @@ describe('Processing dialog scope serialization', () => {
     expect(applyBtn.disabled).toBe(true);
   });
 
-  it('serializes standalone Archive options and uses the explicit archive route', async () => {
-    const { root, trigger, scope, previewBtn } = buildDialogRoot(doc, { operation: 'archive' });
-    const makeArchives = makeNode('input', { type: 'checkbox', 'data-processing-field': 'makeArchives', 'data-processing-type': 'bool' });
-    const archiveFormat = makeNode('select', { 'data-processing-field': 'archiveFormat', 'data-processing-type': 'string' });
-    archiveFormat.appendChild(makeOption('zip', 'ZIP'));
-    archiveFormat.appendChild(makeOption('7z', '7z'));
-    const setName = makeNode('input', { type: 'text', 'data-processing-field': 'setName', 'data-processing-type': 'string', 'data-processing-omit-if-empty': 'true' });
-    const jpegQuality = makeNode('input', { type: 'number', 'data-processing-field': 'zipJpgQuality', 'data-processing-type': 'int' });
-    const webpQuality = makeNode('input', { type: 'number', 'data-processing-field': 'zipWebpQuality', 'data-processing-type': 'int' });
-    const replaceExisting = makeNode('input', { type: 'checkbox', 'data-processing-field': 'replaceExistingArchives', 'data-processing-type': 'bool' });
-    const makeCbz = makeNode('input', { type: 'checkbox', 'data-processing-field': 'makeCbz', 'data-processing-type': 'bool' });
-    const cbzQuality = makeNode('input', { type: 'number', 'data-processing-field': 'cbzJpgQuality', 'data-processing-type': 'int' });
-    const cbzPrefix = makeNode('input', { type: 'text', 'data-processing-field': 'cbzPrefix', 'data-processing-type': 'string', 'data-processing-omit-if-empty': 'true' });
-    root.append(makeArchives, archiveFormat, setName, jpegQuality, webpQuality, replaceExisting, makeCbz, cbzQuality, cbzPrefix);
-    scope.projectRadio.checked = true;
-
+  it('collects Archive Preview separately from legacy options', async () => {
+    fetchMock.mockImplementation(async (url, init) => {
+      calls.push({ url, body: JSON.parse(init.body) });
+      return { ok: true, status: 200, json: async () => ({ ok: true, plan: {
+        operation: 'archive', archives: [], items: [], counts: { total: 1, eligible: 1 },
+      } }) };
+    });
+    const { root, trigger, previewBtn, applyBtn, errorText } = buildDialogRoot(doc, { operation: 'archive' });
+    const legacy = makeNode('input', { type: 'checkbox', 'data-processing-field': 'makeArchives', 'data-processing-type': 'bool' });
+    legacy.checked = true;
+    root.appendChild(legacy);
     enhanceProcessingDialogs(doc);
     trigger.dispatch('click', { target: trigger });
     await flush();
-    makeArchives.checked = true;
-    archiveFormat.value = '7z';
-    setName.value = 'release-set';
-    jpegQuality.value = '80';
-    webpQuality.value = '90';
-    makeCbz.checked = true;
-    cbzQuality.value = '85';
-    cbzPrefix.value = 'comic_';
     previewBtn.dispatch('click', { target: previewBtn });
     await flush();
-
-    expect(calls[0].url).toBe('/projects/1/assets/processing/archive/plan');
-    expect(calls[0].body).toEqual({
-      scope: { type: 'project' },
-      options: {
-        makeArchives: true,
-        archiveFormat: '7z',
-        setName: 'release-set',
-        zipJpgQuality: 80,
-        zipWebpQuality: 90,
-        replaceExistingArchives: false,
-        makeCbz: true,
-        cbzJpgQuality: 85,
-        cbzPrefix: 'comic_',
-      },
-    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].body.options).toEqual({ archives: [
+      { archiveFormat: 'zip', imageFormat: 'jpeg', quality: 80 },
+    ], replaceExistingArchives: false });
+    expect(calls[0].body.options).not.toHaveProperty('makeArchives');
+    expect(errorText.textContent).toBe('');
   });
 
-  it('gates Archive Apply on planner blockers and renders the Apply result after a clean preview', async () => {
-    let cleanPlan = false;
-    calls = [];
-    fetchMock = vi.fn(async (url, init = {}) => {
-      calls.push({ url, body: init.body ? JSON.parse(init.body) : null });
-      if (url.endsWith('/archive/plan')) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({
-            ok: true,
-            plan: {
-              operation: 'archive',
-              counts: { total: 2, eligible: 2, conflicts: cleanPlan ? 0 : 1 },
-              sourceCount: 2,
-              entryCount: 4,
-              archives: [{
-                kind: 'archive-jpg', format: 'zip', containerFormat: 'zip', relativePath: 'archive_jpg.zip',
-                quality: 80, entryCount: 2, status: cleanPlan ? 'ready' : 'conflict',
-                reasonCode: cleanPlan ? null : 'ARCHIVE_DESTINATION_CONFLICT',
-              }],
-              operationBlockers: cleanPlan ? [] : [{ code: 'ARCHIVE_DESTINATION_CONFLICT', reason: 'Archive destination already exists.' }],
-              items: [],
-            },
-          }),
-        };
-      }
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({
-          ok: true,
-          result: {
-            sourceCount: 2,
-            artifacts: [{ relativePath: 'archive_jpg.zip', format: 'zip', containerFormat: 'zip', quality: 80, entryCount: 2 }],
-          },
-        }),
-      };
-    });
-    vi.stubGlobal('fetch', fetchMock);
-
-    const { trigger, scope, previewBtn, applyBtn, resultBody } = buildDialogRoot(doc, { operation: 'archive' });
-    scope.projectRadio.checked = true;
+  it('requires the exact previewed Archive body before Apply', async () => {
+    const { root, trigger, applyBtn, errorText } = buildDialogRoot(doc, { operation: 'archive' });
     enhanceProcessingDialogs(doc);
     trigger.dispatch('click', { target: trigger });
     await flush();
-
-    previewBtn.dispatch('click', { target: previewBtn });
-    await flush();
-    expect(applyBtn.disabled).toBe(true);
-
-    cleanPlan = true;
-    previewBtn.dispatch('click', { target: previewBtn });
-    await flush();
-    expect(applyBtn.disabled).toBe(false);
-
+    root.__ccPreviewValid = true;
+    applyBtn.disabled = false;
     applyBtn.dispatch('click', { target: applyBtn });
     await flush();
-    expect(calls.map((call) => call.url)).toEqual([
-      '/projects/1/assets/processing/archive/plan',
-      '/projects/1/assets/processing/archive/plan',
-      '/projects/1/assets/processing/archive/apply',
-    ]);
-    expect(resultBody.children[0].textContent).toContain('Generated 1 archive artifact');
+    expect(calls).toEqual([]);
+    expect(root.__ccProcessingSubmission).toBeUndefined();
+    expect(errorText.textContent).toContain('Run Preview again');
   });
 
   describe('Watermark archive output gating', () => {
@@ -1700,7 +1636,8 @@ describe('Processing preview plan-item source actions', () => {
       if (url === '/processing/watermarks/default') return ok({ ok: true, watermarkId: 5 });
       return ok({ ok: true });
     }));
-    const fixture = buildDialogRoot(doc, { operation });
+    // Exercise archive descriptors through the shared renderer without submitting Archive.
+    const fixture = buildDialogRoot(doc, { operation: operation === 'archive' ? 'convert' : operation });
     const list = makeNode('ul', { 'data-processing-plan-items': '' });
     fixture.root.querySelector('[data-processing-plan]').appendChild(list);
     const fill = surfaces[operation].setup(fixture.root);

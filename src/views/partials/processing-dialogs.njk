@@ -7,6 +7,7 @@
    appDialogBindForm submit handler never engages them. #}
 {% import "partials/dialog.njk" as dialog %}
 {% import "partials/dropdown.njk" as dropdown %}
+{% import "partials/icons.njk" as icons %}
 {% import "partials/processing-recovery-details.njk" as recoveryDetails %}
 
 {# Static-option select: routed through the shared cc-dropdown component like
@@ -52,9 +53,9 @@
   }) }}
 {% endmacro %}
 
-{% macro scopeSection(prefix, categoryOptions=[]) %}
+{% macro scopeSection(prefix, categoryOptions=[], embedded=false) %}
   {% set usesWatermarkScopePattern = prefix == 'watermark' or prefix == 'workflow' %}
-  <section class="settings-section processing-dialog-section" data-processing-scope role="radiogroup" aria-labelledby="{{ prefix }}-scope-heading">
+  <{% if embedded %}div class="processing-archive-scope"{% else %}section class="settings-section processing-dialog-section"{% endif %} data-processing-scope role="radiogroup" aria-labelledby="{{ prefix }}-scope-heading">
     <h3 id="{{ prefix }}-scope-heading">Scope</h3>
     <div class="processing-dialog-section-body processing-scope-body{% if usesWatermarkScopePattern %} processing-watermark-scope-body{% endif %}">
       {% if usesWatermarkScopePattern %}<div class="processing-watermark-scope-row">{% endif %}
@@ -104,13 +105,19 @@
         }) }}
       </div>
 
+      {% if prefix == 'archive' %}
+        <label class="field field--checkbox processing-scope-option">
+          <input type="radio" name="{{ prefix }}-scope-type" value="project" data-processing-scope-option="project">
+          <span>Entire project</span>
+        </label>
+      {% endif %}
 
       {% if usesWatermarkScopePattern %}
         </div>
         <p class="processing-scope-hint help-text" data-processing-selected-hint hidden>Select assets in the browser list to use this scope.</p>
       {% endif %}
     </div>
-  </section>
+  </{% if embedded %}div{% else %}section{% endif %}>
 {% endmacro %}
 
 {% macro presetSection(prefix, label='Preset') %}
@@ -609,7 +616,7 @@
 {% endcall %}
 
 {# ─── Archives ──────────────────────────────────────────────────────────── #}
-{% call dialog.render('processing-archive-dialog', 'Archives', false, 'processing-archive-description', '', 'app-dialog--processing', [
+{% call dialog.render('processing-archive-dialog', 'Archives', false, 'processing-archive-description', '', 'app-dialog--processing app-dialog--processing-archive', [
   ['data-processing-root', true],
   ['data-processing-operation', 'archive'],
   ['data-project-id', project.id],
@@ -617,71 +624,86 @@
   ['data-current-category-id', currentCategoryId or ''],
   ['data-current-category-label', currentCategoryLabel or '']
 ]) %}
-  <p id="processing-archive-description" class="app-dialog-description">Create JPEG/WebP archives and optional CBZ files from selected image assets.</p>
+  <p id="processing-archive-description" class="app-dialog-description">Configure archives from selected image assets.</p>
   <div class="app-dialog-body processing-dialog-body">
+    <section class="settings-section processing-dialog-section" data-archive-create aria-labelledby="archive-create-heading">
+      <h3 id="archive-create-heading">Create archives</h3>
+      <div class="processing-dialog-section-body">
+        {{ scopeSection('archive', processingCategoryOptions, true) }}
+        <div class="processing-archive-entries" data-archive-entries></div>
+        <button type="button" class="button button-primary dashboard-create-action" data-archive-add aria-label="+ archive"><span class="project-create-submit-icon" aria-hidden="true">{{ icons.icon('plus') }}</span>archive</button>
+        <p class="sr-only" data-archive-announcement role="status" aria-live="polite" aria-atomic="true"></p>
+      </div>
+    </section>
 
-    {{ scopeSection('archive', processingCategoryOptions) }}
-
-    <details class="processing-section" open>
-      <summary>Archive pair</summary>
-      <label class="processing-checkbox-label">
-        <input type="checkbox" data-processing-field="makeArchives" data-processing-type="bool" checked> Create JPEG/WebP archive pair
+    <details class="processing-section" data-archive-advanced>
+      <summary>Advanced options</summary>
+      <label class="processing-checkbox-label" for="archive-replace-existing">
+        <input id="archive-replace-existing" type="checkbox" data-archive-replace> Replace existing archives
       </label>
-      {{ processingSelect('archive-format', 'archiveFormat', 'string', 'Archive format', [
-        { value: 'zip', label: 'ZIP', selected: true },
-        { value: '7z', label: '7z' }
-      ]) }}
-      <div class="field app-dialog-field">
-        <label for="archive-set-name">Set name</label>
-        <input id="archive-set-name" type="text" placeholder="Optional; overrides Archive prefix and Base name" autocomplete="off"
-               data-processing-field="setName" data-processing-type="string" data-processing-omit-if-empty="true">
-      </div>
-      <div class="field app-dialog-field">
-        <label for="archive-jpeg-quality">JPEG quality</label>
-        <input id="archive-jpeg-quality" type="number" min="1" max="100" placeholder="80"
-               data-processing-field="zipJpgQuality" data-processing-type="int" data-processing-omit-if-empty="true">
-      </div>
-      <div class="field app-dialog-field">
-        <label for="archive-webp-quality">WebP quality</label>
-        <input id="archive-webp-quality" type="number" min="1" max="100" placeholder="90"
-               data-processing-field="zipWebpQuality" data-processing-type="int" data-processing-omit-if-empty="true">
-      </div>
-      <label class="processing-checkbox-label">
-        <input type="checkbox" data-processing-field="replaceExistingArchives" data-processing-type="bool"> Replace existing archives
-      </label>
+      <p class="help-text">Replacement applies to all archives in this run.</p>
+      <p id="archive-naming-help" class="help-text">Set name overrides Set prefix and Base name when provided. Leave prefix and base name empty to use format defaults. Image format and quality suffixes keep the default JPEG and WebP filenames distinct.</p>
+      <div class="processing-archive-naming-list" data-archive-naming-list></div>
     </details>
 
-    <details class="processing-section">
-      <summary>Advanced naming</summary>
-      <p class="help-text">Set name overrides Archive prefix and Base name when provided.</p>
-      <div class="field app-dialog-field">
-        <label for="archive-prefix">Archive prefix</label>
-        <input id="archive-prefix" type="text" autocomplete="off"
-               data-processing-field="archivePrefix" data-processing-type="string" data-processing-omit-if-empty="true">
-      </div>
-      <div class="field app-dialog-field">
-        <label for="archive-base-name">Base name</label>
-        <input id="archive-base-name" type="text" placeholder="archive" autocomplete="off"
-               data-processing-field="zipBaseName" data-processing-type="string" data-processing-omit-if-empty="true">
-      </div>
-    </details>
-
-    <details class="processing-section">
-      <summary>CBZ</summary>
-      <label class="processing-checkbox-label">
-        <input type="checkbox" data-processing-field="makeCbz" data-processing-type="bool"> Create CBZ
-      </label>
-      <div class="field app-dialog-field">
-        <label for="archive-cbz-quality">CBZ quality</label>
-        <input id="archive-cbz-quality" type="number" min="1" max="100" placeholder="85"
-               data-processing-field="cbzJpgQuality" data-processing-type="int" data-processing-omit-if-empty="true">
-      </div>
-      <div class="field app-dialog-field">
-        <label for="archive-cbz-prefix">CBZ prefix</label>
-        <input id="archive-cbz-prefix" type="text" placeholder="archive_" autocomplete="off"
-               data-processing-field="cbzPrefix" data-processing-type="string" data-processing-omit-if-empty="true">
-      </div>
-    </details>
+    <template data-archive-entry-template>
+      <fieldset class="processing-archive-entry" data-archive-entry>
+        <legend id="archive-entry-heading" data-archive-heading>Archive</legend>
+        <div class="processing-archive-entry-fields">
+          {{ dropdown.singleSelect({
+            id: 'archive-entry-format-dropdown', label: 'Archive format',
+            fieldClasses: 'processing-select-field', dispatchNativeChange: true,
+            selected: 'zip', options: [
+              { value: 'zip', label: 'ZIP' }, { value: '7z', label: '7Z' },
+              { value: 'cbz', label: 'CBZ' }, { value: 'cb7', label: 'CB7' }
+            ], nativeSelect: { id: 'archive-entry-format', attributes: [['data-archive-field', 'archiveFormat']] }
+          }) }}
+          <div class="processing-archive-names">
+            <div class="field app-dialog-field">
+              <label for="archive-entry-set-name">Set name (optional)</label>
+              <input id="archive-entry-set-name" type="text" autocomplete="off" placeholder="Optional" data-archive-field="setName" aria-describedby="archive-naming-help">
+            </div>
+            <div class="field app-dialog-field">
+              <label for="archive-entry-prefix">Set prefix</label>
+              <input id="archive-entry-prefix" type="text" autocomplete="off" data-archive-field="prefix" aria-describedby="archive-naming-help">
+            </div>
+          </div>
+          <div class="processing-archive-image-settings" role="group" aria-label="Image settings">
+            {{ dropdown.singleSelect({
+              id: 'archive-entry-image-format-dropdown', label: 'Image Format',
+              fieldClasses: 'processing-select-field', dispatchNativeChange: true,
+              selected: 'jpeg', options: [
+                { value: 'jpeg', label: 'JPEG' }, { value: 'webp', label: 'WebP' }, { value: 'png', label: 'PNG' }
+              ], nativeSelect: { id: 'archive-entry-image-format', attributes: [['data-archive-field', 'imageFormat']] }
+            }) }}
+            <div class="field app-dialog-field" data-archive-jpeg-options>
+              <label for="archive-entry-jpeg-quality">JPEG quality</label>
+              <input id="archive-entry-jpeg-quality" type="number" min="1" max="100" step="1" value="80" data-archive-field="jpegQuality">
+            </div>
+            <div class="processing-archive-webp-settings" data-archive-webp-options hidden>
+              <div class="field app-dialog-field">
+                <label for="archive-entry-webp-quality">WebP quality</label>
+                <input id="archive-entry-webp-quality" type="number" min="1" max="100" step="1" value="90" data-archive-field="webpQuality" aria-describedby="archive-entry-lossless-hint">
+              </div>
+              <label class="processing-checkbox-label" for="archive-entry-lossless">
+                <input id="archive-entry-lossless" type="checkbox" data-archive-field="lossless" aria-describedby="archive-entry-lossless-hint"> Lossless
+              </label>
+              <p id="archive-entry-lossless-hint" class="help-text" data-archive-lossless-hint hidden>Quality does not apply to lossless WebP output. Your lossy quality value is retained.</p>
+            </div>
+          </div>
+          <button type="button" class="button button-small button-secondary" data-archive-remove>Remove</button>
+        </div>
+      </fieldset>
+    </template>
+    <template data-archive-naming-template>
+      <fieldset class="processing-archive-naming" data-archive-naming>
+        <legend data-archive-naming-heading>Archive</legend>
+        <div class="field app-dialog-field">
+          <label for="archive-entry-base-name">Base name</label>
+          <input id="archive-entry-base-name" type="text" autocomplete="off" placeholder="archive" data-archive-field="baseName" aria-describedby="archive-naming-help">
+        </div>
+      </fieldset>
+    </template>
 
     {{ processingOutputSections(true) }}
   </div>
