@@ -4,7 +4,7 @@ import { createProjectDirectoryOwnershipVerifier } from './project-directory-own
 import { ProjectNotFoundError } from './project-service.js';
 import { createAssetRepository } from '../data/asset-repository.js';
 import { PRIMARY_IMAGE_PROVENANCE } from '../data/project-primary-image-repository.js';
-import { mimeFromExtension } from './asset-metadata.js';
+import { classifyComicAsset, mimeFromExtension } from './asset-metadata.js';
 import { classifyPreviewable } from './preview-service.js';
 import { PREVIEW_CATEGORY_DISABLED_VALUE } from './preview-category-settings-service.js';
 import { classifyAssetPath } from './asset-path-classification.js';
@@ -20,7 +20,10 @@ const SKIP_FILENAMES = new Set([
   'Thumbs.db',
   'desktop.ini',
 ]);
-const SKIP_EXTENSIONS = new Set(['zip', 'cbz', '7z', 'cb7']);
+// Generic archives stay unindexed. Comic archives (cbz/cbr/cb7) are indexed as
+// comic assets; CreatorCrate's own generated archive outputs are kept out of
+// the asset index by their generated_artifacts ownership during reconciliation.
+const SKIP_EXTENSIONS = new Set(['zip', '7z']);
 
 /**
  * Check if a filename is a temporary manifest file (e.g., .{hex}.project.json.tmp).
@@ -49,6 +52,7 @@ function categorizeFsError(err) {
 function classifyType(ext) {
   if (['png', 'webp', 'jpg', 'jpeg', 'bmp', 'gif'].includes(ext)) return 'image';
   if (['kra', 'krz'].includes(ext)) return 'krita';
+  if (classifyComicAsset({ extension: ext }).comic) return 'comic';
   return 'unknown';
 }
 

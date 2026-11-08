@@ -35,6 +35,7 @@ ENV NODE_ENV=test
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY src ./src
+COPY vendor/7zip-wasm ./vendor/7zip-wasm
 COPY migrations ./migrations
 COPY tests ./tests
 COPY vitest.config.js ./
@@ -47,6 +48,8 @@ FROM base AS runtime
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=frontend-build /app/dist/client ./dist/client
 COPY src ./src
+# Prebuilt 7-Zip 26.06 RAR/7z decoder (glue + WASM) with its recipe, patch and notices.
+COPY vendor/7zip-wasm ./vendor/7zip-wasm
 COPY migrations ./migrations
 COPY downloads ./downloads
 RUN chown -R creatorcrate:creatorcrate /app

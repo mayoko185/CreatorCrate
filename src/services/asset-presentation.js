@@ -1,6 +1,6 @@
 import { classifyPreviewable, buildAssetRevisionToken } from './preview-service.js';
 import { inlineMimeFor } from './media-service.js';
-import { classifySupportedVideo } from './asset-metadata.js';
+import { classifyComicAsset, classifySupportedVideo } from './asset-metadata.js';
 
 function buildPreviewUrls(asset, revision) {
   if (!revision) {
@@ -29,6 +29,12 @@ function buildPreviewUrls(asset, revision) {
  * bytes. `playbackUrl` is the authenticated original route, used only by the
  * Asset Viewer's native player.
  *
+ * A comic archive (CBZ/CBR/CB7) keeps the `unsupported` (or `missing`) state
+ * and null URLs — it is never previewable, never an image `kind`, and so never
+ * a slideshow member or image-processing source. `comic` identifies it by
+ * extension for later reader/format-indicator callers; it is `null` for every
+ * other asset. It is a type classification, not proof the archive is valid.
+ *
  * @param {object} asset
  * @returns {{
  *   state: 'missing'|'unsupported'|'previewable'|'video',
@@ -38,6 +44,7 @@ function buildPreviewUrls(asset, revision) {
  *   revision: string|null,
  *   urls: { thumbnail: string|null, preview: string|null },
  *   playbackUrl: string|null,
+ *   comic: { format: 'cbz'|'cbr'|'cb7' }|null,
  * }}
  */
 export function buildAssetPreviewModel(asset, presentationPolicy) {
@@ -51,6 +58,7 @@ export function buildAssetPreviewModel(asset, presentationPolicy) {
       revision: null,
       urls: { thumbnail: null, preview: null },
       playbackUrl: null,
+      comic: buildComicDescriptor(resolvedAsset),
     };
   }
 
@@ -66,6 +74,7 @@ export function buildAssetPreviewModel(asset, presentationPolicy) {
         revision: null,
         urls: { thumbnail: null, preview: null },
         playbackUrl: `${viewerUrl}/original`,
+        comic: null,
       };
     }
     return {
@@ -76,6 +85,7 @@ export function buildAssetPreviewModel(asset, presentationPolicy) {
       revision: null,
       urls: { thumbnail: null, preview: null },
       playbackUrl: null,
+      comic: buildComicDescriptor(resolvedAsset),
     };
   }
 
@@ -95,7 +105,13 @@ export function buildAssetPreviewModel(asset, presentationPolicy) {
     revision,
     urls,
     playbackUrl: null,
+    comic: null,
   };
+}
+
+function buildComicDescriptor(asset) {
+  const comic = classifyComicAsset(asset);
+  return comic.comic ? { format: comic.format } : null;
 }
 
 /**

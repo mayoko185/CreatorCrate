@@ -27,7 +27,8 @@ import { createProjectOperationCoordinator, ProjectOperationError } from '../src
 import { createManualScanAcceptanceAuthority } from '../src/services/manual-scan-acceptance.js';
 import { makeSolidAnimatedWebp } from './helpers/animated-webp.js';
 import { buildAssetRevisionToken, classifyPreviewable } from '../src/services/preview-service.js';
-import { classifySupportedVideo } from '../src/services/asset-metadata.js';
+import { classifyComicAsset, classifySupportedVideo } from '../src/services/asset-metadata.js';
+import { buildAssetPreviewModel } from '../src/services/asset-presentation.js';
 import {
   formatProjectDirName,
 } from '../src/storage/project-storage.js';
@@ -289,21 +290,22 @@ describe('asset scanner', () => {
     expect(assets[0].mime_type).toBe('application/x-krita');
   });
 
-  it('keeps generated archives out of the asset index while retaining other unknown files', () => {
+  it('keeps generic ZIP and 7z archives out of the asset index while retaining other unknown files', () => {
     const { project, absPath } = createProjectWithDir('Mixed Project');
     fs.writeFileSync(path.join(absPath, 'document.pdf'), 'pdf data');
     fs.writeFileSync(path.join(absPath, 'archive.zip'), 'zip data');
-    fs.writeFileSync(path.join(absPath, 'comic.cbz'), 'cbz data');
+    fs.writeFileSync(path.join(absPath, 'LOUD.ZIP'), 'zip data');
     fs.writeFileSync(path.join(absPath, 'future.7z'), '7z data');
-    fs.writeFileSync(path.join(absPath, 'comic.cb7'), '7z data');
-    fs.writeFileSync(path.join(absPath, 'COMIC.CB7'), '7z data');
+    fs.writeFileSync(path.join(absPath, 'Upper.7Z'), '7z data');
+    fs.writeFileSync(path.join(absPath, 'legacy.rar'), 'rar data');
 
     const result = assetScanner.scanProjectAssets(project.id);
-    expect(result.added).toBe(1);
+    expect(result.added).toBe(2);
 
     const assets = assetScanner.repository.findByProjectId(project.id);
-    expect(assets.map((asset) => asset.filename)).toEqual(['document.pdf']);
+    expect(assets.map((asset) => asset.filename).sort()).toEqual(['document.pdf', 'legacy.rar']);
     for (const asset of assets) {
+      // A generic RAR stays an ordinary generic file, never a comic.
       expect(asset.mime_type).toBe('application/octet-stream');
     }
   });
@@ -1068,6 +1070,200 @@ describe('asset scanner', () => {
     const after = assetScanner.repository.findByProjectId(project.id);
     expect(after.length).toBe(1);
     expect(after[0].is_present).toBe(1);
+  });
+
+  // ─── A2: comic asset recognition ─────────────────────────────────
+
+  describe('comic archives', () => {
+    const COMIC_MIME = {
+      cbz: 'application/vnd.comicbook+zip',
+      cbr: 'application/vnd.comicbook-rar',
+      cb7: 'application/x-cb7',
+    };
+
+    function addComicsCategory(projectId) {
+      return db.prepare(`
+        INSERT INTO project_asset_categories (project_id, display_name, directory_slug, enabled)
+        VALUES (?, 'Comics', 'comics', 1)
+        RETURNING id
+      `).get(projectId);
+    }
+
+    function insertGeneratedArtifact(projectId, relativePath, kind = 'archive-cbz') {
+      return db.prepare(`
+        INSERT INTO generated_artifacts (project_id, relative_path, kind, generated_by, sha256, size_bytes)
+        VALUES (?, ?, ?, 'archives', ?, 1)
+      `).run(projectId, relativePath, kind, 'a'.repeat(64)).lastInsertRowid;
+    }
+
+    function writeProjectFile(absPath, relativePath, content = 'comic data') {
+      const target = path.join(absPath, ...relativePath.split('/'));
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, content);
+      return target;
+    }
+
+    it('indexes CBZ, CBR, and CB7 case-insensitively as comics outside every image path', () => {
+      const { project, absPath } = createProjectWithDir('Comic Formats');
+      const files = {
+        'one.cbz': 'cbz', 'two.cbr': 'cbr', 'three.cb7': 'cb7',
+        'LOUD.CBZ': 'cbz', 'Mixed.Cbr': 'cbr', 'Upper.CB7': 'cb7',
+      };
+      for (const name of Object.keys(files)) writeProjectFile(absPath, name);
+
+      expect(assetScanner.scanProjectAssets(project.id)).toMatchObject({ added: 6, total: 6 });
+      for (const [relativePath, format] of Object.entries(files)) {
+        const asset = assetScanner.repository.findByProjectIdAndPath(project.id, relativePath);
+        expect(asset).toMatchObject({
+          filename: relativePath, extension: format, mime_type: COMIC_MIME[format], is_present: 1,
+          source_animated: null,
+        });
+        expect(classifyComicAsset(asset)).toEqual({ comic: true, format, mimeType: COMIC_MIME[format] });
+        expect(classifyPreviewable(asset).supported).toBe(false);
+        expect(classifySupportedVideo(asset).supported).toBe(false);
+        const preview = buildAssetPreviewModel(asset, null);
+        expect(preview).toMatchObject({
+          state: 'unsupported', previewable: false, kind: null, comic: { format },
+          urls: { thumbnail: null, preview: null }, playbackUrl: null,
+        });
+      }
+      expect(assetScanner.classifyType('cbz')).toBe('comic');
+      expect(assetScanner.classifyType('zip')).toBe('unknown');
+    });
+
+    it('places comics in category roots and nested paths, and never auto-selects one as Preview', () => {
+      const { project, absPath } = createProjectWithDir('Comic Categories');
+      const category = addComicsCategory(project.id);
+      if (!assetCategoryService.listDefaults().some((entry) => entry.directory_slug === 'comics')) {
+        assetCategoryService.addDefault({ displayName: 'Comics', directorySlug: 'comics', enabled: true });
+      }
+      previewCategorySettingsService.setPreviewCategory('comics');
+      writeProjectFile(absPath, 'comics/root.cbz');
+      writeProjectFile(absPath, 'comics/vol-1/issue.cb7');
+      writeProjectFile(absPath, 'loose/issue.cbr');
+
+      assetScanner.scanProjectAssets(project.id);
+
+      expect(assetScanner.repository.findByProjectIdAndPath(project.id, 'comics/root.cbz'))
+        .toMatchObject({ category_id: category.id, nested_path: '' });
+      expect(assetScanner.repository.findByProjectIdAndPath(project.id, 'comics/vol-1/issue.cb7'))
+        .toMatchObject({ category_id: category.id, nested_path: 'vol-1' });
+      expect(assetScanner.repository.findByProjectIdAndPath(project.id, 'loose/issue.cbr'))
+        .toMatchObject({ category_id: null, nested_path: 'loose' });
+      expect(primaryImageRepository.findByProjectId(project.id)).toBeFalsy();
+    });
+
+    it('adds previously excluded CBZ/CB7 files on rescan of an indexed project without duplicates', () => {
+      const { project, absPath } = createProjectWithDir('Comic Rescan');
+      writeProjectFile(absPath, 'cover.png', 'png');
+      expect(assetScanner.scanProjectAssets(project.id)).toMatchObject({ added: 1, total: 1 });
+      const cover = assetScanner.repository.findByProjectIdAndPath(project.id, 'cover.png');
+
+      // Files that the pre-A2 scanner skipped are found by the next ordinary scan.
+      writeProjectFile(absPath, 'book.cbz');
+      writeProjectFile(absPath, 'book.cb7');
+      expect(assetScanner.scanProjectAssets(project.id)).toMatchObject({ added: 2, updated: 0, removed: 0, total: 3 });
+      const ids = assetScanner.repository.findByProjectId(project.id).map((asset) => asset.id).sort();
+
+      expect(assetScanner.scanProjectAssets(project.id)).toEqual({ added: 0, updated: 0, removed: 0, total: 3 });
+      expect(assetScanner.repository.findByProjectId(project.id).map((asset) => asset.id).sort()).toEqual(ids);
+      expect(assetScanner.repository.findByProjectIdAndPath(project.id, 'cover.png').id).toBe(cover.id);
+    });
+
+    it('recognizes a legacy octet-stream CBR row before rescan and repairs its MIME without replacing it', () => {
+      const { project, absPath } = createProjectWithDir('Legacy CBR');
+      const filePath = writeProjectFile(absPath, 'issue.cbr');
+      const stats = fs.statSync(filePath);
+      assetScanner.repository.upsert(project.id, 'issue.cbr', {
+        filename: 'issue.cbr', extension: 'cbr', mimeType: 'application/octet-stream',
+        sizeBytes: stats.size, modifiedAt: stats.mtime.toISOString(),
+      });
+      const before = assetScanner.repository.findByProjectIdAndPath(project.id, 'issue.cbr');
+
+      // Classification is extension-based: no database change is needed to recognize it.
+      expect(classifyComicAsset(before)).toMatchObject({ comic: true, format: 'cbr' });
+      expect(buildAssetPreviewModel(before, null)).toMatchObject({ state: 'unsupported', comic: { format: 'cbr' } });
+
+      expect(assetScanner.scanProjectAssets(project.id)).toMatchObject({ added: 0, updated: 1, total: 1 });
+      const after = assetScanner.repository.findByProjectIdAndPath(project.id, 'issue.cbr');
+      expect(after).toMatchObject({
+        id: before.id, mime_type: COMIC_MIME.cbr, source_generation: before.source_generation,
+        created_at: before.created_at,
+      });
+    });
+
+    it('follows ordinary missing, restore, and external-rename reconciliation', () => {
+      const { project, absPath } = createProjectWithDir('Comic Presence');
+      const original = writeProjectFile(absPath, 'issue.cbz');
+      assetScanner.scanProjectAssets(project.id);
+      const first = assetScanner.repository.findByProjectIdAndPath(project.id, 'issue.cbz');
+
+      fs.rmSync(original);
+      expect(assetScanner.scanProjectAssets(project.id)).toMatchObject({ removed: 1, total: 1 });
+      const missing = assetScanner.repository.findByProjectIdAndPath(project.id, 'issue.cbz');
+      expect(missing).toMatchObject({ id: first.id, is_present: 0 });
+      expect(buildAssetPreviewModel(missing, null)).toMatchObject({ state: 'missing', comic: { format: 'cbz' } });
+
+      writeProjectFile(absPath, 'issue.cbz');
+      assetScanner.scanProjectAssets(project.id);
+      expect(assetScanner.repository.findByProjectIdAndPath(project.id, 'issue.cbz'))
+        .toMatchObject({ id: first.id, is_present: 1 });
+
+      fs.renameSync(path.join(absPath, 'issue.cbz'), path.join(absPath, 'renamed.cbz'));
+      expect(assetScanner.scanProjectAssets(project.id)).toMatchObject({ added: 1, removed: 1, total: 2 });
+      expect(assetScanner.repository.findByProjectIdAndPath(project.id, 'issue.cbz'))
+        .toMatchObject({ id: first.id, is_present: 0 });
+      expect(assetScanner.repository.findByProjectIdAndPath(project.id, 'renamed.cbz'))
+        .toMatchObject({ is_present: 1, mime_type: COMIC_MIME.cbz });
+    });
+
+    it('never indexes CreatorCrate-generated archive outputs as manual comic assets', () => {
+      const { project, absPath } = createProjectWithDir('Generated Comics');
+      insertGeneratedArtifact(project.id, 'exports/generated_jpg_q85.cbz', 'archive-cbz');
+      insertGeneratedArtifact(project.id, 'generated.cb7', 'archive-jpg');
+      insertGeneratedArtifact(project.id, 'Final/watermarked_jpg_q85.cbz', 'watermark-cbz');
+      writeProjectFile(absPath, 'exports/generated_jpg_q85.cbz');
+      writeProjectFile(absPath, 'generated.cb7');
+      writeProjectFile(absPath, 'Final/watermarked_jpg_q85.cbz');
+      writeProjectFile(absPath, 'exports/manual.cbz');
+      const artifactsBefore = db.prepare('SELECT * FROM generated_artifacts WHERE project_id = ? ORDER BY id').all(project.id);
+
+      expect(assetScanner.scanProjectAssets(project.id)).toMatchObject({ added: 1, removed: 0, total: 1 });
+      expect(assetScanner.repository.findByProjectId(project.id).map((asset) => asset.relative_path))
+        .toEqual(['exports/manual.cbz']);
+      expect(assetScanner.scanProjectAssets(project.id)).toEqual({ added: 0, updated: 0, removed: 0, total: 1 });
+      // Artifact ownership rows are untouched by scanning.
+      expect(db.prepare('SELECT * FROM generated_artifacts WHERE project_id = ? ORDER BY id').all(project.id))
+        .toEqual(artifactsBefore);
+
+      // Artifact ownership is per project: another project's identical path is still a manual comic.
+      const other = createProjectWithDir('Other Generated Comics');
+      writeProjectFile(other.absPath, 'generated.cb7');
+      expect(assetScanner.scanProjectAssets(other.project.id)).toMatchObject({ added: 1, total: 1 });
+    });
+
+    it('matches generated-artifact ownership with the processing planner path key', () => {
+      const { project, absPath } = createProjectWithDir('Generated Case');
+      insertGeneratedArtifact(project.id, 'Out/Gen.cbz');
+      writeProjectFile(absPath, 'out/gen.cbz');
+
+      assetScanner.scanProjectAssets(project.id);
+      const indexed = assetScanner.repository.findByProjectIdAndPath(project.id, 'out/gen.cbz');
+      if (process.platform === 'win32') expect(indexed).toBeFalsy();
+      else expect(indexed).toMatchObject({ is_present: 1 });
+    });
+
+    it('keeps reconciling an asset row that already exists at a generated-artifact path', () => {
+      const { project, absPath } = createProjectWithDir('Generated Overlap');
+      writeProjectFile(absPath, 'kept.cbz');
+      assetScanner.scanProjectAssets(project.id);
+      const asset = assetScanner.repository.findByProjectIdAndPath(project.id, 'kept.cbz');
+      insertGeneratedArtifact(project.id, 'kept.cbz');
+
+      expect(assetScanner.scanProjectAssets(project.id)).toEqual({ added: 0, updated: 0, removed: 0, total: 1 });
+      expect(assetScanner.repository.findByProjectIdAndPath(project.id, 'kept.cbz'))
+        .toMatchObject({ id: asset.id, is_present: 1 });
+    });
   });
 
   // ─── Phase 2 chunk 1: category classification ────────────────────

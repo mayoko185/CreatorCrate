@@ -246,6 +246,7 @@ describe('supported video presentation', () => {
       revision: null,
       urls: { thumbnail: null, preview: null },
       playbackUrl: '/projects/7/assets/80/original',
+      comic: null,
     });
   });
 

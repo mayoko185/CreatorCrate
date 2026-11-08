@@ -5,6 +5,7 @@ import {
   normalizeAssetPickerLimit,
   normalizeAssetPickerQuery,
 } from './asset-picker-pagination.js';
+import { pathKey } from '../services/asset-processing-contracts.js';
 
 /**
  * Asset repository — SQL operations for the assets table.
@@ -765,12 +766,23 @@ export function createAssetRepository(db) {
     WHERE project_id = ? AND is_present = 1
   `);
 
+  const selectGeneratedArtifactPathsForReconcileStmt = db.prepare(`
+    SELECT relative_path FROM generated_artifacts WHERE project_id = ?
+  `);
+
   /**
    * Atomic scan reconciliation. Takes the complete discovered snapshot for a
    * project (already classified with categoryId/nestedPath) and applies it
    * in one transaction: inserts new paths, restores/updates existing ones
    * (including a path-derived-field-only repair when size/mtime match), and
    * marks undiscovered paths missing. Rolls back entirely on any failure.
+   *
+   * A discovered path owned by a generated_artifacts row (CreatorCrate's own
+   * archive outputs, e.g. a generated .cbz/.cb7) never becomes a new asset:
+   * that file already has its single owner. Matching uses the processing
+   * planner's platform path key. An asset row that already exists at such a
+   * path keeps its ordinary reconciliation, so no indexed asset is silently
+   * dropped or marked missing while its file is present.
    *
    * @param {number} projectId
    * @param {Array<{relativePath: string, filename: string, extension: string, mimeType: string, sizeBytes: number, modifiedAt: string|null, categoryId: number|null, nestedPath: string}>} discovered
@@ -780,17 +792,21 @@ export function createAssetRepository(db) {
     const existingByPath = new Map(
       selectExistingForReconcileStmt.all(projectId).map((row) => [row.relative_path, row])
     );
+    const generatedArtifactPathKeys = new Set(
+      selectGeneratedArtifactPathsForReconcileStmt.all(projectId).map((row) => pathKey(row.relative_path))
+    );
 
     let added = 0;
     let updated = 0;
     const discoveredPaths = [];
 
     for (const file of discovered) {
+      const existing = existingByPath.get(file.relativePath);
+      if (!existing && generatedArtifactPathKeys.has(pathKey(file.relativePath))) continue;
       discoveredPaths.push(file.relativePath);
       const categoryId = file.categoryId ?? null;
       const nestedPath = file.nestedPath ?? '';
       const modifiedAt = file.modifiedAt || null;
-      const existing = existingByPath.get(file.relativePath);
 
       if (!existing) {
         insertReconcileStmt.run(

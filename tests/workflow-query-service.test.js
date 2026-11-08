@@ -23,6 +23,7 @@ import { buildRevisionToken } from '../src/storage/preview-cache.js';
 import { createAppMetaRepository } from '../src/data/app-meta-repository.js';
 import { createProjectImageSettingsService } from '../src/services/project-image-settings-service.js';
 import { projectImagePolicyFingerprint } from '../src/services/project-image-policy.js';
+import { buildReleaseAssetPresentation } from '../src/services/release-asset-presenter.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const imageFingerprint = (db) => projectImagePolicyFingerprint(
@@ -854,6 +855,7 @@ describe('workflow query service', () => {
             revision: null,
             urls: { thumbnail: null, preview: null },
             playbackUrl: `/projects/${project.id}/assets/${video.id}/original`,
+            comic: null,
           },
         });
       }
@@ -2240,6 +2242,51 @@ describe('workflow query service', () => {
     it('returns null for missing project', () => {
       const result = service.getProjectAssetBrowser(9999);
       expect(result).toBeNull();
+    });
+
+    it('carries the comic descriptor consistently and keeps comics out of slideshow and Original paths', () => {
+      const project = insertProject(db, { title: 'Comic Query Paths' });
+      const asset = (name, extension, mimeType) => insertAsset(db, {
+        projectId: project.id,
+        relativePath: name,
+        filename: name,
+        extension,
+        mimeType,
+        sizeBytes: 4096,
+        modifiedAt: '2026-08-02T12:00:00.000Z',
+        isPresent: 1,
+      });
+      const image = asset('page.png', 'png', 'image/png');
+      const cbz = asset('issue.cbz', 'cbz', 'application/vnd.comicbook+zip');
+      const legacyCbr = asset('legacy.cbr', 'cbr', 'application/octet-stream');
+      const cb7 = asset('issue.cb7', 'cb7', 'application/x-cb7');
+      const rar = asset('generic.rar', 'rar', 'application/octet-stream');
+      const expected = new Map([
+        [image.id, null], [cbz.id, { format: 'cbz' }], [legacyCbr.id, { format: 'cbr' }],
+        [cb7.id, { format: 'cb7' }], [rar.id, null],
+      ]);
+
+      const browser = service.getProjectAssetBrowser(project.id, { pageSize: 100 });
+      const library = service.getAssetLibraryPage({ projectId: project.id }, {
+        projectOptionPresentation: { statusByValue: new Map(), projectTypeByValue: new Map() },
+      });
+      for (const [assetId, comic] of expected) {
+        const row = browser.assets.find((candidate) => candidate.id === assetId);
+        const libraryRow = library.assets.find((candidate) => candidate.id === assetId);
+        const viewer = service.getProjectAssetViewer(project.id, assetId).asset;
+        const release = buildReleaseAssetPresentation({ ...row, asset_id: assetId });
+        for (const presented of [row, libraryRow, viewer, release]) {
+          expect(presented.preview.comic).toEqual(comic);
+        }
+        if (comic) {
+          expect(row).toMatchObject({ preview_state: 'unsupported', isPreviewable: false, originalEligible: false });
+          expect(row.thumbnail_url).toBeNull();
+          expect(row.preview_url).toBeNull();
+          expect(release).toMatchObject({ preview_state: 'unsupported', originalEligible: false, original_url: null });
+        }
+      }
+      expect(browser.slideshowSequence.map((entry) => entry.id)).toEqual([image.id]);
+      expect(library.slideshowSequence.map((entry) => entry.id)).toEqual([image.id]);
     });
 
     it('returns safe empty result for project with no assets', () => {

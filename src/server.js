@@ -12,6 +12,7 @@ import { createBackupService } from './services/backup-service.js';
 import { createAutomaticProjectScanScheduler } from './services/automatic-project-scan-scheduler.js';
 import { createReleaseNotificationScheduler } from './services/release-notification-scheduler.js';
 import { createApplicationContext } from './app-context.js';
+import { createComicRuntime, reportComicRuntimeClose, reportComicRuntimeStart } from './services/comic-runtime.js';
 import { ASSET_MODES, resolveAssetMode } from './app.js';
 import { createManagedCredentialProvider, CredentialError } from './auth/credential-provider.js';
 import { ensureAuthEnablement, AuthStateError } from './auth/auth-state.js';
@@ -130,6 +131,9 @@ export function createShutdownHandler({
     if (shuttingDown) return;
     shuttingDown = true;
     managedUploadTracker.beginShutdown();
+    // Comic preparation stops accepting work now; queued and running preparations are
+    // cancelled. Awaited below, after HTTP has drained (in-flight reads hold cache leases).
+    const comicClosing = startComicClose(appContext);
     appContext.generatedImageRebuildService?.stop();
     appContext.generatedImagePublicationLifecycle?.stop();
     appContext.projectOwnershipAdoption?.stop();
@@ -157,6 +161,7 @@ export function createShutdownHandler({
       await appContext.legacyManifestCleanup?.waitForIdle();
       await releaseNotificationScheduler?.waitForIdle();
       await appContext.releaseNotificationRuntime?.waitForIdle();
+      await finishComicClose(comicClosing, applicationLogger);
       applicationLogger.info({
         kind: 'diagnostic',
         subsystem: 'runtime',
@@ -169,6 +174,34 @@ export function createShutdownHandler({
       exit(0);
     }
   };
+}
+
+function startComicClose(appContext) {
+  try {
+    return Promise.resolve(appContext.comicRuntime?.close());
+  } catch (err) {
+    return Promise.reject(err);
+  }
+}
+
+// Comic preparation workers and staging are settled before the database is retired; retained
+// temporary storage is reported, never dropped. A failure here does not stop shutdown.
+async function finishComicClose(comicClosing, applicationLogger) {
+  try {
+    reportComicRuntimeClose(await comicClosing, applicationLogger);
+  } catch (err) {
+    try {
+      applicationLogger.error?.({
+        kind: 'diagnostic',
+        subsystem: 'comics',
+        event: 'comics.runtime.close_failed',
+        message: 'Comic resources could not be closed cleanly.',
+        error: err,
+      });
+    } catch {
+      // Diagnostics must not change shutdown behavior.
+    }
+  }
 }
 
 async function main() {
@@ -282,6 +315,24 @@ async function main() {
     authConfig = { ...config.auth, sessionSecret: authState.sessionSecret, credentialProvider };
   }
 
+  // A3.3c-1: the application's one comic admission and preparation cache. The cache lives in
+  // the reviewed automatic private location derived from APP_DATA_ROOT (platform temporary
+  // storage, not the app-data directory) and is recovered before any comic service can use it.
+  // An unusable location degrades to on-demand comic reads; anything else fails startup.
+  let comicRuntime;
+  let comicStart;
+  try {
+    // F1b: the server's runtime is the one owner of the preloaded rendition spare.
+    comicRuntime = createComicRuntime({
+      appDataRoot: config.appDataRoot, projectsRoot: config.projectsRoot, renditionSpare: true,
+    });
+    comicStart = await comicRuntime.start();
+  } catch (err) {
+    closeDatabase(db);
+    console.error(`Comic preparation cache error: ${err instanceof Error ? err.message : String(err)}`);
+    throw err;
+  }
+
   // Phase 11.2 (fixed): the application context owns the currently active
   // `db` and the Express app built from it. A live restore rebuilds every
   // db-bound repository/service/route against the restored connection and
@@ -307,6 +358,7 @@ async function main() {
       authState: { csrfPepper: authState.csrfPepper },
       assetManifest,
       assetMode: resolveAssetMode(config.nodeEnv),
+      comicRuntime,
     },
   }, db);
   const applicationLogger = appContext.app.locals.applicationLogger;
@@ -316,6 +368,7 @@ async function main() {
     event: 'runtime.migrations.completed',
     message: 'Database migrations completed.',
   });
+  reportComicRuntimeStart(comicStart, applicationLogger);
 
   if (config.releaseNotifications.baseUrlInvalid) {
     // The value itself is never logged; notifications are sent without links.

@@ -304,6 +304,28 @@ describe('asset action service', () => {
       expect(unsupported).toMatchObject({ extension: 'mov', mime_type: 'application/octet-stream' });
     });
 
+    it('renames and moves comic archives under the ordinary rules, keeping identity and comic MIME', () => {
+      const category = createEnabledCategory('Comics', 'comics');
+      writeFile('issue.cbr', 'content');
+      // Legacy CBR row: indexed before comic recognition with the generic MIME.
+      const asset = createAsset('issue.cbr', { extension: 'cbr', mimeType: 'application/octet-stream' });
+
+      const renamed = actionService.renameAsset(project.id, asset.id, 'Issue 01.CBZ');
+      expect(renamed).toMatchObject({
+        id: asset.id, extension: 'cbz', mime_type: 'application/vnd.comicbook+zip',
+      });
+
+      const moved = actionService.moveAsset(project.id, asset.id, category.id);
+      expect(moved).toMatchObject({
+        id: asset.id, relative_path: 'comics/Issue 01.CBZ', category_id: category.id,
+        mime_type: 'application/vnd.comicbook+zip',
+      });
+      expect(fs.existsSync(path.join(absPath, 'comics', 'Issue 01.CBZ'))).toBe(true);
+
+      const generic = actionService.renameAsset(project.id, asset.id, 'Issue 01.zip');
+      expect(generic).toMatchObject({ id: asset.id, extension: 'zip', mime_type: 'application/octet-stream' });
+    });
+
     it('renames from a basename while preserving the current extension', () => {
       writeFile('archive.final.png', 'content');
       const asset = createAsset('archive.final.png');

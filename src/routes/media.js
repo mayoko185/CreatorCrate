@@ -7,6 +7,12 @@
 //   GET /projects/:projectId/assets/:assetId/preview
 //   GET /projects/:projectId/assets/:assetId/original
 //
+// A3.3c-2 adds the comic manifest and numbered-page routes (see "Comic
+// routes" below):
+//
+//   GET /projects/:projectId/assets/:assetId/comic
+//   GET /projects/:projectId/assets/:assetId/comic/pages/:position?v=<revision>
+//
 // Constraints enforced by this router:
 //
 //   - Routes contain NO SQL, NO path resolution, NO filesystem access, NO
@@ -34,6 +40,7 @@ import {
   MediaUnsupportedError,
   MediaBadRequestError,
 } from '../services/media-service.js';
+import { COMIC_PAGE_DELIVERY_TYPES, COMIC_REVISION_RE } from '../services/comic-media-service.js';
 
 /**
  * Strict positive-integer parser. Rejects floats, hex, signs, whitespace,
@@ -245,6 +252,194 @@ function makeOriginalHandler(mediaService) {
   };
 }
 
+// ─── Comic routes (A3.3c-2) ────────────────────────────────────────────────
+//
+// Thin HTTP adapters over the application graph's one comic media service
+// (comic-media-service.js, built by createApp with the shared comic runtime's
+// admission and recovered preparation cache). The routes never open, list or
+// decode an archive themselves: authorization, source revision, admission,
+// bounded extraction, preparation and rendition all stay in the service. The
+// only inputs are the two IDs, a 1-based page number and the manifest's
+// revision; no member path or selector is ever accepted.
+//
+// Caching: both responses are `no-store`. A page URL names a revision, but the
+// service re-authorizes and re-proves the source on every request (a stale
+// revision is an explicit 409, never another revision's page), and the
+// revision token cannot prove absolute content identity, so no browser or
+// intermediary copy may stand in for that check.
+
+/**
+ * Same-origin page URL for one numbered page of a manifest revision. Every
+ * component is server-issued (integers and a 32-hex revision) and encoded.
+ */
+function comicPageUrl(projectId, assetId, position, revision) {
+  return `/projects/${encodeURIComponent(projectId)}/assets/${encodeURIComponent(assetId)}`
+    + `/comic/pages/${encodeURIComponent(position)}?v=${encodeURIComponent(revision)}`;
+}
+
+/**
+ * Public manifest projection. Keeps only what a viewer needs: identity,
+ * format, revision, ordered numbered pages (display name, availability and
+ * page URL) and the display image types. Member paths, entry indexes, sizes,
+ * containers and source MIME declarations stay inside the service.
+ */
+function publicComicManifest(manifest, projectId, assetId) {
+  if (manifest.projectId !== projectId || manifest.assetId !== assetId
+    || typeof manifest.revision !== 'string' || !COMIC_REVISION_RE.test(manifest.revision)
+    || !Number.isSafeInteger(manifest.pageCount) || manifest.pages.length !== manifest.pageCount) {
+    throw new Error('Comic media service returned an invalid manifest.');
+  }
+  const { revision } = manifest;
+  const pages = manifest.pages.map((page, index) => {
+    if (page.position !== index + 1) throw new Error('Comic manifest pages are not numbered in order.');
+    return {
+      position: page.position,
+      name: page.name,
+      available: page.available === true,
+      problem: page.problem ?? null,
+      url: comicPageUrl(projectId, assetId, page.position, revision),
+    };
+  });
+  return {
+    projectId,
+    assetId,
+    format: manifest.format,
+    revision,
+    pageCount: manifest.pageCount,
+    displayImageTypes: [...manifest.deliveryImageTypes],
+    preparation: {
+      solid: manifest.preparation.solid === true,
+      state: manifest.preparation.state,
+    },
+    unavailablePositions: [...manifest.unavailablePositions],
+    pages,
+  };
+}
+
+/**
+ * Abort the service call when the client goes away before the response is
+ * written. `close` on the response is the established signal (see
+ * sendPreparedMediaResponse): a completed response has `writableEnded` set,
+ * so normal completion is never mistaken for a disconnect. The listener is
+ * removed as soon as the service settles, so nothing retains req/res.
+ * Background preparations run under the cache's own signal and are never
+ * cancelled by this one.
+ */
+function watchClientDisconnect(req, res) {
+  const controller = new AbortController();
+  const onClose = () => {
+    if (!res.writableEnded) controller.abort();
+  };
+  res.once('close', onClose);
+  if (res.destroyed || req.socket?.destroyed) controller.abort();
+  return {
+    signal: controller.signal,
+    gone: () => controller.signal.aborted || res.destroyed,
+    release: () => res.off('close', onClose),
+  };
+}
+
+function rejectComicUnavailable(res) {
+  // This graph has no comic service (rootless or test-only application).
+  res.setHeader('Cache-Control', CACHE_NO_STORE);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  return res.status(404).type('text/plain').send('Not found');
+}
+
+function respondComicError(req, res, next, err, watch) {
+  // Nothing can be written to a client that went away; the service has
+  // already released its admission, descriptor and leases.
+  if (watch.gone()) return undefined;
+  if (err instanceof MediaError && err.status >= 500 && err.status !== 503) {
+    try {
+      req.app.locals.applicationLogger?.error?.({
+        kind: 'diagnostic',
+        subsystem: 'comics',
+        event: 'comics.http.failed',
+        message: 'A comic request failed unexpectedly.',
+        error: err.cause ?? err,
+      });
+    } catch {
+      // Diagnostics must not change the response.
+    }
+  }
+  if (mapMediaError(res, err)) return undefined;
+  return next(err);
+}
+
+function makeComicManifestHandler(comicMediaService) {
+  return async (req, res, next) => {
+    const ids = rejectMalformedIds(req, res);
+    if (ids === null) return undefined;
+    if (!comicMediaService) return rejectComicUnavailable(res);
+    const { projectId, assetId } = ids;
+
+    const watch = watchClientDisconnect(req, res);
+    let manifest;
+    try {
+      manifest = await comicMediaService.getComicManifest(projectId, assetId, { signal: watch.signal });
+    } catch (err) {
+      return respondComicError(req, res, next, err, watch);
+    } finally {
+      watch.release();
+    }
+    if (watch.gone()) return undefined;
+
+    let body;
+    try {
+      body = publicComicManifest(manifest, projectId, assetId);
+    } catch (err) {
+      return next(err);
+    }
+    res.setHeader('Cache-Control', CACHE_NO_STORE);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    return res.status(200).json(body);
+  };
+}
+
+function makeComicPageHandler(comicMediaService) {
+  return async (req, res, next) => {
+    const ids = rejectMalformedIds(req, res);
+    if (ids === null) return undefined;
+    if (!comicMediaService) return rejectComicUnavailable(res);
+    const { projectId, assetId } = ids;
+
+    // Malformed values reach the service as null, which refuses them
+    // (REVISION_INVALID / PAGE_INVALID_POSITION → 400) before any
+    // authorization, admission or file access. A missing revision is never
+    // replaced by the current one.
+    const position = parseStrictInt(req.params.position);
+    const revision = typeof req.query.v === 'string' ? req.query.v : null;
+
+    const watch = watchClientDisconnect(req, res);
+    let page;
+    try {
+      page = await comicMediaService.getComicPage(projectId, assetId, {
+        revision,
+        position,
+        signal: watch.signal,
+      });
+    } catch (err) {
+      return respondComicError(req, res, next, err, watch);
+    } finally {
+      watch.release();
+    }
+    if (watch.gone()) return undefined;
+
+    if (!Buffer.isBuffer(page?.bytes) || !COMIC_PAGE_DELIVERY_TYPES.includes(page.mimeType)
+      || page.revision !== revision || page.position !== position) {
+      return next(new Error('Comic media service returned an invalid page.'));
+    }
+    res.status(200);
+    res.setHeader('Content-Type', page.mimeType);
+    res.setHeader('Content-Length', String(page.bytes.length));
+    res.setHeader('Cache-Control', CACHE_NO_STORE);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    if (req.method === 'HEAD') return res.end();
+    return res.end(page.bytes);
+  };
+}
+
 // ─── Router factory ───────────────────────────────────────────────────────
 
 /**
@@ -256,17 +451,30 @@ function makeOriginalHandler(mediaService) {
  *   GET /projects/:projectId/assets/:assetId/thumbnail
  *   GET /projects/:projectId/assets/:assetId/preview
  *   GET /projects/:projectId/assets/:assetId/original
+ *   GET /projects/:projectId/assets/:assetId/comic
+ *   GET /projects/:projectId/assets/:assetId/comic/pages/:position
  *
  * The order matters: these three routes are more specific than the later
  * `GET /projects/:projectId/assets/:assetId` detail route (4 segments vs
  * 3), so they are matched first by Express without conflict.
  *
+ * The comic routes have five and six segments and literal `comic`/`pages`
+ * parts, so they cannot shadow (or be shadowed by) the routes above or the
+ * asset detail/tag routes.
+ *
  * @param {object} deps
- * @param {import('../services/media-service.js').MediaService} deps.mediaService
+ * @param {import('../services/media-service.js').MediaService|null} [deps.mediaService]
+ * @param {object|null} [deps.comicMediaService] - the graph's comic media service
+ *   (app.locals.comicMediaService); null answers the comic routes 404.
  */
-export function createMediaRouter({ mediaService }) {
-  if (!mediaService) throw new TypeError('mediaService is required');
+export function createMediaRouter({ mediaService = null, comicMediaService = null } = {}) {
+  if (!mediaService && !comicMediaService) throw new TypeError('mediaService is required');
   const router = express.Router({ mergeParams: true });
+
+  router.get('/:projectId/assets/:assetId/comic', makeComicManifestHandler(comicMediaService));
+  router.get('/:projectId/assets/:assetId/comic/pages/:position', makeComicPageHandler(comicMediaService));
+
+  if (!mediaService) return router;
 
   router.get(
     '/:projectId/assets/:assetId/thumbnail',

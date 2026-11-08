@@ -1895,7 +1895,7 @@ Inside the lock:
    primary selection never move on unverified content.
 2. Walk it recursively, collecting **relative paths and metadata only** —
    no absolute path is ever stored. Skips legacy CreatorCrate sidecars
-   (`project.json` and its temp form), OS junk, archive extensions, root-level
+   (`project.json` and its temp form), OS junk, generic ZIP and 7Z archives, root-level
    dotfiles (including the `.creatorcrate-owner` ownership marker), hidden
    directories, and symlinks of any kind.
 3. **Abort on permission or I/O errors.** This is the critical invariant: a
@@ -1925,6 +1925,26 @@ Inside the lock:
 6. Optionally apply automatic primary-image selection, which is fail-closed:
    any non-automatic (or unrecognized) provenance on an existing primary
    image is treated as manual and left alone.
+
+Normal project asset scanning discovers CBZ, CBR and CB7 comic assets with
+case-insensitive extension matching and the same directory-based category
+classification as other assets. Generic ZIP and 7Z archives remain excluded;
+generic RAR files may be indexed but are not classified as comics.
+[`asset-metadata.js`](src/services/asset-metadata.js) classifies comics by
+extension alone, so previously indexed CBR files with generic
+`application/octet-stream` MIME metadata are recognized before a rescan
+repairs that metadata. Comic classification grants no image-only or
+video-only processing eligibility. Archive validation and page reading belong
+to the comic media backend, not ordinary asset scanning.
+
+CreatorCrate-generated archives remain owned through `generated_artifacts`.
+During reconciliation, a discovered path owned by a generated-artifact row
+for the project is not inserted as a new ordinary asset record, preventing
+generated CBZ/CB7 archives from acquiring duplicate asset ownership. Matching
+uses the processing planner's platform path key. An asset row already indexed
+at such a path still receives ordinary reconciliation; it is not silently
+dropped or marked missing while its file is present. Generated-artifact
+retention and cleanup remain separate from asset reconciliation.
 
 Assets are soft-deleted: a vanished file is marked *missing*, not removed,
 so that a temporarily unmounted share or a moved file does not destroy tags,
@@ -2184,8 +2204,9 @@ the submitted image settings to label each output. Archive uses the existing
 job cancellation contract above: only queued jobs can be cancelled; running
 generation completes or follows its failure and recovery path.
 
-The scanner excludes ZIP, 7Z, CBZ and CB7 files. Recovery cleanup accepts only
-these explicit archive-stage extensions in the existing private staging
+Generated archive ownership is handled during asset reconciliation (§10),
+separately from retention and cleanup. Recovery cleanup accepts only ZIP, 7Z,
+CBZ and CB7 archive-stage extensions in the existing private staging
 namespace; public archives remain tracking-only. Identity, content proof,
 lifecycle and checkpoint checks still govern cleanup authorization.
 

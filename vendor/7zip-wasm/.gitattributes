@@ -1,0 +1,9 @@
+# Checksummed decoder artifacts and recipe: never convert line endings.
+* -text
+
+# Preserve qualified upstream content, including patch formatting and license whitespace.
+build/qualified.patch whitespace=-blank-at-eol
+licenses/License.txt whitespace=cr-at-eol,-blank-at-eol
+licenses/copying.txt whitespace=cr-at-eol
+licenses/emscripten-LICENSE.txt whitespace=-blank-at-eol,-blank-at-eof
+licenses/unRarLicense.txt whitespace=-blank-at-eol

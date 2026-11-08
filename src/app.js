@@ -119,6 +119,7 @@ import { createReleaseService } from './services/release-service.js';
 import { createWorkflowQueryService } from './services/workflow-query-service.js';
 import { createAssetWorkflowMetadataService } from './services/asset-workflow-metadata-service.js';
 import { createPreviewService } from './services/preview-service.js';
+import { createComicMediaService } from './services/comic-media-service.js';
 import { createManagedMediaService } from './services/managed-media-service.js';
 import { createMediaService } from './services/media-service.js';
 import { createBookExportService } from './services/book-export-service.js';
@@ -889,6 +890,28 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
 
   app.locals.mediaService = mediaService;
 
+  // A3.3c-1: comic reads (CBZ/CBR/CB7) use this graph's preview authority with the
+  // application's one comic admission, rendition process supervisor and its recovered
+  // preparation cache (comic-runtime.js).
+  // The application context supplies the same runtime to every rebuild; the cache is passed
+  // only once recovered (null before, or when degraded: on-demand reads only). Direct
+  // createApp callers without a runtime get the service's own default admission and no cache.
+  // A graph whose (injected) preview service has no original-descriptor authority has no
+  // comic service, exactly as a rootless graph.
+  const comicRuntime = opts.comicRuntime || null;
+  const comicMediaService =
+    opts.comicMediaService ||
+    (typeof previewService?.getOriginalDescriptor === 'function' && projectsRoot
+      ? createComicMediaService({
+        previewService,
+        projectsRoot,
+        ...(comicRuntime ? { admission: comicRuntime.admission, renditions: comicRuntime.renditions } : {}),
+        ...(comicRuntime?.preparationCache ? { preparationCache: comicRuntime.preparationCache } : {}),
+      })
+      : null);
+  app.locals.comicRuntime = comicRuntime;
+  app.locals.comicMediaService = comicMediaService;
+
   const bookExportService = opts.bookExportService || createBookExportService({
     db,
     managedMediaService: app.locals.managedMediaService,
@@ -1101,8 +1124,10 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   // three, but this ordering protects the media contract from future route
   // broadening.
   app.use('/managed-assets', createManagedMediaRouter({ managedMediaService: app.locals.managedMediaService }));
-  if (mediaService) {
-    app.use('/projects', createMediaRouter({ mediaService }));
+  // A3.3c-2: the comic manifest/page routes use this graph's one comic media
+  // service (built above with the shared comic runtime); never one per request.
+  if (mediaService || comicMediaService) {
+    app.use('/projects', createMediaRouter({ mediaService, comicMediaService }));
   }
 
   // The Assets and category-management routers combine database-backed browser

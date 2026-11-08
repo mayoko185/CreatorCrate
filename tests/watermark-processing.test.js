@@ -1565,6 +1565,15 @@ describe('watermark asset processing', () => {
     expect((await sharp(webpEntries[0].data).metadata()).format).toBe('webp');
     expect((await sharp(cbzEntries[0].data).metadata()).format).toBe('jpeg');
     expect(generatedArtifactRepository.listByProjectId(project.id)).toHaveLength(3);
+
+    // Comic recognition must not turn the generated CBZ into a second, manual asset owner.
+    const artifactsBefore = generatedArtifactRepository.listByProjectId(project.id);
+    assetScanner.scanProjectAssets(project.id);
+    assetScanner.scanProjectAssets(project.id);
+    expect(assetRepository.findByProjectIdAndPath(project.id, 'Patreon August_jpg_q85.cbz')).toBeFalsy();
+    expect(db.prepare("SELECT COUNT(*) AS c FROM assets WHERE project_id = ? AND extension IN ('zip', 'cbz')")
+      .get(project.id).c).toBe(0);
+    expect(generatedArtifactRepository.listByProjectId(project.id)).toEqual(artifactsBefore);
   });
 
 

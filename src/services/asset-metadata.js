@@ -22,7 +22,21 @@ const EXTENSION_MIME_MAP = {
   krz: 'application/x-krita',
   webm: 'video/webm',
   mp4: 'video/mp4',
+  cbz: 'application/vnd.comicbook+zip',
+  cbr: 'application/vnd.comicbook-rar',
+  cb7: 'application/x-cb7',
 };
+
+/**
+ * Supported comic archive formats, keyed by extension. Only these comic
+ * extensions are comics: a generic .zip, .rar, or .7z is never a comic even
+ * though its container is compatible.
+ */
+const COMIC_MIME_BY_EXTENSION = Object.freeze({
+  cbz: EXTENSION_MIME_MAP.cbz,
+  cbr: EXTENSION_MIME_MAP.cbr,
+  cb7: EXTENSION_MIME_MAP.cb7,
+});
 
 /**
  * Supported CreatorCrate video formats. Deliberately separate from the image
@@ -68,4 +82,23 @@ export function classifySupportedVideo(asset) {
   const mime = String(asset?.mime_type || '').toLowerCase();
   const expected = SUPPORTED_VIDEO_MIME_BY_EXTENSION[ext];
   return { supported: Boolean(expected) && mime === expected, extension: ext, mimeType: mime };
+}
+
+/**
+ * Decide whether an asset record is a comic archive (CBZ, CBR, or CB7) from
+ * its extension alone. Unlike images and videos, the recorded MIME is not
+ * consulted: rows indexed before comic recognition carry the generic
+ * `application/octet-stream` (CBR was always scanned) until a rescan repairs
+ * them, and a MIME could never prove the archive is valid anyway. This is a
+ * type classification only — it never makes the asset previewable or eligible
+ * for any image processing, and actual archive validation stays with the
+ * page-access path.
+ *
+ * @param {{ extension: string }} asset
+ * @returns {{ comic: boolean, format: 'cbz'|'cbr'|'cb7'|null, mimeType: string|null }}
+ */
+export function classifyComicAsset(asset) {
+  const ext = String(asset?.extension || '').toLowerCase();
+  const mimeType = Object.hasOwn(COMIC_MIME_BY_EXTENSION, ext) ? COMIC_MIME_BY_EXTENSION[ext] : null;
+  return { comic: mimeType !== null, format: mimeType === null ? null : ext, mimeType };
 }

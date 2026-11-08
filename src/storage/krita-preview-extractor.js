@@ -44,8 +44,10 @@ export class KritaPreviewExtractionError extends Error {
  * yauzl's fromFd path closes the supplied descriptor when its reader is
  * closed. This reader deliberately makes close a no-op so the descriptor
  * remains owned by openAssetFile's caller and is closed exactly once there.
+ * Exported for the CBZ page reader, which reads caller-owned descriptors the
+ * same way.
  */
-class OpenDescriptorReader extends yauzl.RandomAccessReader {
+export class OpenDescriptorReader extends yauzl.RandomAccessReader {
   constructor(handle) {
     super();
     this.handle = handle;

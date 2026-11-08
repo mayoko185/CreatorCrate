@@ -7,6 +7,7 @@ import { createProcessingJobService } from './services/processing-job-service.js
 import { createProcessingConcurrencyService } from './services/processing-concurrency-service.js';
 import { createApplicationLogger } from './services/application-logger.js';
 import { createReleaseNotificationRuntime } from './services/release-notification-runtime.js';
+import { createComicRuntime } from './services/comic-runtime.js';
 
 /**
  * Phase 11.2 live-restore fix — the mutable application context that owns
@@ -85,6 +86,12 @@ export function createApplicationContext(
   // later processing operations across projects share one process-wide cap.
   const processingConcurrencyService = activeAppOpts.processingConcurrencyService
     || createProcessingConcurrencyService({ concurrency: activeAppOpts.processingConcurrency });
+  // A3.3c-1: one comic admission and one preparation cache for the whole application, shared
+  // by every graph like the pool above. server.js creates and recovers the runtime before this
+  // context exists; a context built without one gets an admission-only runtime (no cache), so
+  // its graphs still never own separate comic admissions.
+  const comicRuntime = activeAppOpts.comicRuntime
+    || createComicRuntime({ preparation: false });
 
   // Release-notification runtime: transport configuration, the four channel
   // lanes, Send Test, and scheduled cycles live for the whole process. Its
@@ -118,6 +125,7 @@ export function createApplicationContext(
         processingJobService,
         processingConcurrencyService,
         releaseNotificationRuntime,
+        comicRuntime,
         startGeneratedImageRebuild: false,
         applicationLogger,
         ...(applicationLogRepository ? { applicationLogRepository } : {}),
@@ -163,12 +171,18 @@ export function createApplicationContext(
   // notification admission (scheduled cycles, Send Test, lane work), paused
   // together for replacement. Releasing the notification pause reconciles
   // destinations against whichever graph is then current.
+  // F2: the graph's comic media service joins the same pause. It refuses new
+  // comic reads and preparations of that graph and cancels its queued and
+  // running ones; waitForIdle() settles only when their admission slots,
+  // descriptors, decoder workers and rendition children are released, so the
+  // shared comic runtime never holds work that could reach a retired database.
   function pauseGeneratedImageWork(app) {
     const pauses = [
       app.locals?.generatedImageRebuildService?.pauseForMaintenance(),
       app.locals?.generatedImagePublicationLifecycle?.pauseForMaintenance(),
       app.locals?.projectOwnershipAdoption?.pauseForMaintenance(),
       app.locals?.legacyManifestCleanup?.pauseForMaintenance(),
+      app.locals?.comicMediaService?.pauseForMaintenance?.(),
       releaseNotificationRuntime.pauseForMaintenance(),
     ].filter(Boolean);
     return {
@@ -184,8 +198,24 @@ export function createApplicationContext(
     current.app.locals?.generatedImagePublicationLifecycle?.signal();
   }
 
+  // F2 (synchronous path): beginReplacement cannot await the comic pause's cleanup (cancellation
+  // requested is not cleanup done: slots, descriptors, decoder workers and rendition children
+  // settle asynchronously). It therefore grants ownership only when this graph's comic work is
+  // already idle — queued, admitted and settling operations all count — and otherwise refuses
+  // like the upload and processing guards, before pausing anything, so a refusal neither cancels
+  // the graph's work nor touches another owner's pause. The check, the pause (which refuses new
+  // comic work) and the acquisition run in one synchronous step: nothing can start in between.
+  // beginReplacementAfterRebuild is the path that cancels and awaits that work instead.
+  function assertNoActiveComicOperations(app) {
+    const comics = app.locals?.comicMediaService;
+    if (comics?.isIdle && !comics.isIdle()) {
+      throw new Error('Cannot replace the application context while comic operations are active.');
+    }
+  }
+
   function beginReplacement(db = current.db, app = current.app) {
     const graph = current;
+    assertNoActiveComicOperations(app);
     const pause = pauseGeneratedImageWork(app);
     try {
       return beginReplacementMaintenance(
@@ -266,6 +296,8 @@ export function createApplicationContext(
     current.app.locals?.legacyManifestCleanup?.stop();
     current.app.locals?.generatedImageRebuildService?.stop();
     current.app.locals?.generatedImagePublicationLifecycle?.stop();
+    // F2: the replaced graph never serves or prepares comics again.
+    current.app.locals?.comicMediaService?.stop?.();
     current = { db: newDb, app: newApp };
     if (!maintenanceOwner) owner.release();
   }
@@ -305,6 +337,8 @@ export function createApplicationContext(
       current.app.locals?.legacyManifestCleanup?.stop();
       current.app.locals?.generatedImageRebuildService?.stop();
       current.app.locals?.generatedImagePublicationLifecycle?.stop();
+      // F2: requests authorized under the replaced auth configuration end with it.
+      current.app.locals?.comicMediaService?.stop?.();
       current = { db: current.db, app: newApp };
     } finally {
       if (!maintenanceOwner) owner.release();
@@ -338,6 +372,12 @@ export function createApplicationContext(
     },
     get releaseNotificationRuntime() {
       return releaseNotificationRuntime;
+    },
+    get comicRuntime() {
+      return comicRuntime;
+    },
+    get comicMediaService() {
+      return current.app.locals?.comicMediaService;
     },
     replaceDatabase,
     beginReplacement,
