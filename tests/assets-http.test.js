@@ -2913,10 +2913,11 @@ describe('asset browser HTTP workflow', () => {
     expect((invalidDefaultsDialog.match(/data-autosubmit="fetch"/g) || [])).toHaveLength(9);
     expect(invalidDefaultsDialog).not.toContain('>Save defaults</button>');
 
-    const speedSelect = response.text.match(/<select[^>]*data-slideshow-speed[^>]*>/)?.[0] || '';
+    // B5a: Project Assets' slideshow speed is the unified viewer's control.
+    expect(response.text).not.toContain('data-slideshow-speed');
+    const speedSelect = response.text.match(/<select[^>]*data-unified-viewer-speed[^>]*>/)?.[0] || '';
     expect(speedSelect).toContain('data-cc-dropdown-native-select');
-    expect(speedSelect).toContain('disabled');
-    expect(response.text).toContain('id="slideshow-speed-dropdown" data-cc-dropdown');
+    expect(response.text).toContain('id="unified-viewer-speed-dropdown" data-cc-dropdown');
     expect(response.text).toContain('<option value="2000">2 s</option>');
     expect(response.text).toContain('value="4000" selected');
     expect(response.text).toContain('<option value="6000">6 s</option>');
@@ -3592,6 +3593,103 @@ describe('asset browser HTTP workflow', () => {
   // as &amp; in the markup; browsers decode them when following the link.
   // The action must never leak the container root or an absolute path.
 
+  // B6: Asset Details opens its own image (only) in the shared unified viewer.
+  describe('Asset Details unified viewer (B6)', () => {
+    function viewerTriggers(html) {
+      return html.match(/<(?:a|button)\b[^>]*data-asset-details-viewer-trigger[^>]*>/g) || [];
+    }
+
+    function attr(tag, name) {
+      const match = tag.match(new RegExp(`\\s${name}="([^"]*)"`));
+      return match ? match[1].replace(/&amp;/g, '&') : null;
+    }
+
+    it('mounts the shared viewer once, outside main content, with one descriptor-bearing original link trigger', async () => {
+      const { id, assets } = await setupOrderedImageAssets('B6 Viewer Original');
+      const asset = assets.bravo;
+      const res = await agent.get(`/projects/${id}/assets/${asset.id}?pageSize=1`).expect(200);
+
+      expect(res.text.match(/<dialog id="unified-viewer-dialog"/g)).toHaveLength(1);
+      const main = res.text.match(/<main id="main-content"[\s\S]*?<\/main>/)?.[0] || '';
+      expect(main).not.toContain('unified-viewer-dialog');
+      expect(main).not.toContain('data-unified-viewer');
+
+      const preview = previewSectionHtml(res.text);
+      const triggers = viewerTriggers(preview);
+      expect(triggers).toHaveLength(1);
+      const [trigger] = triggers;
+      // The existing original link stays the trigger and its fallback.
+      expect(trigger).toMatch(/^<a class="asset-preview-link" href="/);
+      const originalHref = `/projects/${id}/assets/${asset.id}/original`;
+      expect(attr(trigger, 'href')).toBe(originalHref);
+      expect(attr(trigger, 'aria-label')).toBe(`View original ${asset.filename}`);
+      expect(attr(trigger, 'data-viewer-filename')).toBe(asset.filename);
+      expect(attr(trigger, 'data-viewer-original-url')).toBe(originalHref);
+      const previewUrl = attr(trigger, 'data-viewer-preview-url');
+      const revision = attr(trigger, 'data-viewer-revision');
+      expect(revision).toBeTruthy();
+      expect(previewUrl).toBe(`/projects/${id}/assets/${asset.id}/preview?v=${revision}`);
+      expect(preview).toContain(`src="/projects/${id}/assets/${asset.id}/preview?v=${revision}"`);
+
+      // Page Previous/Next stay plain asset-page navigation, never triggers.
+      expect(anchorHref(res.text, 'asset-preview-nav--previous')).toContain(`/projects/${id}/assets/${assets.alpha.id}?`);
+      expect(anchorHref(res.text, 'asset-preview-nav--next')).toContain(`/projects/${id}/assets/${assets.charlie.id}?`);
+      expect(res.text).not.toMatch(/<a\b[^>]*asset-preview-nav[^>]*data-asset-details-viewer-trigger/);
+      // Toolbar and metadata links never carry the hook.
+      const toolbar = res.text.match(/<nav class="project-detail-action-toolbar[\s\S]*?<\/nav>/)?.[0] || '';
+      expect(toolbar).not.toContain('data-asset-details-viewer-trigger');
+      expect(res.text.match(/data-asset-details-viewer-trigger/g)).toHaveLength(1);
+    });
+
+    it('gives a preview-only Krita image a button trigger with no original URL', async () => {
+      const res = await createProject('B6 Viewer Krita');
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      const asset = writeIndexedAsset(id, getProjectDir('B6 Viewer Krita'), 'paint.kra', makeKritaArchive({ merged: await makePng() }));
+
+      const detail = await agent.get(`/projects/${id}/assets/${asset.id}`).expect(200);
+      const preview = previewSectionHtml(detail.text);
+      expect(preview).toContain('asset-media--krita');
+      const triggers = viewerTriggers(preview);
+      expect(triggers).toHaveLength(1);
+      const [trigger] = triggers;
+      expect(trigger).toMatch(/^<button type="button" class="asset-preview-link asset-preview-view-button"/);
+      expect(attr(trigger, 'aria-label')).toBe('View preview of paint.kra');
+      expect(attr(trigger, 'aria-haspopup')).toBe('dialog');
+      expect(attr(trigger, 'data-viewer-preview-url')).toMatch(new RegExp(`^/projects/${id}/assets/${asset.id}/preview\\?v=`));
+      // The generated preview is never offered as the original file.
+      expect(trigger).not.toContain('data-viewer-original-url');
+      expect(preview).not.toContain('/original');
+      expect(preview).not.toMatch(/<a\b[^>]*asset-preview-link/);
+      expect(detail.text).toContain('The asset cannot be opened as an original');
+    });
+
+    it('renders no viewer trigger for video, comic, missing or unsupported assets', async () => {
+      const res = await createProject('B6 Viewer Ineligible');
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      const projectDir = getProjectDir('B6 Viewer Ineligible');
+      const video = writeIndexedAsset(id, projectDir, 'clip.webm', Buffer.from('video-bytes'), { mimeType: 'video/webm' });
+      const comic = writeIndexedAsset(id, projectDir, 'book.cbz', Buffer.from([0x50, 0x4b, 0x05, 0x06, ...new Array(18).fill(0)]), { mimeType: 'application/zip' });
+      const unsupported = writeIndexedAsset(id, projectDir, 'data.bin', Buffer.from('bin'));
+      const gone = writeIndexedAsset(id, projectDir, 'gone.png', await makePng());
+      fs.rmSync(path.join(projectDir, 'gone.png'));
+      await agent.post(`/projects/${id}/scan`).send({ _csrf: csrfToken }).type('form').expect(302);
+
+      for (const asset of [video, comic, unsupported, gone]) {
+        const detail = await agent.get(`/projects/${id}/assets/${asset.id}`).expect(200);
+        const preview = previewSectionHtml(detail.text);
+        expect(viewerTriggers(preview)).toHaveLength(0);
+        expect(preview).not.toContain('data-viewer-preview-url');
+        // The viewer is still mounted (one per page) but has nothing to open.
+        expect(detail.text.match(/<dialog id="unified-viewer-dialog"/g)).toHaveLength(1);
+      }
+      const videoDetail = await agent.get(`/projects/${id}/assets/${video.id}`).expect(200);
+      expect(previewSectionHtml(videoDetail.text)).toMatch(/<video\b[^>]*data-asset-video/);
+      // No comic manifest or page URL is rendered on Asset Details in B6.
+      const comicDetail = await agent.get(`/projects/${id}/assets/${comic.id}`).expect(200);
+      expect(comicDetail.text).not.toMatch(/\/comic\b|manifest/);
+    });
+  });
+
   describe('open locally action on the asset viewer', () => {
     function configureWindowsRoot() {
       db.prepare('INSERT INTO app_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
@@ -4120,15 +4218,25 @@ describe('asset browser HTTP workflow', () => {
     expect(res2.text).toContain('alt="Preview of viewer-fallback.png"');
     expectNoAnchor(res2.text, 'asset-viewer-original');
     expectAnchorHref(res2.text, 'asset-preview-link', `/projects/${id}/assets/${asset.id}/original`);
-    const dialogStart = res2.text.indexOf('<dialog id="asset-edit-dialog"');
-    const dialogEnd = res2.text.indexOf('</dialog>', dialogStart) + '</dialog>'.length;
-    const dialogHtml = res2.text.slice(dialogStart, dialogEnd);
-    const outsideDialog = res2.text.slice(0, dialogStart) + res2.text.slice(dialogEnd);
+    // B6: the shared unified viewer is mounted once, after the page content.
+    // Its own status regions are scoped to its (closed) dialog; the page's
+    // own workflow still reports through Edit Asset's one live region.
+    const viewerMatch = res2.text.match(/<dialog id="unified-viewer-dialog"[\s\S]*?<\/dialog>/);
+    expect(res2.text.match(/<dialog id="unified-viewer-dialog"/g)).toHaveLength(1);
+    const viewerHtml = viewerMatch?.[0] ?? '';
+    expect(res2.text.indexOf(viewerHtml)).toBeGreaterThan(res2.text.indexOf('</main>'));
+    expect(viewerHtml).toContain('data-unified-viewer-status role="status" aria-live="polite"');
+    expect(viewerHtml).toContain('data-unified-viewer-position aria-live="polite" aria-atomic="true"');
+    const pageText = res2.text.replace(viewerHtml, '');
+    const dialogStart = pageText.indexOf('<dialog id="asset-edit-dialog"');
+    const dialogEnd = pageText.indexOf('</dialog>', dialogStart) + '</dialog>'.length;
+    const dialogHtml = pageText.slice(dialogStart, dialogEnd);
+    const outsideDialog = pageText.slice(0, dialogStart) + pageText.slice(dialogEnd);
     expect(dialogStart).toBeGreaterThan(-1);
     expect(dialogHtml).toContain(
       'class="app-dialog-status" data-dialog-status role="status" aria-live="polite"'
     );
-    expect((res2.text.match(/aria-live="polite"/g) || [])).toHaveLength(1);
+    expect((pageText.match(/aria-live="polite"/g) || [])).toHaveLength(1);
     expect(outsideDialog).not.toContain('aria-live');
   });
 
@@ -4637,7 +4745,8 @@ describe('asset browser HTTP workflow', () => {
     expect(filterActions).toContain('href="#project-assets-filter-dialog"');
     expect(filterActions).toContain('data-dialog-open="project-assets-filter-dialog"');
     expect(filterActions).toContain('aria-label="Filter assets"');
-    expect(filterActions).toContain('data-slideshow-trigger');
+    expect(filterActions).toContain('data-project-assets-slideshow-trigger');
+    expect(filterActions).not.toContain('data-slideshow-trigger');
     expect(filterActions).not.toContain('data-project-assets-reset');
 
     const defaultsLink = res2.text.match(/<a class="[^"]*\basset-viewer-defaults-link\b[^"]*"[\s\S]*?<\/a>/)?.[0];

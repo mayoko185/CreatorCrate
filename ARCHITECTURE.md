@@ -1935,7 +1935,8 @@ extension alone, so previously indexed CBR files with generic
 `application/octet-stream` MIME metadata are recognized before a rescan
 repairs that metadata. Comic classification grants no image-only or
 video-only processing eligibility. Archive validation and page reading belong
-to the comic media backend, not ordinary asset scanning.
+to the comic media backend, not ordinary asset scanning. Comics never enter the
+image viewer or its slideshows (§16, comic seam).
 
 CreatorCrate-generated archives remain owned through `generated_artifacts`.
 During reconciliation, a discovered path owned by a generated-artifact row
@@ -2674,8 +2675,8 @@ The shared asset presentation model selects the existing authenticated
 `/original` URL for present PNG, JPEG, WebP, and GIF assets when Preview is
 Original; Krita keeps the generated `/preview` fallback. Generated URLs retain
 the policy-aware revision, while `/original` uses its existing no-store response.
-Fitted slideshows use the selected normal preview URL, and Original Size keeps
-its separate source URL and natural-size display behavior.
+The unified image viewer (§16) fits the selected normal preview URL, and its
+Original Size loads the separate source URL on demand at natural size.
 
 Supported browser video is WebM (`video/webm`) and MP4 (`video/mp4`), decided
 by `classifySupportedVideo()` in
@@ -2691,7 +2692,7 @@ never played) so the card takes the file's intrinsic aspect ratio, falling back
 to a static placeholder on error. On every card surface (Project Assets, Asset
 Library, release selection, release detail) an unmodified activation of the
 video media link opens the one layout-level `asset-video-preview-dialog` (not
-the image-only slideshow), which inserts a fresh native `<video controls
+the unified image viewer, §16), which inserts a fresh native `<video controls
 playsinline preload="metadata">` and calls `play()` on it from that same click;
 modified clicks still navigate to the Asset Viewer. Closing pauses and removes
 the player. The Asset Viewer embeds the same native player but never plays it
@@ -3600,6 +3601,135 @@ Lists (Project Assets, Release assets and the Asset Library) use the same
 trigger, card shell and enhancer on asset titles, re-applied after each
 live-region replacement; asset navigation stays on the thumbnail, Details and
 the card's Open asset action.
+
+**Unified image viewer (Milestone B).** Every image preview entry point opens
+one shared viewer; there is no second production image viewer.
+
+*One shell per document.* A page opts in with `{% set unifiedViewer = true %}`
+and [`layout.njk`](src/views/layout.njk) then mounts
+[`partials/unified-viewer.njk`](src/views/partials/unified-viewer.njk) once,
+outside `#main-content` and every replaceable live region. It is a native
+`<dialog>` bound by the shared app-dialog binder, which supplies `showModal`,
+focus containment, Escape and dropdown precedence, the static backdrop, body
+scroll locking (`app-dialog-open`) and opener focus return.
+`enhanceUnifiedViewer()` in [`unified-viewer.js`](src/static/client/unified-viewer.js)
+creates one controller per document, stored on the dialog element and reached
+through `unifiedViewerFor(document)`; repeated enhancement is a no-op. The
+controller runs last in the `creatorcrate.js` enhancer list, after the six host
+adapters and after the separate video player (`enhanceAssetVideoPreview`,
+`asset-video-preview-dialog`), which the viewer never opens or controls.
+
+*Module responsibilities.* The controller owns sessions; participants it
+creates observe its frozen change records (`open`, `navigate`, `update`,
+`close`, each tagged with its session id):
+
+| Module | Responsibility |
+|---|---|
+| [`viewer-sequence.js`](src/static/client/viewer-sequence.js) | Pure data model: normalizes server entries into frozen sources of items keyed by project + asset (+ optional page position), never by index or filename; `single` vs `sequence` mode; explicit `wrap` and `slideshow` flags; initial selection, stepping, skipping unavailable items, and live-refresh reconciliation (`reconcileViewerSource`). Revisions are opaque strings and URLs are server-provided root-relative paths, compared by equality only. |
+| [`unified-viewer.js`](src/static/client/unified-viewer.js) | Dialog sessions: `open`, `close`, `next`/`previous`/`select`, session-bound `update`, header context (title, source label, View details link), Previous/position/Next, Arrow-key navigation, and replaced-opener focus fallback. It never fetches, renders media, schedules timers or reads page thumbnails, selection or filters. |
+| [`viewer-content.js`](src/static/client/viewer-content.js) | Media for the current item only: `fetch` with a fresh token and `AbortController` per load, HTTP status and `image/{jpeg,png,webp,gif}` content-type validation, decode, then an object URL in the media region; loading/failed/unavailable status with Retry; on-demand Original Size (decoded before it replaces the preview, which stays on failure); at most one neighbour preload. A result arriving under a stale token is released, not installed; every object URL, request and image it created is released on navigation, replacement or close. |
+| [`viewer-viewport.js`](src/static/client/viewer-viewport.js) | Geometry of the one shown image: contained, centred Fit (never upscaled past 1:1), button zoom, mouse/pen pan and Shift+Arrow pan bounded so no empty gap opens, re-measured on resize. Touch is left to the browser. |
+| [`viewer-playback.js`](src/static/client/viewer-playback.js) | Explicit slideshows only (`slideshow` source with at least two available items): Play/Pause and a 2/4/6 s speed dropdown (4 s default), autoplay on open unless reduced motion is preferred, at most one session-, item- and generation-bound advancement timer that starts only once the slide is loaded. Manual navigation, a failed or unavailable item, zoom, Original Size, a hidden tab and close pause it; nothing resumes it except Play. It advances through the controller's own `next`. |
+| [`viewer-fullscreen.js`](src/static/client/viewer-fullscreen.js) | Native fullscreen on the dialog's inner card (`[data-unified-viewer-card]`, since a `<dialog>` cannot itself be fullscreen) with no re-creation or reload; Escape exits fullscreen before the dialog closes (an open dropdown still takes Escape first); close, destroy and late grants exit or release fullscreen; deferred focus return once fullscreen has gone; fullscreen-only idle hiding of header, context bar and controls. |
+
+*Host adapters.* Each host module binds one delegated document click handler
+(guarded by a per-document bound key), acts only on an unmodified primary
+click on its own trigger attribute, builds a B1 source from server-rendered
+data, and opens it with the clicked element as opener plus a host fallback
+focus target. Modified and middle clicks keep the link's own navigation;
+Details links, checkboxes, Role controls, info cards, release actions and
+video tiles are never triggers. Videos, comics, missing and unsupported files
+get no trigger: the server emits viewer attributes only for a present,
+previewable image with a server-built preview URL (`viewerTriggerAttributes`
+in [`asset-presentation.njk`](src/views/partials/asset-presentation.njk)).
+
+| Host (page) | Module | Entry points | Refresh path |
+|---|---|---|---|
+| Project Assets (`/projects/:id/assets`) | [`project-assets-viewer.js`](src/static/client/project-assets-viewer.js) | Thumbnail → single image; toolbar Slideshow → complete filtered sequence | `refreshProjectAssetsViewer()` from the live-region engine |
+| Asset Library (`/asset-viewer`) | [`asset-library-viewer.js`](src/static/client/asset-library-viewer.js) | Project-qualified thumbnail → single image; toolbar Slideshow → complete cross-project filtered sequence | `refreshAssetLibraryViewer()` from the live-region engine (filters, sort, paging, history) |
+| Asset Details (`/projects/:p/assets/:a`) | [`asset-details-viewer.js`](src/static/client/asset-details-viewer.js) | Preview (View original link, or a button for preview-only Krita/non-inline originals) → single image | `observeAssetViewerRefresh()` in [`asset-viewer-refresh.js`](src/static/client/asset-viewer-refresh.js): installed `file` region, or gone (404/retired) |
+| Release Manage Assets (`/releases/:id/assets`) | [`release-assets-viewer.js`](src/static/client/release-assets-viewer.js) | Eligible thumbnail → single image | `refreshReleaseAssetsViewer()` from the live-region engine |
+| Release Detail (`/releases/:id`) | [`release-detail-viewer.js`](src/static/client/release-detail-viewer.js) | Eligible selected-image thumbnail → single image | `observeReleaseDetailRefresh()` in [`release-detail-refresh.js`](src/static/client/release-detail-refresh.js): adopted current render, or retirement |
+| Project Detail (`/projects/:id`) release strips | [`project-detail-viewer.js`](src/static/client/project-detail-viewer.js) | Eligible strip thumbnail → single image, keyed by its release | none (strips sit outside every Project Detail refresh region); `project-deleted` retirement only |
+
+Only Project Assets and the Asset Library have explicit slideshows. A single
+source holds only the clicked image, so it shows no Previous/Next, position,
+playback or wrapping, and Arrow keys do nothing. A slideshow source wraps and
+holds every matching image in server order, not the rendered page, cards or
+selection; videos and comics are never members.
+
+*Authoritative data.* Media descriptors are produced only on the server:
+Project Assets and the Library embed the full filtered `slideshowSequence`
+JSON (`[data-project-assets-viewer-sequence]`,
+`[data-asset-library-viewer-sequence]`) outside their live regions; the four
+single-image hosts carry `data-viewer-*` attributes (project, asset, release
+where applicable, filename, preview URL, original URL only when
+inline-eligible, opaque revision, Details URL). The client never builds a
+media URL. Item keys are `p:<project>|a:<asset>`, so equal filenames in
+different projects stay distinct, and source keys add host context
+(`project-assets:<project>`, `project-detail:<project>:release:<release>`), so
+the same asset opened from two release strips keeps its own release. Each
+host records the session id it opened and passes it to `update()`; the
+controller ignores an update for any other session, so a refresh can neither
+reach a closed or replaced session nor cross hosts. Hosts reconcile only
+accepted, current responses (the live-region engine and the refresh modules
+discard superseded ones). B1 reconciliation keeps unchanged media without a
+reload, reloads on a changed revision or URL, updates a changed original
+eligibility, re-selects or closes a removed slideshow item by its rules, and
+closes a single image whose asset the authority no longer offers. Release
+Manage Assets reconciles a matching eligible image against its installed
+server descriptor, updating revision, media URL, original eligibility, title
+and Details URL as appropriate. It closes when the asset is explicitly
+rendered without an eligible image trigger. Absence from a paginated result
+alone does not prove deletion: filtering, ordering or pagination may hide the
+asset, even with identical filter and page parameters, so the open session
+is preserved. An independently authoritative removal or retirement signal can
+invalidate a source where the existing host lifecycle supplies one. Release
+Detail's full saved-selection presentation is authoritative: it closes when
+the saved selection no longer offers the asset; Asset Details persists a
+gone asset so neither the viewer nor its old trigger can reopen it. No viewer
+refresh adds a backend query or polling.
+
+*Focus and cleanup.* Opening records the opener; closing returns focus there
+or, when a refresh replaced or removed it, to the host fallback (same asset's
+current thumbnail, the Slideshow button, the release title, the Preview
+heading) and finally `#main-content`, never a disconnected or inert element.
+Closing from fullscreen exits it first and completes focus return afterwards;
+body scroll locking is released with the dialog. Closing or replacing a
+session aborts pending fetches, discards late decodes, revokes object URLs,
+clears the playback timer and resets the stage; the accepted retention is
+the current preview plus, after Original Size, its original until navigation
+or close, plus at most one neighbour preload. Listeners are installed once
+per controller and per host document, so repeated viewing adds none.
+Project Detail's `project-deleted` retirement withdraws every strip trigger
+before closing its session.
+
+*Legacy status.* [`slideshow.js`](src/static/client/slideshow.js) is still
+imported and re-exported by `creatorcrate.js`, but no enhancer calls it and no page renders its scaffold; the production bundle
+tree-shakes it out (no `data-slideshow-*` selector ships). The JSON sequence
+elements keep a legacy `data-slideshow-sequence` attribute beside their host
+attribute. Removing the module and the `.slideshow-*` rules still in
+`creatorcrate.css` belongs to Milestone D.
+
+*Comic seam.* Comics (CBZ/CBR/CB7, §10) are recognized server-side and never
+reach the image viewer: they have no trigger and no slideshow membership, and
+no browser-side archive decoding exists. The Milestone A manifest and
+revision-bound page routes (`GET /projects/:p/assets/:a/comic` and
+`.../comic/pages/:position` in [`media.js`](src/routes/media.js)) are not yet
+fetched by any client. B1 already models what a reader needs (page
+positions in item keys, opaque revisions, unavailable items, non-wrapping
+non-slideshow sequences), and B3's validated content types include the comic
+page types; a comic content source and reader UI are Milestone C.
+
+*Known qualifications.* Fullscreen relies on the browser's Fullscreen API
+(the button is hidden where it is unavailable) and is qualified in Chromium
+only. Resource use is bounded by ownership and release rules, not by a hard
+browser memory cap. Project Detail strips are never replaced in place, so an
+edit elsewhere appears only after reload. Touch swipe, pinch zoom and broader
+responsive work belong to Milestone D; at about 375 px the dialog fits
+without horizontal scrolling. Cross-host behaviour against the compiled bundle
+is covered by [`unified-viewer.spec.js`](tests/browser/unified-viewer.spec.js);
+each module and host keeps its own client and browser suites.
 
 **Three asset modes**, resolved once by `resolveAssetMode(nodeEnv)` and
 exposed to templates as `assetMode`:

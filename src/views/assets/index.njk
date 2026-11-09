@@ -11,6 +11,7 @@
 
 {% set page_title = "Asset Viewer" %}
 {% set assetVideoPreview = true %}
+{% set unifiedViewer = true %}
 
 {% block body_class %}refined-page{% endblock %}
 {% set currentView = presentation.view or filters.view %}
@@ -70,7 +71,7 @@
   {% set previewAvailable = asset.is_present and previewUrl and asset.preview_state != 'unsupported' and asset.preview_state != 'missing' %}
   <div class="asset-card-media asset-viewer-grid-card-preview{% if asset.preview and asset.preview.kind == 'krita' %} asset-media--krita{% endif %}" data-asset-viewer-preview{% if previewAvailable %} data-preview-enhancement data-preview-state="loading"{% endif %}>
     {% if previewAvailable %}
-      <a class="asset-card-media-link asset-viewer-grid-card-preview-link" href="{{ detailUrl }}" aria-label="View preview of {{ displayName }}" data-project-assets-preview-id="{{ asset.id }}">
+      <a class="asset-card-media-link asset-viewer-grid-card-preview-link" href="{{ detailUrl }}" aria-label="View preview of {{ displayName }}" data-asset-library-preview-id="{{ asset.id }}" data-asset-library-preview-project-id="{{ asset.project_id }}">
         <img class="asset-card-thumb asset-viewer-grid-card-preview-image{% if asset.nsfwBlur %} asset-image--nsfw-blurred{% endif %}"
              src="{{ previewUrl }}"
              alt=""
@@ -101,7 +102,7 @@
   {% set typeLabel = (asset.extension | upper) or 'File' %}
   <div class="asset-list-card-media dashboard-thumb{% if asset.preview and asset.preview.kind == 'krita' %} asset-media--krita{% endif %}"{% if previewAvailable %} data-preview-enhancement data-preview-state="loading"{% endif %}>
     {% if previewAvailable %}
-      <a class="asset-list-card-media-link" href="{{ detailUrl }}" aria-label="View preview of {{ displayName }} from {{ asset.project_title }}" data-project-assets-preview-id="{{ asset.id }}">
+      <a class="asset-list-card-media-link" href="{{ detailUrl }}" aria-label="View preview of {{ displayName }} from {{ asset.project_title }}" data-asset-library-preview-id="{{ asset.id }}" data-asset-library-preview-project-id="{{ asset.project_id }}">
         <img class="asset-list-card-media-image{% if asset.nsfwBlur %} asset-image--nsfw-blurred{% endif %}"
              src="{{ previewUrl }}"
              alt=""
@@ -225,7 +226,8 @@
                type="button"
                aria-label="Start slideshow"
               data-tooltip="Start slideshow"
-              data-slideshow-trigger>{{ icons.icon('slideshow') }}</button>
+              aria-haspopup="dialog"
+              data-asset-library-slideshow-trigger>{{ icons.icon('slideshow') }}</button>
     </div>
   </div>
 
@@ -647,51 +649,11 @@
       <div class="app-dialog-status" data-settings-fetch-save-status role="status" aria-live="polite" aria-atomic="true"></div>
     </form>
   {% endcall %}
-  <div data-slideshow-scaffold class="slideshow-scaffold" hidden inert role="dialog" aria-modal="true" aria-label="Slideshow">
-      <script type="application/json" data-slideshow-sequence>{{ slideshowSequenceJson | default('[]') | safe }}</script>
-      <div class="slideshow-scaffold-inner">
-        <div class="slideshow-header">
-          <span class="slideshow-status" data-slideshow-status aria-live="polite" aria-atomic="true"></span>
-          <span class="slideshow-media-status" data-slideshow-media-status role="status" aria-live="polite" hidden></span>
-          <div class="slideshow-header-actions">
-            <button type="button" class="slideshow-fullscreen asset-tooltip" data-slideshow-fullscreen aria-label="Enter fullscreen" data-tooltip="Enter fullscreen" aria-pressed="false">
-              <span class="slideshow-fullscreen-enter-icon" aria-hidden="true">{{ icons.icon('fullscreen') }}</span>
-              <span class="slideshow-fullscreen-exit-icon" aria-hidden="true">{{ icons.icon('fullscreen-exit') }}</span>
-            </button>
-            <button type="button" class="slideshow-original-size asset-tooltip" data-slideshow-original-size aria-label="View original size" data-tooltip="View original size" aria-pressed="false">
-              {{ icons.icon('original-size') }}
-            </button>
-            <button type="button" class="slideshow-close asset-tooltip asset-tooltip--right" data-slideshow-close aria-label="Close slideshow" data-tooltip="Close slideshow">{{ icons.icon('close') }}</button>
-          </div>
-        </div>
-      <div class="slideshow-preview" data-slideshow-preview></div>
-      <div class="slideshow-controls">
-        <button type="button" class="slideshow-nav-btn asset-tooltip asset-tooltip--left" data-slideshow-prev aria-label="Previous" data-tooltip="Previous">{{ icons.icon('chevron-left') }}</button>
-        <button type="button" class="slideshow-play-pause asset-tooltip asset-tooltip--top" data-slideshow-play-pause aria-label="Play" data-tooltip="Play" disabled>
-          <span class="slideshow-play-icon" aria-hidden="true">{{ icons.icon('slideshow') }}</span>
-          <span class="slideshow-pause-icon" aria-hidden="true">{{ icons.icon('pause') }}</span>
-        </button>
-        {{ dropdown.singleSelect({
-          id: "slideshow-speed-dropdown",
-          label: "Slideshow speed",
-          visuallyHiddenLabel: true,
-          compact: true,
-          selected: "4000",
-          dispatchNativeChange: true,
-          options: [
-            { value: "2000", label: "2 s" },
-            { value: "4000", label: "4 s" },
-            { value: "6000", label: "6 s" }
-          ],
-          panelLabel: "Slideshow speed options",
-          nativeSelect: {
-            id: "slideshow-speed",
-            classes: "slideshow-speed",
-            attributes: [["data-slideshow-speed", true], ["disabled", true]]
-          }
-        }) }}
-        <button type="button" class="slideshow-nav-btn asset-tooltip asset-tooltip--right" data-slideshow-next aria-label="Next" data-tooltip="Next">{{ icons.icon('chevron-right') }}</button>
-      </div>
-    </div>
-  </div>
+  {# The complete server-filtered cross-project image sequence (every
+     matching image in server order, across all pages) for the unified
+     viewer: the Slideshow button plays it and an image thumbnail opens its
+     own project-qualified entry. It stays outside the live region; an Asset
+     Library refresh copies the new sequence in (live-regions.js) and the open
+     viewer reconciles with it (client/asset-library-viewer.js). #}
+  <script type="application/json" data-slideshow-sequence data-asset-library-viewer-sequence data-viewer-label="Asset Viewer">{{ slideshowSequenceJson | default('[]') | safe }}</script>
 {% endblock %}

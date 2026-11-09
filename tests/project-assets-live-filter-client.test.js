@@ -4,6 +4,7 @@ import {
   enhanceAssetGridSize,
   enhanceAssetListSize,
   enhanceProjectAssetsLiveFiltering,
+  enhanceProjectAssetsViewer,
   refreshProjectAssetsAfterMutation,
   refreshProjectAssetsDefaultsLiveRegion,
   refreshProjectAssetsLiveRegion,
@@ -237,6 +238,7 @@ function makePage({
   withAssetSelection = false,
   withSlideshow = false,
   projectPreviewAssetId = null,
+  slideshowEntries = null,
   dialogOpen = true,
   withPageSizeForm = false,
   paginationUrl = null,
@@ -475,27 +477,28 @@ function makePage({
   const viewSwitcher = viewLink ? makeNode({ tagName: 'nav', attrs: { class: 'view-switcher' } }) : null;
   if (paginationLink) pagination.appendChild(paginationLink);
   if (viewLink) viewSwitcher.appendChild(viewLink);
+  // B5a: Project Assets drives the unified viewer. The Slideshow button is
+  // part of the live region; the authoritative image sequence is page data
+  // outside it.
   const slideshowTrigger = withSlideshow
-    ? makeNode({ tagName: 'button', attrs: { type: 'button', 'data-slideshow-trigger': '' } })
+    ? makeNode({ tagName: 'button', attrs: { type: 'button', 'data-project-assets-slideshow-trigger': '' } })
     : null;
-  const slideshowScaffold = withSlideshow
-    ? makeNode({ attrs: { 'data-slideshow-scaffold': '' } })
+  const slideshowSequence = withSlideshow
+    ? makeNode({ tagName: 'script', attrs: {
+      type: 'application/json',
+      'data-project-assets-viewer-sequence': '',
+      'data-project-id': '1',
+      'data-viewer-label': 'Test Project',
+    } })
     : null;
   if (slideshowTrigger) region.appendChild(slideshowTrigger);
-  if (slideshowScaffold) {
-    const sequence = makeNode({ tagName: 'script', attrs: { 'data-slideshow-sequence': '' } });
-    sequence.textContent = JSON.stringify([{ id: projectPreviewAssetId || 'initial-asset', filename: 'replacement.png', previewUrl: `/preview/${projectPreviewAssetId || 'initial-asset'}` }]);
-    const preview = makeNode({ attrs: { 'data-slideshow-preview': '' } });
-    const previous = makeNode({ tagName: 'button', attrs: { 'data-slideshow-prev': '' } });
-    const slideshowStatus = makeNode({ tagName: 'span', attrs: { 'data-slideshow-status': '' } });
-    const next = makeNode({ tagName: 'button', attrs: { 'data-slideshow-next': '' } });
-    const close = makeNode({ tagName: 'button', attrs: { 'data-slideshow-close': '' } });
-    slideshowScaffold.appendChild(sequence);
-    slideshowScaffold.appendChild(preview);
-    slideshowScaffold.appendChild(previous);
-    slideshowScaffold.appendChild(slideshowStatus);
-    slideshowScaffold.appendChild(next);
-    slideshowScaffold.appendChild(close);
+  if (slideshowSequence) {
+    slideshowSequence.textContent = JSON.stringify(slideshowEntries ?? [{
+      id: Number(projectPreviewAssetId || 41),
+      projectId: 1,
+      filename: 'replacement.png',
+      previewUrl: `/preview/${projectPreviewAssetId || 41}`,
+    }]);
   }
   const projectPreviewLink = projectPreviewAssetId
     ? makeNode({ tagName: 'a', attrs: {
@@ -519,7 +522,7 @@ function makePage({
   document.appendChild(region);
   if (pagination) document.appendChild(pagination);
   if (viewSwitcher) document.appendChild(viewSwitcher);
-  if (slideshowScaffold) document.appendChild(slideshowScaffold);
+  if (slideshowSequence) document.appendChild(slideshowSequence);
   dialog.appendChild(form);
   resetForm.appendChild(reset);
   dialog.appendChild(resetForm);
@@ -569,7 +572,7 @@ function makePage({
     viewLink,
     slideshowTrigger,
     projectPreviewLink,
-    slideshowScaffold,
+    slideshowSequence,
   };
 }
 
@@ -754,34 +757,118 @@ describe('Project Assets live filtering enhancement', () => {
     expect(replacement.assetInfoPreview.listeners).toHaveLength(5);
   });
 
-  it('rebinds general and Project preview slideshows on live replacement exactly once', async () => {
+  // A stand-in for the unified viewer controller (its real lifecycle is
+  // covered by unified-viewer-client.test.js and the Chromium specs).
+  function attachFakeViewer(document) {
+    let session = 0;
+    let open = false;
+    const viewer = {
+      open: vi.fn(() => {
+        session += 1;
+        open = true;
+        return session;
+      }),
+      update: vi.fn(() => ({ outcome: 'kept' })),
+      getState: () => ({ open, session: open ? session : null }),
+    };
+    const dialog = makeNode({ tagName: 'dialog', attrs: { id: 'unified-viewer-dialog' } });
+    dialog.__creatorCrateUnifiedViewer = viewer;
+    document.getElementById = (id) => (id === 'unified-viewer-dialog' ? dialog : null);
+    return viewer;
+  }
+
+  it('opens Project Assets images and Slideshow in the unified viewer across live replacement without rebinding', async () => {
     vi.useFakeTimers();
     const initial = makePage({ withSlideshow: true });
-    const replacement = makePage({ withSlideshow: true, projectPreviewAssetId: 'replacement-42' });
+    const replacement = makePage({
+      withSlideshow: true,
+      projectPreviewAssetId: '42',
+      slideshowEntries: [
+        { id: 42, projectId: 1, filename: 'b.png', previewUrl: '/preview/42', viewerUrl: '/projects/1/assets/42', revision: 'r2' },
+        { id: 41, projectId: 1, filename: 'a.png', previewUrl: '/preview/41', viewerUrl: '/projects/1/assets/41', revision: 'r1' },
+      ],
+    });
+    const viewer = attachFakeViewer(initial.document);
     const { windowObject } = makeWindow(initial.document, new Map([['slideshow', replacement.document]]));
     windowObject.fetch.mockResolvedValue(htmlResponse(
       'slideshow',
       'http://creatorcrate.test/projects/1/assets?search=replaced',
     ));
+    expect(enhanceProjectAssetsViewer(initial.document)).toBe(1);
     enhanceProjectAssetsLiveFiltering(initial.document);
+    const documentClicks = () => initial.document.listeners.filter(({ type }) => type === 'click').length;
+    const clicksAfterBinding = documentClicks();
 
-    expect(initial.slideshowTrigger.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
-    expect(initial.projectPreviewLink).toBeNull();
+    // The toolbar button opens the whole sequence as a slideshow.
+    expect(initial.slideshowTrigger.disabled).toBe(false);
+    expect(initial.slideshowTrigger.listeners.filter(({ type }) => type === 'click')).toHaveLength(0);
+    const slideshowEvent = initial.slideshowTrigger.dispatch('click', { button: 0 });
+    expect(slideshowEvent.defaultPrevented).toBe(true);
+    expect(viewer.open).toHaveBeenCalledTimes(1);
+    const [slideshowSource, slideshowOptions] = viewer.open.mock.calls[0];
+    expect(slideshowSource).toMatchObject({ key: 'project-assets:1', label: 'Test Project', mode: 'sequence', slideshow: true, wrap: true });
+    expect(slideshowSource.items.map((item) => item.assetId)).toEqual(['41']);
+    expect(slideshowOptions.opener).toBe(initial.slideshowTrigger);
+
     initial.search.value = 'replaced';
     initial.search.dispatch('input');
     vi.advanceTimersByTime(350);
     await flush();
-    enhanceProjectAssetsLiveFiltering(initial.document);
 
-    expect(replacement.slideshowTrigger.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
+    // The replacement sequence (copied in outside the region) reaches the
+    // open session once, in server order.
+    expect(initial.slideshowSequence.textContent).toBe(replacement.slideshowSequence.textContent);
+    expect(viewer.update).toHaveBeenCalledTimes(1);
+    const [replacementData, updateOptions] = viewer.update.mock.calls[0];
+    expect(replacementData.key).toBe('project-assets:1');
+    expect(replacementData.items.map((item) => item.assetId)).toEqual([42, 41]);
+    expect(replacementData.items[0]).toMatchObject({ mediaUrl: '/preview/42', detailsUrl: '/projects/1/assets/42', revision: 'r2' });
+    expect(updateOptions).toEqual({ session: 1 });
+
+    // Re-enhancing never adds listeners; replaced controls work through the
+    // one delegated binding.
+    enhanceProjectAssetsLiveFiltering(initial.document);
+    expect(enhanceProjectAssetsViewer(initial.document)).toBe(1);
+    expect(documentClicks()).toBe(clicksAfterBinding);
+    expect(viewer.update).toHaveBeenCalledTimes(1);
     const replacementRegion = initial.document.querySelector('[data-project-assets-live-region]');
     const replacementPreviewLink = replacementRegion.querySelector('[data-project-assets-preview-id]');
     expect(replacementRegion).toBe(replacement.region);
     expect(replacementPreviewLink).toBe(replacement.projectPreviewLink);
-    expect(replacementPreviewLink).not.toBe(initial.projectPreviewLink);
+    expect(replacementPreviewLink.listeners).toHaveLength(0);
     const previewEvent = replacementPreviewLink.dispatch('click', { button: 0 });
     expect(previewEvent.defaultPrevented).toBe(true);
-    expect(initial.document.querySelector('[data-slideshow-status]').textContent).toBe('1 of 1');
+    expect(viewer.open).toHaveBeenCalledTimes(2);
+    const [singleSource, singleOptions] = viewer.open.mock.calls[1];
+    expect(singleSource).toMatchObject({ mode: 'single', slideshow: false, wrap: false });
+    expect(singleSource.items.map((item) => item.assetId)).toEqual(['42']);
+    expect(singleOptions.opener).toBe(replacementPreviewLink);
+
+    // Modified clicks keep the link's own navigation.
+    const modified = replacementPreviewLink.dispatch('click', { button: 0, ctrlKey: true });
+    expect(modified.defaultPrevented).toBe(false);
+    expect(viewer.open).toHaveBeenCalledTimes(2);
+  });
+
+  it('disables the Project Assets Slideshow button while the filtered sequence has no image', async () => {
+    vi.useFakeTimers();
+    const initial = makePage({ withSlideshow: true });
+    const replacement = makePage({ withSlideshow: true, slideshowEntries: [] });
+    const viewer = attachFakeViewer(initial.document);
+    const { windowObject } = makeWindow(initial.document, new Map([['empty', replacement.document]]));
+    windowObject.fetch.mockResolvedValue(htmlResponse('empty', 'http://creatorcrate.test/projects/1/assets?search=none'));
+    enhanceProjectAssetsViewer(initial.document);
+    enhanceProjectAssetsLiveFiltering(initial.document);
+    expect(initial.slideshowTrigger.disabled).toBe(false);
+
+    initial.search.value = 'none';
+    initial.search.dispatch('input');
+    vi.advanceTimersByTime(350);
+    await flush();
+
+    expect(replacement.slideshowTrigger.disabled).toBe(true);
+    expect(replacement.slideshowTrigger.dispatch('click', { button: 0 }).defaultPrevented).toBe(false);
+    expect(viewer.open).not.toHaveBeenCalled();
   });
 
   it('updates the replacement external selected count instead of stale live-region markup', async () => {

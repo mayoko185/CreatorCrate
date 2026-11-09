@@ -9,6 +9,7 @@
 
 {% set page_title = "Releases — " ~ release.title %}
 {% set assetVideoPreview = true %}
+{% set unifiedViewer = true %}
 
 {% block body_class %}refined-page{% endblock %}
 
@@ -29,7 +30,7 @@
 {% endmacro %}
 
 {% macro releaseGridCard(asset, clockFormat) %}
-  {% call(slot) assetCards.gridCard(asset, { filenameLink: true, clockFormat: clockFormat }) %}
+  {% call(slot) assetCards.gridCard(asset, { filenameLink: true, clockFormat: clockFormat, viewerTrigger: 'data-release-detail-viewer-trigger' }) %}
     {% if slot == 'body' %}
       {{ releaseAssetMetadata(asset) }}
     {% endif %}
@@ -42,7 +43,7 @@
    thumbnail and the card's Open asset action. #}
 {% macro releaseListCard(asset, clockFormat, columns) %}
   {% set detailId = 'release-asset-list-info-' ~ asset.id %}
-  {% call(slot) assetCards.listCard(asset, { columns: columns, cardClass: 'asset-list-card--release', clockFormat: clockFormat, titleInfoId: detailId }) %}
+  {% call(slot) assetCards.listCard(asset, { columns: columns, cardClass: 'asset-list-card--release', clockFormat: clockFormat, titleInfoId: detailId, viewerTrigger: 'data-release-detail-viewer-trigger' }) %}
     {% if slot == 'order' and asset.releaseContext.sortOrder is not none %}
       {{ asset.releaseContext.sortOrder }}
     {% elif slot == 'role' %}
@@ -223,6 +224,8 @@
   {% endif %}
   </div>
 
+  {# An eligible image thumbnail opens only that image in the unified viewer
+     (release-detail-viewer.js); viewing never changes the release. #}
   <section class="asset-browser-layout" aria-label="Selected assets" data-selected-assets>
     <div class="asset-browser-content">
       {% set selectedAssets = assetPresentation.selected or [] %}

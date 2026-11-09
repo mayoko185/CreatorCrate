@@ -135,6 +135,16 @@ import {
   enhanceProjectAssetsPreviewSlideshow,
   enhanceSlideshow,
 } from './client/slideshow.js';
+import {
+  enhanceUnifiedViewer,
+  unifiedViewerFor,
+} from './client/unified-viewer.js';
+import { enhanceProjectAssetsViewer } from './client/project-assets-viewer.js';
+import { enhanceAssetLibraryViewer } from './client/asset-library-viewer.js';
+import { enhanceAssetDetailsViewer } from './client/asset-details-viewer.js';
+import { enhanceReleaseAssetsViewer } from './client/release-assets-viewer.js';
+import { enhanceReleaseDetailViewer } from './client/release-detail-viewer.js';
+import { enhanceProjectDetailViewer } from './client/project-detail-viewer.js';
 
 import {
   beginAssetViewerDefaultsLiveRefresh,
@@ -229,6 +239,14 @@ export {
   requestAppConfirmation,
   enhanceSlideshow,
   enhanceProjectAssetsPreviewSlideshow,
+  enhanceUnifiedViewer,
+  unifiedViewerFor,
+  enhanceProjectAssetsViewer,
+  enhanceAssetLibraryViewer,
+  enhanceAssetDetailsViewer,
+  enhanceReleaseAssetsViewer,
+  enhanceReleaseDetailViewer,
+  enhanceProjectDetailViewer,
   syncCreatorCrateDropdownFromNative,
   enhanceAssetViewerFilterDisclosures,
   enhanceDropdowns,
@@ -375,10 +393,19 @@ if (typeof document !== 'undefined') {
     enhanceProjectInfoCards(document);
     enhanceDatePickers(document);
     enhanceTimePickers(document);
-    enhanceSlideshow(document);
-    enhanceProjectAssetsPreviewSlideshow(document);
+    // Image thumbnails and Slideshow open the unified viewer: each host binds
+    // only where its own sequence is rendered. No page hosts the legacy
+    // slideshow scaffold any longer; slideshow.js stays exported until its
+    // global retirement in Milestone D.
+    enhanceProjectAssetsViewer(document);
+    enhanceAssetLibraryViewer(document);
+    enhanceAssetDetailsViewer(document);
+    enhanceReleaseAssetsViewer(document);
+    enhanceReleaseDetailViewer(document);
+    enhanceProjectDetailViewer(document);
     enhanceVideoFrames(document);
     enhanceAssetVideoPreview(document, openAppDialogById);
+    enhanceUnifiedViewer(document);
   };
 
   if (document.readyState === 'loading') {

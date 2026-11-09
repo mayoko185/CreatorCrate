@@ -1,0 +1,88 @@
+{#
+  Shared singleton image/comic viewer (Milestone B). Pages opt in with
+  `{% set unifiedViewer = true %}`; layout.njk then mounts this dialog once,
+  outside every replaceable live region. It is driven only by
+  src/static/client/unified-viewer.js from a normalized viewer source
+  (src/static/client/viewer-sequence.js); nothing here opens it on its own.
+
+  Regions:
+  - context: current item title, optional source label, View details link.
+  - stage: the media mount (filled by viewer-content.js, B3) and an
+    accessible status line for unavailable items, loading failures and
+    original-size progress.
+  - controls: Previous / position / Next for sequences.
+  - view-tools (B3): Zoom out / zoom level / Zoom in / Fit / Original size.
+    Hidden until an image has loaded; Original size only for items with an
+    eligible original. Shift+Arrow keys pan a magnified image.
+  - playback (B4): Play/Pause and the 2/4/6 s speed dropdown, shown only
+    for slideshow sources that can play (viewer-playback.js).
+  - fullscreen (B4): Enter/Exit fullscreen, shown only where the Fullscreen
+    API is available. The fullscreen target is the dialog card (a <dialog>
+    cannot itself be fullscreen); in fullscreen only, the header, context
+    bar and controls hide after inactivity (viewer-fullscreen.js).
+
+  The backdrop is static: a press or drag that ends outside the card never
+  dismisses the viewer. Close and Escape do.
+#}
+{% import "partials/dialog.njk" as dialog %}
+{% import "partials/icons.njk" as icons %}
+{% import "partials/dropdown.njk" as dropdown %}
+{% call dialog.render('unified-viewer-dialog', 'Viewer', false, 'unified-viewer-context', '', 'unified-viewer-dialog app-dialog--refined', [['data-unified-viewer-card', true]], false) %}
+  <div class="unified-viewer" data-unified-viewer data-viewer-item-state="empty">
+    <div class="unified-viewer-context" id="unified-viewer-context" data-unified-viewer-context>
+      <p class="unified-viewer-heading">
+        <span class="unified-viewer-title" data-unified-viewer-title></span>
+        <span class="unified-viewer-source" data-unified-viewer-source hidden></span>
+      </p>
+      <div class="unified-viewer-context-actions">
+        <div class="unified-viewer-view-tools" data-unified-viewer-view-tools role="group" aria-label="Image view" aria-keyshortcuts="Shift+ArrowLeft Shift+ArrowRight Shift+ArrowUp Shift+ArrowDown" hidden>
+          <button type="button" class="button button-small button-secondary unified-viewer-tool asset-tooltip" data-unified-viewer-zoom-out aria-label="Zoom out" aria-describedby="unified-viewer-zoom-level" data-tooltip="Zoom out" disabled><span aria-hidden="true">&minus;</span></button>
+          <span class="unified-viewer-zoom-level" id="unified-viewer-zoom-level" data-unified-viewer-zoom-level></span>
+          <button type="button" class="button button-small button-secondary unified-viewer-tool asset-tooltip" data-unified-viewer-zoom-in aria-label="Zoom in" aria-describedby="unified-viewer-zoom-level" data-tooltip="Zoom in" disabled><span aria-hidden="true">+</span></button>
+          <button type="button" class="button button-small button-secondary unified-viewer-tool" data-unified-viewer-fit aria-label="Fit to viewer" disabled>Fit</button>
+          <button type="button" class="button button-small button-secondary unified-viewer-tool asset-tooltip" data-unified-viewer-original aria-label="Original size" data-tooltip="Original size" hidden disabled>{{ icons.icon('original-size') }}</button>
+        </div>
+        <button type="button" class="button button-small button-secondary unified-viewer-tool unified-viewer-fullscreen asset-tooltip" data-unified-viewer-fullscreen aria-label="Enter fullscreen" data-tooltip="Enter fullscreen" hidden>
+          <span class="unified-viewer-fullscreen-enter" aria-hidden="true">{{ icons.icon('fullscreen') }}</span>
+          <span class="unified-viewer-fullscreen-exit" aria-hidden="true">{{ icons.icon('fullscreen-exit') }}</span>
+        </button>
+        <a class="button button-small button-secondary unified-viewer-details" data-unified-viewer-details hidden>View details</a>
+      </div>
+    </div>
+    <div class="unified-viewer-stage" data-unified-viewer-stage>
+      <div class="unified-viewer-media" data-unified-viewer-media></div>
+      <p class="unified-viewer-status" data-unified-viewer-status role="status" aria-live="polite"></p>
+    </div>
+    <div class="unified-viewer-controls" data-unified-viewer-controls hidden>
+      <button type="button" class="button button-small button-secondary unified-viewer-nav asset-tooltip asset-tooltip--top" data-unified-viewer-previous aria-label="Previous" data-tooltip="Previous">{{ icons.icon('chevron-left') }}</button>
+      <span class="unified-viewer-position" data-unified-viewer-position aria-live="polite" aria-atomic="true"></span>
+      <div class="unified-viewer-playback" data-unified-viewer-playback role="group" aria-label="Slideshow" hidden>
+        <button type="button" class="button button-small button-secondary unified-viewer-play asset-tooltip asset-tooltip--top" data-unified-viewer-play aria-label="Play slideshow" data-tooltip="Play slideshow">
+          <span class="unified-viewer-play-icon" aria-hidden="true">{{ icons.icon('slideshow') }}</span>
+          <span class="unified-viewer-pause-icon" aria-hidden="true">{{ icons.icon('pause') }}</span>
+        </button>
+        {{ dropdown.singleSelect({
+          id: "unified-viewer-speed-dropdown",
+          label: "Slideshow speed",
+          visuallyHiddenLabel: true,
+          compact: true,
+          selected: "4000",
+          dispatchNativeChange: true,
+          options: [
+            { value: "2000", label: "2 s" },
+            { value: "4000", label: "4 s" },
+            { value: "6000", label: "6 s" }
+          ],
+          panelLabel: "Slideshow speed options",
+          fieldClasses: "unified-viewer-speed-field",
+          nativeSelect: {
+            id: "unified-viewer-speed",
+            classes: "unified-viewer-speed",
+            attributes: [["data-unified-viewer-speed", true]]
+          }
+        }) }}
+      </div>
+      <button type="button" class="button button-small button-secondary unified-viewer-nav asset-tooltip asset-tooltip--top" data-unified-viewer-next aria-label="Next" data-tooltip="Next">{{ icons.icon('chevron-right') }}</button>
+    </div>
+  </div>
+{% endcall %}

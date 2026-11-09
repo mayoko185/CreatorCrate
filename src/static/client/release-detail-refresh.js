@@ -264,8 +264,43 @@ function refreshState(document) {
   document[STATE_KEY] ||= {
     generation: 0, abort: null, loading: false, current: null, deferred: false, [RETRY_KEY]: null,
     releaseLink: null, returnListeners: null, away: false, returnRefresh: null, returnNotice: false,
+    observers: new Set(),
   };
   return document[STATE_KEY];
+}
+
+/**
+ * What an authoritative refresh established, for page
+ * hosts that keep their own presentation in step (the unified viewer host).
+ * 'adopted' carries the current, accepted render of this release (`parsed`)
+ * after its regions were applied; it is never sent for a superseded, failed
+ * or other-release response. 'retired' means the release is gone and no
+ * render will be adopted again.
+ */
+export const RELEASE_DETAIL_REFRESH_CHANGE = Object.freeze({ ADOPTED: 'adopted', RETIRED: 'retired' });
+
+/**
+ * Observe Release Detail refreshes. The callback receives
+ * `{ type, releaseId, parsed? }`; returns an unsubscribe function.
+ */
+export function observeReleaseDetailRefresh(document, callback) {
+  if (!document || typeof callback !== 'function') return () => {};
+  const { observers } = refreshState(document);
+  observers.add(callback);
+  return () => { observers.delete(callback); };
+}
+
+// An observer never disturbs the refresh it is told about.
+function notifyObservers(document, change) {
+  const observers = document?.[STATE_KEY]?.observers;
+  if (!observers?.size) return;
+  [...observers].forEach((callback) => {
+    try {
+      callback(change);
+    } catch {
+      // Ignored: the refresh outcome stands.
+    }
+  });
 }
 
 /**
@@ -273,13 +308,15 @@ function refreshState(document) {
  * ever sent, so the save is never repeated. Each refresh supersedes any older
  * one still in flight, so a late response can never overwrite a newer save.
  * Resolves to 'refreshed', 'deferred' (some regions are busy and were marked
- * stale instead), 'failed', 'signed-out' or 'superseded'. The Release link
+ * stale instead), 'retired', 'failed', 'signed-out' or 'superseded'. The Release link
  * shown by the adopted render is kept as state.releaseLink.
  */
 export function refreshReleaseDetail(document, releaseId, { staleDialogMessage = STALE_DIALOG_MESSAGE } = {}) {
   const state = refreshState(document);
   // A retired page (its release is gone) never reads or adopts a render again.
-  if (state.retired) return Promise.resolve('superseded');
+  if (state.retired || document.querySelector(PAGE_SELECTOR)?.getAttribute('data-release-detail') !== String(releaseId)) {
+    return Promise.resolve('superseded');
+  }
   state.current = fetchReleaseDetail(document, releaseId, staleDialogMessage);
   return state.current;
 }
@@ -305,7 +342,8 @@ async function fetchReleaseDetail(document, releaseId, staleDialogMessage) {
   state.loading = true;
   let outcome = 'failed';
   try {
-    const response = await windowObject.fetch(refreshUrl(windowObject, releaseId).href, {
+    const url = refreshUrl(windowObject, releaseId);
+    const response = await windowObject.fetch(url.href, {
       credentials: 'same-origin',
       cache: 'no-store',
       headers: { Accept: 'text/html' },
@@ -313,7 +351,16 @@ async function fetchReleaseDetail(document, releaseId, staleDialogMessage) {
     });
     const unauthenticated = signedOut(windowObject, response);
     const html = response.ok && !unauthenticated ? await response.text() : '';
-    if (generation !== state.generation) return 'superseded';
+    if (generation !== state.generation || abort?.signal.aborted
+      || document.querySelector(PAGE_SELECTOR)?.getAttribute('data-release-detail') !== String(releaseId)) return 'superseded';
+    // Only the current request for this page can establish disappearance;
+    // redirected errors are not evidence about the requested release.
+    const responseUrl = new URL(response.url || url.href, url);
+    if (response.status === 404 && !response.redirected && !unauthenticated
+      && responseUrl.origin === url.origin && responseUrl.pathname === url.pathname) {
+      retireReleaseDetailRefresh(document);
+      return 'retired';
+    }
     if (unauthenticated) outcome = 'signed-out';
     if (html) {
       const parsed = new windowObject.DOMParser().parseFromString(html, 'text/html');
@@ -321,18 +368,22 @@ async function fetchReleaseDetail(document, releaseId, staleDialogMessage) {
       if (outcome !== 'failed') {
         state.releaseLink = parsed.querySelector(`[data-release-detail-region="details"][${RELEASE_LINK_ATTRIBUTE}]`)
           ?.getAttribute(RELEASE_LINK_ATTRIBUTE) ?? null;
+        notifyObservers(document, { type: RELEASE_DETAIL_REFRESH_CHANGE.ADOPTED, releaseId, parsed });
       }
     }
   } catch {
     if (generation !== state.generation) return 'superseded';
+  } finally {
+    if (generation === state.generation) {
+      state.abort = null;
+      state.loading = false;
+    }
   }
-  state.abort = null;
-  state.loading = false;
   return outcome;
 }
 
 /**
- * WP11B-2: Release Detail whose release is gone (release-delete.js). Every
+ * Release Detail whose release is gone (Delete or an authoritative 404). Every
  * refresh in flight is superseded and none starts again (after a save, a
  * dialog close, a companion return or a Retry), so no later answer can adopt
  * a render or bring the release's controls back. Returns false when the page
@@ -351,6 +402,10 @@ export function retireReleaseDetailRefresh(document) {
   removeStatusRetry(state, RETRY_KEY);
   state.returnListeners?.abort();
   state.returnListeners = null;
+  notifyObservers(document, {
+    type: RELEASE_DETAIL_REFRESH_CHANGE.RETIRED,
+    releaseId: document.querySelector(PAGE_SELECTOR)?.getAttribute('data-release-detail'),
+  });
   return true;
 }
 
@@ -376,6 +431,11 @@ async function refreshAfterSave(document, releaseId, {
   const outcome = await refreshReleaseDetail(document, releaseId);
   // A newer save or retry owns the outcome now.
   if (outcome === 'superseded') return;
+  if (outcome === 'retired') {
+    withdrawPublishAction(document);
+    setFeedback(document, 'This release no longer exists.', 'error');
+    return;
+  }
   // Stale regions wait for their dialog or companion request; until then the
   // page says it is not fully refreshed.
   state.deferred = outcome === 'deferred' ? 'save' : false;
@@ -479,6 +539,11 @@ async function refreshOnReturn(document, releaseId, { focusResult = false } = {}
   finishReleaseLinkCheck(document, linkCheck, adopted ? { releaseLink: state.releaseLink ?? '' } : { failed: true });
   // A newer save took this refresh over and reports its own outcome.
   if (!owned) return;
+  if (outcome === 'retired') {
+    withdrawPublishAction(document);
+    setFeedback(document, 'This release no longer exists.', 'error');
+    return;
+  }
   if (adopted) {
     if (outcome === 'deferred') {
       state.deferred ||= 'return';

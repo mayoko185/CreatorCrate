@@ -925,7 +925,11 @@ describe('asset tags — HTTP', () => {
       expect(editDialog).toContain('data-asset-tags-form');
       // The tag save reports through the dialog's one live region.
       expect((editDialog.match(/data-dialog-status/g) || [])).toHaveLength(1);
-      expect((detail.text.match(/aria-live="polite"/g) || [])).toHaveLength(1);
+      // B6: the shared unified viewer's own status regions live only inside
+      // its dialog; outside it the page keeps exactly that one live region.
+      const viewerDialog = detail.text.match(/<dialog id="unified-viewer-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+      expect(viewerDialog).toContain('data-unified-viewer-status role="status" aria-live="polite"');
+      expect((detail.text.replace(viewerDialog, '').match(/aria-live="polite"/g) || [])).toHaveLength(1);
     });
   });
   // WP10A1-F3: a delayed complete-set replacement, reviewed against an older

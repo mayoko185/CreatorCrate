@@ -24,6 +24,10 @@ import { createAppMetaRepository } from '../src/data/app-meta-repository.js';
 import { createProjectImageSettingsService } from '../src/services/project-image-settings-service.js';
 import { projectImagePolicyFingerprint } from '../src/services/project-image-policy.js';
 import { buildReleaseAssetPresentation } from '../src/services/release-asset-presenter.js';
+import {
+  createSingleImageSource,
+  createSlideshowSource,
+} from '../src/static/client/viewer-sequence.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const imageFingerprint = (db) => projectImagePolicyFingerprint(
@@ -735,6 +739,11 @@ describe('workflow query service', () => {
           extension: 'png',
           thumbnailUrl: `/projects/${project.id}/assets/${secondById.id}/thumbnail?v=${secondRevision}`,
           viewerUrl: `/projects/${project.id}/assets/${secondById.id}`,
+          // B7c: the unified viewer descriptor of an image thumbnail.
+          projectId: project.id,
+          previewUrl: `/projects/${project.id}/assets/${secondById.id}/preview?v=${secondRevision}`,
+          originalUrl: `/projects/${project.id}/assets/${secondById.id}/original`,
+          revision: secondRevision,
           preview: expect.objectContaining({
             state: 'previewable',
             kind: 'image',
@@ -750,6 +759,10 @@ describe('workflow query service', () => {
           extension: 'png',
           thumbnailUrl: `/projects/${project.id}/assets/${firstById.id}/thumbnail?v=${firstRevision}`,
           viewerUrl: `/projects/${project.id}/assets/${firstById.id}`,
+          projectId: project.id,
+          previewUrl: `/projects/${project.id}/assets/${firstById.id}/preview?v=${firstRevision}`,
+          originalUrl: `/projects/${project.id}/assets/${firstById.id}/original`,
+          revision: firstRevision,
           preview: expect.objectContaining({
             state: 'previewable',
             kind: 'image',
@@ -847,6 +860,11 @@ describe('workflow query service', () => {
           extension,
           thumbnailUrl: null,
           viewerUrl: `/projects/${project.id}/assets/${video.id}`,
+          // B7c: a video carries no image viewer descriptor.
+          projectId: project.id,
+          previewUrl: null,
+          originalUrl: null,
+          revision: null,
           preview: {
             state: 'video',
             previewable: false,
@@ -2287,6 +2305,55 @@ describe('workflow query service', () => {
       }
       expect(browser.slideshowSequence.map((entry) => entry.id)).toEqual([image.id]);
       expect(library.slideshowSequence.map((entry) => entry.id)).toEqual([image.id]);
+    });
+
+    it('serializes slideshow entries with project identity and opaque revision for the viewer sequence contract', () => {
+      const projectA = insertProject(db, { title: 'Viewer Sequence A' });
+      const projectB = insertProject(db, { title: 'Viewer Sequence B' });
+      const asset = (project, name, extension, mimeType) => insertAsset(db, {
+        projectId: project.id,
+        relativePath: name,
+        filename: name,
+        extension,
+        mimeType,
+        sizeBytes: 4096,
+        modifiedAt: '2026-08-02T12:00:00.000Z',
+        isPresent: 1,
+      });
+      const sharedA = asset(projectA, 'shared.png', 'png', 'image/png');
+      const otherA = asset(projectA, 'alpha.png', 'png', 'image/png');
+      const sharedB = asset(projectB, 'shared.png', 'png', 'image/png');
+      const video = asset(projectA, 'clip.mp4', 'mp4', 'video/mp4');
+      const comic = asset(projectB, 'issue.cbz', 'cbz', 'application/vnd.comicbook+zip');
+      const ours = new Set([projectA.id, projectB.id]);
+
+      const library = service.getAssetLibraryPage({}, {
+        projectOptionPresentation: { statusByValue: new Map(), projectTypeByValue: new Map() },
+      });
+      const entries = library.slideshowSequence.filter((entry) => ours.has(entry.projectId));
+      expect(entries.map((entry) => entry.id).sort((a, b) => a - b))
+        .toEqual([sharedA.id, otherA.id, sharedB.id].sort((a, b) => a - b));
+      expect(entries.some((entry) => entry.id === video.id || entry.id === comic.id)).toBe(false);
+      for (const entry of entries) {
+        expect(entry.revision).toEqual(expect.any(String));
+        expect(entry.previewUrl).toBe(`/projects/${entry.projectId}/assets/${entry.id}/preview?${new URLSearchParams({ v: entry.revision })}`);
+        expect(entry.viewerUrl).toBe(`/projects/${entry.projectId}/assets/${entry.id}`);
+      }
+
+      // The sequence contract keeps the complete server order and both same-named images apart.
+      const source = createSlideshowSource({ key: 'library', entries: library.slideshowSequence });
+      expect(source.items.map((item) => item.assetId))
+        .toEqual(library.slideshowSequence.map((entry) => String(entry.id)));
+      const shared = source.items.filter((item) => item.title === 'shared.png' && ours.has(Number(item.projectId)));
+      expect(shared.map((item) => item.key).sort())
+        .toEqual([`p:${projectA.id}|a:${sharedA.id}`, `p:${projectB.id}|a:${sharedB.id}`].sort());
+
+      const browser = service.getProjectAssetBrowser(projectA.id, { pageSize: 1 });
+      expect(browser.assets).toHaveLength(1);
+      expect(browser.slideshowSequence.map((entry) => entry.id).sort((a, b) => a - b))
+        .toEqual([sharedA.id, otherA.id].sort((a, b) => a - b));
+      const single = createSingleImageSource({ entries: browser.slideshowSequence, projectId: projectA.id, assetId: otherA.id });
+      expect(single.items.map((item) => item.key)).toEqual([`p:${projectA.id}|a:${otherA.id}`]);
     });
 
     it('returns safe empty result for project with no assets', () => {

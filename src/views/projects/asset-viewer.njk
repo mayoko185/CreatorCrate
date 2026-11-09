@@ -3,6 +3,8 @@
 {% import "partials/icons.njk" as icons %}
 
 {% set page_title = "Assets — " ~ project.title ~ " — " ~ asset.filename %}
+{# Mounts the one shared viewer dialog (layout.njk), outside main content. #}
+{% set unifiedViewer = true %}
 
 {% block body_class %}refined-page{% endblock %}
 
@@ -65,13 +67,21 @@
        Next); the media inside is rebuilt only when its kind changed. #}
     <div class="asset-preview-viewer" data-asset-viewer-host data-asset-viewer-project-id="{{ project.id }}" data-asset-viewer-asset-id="{{ asset.id }}">
       {% if asset.preview.previewable and asset.preview_url %}
+        {# The preview image opens the shared unified viewer on this asset
+           only (client/asset-details-viewer.js), from the server descriptor
+           below. With an eligible original the trigger stays the original
+           link (its href is the modified-click and no-script path); a
+           preview-only image (Krita, non-inline originals) gets a button,
+           and no original URL is ever offered for it. #}
         <figure class="asset-preview-frame{% if asset.preview.kind == 'krita' %} asset-media--krita{% endif %}" data-preview-enhancement data-preview-state="loading">
           {% if asset.original_url %}
-            <a class="asset-preview-link" href="{{ asset.original_url }}" aria-label="View original {{ asset.filename }}">
+            <a class="asset-preview-link" href="{{ asset.original_url }}" aria-label="View original {{ asset.filename }}" data-asset-details-viewer-trigger data-viewer-filename="{{ asset.filename }}" data-viewer-preview-url="{{ asset.preview_url }}" data-viewer-original-url="{{ asset.original_url }}" data-viewer-revision="{{ asset.preview_revision }}">
               <img class="asset-preview-image" src="{{ asset.preview_url }}" alt="{{ asset.previewAltText }}" data-preview-image>
             </a>
           {% else %}
-            <img class="asset-preview-image" src="{{ asset.preview_url }}" alt="{{ asset.previewAltText }}" data-preview-image>
+            <button type="button" class="asset-preview-link asset-preview-view-button" aria-label="View preview of {{ asset.filename }}" aria-haspopup="dialog" data-asset-details-viewer-trigger data-viewer-filename="{{ asset.filename }}" data-viewer-preview-url="{{ asset.preview_url }}" data-viewer-revision="{{ asset.preview_revision }}">
+              <img class="asset-preview-image" src="{{ asset.preview_url }}" alt="{{ asset.previewAltText }}" data-preview-image>
+            </button>
           {% endif %}
           <p class="asset-preview-placeholder asset-preview-fallback" data-preview-fallback hidden>Preview unavailable</p>
         </figure>

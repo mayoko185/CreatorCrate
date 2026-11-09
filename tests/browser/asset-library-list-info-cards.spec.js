@@ -340,12 +340,14 @@ test('Media states, thumbnail slideshow and video stay on their existing paths',
   await expect(krita.info.locator('.asset-viewer-grid-card-info-row', { has: page.locator('dt', { hasText: /^Type$/ }) })).toContainText('KRA (.kra)');
   await page.keyboard.press('Escape');
 
-  // An image thumbnail opens the slideshow, not navigation.
-  await rowParts(page, fixture.ids['02-beta.png']).card.locator('a[data-project-assets-preview-id]').click();
-  await expect(page.locator('[data-slideshow-scaffold]')).toBeVisible();
+  // An image thumbnail opens the unified viewer (B5b), not navigation.
+  await rowParts(page, fixture.ids['02-beta.png']).card.locator('a[data-asset-library-preview-id]').click();
+  await expect(page.locator('#unified-viewer-dialog')).toBeVisible();
+  await expect(page.locator('#unified-viewer-dialog [data-unified-viewer-title]')).toHaveText('02-beta.png');
+  await expect(page.locator('[data-slideshow-scaffold]')).toHaveCount(0);
   expect(currentPath(page)).toBe(LIST_PATH);
   await page.keyboard.press('Escape');
-  await expect(page.locator('[data-slideshow-scaffold]')).toBeHidden();
+  await expect(page.locator('#unified-viewer-dialog')).toBeHidden();
 
   // NSFW tags blur the row thumbnail and the card preview.
   const nsfw = app.locals.tagService.createTag({ name: 'NSFW' });
@@ -616,11 +618,12 @@ test('Grid style Cropped squares Grid media viewports without touching List or i
     expect(hit).toBe(true);
     await moveAway(page);
 
-    // The preview still opens the slideshow.
-    await gridCard('02-beta.png').locator('a[data-project-assets-preview-id]').click();
-    await expect(page.locator('[data-slideshow-scaffold]')).toBeVisible();
+    // The preview still opens the image viewer (the unified viewer, B5b).
+    await gridCard('02-beta.png').locator('a[data-asset-library-preview-id]').click();
+    await expect(page.locator('#unified-viewer-dialog')).toBeVisible();
+    await expect(page.locator('#unified-viewer-dialog [data-unified-viewer-title]')).toHaveText('02-beta.png');
     await page.keyboard.press('Escape');
-    await expect(page.locator('[data-slideshow-scaffold]')).toBeHidden();
+    await expect(page.locator('#unified-viewer-dialog')).toBeHidden();
 
     // Grid size stays independent.
     const sizeLabel = (size) => page.locator(`[data-asset-grid-size-controls] [data-grid-size-option-label="${size}"]`);

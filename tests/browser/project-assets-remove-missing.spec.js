@@ -900,8 +900,9 @@ test('presentation: grid size, list view and slideshow survive a removal', async
   await expectInstalled(page);
   await expect(feedbackText(page)).toHaveText('Removed 1 of 1 missing asset record. No files were deleted.');
   expect(await page.locator('.asset-grid').getAttribute('data-grid-style')).toBe(style);
-  const sequence = await page.evaluate(() => JSON.parse(document.querySelector('[data-slideshow-scaffold] [data-slideshow-sequence]')?.textContent || '[]'));
-  expect(JSON.stringify(sequence)).not.toContain(`"${f.assetId('06-ref.png')}"`);
+  const sequence = await page.evaluate(() => JSON.parse(document.querySelector('[data-project-assets-viewer-sequence]')?.textContent || 'null'));
+  expect(Array.isArray(sequence)).toBe(true);
+  expect(sequence.map((entry) => entry.id)).not.toContain(f.assetId('06-ref.png'));
   expect(control.posts).toHaveLength(1);
   await expectSameDocument(page, url);
   expect(errors).toEqual([]);

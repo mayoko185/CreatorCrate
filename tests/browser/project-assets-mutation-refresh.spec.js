@@ -35,7 +35,7 @@ test.beforeAll(async () => {
   db = openDatabase(path.join(root, 'test.db'));
   runMigrations(db, fileURLToPath(new URL('../../migrations', import.meta.url)));
   const { csrfPepper } = ensureAuthEnablement(appDataRoot);
-  app = createApp({ appName: 'CreatorCrate', db, projectsRoot }, {
+  app = createApp({ appName: 'CreatorCrate', db, projectsRoot, previewRoot: path.join(root, 'previews') }, {
     appDataRoot, authState: { csrfPepper }, useViteAssets: true, viteDistRoot,
     assetManifest: createAssetManifest({ distRoot: viteDistRoot,
       manifestPath: path.join(viteDistRoot, '.vite', 'manifest.json') }),
@@ -643,43 +643,44 @@ test('F: presentation, focus, scroll and slideshow survive by identity', async (
   await expect(page.locator('.asset-grid')).toHaveAttribute('data-grid-style', 'cropped');
 
   // Slideshow stays on the same asset, then falls to a neighbor once it is gone.
+  // B5a: Project Assets plays its slideshow in the unified viewer.
   await page.setViewportSize({ width: 1280, height: 900 });
-  const scaffold = page.locator('[data-slideshow-scaffold]');
-  const caption = scaffold.locator('.slideshow-caption');
-  await page.locator('[data-slideshow-trigger]').click();
-  await expect(scaffold).toBeVisible();
-  await scaffold.locator('[data-slideshow-next]').click();
+  const viewer = page.locator('#unified-viewer-dialog');
+  const caption = viewer.locator('[data-unified-viewer-title]');
+  const position = viewer.locator('[data-unified-viewer-position]');
+  const trigger = page.locator('[data-project-assets-slideshow-trigger]');
+  await trigger.click();
+  await expect(viewer).toBeVisible();
+  await viewer.locator('[data-unified-viewer-next]').click();
   await expect(caption).toHaveText('02-ref.jpg');
-  await scaffold.locator('[data-slideshow-next]').click();
+  await viewer.locator('[data-unified-viewer-next]').click();
   await expect(caption).toHaveText('04-ref.jpg');
-  await expect(scaffold.locator('[data-slideshow-status]')).toHaveText('3 of 5');
+  await expect(position).toHaveText('3 of 5');
 
   await f.add('00-first.png');
   await refreshed(page);
   await expect(caption).toHaveText('04-ref.jpg');
-  await expect(scaffold.locator('[data-slideshow-status]')).toHaveText('4 of 6');
-  await expect(scaffold).toBeVisible();
-  await expect(page.locator('[data-slideshow-trigger]')).toHaveAttribute('aria-expanded', 'true');
+  await expect(position).toHaveText('4 of 6');
+  await expect(viewer).toBeVisible();
 
   f.remove('04-ref.jpg');
   await refreshed(page);
   await expect(caption).toHaveText('05-draft.png');
-  await expect(scaffold.locator('[data-slideshow-status]')).toHaveText('4 of 5');
-  await expect(scaffold.locator('img.slideshow-preview-img')).toHaveCount(1);
+  await expect(position).toHaveText('4 of 5');
+  await expect(viewer.locator('img.unified-viewer-image:not([hidden])')).toHaveCount(1);
+  await expect(viewer.locator('img.unified-viewer-image:not([hidden])')).toBeVisible();
 
   // No duplicated listeners: one click moves one asset, one close closes.
-  // Pointer activity first, since the controls auto-hide during the refreshes.
-  await page.mouse.move(640, 300);
-  await scaffold.locator('[data-slideshow-next]').click();
-  await expect(scaffold.locator('[data-slideshow-status]')).toHaveText('5 of 5');
-  await page.mouse.move(640, 320);
-  await scaffold.locator('[data-slideshow-close]').click();
-  await expect(scaffold).toBeHidden();
-  await expect(page.locator('[data-slideshow-trigger]')).toBeFocused();
-  await page.locator('[data-slideshow-trigger]').click();
-  await expect(scaffold.locator('[data-slideshow-status]')).toHaveText('1 of 5');
-  await page.mouse.move(640, 300);
-  await scaffold.locator('[data-slideshow-close]').click();
+  await viewer.locator('[data-unified-viewer-next]').click();
+  await expect(position).toHaveText('5 of 5');
+  await viewer.locator('[data-dialog-close]').click();
+  await expect(viewer).toBeHidden();
+  await expect(trigger).toBeFocused();
+  await trigger.click();
+  await expect(position).toHaveText('1 of 5');
+  await viewer.locator('[data-dialog-close]').click();
+  await expect(viewer).toBeHidden();
+  await expect(page.locator('[data-slideshow-scaffold]')).toHaveCount(0);
   expect(fourth).toBeGreaterThan(0);
   expect(control.posts).toEqual([]);
   expect(errors).toEqual([]);

@@ -4153,9 +4153,11 @@ describe('project HTTP workflow', () => {
       expect(tile.match(/<a\b/g)).toHaveLength(1);
     };
 
+    // The eligible image also carries its unified viewer descriptor (B7c).
     expect(mixedItem).toContain(
-      `<a class="release-thumbnail-link" href="/projects/${projectId}/assets/${image.id}" aria-label="View still.png">`,
+      `<a class="release-thumbnail-link" href="/projects/${projectId}/assets/${image.id}" aria-label="View still.png" data-project-detail-viewer-trigger data-viewer-project="${projectId}" data-viewer-asset="${image.id}" `,
     );
+    expect(mixedItem).toContain(`data-viewer-details-url="/projects/${projectId}/assets/${image.id}" data-viewer-release="${mixedRelease.id}">`);
     expect(mixedItem).toContain(
       `src="/projects/${projectId}/assets/${image.id}/thumbnail?v=${buildAssetRevisionToken(image, imageFingerprint(db))}"`,
     );

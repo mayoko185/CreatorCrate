@@ -1965,6 +1965,19 @@ function normalizeAssetBrowserQuery(
         thumbnailUrl: previewModel.urls.thumbnail,
         viewerUrl: buildProjectAssetViewerUrl(row.asset_project_id, row.asset_id),
         preview: previewModel,
+        // Unified viewer descriptor (Milestone B, B7c): the server-built
+        // preview URL, opaque revision and, only when inline-eligible, the
+        // original URL of an image thumbnail. Null for videos.
+        projectId: row.asset_project_id,
+        previewUrl: hasThumbnail ? previewModel.urls.preview : null,
+        originalUrl: hasThumbnail ? buildAssetOriginalUrl({
+          id: row.asset_id,
+          project_id: row.asset_project_id,
+          extension: row.extension,
+          mime_type: row.mime_type,
+          is_present: row.is_present,
+        }) : null,
+        revision: hasThumbnail ? previewModel.revision : null,
       });
     }
 
@@ -2269,7 +2282,7 @@ function normalizeAssetBrowserQuery(
    *   emptyState: object|null,
    *   ordering: string,
    *   searchMaxLength: number,
-   *   slideshowSequence: Array<{id: number, filename: string, previewUrl: string, viewerUrl: string, originalUrl?: string}>,
+   *   slideshowSequence: Array<{id: number, projectId: number, filename: string, previewUrl: string, viewerUrl: string, originalUrl?: string, revision: string|null}>,
    * }}
    */
   function buildSlideshowSequence(rows, policyFingerprint = imageFingerprint()) {
@@ -2280,10 +2293,12 @@ function normalizeAssetBrowserQuery(
       const originalUrl = buildAssetOriginalUrl(asset);
       result.push({
         id: asset.id,
+        projectId: asset.project_id,
         filename: asset.filename,
         previewUrl: preview.urls.preview,
         viewerUrl: buildAssetViewerUrl(asset.project_id, asset.id),
         ...(originalUrl ? { originalUrl } : {}),
+        revision: preview.revision,
       });
     }
     return result;

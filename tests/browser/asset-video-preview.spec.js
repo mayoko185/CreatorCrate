@@ -443,7 +443,7 @@ test('the Asset Viewer player loads paused and Loop only toggles native looping'
   }
 });
 
-test('images keep using the slideshow and never the video dialog', async ({ page }) => {
+test('images keep using the image viewer and never the video dialog', async ({ page }) => {
   const fixture = await openFixture(page);
   try {
     await page.goto(`${fixture.baseURL}/projects/${fixture.project.id}/assets?view=grid`);
@@ -451,7 +451,8 @@ test('images keep using the slideshow and never the video dialog', async ({ page
     const sequence = JSON.parse(await page.locator('[data-slideshow-sequence]').first().textContent());
     expect(sequence.map((entry) => entry.id)).toEqual([fixture.image.id]);
     await page.locator(`a[data-project-assets-preview-id="${fixture.image.id}"]`).click();
-    await expect(page.locator('[data-slideshow-scaffold]')).toBeVisible();
+    // B5a: Project Assets images open the unified viewer.
+    await expect(page.locator('#unified-viewer-dialog')).toBeVisible();
     await expect(page.locator(DIALOG)).toBeHidden();
     expect(await playCalls(page)).toEqual([]);
   } finally {

@@ -18,6 +18,19 @@
 {% endmacro %}
 
 {#
+  Host-scoped unified-viewer trigger attributes (Milestone B). Emitted only
+  when the caller names its trigger attribute in options.viewerTrigger (for
+  example data-release-assets-viewer-trigger), and only for an eligible
+  image: a present, previewable asset with a server-built preview URL, the
+  same rule as the server slideshow sequence. Videos, comics, missing and
+  unsupported files never get it. Every value is server-produced; the
+  original URL appears only when the original is inline-eligible.
+#}
+{% macro viewerTriggerAttributes(asset, attribute) -%}
+  {%- if attribute and asset.is_present and asset.preview and asset.preview.state == 'previewable' and asset.preview_url and asset.project_id and asset.id %} {{ attribute }} data-viewer-project="{{ asset.project_id }}" data-viewer-asset="{{ asset.id }}" data-viewer-filename="{{ asset.filename }}" data-viewer-preview-url="{{ asset.preview_url }}"{% if asset.original_url %} data-viewer-original-url="{{ asset.original_url }}"{% endif %}{% if asset.preview_revision %} data-viewer-revision="{{ asset.preview_revision }}"{% endif %}{% if asset.viewerUrl %} data-viewer-details-url="{{ asset.viewerUrl }}"{% endif %}{% endif -%}
+{%- endmacro %}
+
+{#
   Card media for a supported video in grids and lists. The inert <video> has
   no controls, no autoplay, and is never played: preload="metadata" only lets
   the browser learn the real width/height (and usually paint the first frame)
@@ -73,7 +86,7 @@
     <div class="asset-card-media{% if asset.preview and asset.preview.kind == 'krita' %} asset-media--krita{% endif %}"{% if options.assetInformation %} data-asset-viewer-preview{% endif %}{% if previewAvailable %} data-preview-enhancement data-preview-state="loading"{% endif %}>
       {% if previewAvailable %}
         {% if asset.viewerUrl %}
-          <a class="asset-card-media-link" href="{{ asset.viewerUrl }}" aria-label="View details for {{ filenameLabel }}"{% if options.previewSlideshowAssetId is defined and options.previewSlideshowAssetId is not none %} data-project-assets-preview-id="{{ options.previewSlideshowAssetId }}"{% endif %}>
+          <a class="asset-card-media-link" href="{{ asset.viewerUrl }}" aria-label="View details for {{ filenameLabel }}"{% if options.previewSlideshowAssetId is defined and options.previewSlideshowAssetId is not none %} data-project-assets-preview-id="{{ options.previewSlideshowAssetId }}"{% endif %}{{ viewerTriggerAttributes(asset, options.viewerTrigger) }}>
             <img class="asset-card-thumb{% if options.nsfwBlur %} asset-image--nsfw-blurred{% endif %}"
                  src="{{ previewUrl }}"
                  alt="{{ asset.previewAltText or ('Preview of ' ~ filenameLabel) }}"
@@ -268,7 +281,7 @@
           <div class="asset-list-card-media dashboard-thumb{% if asset.preview and asset.preview.kind == 'krita' %} asset-media--krita{% endif %}"{% if previewAvailable %} data-preview-enhancement data-preview-state="loading"{% endif %}>
             {% if previewAvailable %}
               {% if asset.viewerUrl %}
-                <a class="asset-list-card-media-link" href="{{ asset.viewerUrl }}" aria-label="View preview of {{ filenameLabel }}{% if options.mediaContextLabel %} from {{ options.mediaContextLabel }}{% endif %}"{% if options.previewSlideshowAssetId is defined and options.previewSlideshowAssetId is not none %} data-project-assets-preview-id="{{ options.previewSlideshowAssetId }}"{% endif %}>
+                <a class="asset-list-card-media-link" href="{{ asset.viewerUrl }}" aria-label="View preview of {{ filenameLabel }}{% if options.mediaContextLabel %} from {{ options.mediaContextLabel }}{% endif %}"{% if options.previewSlideshowAssetId is defined and options.previewSlideshowAssetId is not none %} data-project-assets-preview-id="{{ options.previewSlideshowAssetId }}"{% endif %}{{ viewerTriggerAttributes(asset, options.viewerTrigger) }}>
                   <img class="asset-list-card-media-image{% if options.nsfwBlur %} asset-image--nsfw-blurred{% endif %}"
                        src="{{ previewUrl }}"
                        alt=""

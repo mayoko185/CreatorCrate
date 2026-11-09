@@ -366,7 +366,17 @@ describe('asset Rename and Move — enhanced JSON', () => {
     expect(page.text).toContain(`data-asset-destination="${f.wipId}"`);
     expect(page.text).toContain('data-asset-viewer-region="file-details"');
     expect(page.text).toMatch(/data-asset-viewer-region="filter-notice" data-asset-viewer-filtered-out="true"/);
-    expect((page.text.match(/aria-live/g) || []).length).toBe(1);
+    // The viewer announces independently; file actions use Edit Asset's status region.
+    expect(page.text.match(/<dialog id="unified-viewer-dialog"/g)).toHaveLength(1);
+    const viewerDialog = page.text.match(/<dialog id="unified-viewer-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+    expect(page.text.indexOf(viewerDialog)).toBeGreaterThan(page.text.indexOf('</main>'));
+    expect(viewerDialog).toContain('data-unified-viewer-status role="status" aria-live="polite"');
+    expect(viewerDialog).toContain('data-unified-viewer-position aria-live="polite" aria-atomic="true"');
+    expect(viewerDialog.match(/aria-live/g)).toHaveLength(2);
+    const pageText = page.text.replace(viewerDialog, '');
+    const editDialog = pageText.match(/<dialog id="asset-edit-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+    expect(editDialog).toContain('class="app-dialog-status" data-dialog-status role="status" aria-live="polite"');
+    expect((pageText.match(/aria-live/g) || []).length).toBe(1);
   });
   // ─── F2B: reviewed-state precondition for viewer Rename and Move ──────────
   // A Rename or Move names the asset state the page showed (assetReview). The

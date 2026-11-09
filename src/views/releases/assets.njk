@@ -10,6 +10,7 @@
 {% set page_title = "Releases — " ~ release.title ~ " — Assets" %}
 {% block body_class %}refined-page{% endblock %}
 {% set assetVideoPreview = true %}
+{% set unifiedViewer = true %}
 
 {% macro releaseAssetSelectionControl(asset, readOnly) %}
   {% if not readOnly and (asset.is_present or asset.releaseContext.selected) %}
@@ -84,7 +85,8 @@
     selectableTabIndex: true,
     assetInformation: true,
     detailsPresenceStatus: true,
-    hideBody: true
+    hideBody: true,
+    viewerTrigger: 'data-release-assets-viewer-trigger'
   }) %}
     {% if slot == 'top-start' %}
       {{ releaseAssetSelectionControl(asset, readOnly) }}
@@ -116,7 +118,8 @@
     cardClass: 'asset-list-card--project asset-list-card--release',
     filenameLink: false,
     selected: asset.releaseContext.selected,
-    selectable: not readOnly and (asset.is_present or asset.releaseContext.selected)
+    selectable: not readOnly and (asset.is_present or asset.releaseContext.selected),
+    viewerTrigger: 'data-release-assets-viewer-trigger'
   }) %}
     {% if slot == 'select' %}
       {{ releaseAssetSelectionControl(asset, readOnly) }}
@@ -209,6 +212,9 @@
     </div>
   {% endif %}
 
+  {# An eligible image thumbnail opens only that image in the unified viewer
+     (release-assets-viewer.js); the viewer is presentation-only and never
+     touches the draft membership, roles or the Save form. #}
   <section data-release-assets-live-region>
     <span class="sr-only" data-release-assets-live-status aria-live="polite" aria-atomic="true"></span>
     {% set selectedAssets = assetPresentation.selected or [] %}

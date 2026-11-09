@@ -57,6 +57,13 @@
 // new baseline means for the controls it owns (see refreshAssetViewer's result).
 // A later caller whose change affects another region adds that region here.
 //
+// The unified viewer (B6, asset-details-viewer.js) follows the same boundary:
+// its preview trigger's descriptor attributes are kept with the image, and it
+// observes this module (observeAssetViewerRefresh) without this module knowing
+// it: observers hear only of a current read that was installed, or that the
+// asset was found missing or retired. A superseded, failed or other-asset read
+// never reaches them.
+//
 // A region whose read was superseded or failed stays owed: the next refresh of
 // this document installs it too, whoever asks, so a newer change can never leave
 // an older change's region unrefreshed.
@@ -117,6 +124,25 @@ const CONFIRMED_VALUE_ATTRIBUTE = 'data-confirmed-value';
 const DELETE_REVIEW_SELECTOR = 'input[data-asset-delete-review]';
 const FILE_REVIEW_SELECTOR = 'input[data-asset-review]';
 const PREVIEW_HEADING_SELECTOR = '#asset-preview-heading';
+const VIEWER_TRIGGER_SELECTOR = '[data-asset-details-viewer-trigger]';
+const OBSERVERS_KEY = '__creatorCrateAssetViewerRefreshObservers';
+
+// The server-rendered unified viewer descriptor a preview trigger carries
+// (B6): kept in step with the server's current render, like the image itself.
+export const ASSET_DETAILS_VIEWER_ATTRIBUTES = Object.freeze([
+  'data-viewer-filename',
+  'data-viewer-preview-url',
+  'data-viewer-original-url',
+  'data-viewer-revision',
+]);
+
+// Observer notifications.
+export const ASSET_VIEWER_REFRESH_CHANGE = Object.freeze({
+  // A current read installed these regions (the page now shows them).
+  INSTALLED: 'installed',
+  // The asset is gone: a current read answered 404, or the page was retired.
+  GONE: 'gone',
+});
 const NAV_CLASSES = ['asset-preview-nav--previous', 'asset-preview-nav--next'];
 const FOCUSABLE_TAGS = new Set(['BUTTON', 'SUMMARY', 'SELECT', 'INPUT', 'TEXTAREA', 'A']);
 const STATE_KEY = '__creatorCrateAssetViewerRefresh';
@@ -209,6 +235,36 @@ export function retireAssetViewer(document) {
   state.retired = true;
   state.generation += 1;
   readIdentity(document)?.host?.setAttribute?.('data-asset-viewer-retired', '');
+  notifyObservers(document, { type: ASSET_VIEWER_REFRESH_CHANGE.GONE });
+}
+
+/**
+ * Observe this document's authoritative Asset detail changes (B6): `installed`
+ * (with the regions a current read installed) and `gone`. Registering the same
+ * listener again changes nothing. Returns an unsubscribe.
+ *
+ * @param {Document} document
+ * @param {(change: { type: 'installed'|'gone', regions?: string[] }) => void} listener
+ */
+export function observeAssetViewerRefresh(document, listener) {
+  if (!document || typeof listener !== 'function') return () => {};
+  document[OBSERVERS_KEY] ||= new Set();
+  document[OBSERVERS_KEY].add(listener);
+  return () => { document[OBSERVERS_KEY]?.delete(listener); };
+}
+
+// An observer's failure never affects the page's own refresh lifecycle.
+function notifyObservers(document, change) {
+  const observers = document?.[OBSERVERS_KEY];
+  if (!observers) return;
+  const frozen = Object.freeze({ ...change });
+  for (const observer of Array.from(observers)) {
+    try {
+      observer(frozen);
+    } catch {
+      // An observer is a participant, never a dependency.
+    }
+  }
 }
 
 export function assetViewerRetired(document) {
@@ -363,6 +419,14 @@ function updateMediaInPlace(host, parsedHost) {
     const parsedLink = parsedFigure.querySelector('a.asset-preview-link');
     if (syncAttribute(link, parsedLink, 'href')) changes.push('original');
     syncAttribute(link, parsedLink, 'aria-label');
+    // The unified viewer trigger (the link, or the preview-only button): its
+    // label and the server descriptor the viewer opens from (B6).
+    const trigger = figure.querySelector(VIEWER_TRIGGER_SELECTOR);
+    const parsedTrigger = parsedFigure.querySelector(VIEWER_TRIGGER_SELECTOR);
+    if (trigger && parsedTrigger) {
+      if (trigger !== link) syncAttribute(trigger, parsedTrigger, 'aria-label');
+      ASSET_DETAILS_VIEWER_ATTRIBUTES.forEach((name) => syncAttribute(trigger, parsedTrigger, name));
+    }
     if (image && parsedImage && image.getAttribute('src') !== parsedImage.getAttribute('src')) {
       image.addEventListener?.('load', () => { if (figure.isConnected !== false) markPreviewLoaded(figure); }, { once: true });
       image.addEventListener?.('error', () => { if (figure.isConnected !== false) markPreviewFailed(figure); }, { once: true });
@@ -600,7 +664,10 @@ export function refreshAssetViewer(document, expected = {}) {
     .then((response) => {
       httpStatus = response?.status;
       if (superseded()) return { status: ASSET_VIEWER_REFRESH_STATUS.SUPERSEDED };
-      if (response?.status === 404) return { status: ASSET_VIEWER_REFRESH_STATUS.MISSING, httpStatus };
+      if (response?.status === 404) {
+        notifyObservers(document, { type: ASSET_VIEWER_REFRESH_CHANGE.GONE });
+        return { status: ASSET_VIEWER_REFRESH_STATUS.MISSING, httpStatus };
+      }
       if (!response?.ok || typeof response.text !== 'function') {
         return { status: ASSET_VIEWER_REFRESH_STATUS.FAILED, httpStatus };
       }
@@ -619,6 +686,7 @@ export function refreshAssetViewer(document, expected = {}) {
         const installed = install(document, parsed, regions);
         if (!installed) return { status: ASSET_VIEWER_REFRESH_STATUS.FAILED, httpStatus };
         regions.forEach((region) => state.owed.delete(region));
+        notifyObservers(document, { type: ASSET_VIEWER_REFRESH_CHANGE.INSTALLED, regions: [...regions] });
         return { status: ASSET_VIEWER_REFRESH_STATUS.INSTALLED, ...installed };
       });
     })

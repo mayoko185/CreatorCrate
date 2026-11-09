@@ -3997,6 +3997,19 @@
         outline: 2px solid var(--focus-ring);
         outline-offset: 3px;
       }
+      /* Asset Details preview-only image: a plain button that opens the
+         unified viewer, drawn as the image itself (B6). */
+      .asset-preview-view-button {
+        appearance: none;
+        margin: 0;
+        padding: 0;
+        border: 0;
+        border-radius: var(--radius-md);
+        background: none;
+        color: inherit;
+        font: inherit;
+        cursor: zoom-in;
+      }
       .asset-preview-image {
         display: block;
         max-width: 100%;
@@ -16745,4 +16758,340 @@ button[aria-disabled="true"] > .project-create-submit-icon {
 #asset-edit-dialog .app-dialog-status [data-asset-delete-assets-link] {
   margin-top: var(--space-sm);
   margin-right: var(--space-sm);
+}
+
+/* ── Unified viewer (shared image/comic dialog) ──
+   One layout-level dialog for image and comic viewing. Large and
+   viewport-bounded; the stage takes every pixel the header, context and
+   controls leave. Controls stay visible in dialog mode. Everything is scoped
+   to .unified-viewer-dialog so other dialogs and the video preview are
+   untouched. */
+.app-dialog.unified-viewer-dialog {
+  width: min(90rem, calc(100vw - 2rem));
+  height: calc(100vh - 2rem);
+  height: calc(100dvh - 2rem);
+  max-height: calc(100dvh - 2rem);
+}
+.unified-viewer-dialog > .app-dialog-card {
+  height: 100%;
+  max-height: none;
+}
+.unified-viewer {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+.unified-viewer [hidden] {
+  display: none !important;
+}
+.unified-viewer-context {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  min-width: 0;
+  padding: var(--space-sm) var(--space-lg);
+  border-bottom: 1px solid var(--border);
+}
+.unified-viewer-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  min-width: 0;
+  margin: 0;
+}
+.unified-viewer-title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.unified-viewer-source {
+  color: var(--muted);
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}
+.unified-viewer-context-actions {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--space-sm);
+}
+.unified-viewer-stage {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+.unified-viewer-media {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.unified-viewer-status {
+  position: relative;
+  margin: 0;
+  padding: var(--space-md);
+  color: var(--muted);
+  text-align: center;
+}
+.unified-viewer-status:empty {
+  padding: 0;
+}
+.unified-viewer-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-md);
+  padding: var(--space-sm) var(--space-lg);
+  border-top: 1px solid var(--border);
+}
+.unified-viewer-position {
+  min-width: 5rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+/* B3: media, loading/failure states, view tools and pan. The image is
+   sized and placed only by viewer-viewport.js (width/height/transform);
+   nothing here scales it. Touch behavior is left to the browser. */
+.unified-viewer-media {
+  user-select: none;
+  -webkit-user-select: none;
+}
+.unified-viewer-media[data-viewer-pannable] {
+  cursor: grab;
+}
+.unified-viewer-media[data-viewer-dragging] {
+  cursor: grabbing;
+}
+.unified-viewer-media .unified-viewer-image {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: block;
+  max-width: none;
+  max-height: none;
+  pointer-events: none;
+  -webkit-user-drag: none;
+}
+.unified-viewer[data-viewer-media-state="loading"] .unified-viewer-stage,
+.unified-viewer[data-viewer-media-state="failed"] .unified-viewer-stage {
+  flex-direction: column;
+}
+.unified-viewer[data-viewer-media-state="loading"] .unified-viewer-media,
+.unified-viewer[data-viewer-media-state="failed"] .unified-viewer-media {
+  position: static;
+  order: 1;
+}
+.unified-viewer-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  color: var(--muted);
+}
+.unified-viewer-spinner {
+  width: 1.25rem;
+  height: 1.25rem;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: unified-viewer-spin 0.8s linear infinite;
+}
+@keyframes unified-viewer-spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .unified-viewer-spinner {
+    animation: none;
+  }
+}
+.unified-viewer[data-viewer-media-state="loaded"] .unified-viewer-status:not(:empty) {
+  position: absolute;
+  bottom: var(--space-md);
+  left: 50%;
+  z-index: 1;
+  max-width: calc(100% - 2rem);
+  padding: var(--space-xs) var(--space-md);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface-card);
+  color: var(--text);
+  box-shadow: var(--shadow-md);
+  transform: translateX(-50%);
+}
+.unified-viewer-view-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+.unified-viewer-dialog .unified-viewer-tool {
+  min-width: 2.5rem;
+  min-height: 2.5rem;
+}
+.unified-viewer-tool svg {
+  width: 1.125rem;
+  height: 1.125rem;
+}
+.unified-viewer-zoom-level {
+  min-width: 3.25rem;
+  color: var(--muted);
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.unified-viewer-dialog .unified-viewer-nav {
+  min-width: 2.5rem;
+  min-height: 2.5rem;
+}
+/* B4: slideshow playback, fullscreen and fullscreen-only idle chrome.
+   Play/Pause and the speed dropdown appear only for playable slideshows.
+   The fullscreen target is the dialog card (a <dialog> cannot be
+   fullscreen). In fullscreen the stage takes the whole screen and the
+   header, context bar and controls float over it; only there do they hide
+   after inactivity (data-viewer-chrome-hidden, set by viewer-fullscreen.js).
+   Hidden chrome is transparent, never removed: it keeps its place in the
+   focus order and is revealed by any key, focus or pointer movement. */
+.unified-viewer-playback {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+.unified-viewer-dialog .unified-viewer-play {
+  min-width: 2.5rem;
+  min-height: 2.5rem;
+}
+.unified-viewer-play svg,
+.unified-viewer-fullscreen svg {
+  width: 1.125rem;
+  height: 1.125rem;
+}
+.unified-viewer-play-icon,
+.unified-viewer-pause-icon,
+.unified-viewer-fullscreen-enter,
+.unified-viewer-fullscreen-exit {
+  display: inline-flex;
+}
+.unified-viewer-play .unified-viewer-pause-icon,
+.unified-viewer-play[data-viewer-playing] .unified-viewer-play-icon,
+.unified-viewer-fullscreen .unified-viewer-fullscreen-exit,
+.unified-viewer-fullscreen[data-viewer-fullscreen-active] .unified-viewer-fullscreen-enter {
+  display: none;
+}
+.unified-viewer-play[data-viewer-playing] .unified-viewer-pause-icon,
+.unified-viewer-fullscreen[data-viewer-fullscreen-active] .unified-viewer-fullscreen-exit {
+  display: inline-flex;
+}
+.unified-viewer-speed-field {
+  margin: 0;
+}
+.unified-viewer-speed-field .cc-dropdown summary {
+  min-height: 2.5rem;
+}
+.unified-viewer-dialog > .app-dialog-card:fullscreen {
+  display: block;
+  border: 0;
+  border-radius: 0;
+  background: var(--bg);
+  box-shadow: none;
+  overflow: hidden;
+}
+.unified-viewer-dialog > .app-dialog-card:fullscreen::backdrop {
+  background: var(--bg);
+}
+/* The page's stable scrollbar gutter would otherwise keep a strip of the
+   viewport outside the fullscreen card. Only while the viewer's card is
+   fullscreen. */
+html:has(.unified-viewer-dialog > .app-dialog-card:fullscreen) {
+  scrollbar-gutter: auto;
+}
+.unified-viewer-dialog > .app-dialog-card:fullscreen > .app-dialog-header {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 3;
+  padding: var(--space-sm) var(--space-md);
+  border: 0;
+  background: transparent;
+}
+.unified-viewer-dialog > .app-dialog-card:fullscreen > .app-dialog-header h2 {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.unified-viewer-dialog > .app-dialog-card:fullscreen .unified-viewer,
+.unified-viewer-dialog > .app-dialog-card:fullscreen .unified-viewer-stage {
+  position: absolute;
+  inset: 0;
+}
+.unified-viewer-dialog > .app-dialog-card:fullscreen .unified-viewer-context,
+.unified-viewer-dialog > .app-dialog-card:fullscreen .unified-viewer-controls {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  background: color-mix(in srgb, var(--surface-card) 88%, transparent);
+}
+.unified-viewer-dialog > .app-dialog-card:fullscreen .unified-viewer-context {
+  top: 0;
+  padding-right: 4.5rem;
+}
+.unified-viewer-dialog > .app-dialog-card:fullscreen .unified-viewer-controls {
+  bottom: 0;
+}
+.unified-viewer-dialog > .app-dialog-card:fullscreen .unified-viewer[data-viewer-media-state="loaded"] .unified-viewer-status:not(:empty) {
+  bottom: 5rem;
+}
+.unified-viewer-dialog > .app-dialog-card:fullscreen :is(.app-dialog-header, .unified-viewer-context, .unified-viewer-controls) {
+  transition: opacity 160ms ease;
+}
+.unified-viewer-dialog > .app-dialog-card:fullscreen[data-viewer-chrome-hidden] :is(.app-dialog-header, .unified-viewer-context, .unified-viewer-controls) {
+  opacity: 0;
+  pointer-events: none;
+}
+.unified-viewer-dialog > .app-dialog-card:fullscreen[data-viewer-chrome-hidden] .unified-viewer-media {
+  cursor: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .unified-viewer-dialog > .app-dialog-card:fullscreen :is(.app-dialog-header, .unified-viewer-context, .unified-viewer-controls) {
+    transition: none;
+  }
+}
+@media (max-width: 540px) {
+  .app-dialog.unified-viewer-dialog {
+    width: calc(100vw - 1rem);
+    max-width: calc(100vw - 1rem);
+    height: calc(100vh - 1rem);
+    height: calc(100dvh - 1rem);
+    max-height: calc(100dvh - 1rem);
+  }
+  .unified-viewer-context {
+    flex-wrap: wrap;
+    padding: var(--space-sm) var(--space-md);
+  }
+  .unified-viewer-controls {
+    padding: var(--space-sm) var(--space-md);
+  }
+  .unified-viewer-dialog .unified-viewer-nav {
+    min-width: 2.75rem;
+    min-height: 2.75rem;
+  }
+  .unified-viewer-context-actions {
+    flex-wrap: wrap;
+    flex-shrink: 1;
+  }
+  .unified-viewer-zoom-level {
+    min-width: 2.75rem;
+  }
 }

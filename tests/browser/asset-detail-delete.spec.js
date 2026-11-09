@@ -315,7 +315,7 @@ test('A: Cancel, Escape and the backdrop dismiss the confirmation locally with e
   await expectDraftsKept(page, fixture);
   expect(fixture.row()).toBeDefined();
   expect(fixture.onDisk('wip/02-subject.png')).toBe(true);
-  expect(await page.locator('[aria-live]').count()).toBe(1);
+  expect(await page.locator('[aria-live]:not(#unified-viewer-dialog *)').count()).toBe(1); // B6: the viewer's own regions live in its dialog
   expect(errors).toEqual([]);
 });
 
@@ -393,7 +393,7 @@ test('C: refusals (published release, archived elsewhere, busy, deleted elsewher
   expect(fixture.onDisk('wip/02-subject.png')).toBe(true);
   expect(fixture.stagingDirs()).toEqual([]);
   await expect(dialog(page)).toHaveJSProperty('open', true);
-  expect(await page.locator('[aria-live]').count()).toBe(1);
+  expect(await page.locator('[aria-live]:not(#unified-viewer-dialog *)').count()).toBe(1); // B6: the viewer's own regions live in its dialog
   expect(errors).toEqual([]);
 });
 
@@ -698,7 +698,7 @@ test('I: a refused Delete leaves Tag Save, Rename and the viewer refresh working
   expect(net.navigations).toEqual([]);
   expect(await sameDocument(page)).toBe(true);
   expect(deletePosts(net)).toHaveLength(1);
-  expect(await page.locator('[aria-live]').count()).toBe(1);
+  expect(await page.locator('[aria-live]:not(#unified-viewer-dialog *)').count()).toBe(1); // B6: the viewer's own regions live in its dialog
   expect(errors).toEqual([]);
 });
 
@@ -1231,7 +1231,7 @@ test('F3-B1: a Delete held upstream, a GET finding it listed, then Escape and re
     expect(fixture.row().category_id ?? null).toBe(fixture.wipId);
     expect(net.navigations).toEqual([]);
     expect(await sameDocument(page)).toBe(true);
-    expect(await page.locator('[aria-live]').count()).toBe(1);
+    expect(await page.locator('[aria-live]:not(#unified-viewer-dialog *)').count()).toBe(1); // B6: the viewer's own regions live in its dialog
   } finally {
     await releaseAndVerifyDeleted(page, fixture, net, run);
   }

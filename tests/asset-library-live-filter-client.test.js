@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   beginAssetViewerDefaultsLiveRefresh,
   enhanceAssetLibraryLiveFiltering,
+  enhanceAssetLibraryViewer,
   enhancePageDefaultsFetchSave,
   refreshAssetViewerLiveRegion,
 } from '../src/static/creatorcrate.js';
@@ -319,7 +320,7 @@ function makePage(projectId = null, { dialogOpen = false } = {}) {
   region.appendChild(status);
   const preview = makeNode({
     tagName: 'a',
-    attrs: { href: '/assets/7', 'data-project-assets-preview-id': '7' },
+    attrs: { href: '/assets/7', 'data-asset-library-preview-id': '7', 'data-asset-library-preview-project-id': '1' },
   });
   region.appendChild(preview);
   document.appendChild(region);
@@ -918,14 +919,46 @@ describe('Asset Viewer Project live filtering enhancement', () => {
     expect(initial.form.submit).not.toHaveBeenCalled();
   });
 
+  // B5b: preview links and Slideshow open the shared unified viewer through
+  // one document-level binding; a replaced region copies the authoritative
+  // sequence (outside the region) and reconciles the open viewer with it.
   it('re-enhances replaced Asset Viewer controls and preview links', async () => {
     const initial = makePage();
     const next = makePage('1');
     const fixtures = addReplacementEnhancerFixtures(next);
-    const openSingleById = vi.fn(() => true);
-    const scaffold = makeNode({ attrs: { 'data-slideshow-scaffold': '' } });
-    scaffold.__creatorCrateSlideshowState = { openSingleById };
-    initial.document.appendChild(scaffold);
+    const sequenceEntry = (id, projectId, revision = `r${id}`) => ({
+      id,
+      projectId,
+      filename: 'shared.png',
+      previewUrl: `/projects/${projectId}/assets/${id}/preview?v=${revision}`,
+      viewerUrl: `/projects/${projectId}/assets/${id}`,
+      revision,
+    });
+    const addSequence = (page, entries) => {
+      const script = makeNode({
+        tagName: 'script',
+        attrs: { type: 'application/json', 'data-asset-library-viewer-sequence': '', 'data-viewer-label': 'Asset Viewer' },
+      });
+      script.textContent = JSON.stringify(entries);
+      page.document.appendChild(script);
+      return script;
+    };
+    const currentSequence = addSequence(initial, [sequenceEntry(6, 2), sequenceEntry(7, 1)]);
+    addSequence(next, [sequenceEntry(7, 1, 'r7b')]);
+    let active = null;
+    const viewer = {
+      open: vi.fn(() => { active = 1; return 1; }),
+      update: vi.fn(() => ({ outcome: 'kept' })),
+      getState: () => ({ open: active !== null, session: active }),
+    };
+    const viewerDialog = makeNode({ tagName: 'dialog', attrs: { id: 'unified-viewer-dialog' } });
+    viewerDialog.__creatorCrateUnifiedViewer = viewer;
+    initial.document.appendChild(viewerDialog);
+    initial.document.getElementById = (id) => initial.document.querySelector(`#${id}`);
+    expect(enhanceAssetLibraryViewer(initial.document)).toBe(1);
+    initial.preview.dispatch('click', { button: 0 });
+    expect(viewer.open).toHaveBeenCalledTimes(1);
+    expect(viewer.open.mock.calls[0][0].items.map((item) => item.key)).toEqual(['p:1|a:7']);
 
     const pages = new Map([['filtered', next.document]]);
     const windowObject = makeWindow(initial.document, pages);
@@ -954,9 +987,20 @@ describe('Asset Viewer Project live filtering enhancement', () => {
     expect(fixtures.dropdownSummary.getAttribute('aria-expanded')).toBe('true');
     fixtures.preview.dispatch('pointerenter', { clientX: 10, clientY: 10 });
     expect(fixtures.infoCard.getAttribute('data-info-card-open')).toBe('true');
+    // The newer sequence replaced the page copy and reached the open session.
+    expect(JSON.parse(currentSequence.textContent)).toEqual([sequenceEntry(7, 1, 'r7b')]);
+    expect(viewer.update).toHaveBeenCalledTimes(1);
+    expect(viewer.update.mock.calls[0][1]).toEqual({ session: 1 });
+    expect(viewer.update.mock.calls[0][0].items).toEqual([expect.objectContaining({ projectId: 1, assetId: 7, revision: 'r7b' })]);
+    // The replaced preview link opens through the same single binding.
     const event = next.preview.dispatch('click', { button: 0 });
-    expect(openSingleById).toHaveBeenCalledWith('7', next.preview);
+    expect(viewer.open).toHaveBeenCalledTimes(2);
+    expect(viewer.open.mock.calls[1][1].opener).toBe(next.preview);
     expect(event.defaultPrevented).toBe(true);
+    const documentClickListeners = () => initial.document.listeners.filter(({ type }) => type === 'click').length;
+    const clickListeners = documentClickListeners();
+    expect(enhanceAssetLibraryViewer(initial.document)).toBe(1);
+    expect(documentClickListeners()).toBe(clickListeners);
   });
 });
 

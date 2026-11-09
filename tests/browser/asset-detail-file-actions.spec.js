@@ -336,7 +336,7 @@ test('A: renames in place with one POST of the complete filename; database, disk
   await expect(page.locator('#move-destination')).toHaveAttribute('data-confirmed-value', String(fixture.wipId));
   await expect(page.locator(`#asset-tags-form input[value="${fixture.tag.id}"]`)).toBeChecked();
   expect(fixture.savedTagIds()).toEqual([]);
-  expect(await page.locator('[aria-live]').count()).toBe(1);
+  expect(await page.locator('[aria-live]:not(#unified-viewer-dialog *)').count()).toBe(1); // B6: the viewer's own regions live in its dialog
   expect(errors).toEqual([]);
 });
 
@@ -562,7 +562,7 @@ test('I: keyboard — repeated Enter renames once, focus stays meaningful, Escap
   await page.keyboard.press('Enter');
   expect(filePosts(net)).toHaveLength(1);
   expect(fixture.row().filename).toBe('02-keyboard.png');
-  expect(await page.locator('[aria-live]').count()).toBe(1);
+  expect(await page.locator('[aria-live]:not(#unified-viewer-dialog *)').count()).toBe(1); // B6: the viewer's own regions live in its dialog
   await page.keyboard.press('Escape');
   await expect(dialog(page)).toHaveJSProperty('open', false);
   await openEditAsset(page);

@@ -226,6 +226,13 @@ function renderPage(overrides = {}) {
   });
 }
 
+// The page also mounts the shared unified viewer dialog (Milestone B), whose
+// slideshow speed control is itself a shared dropdown; page-content counts
+// leave that dialog out.
+function withoutUnifiedViewer(html) {
+  return html.replace(/<dialog id="unified-viewer-dialog"[\s\S]*?<\/dialog>/, '');
+}
+
 function renderAssetInformation(asset = alphaAsset, options = {}) {
   const env = nunjucks.configure(VIEWS_DIR, { autoescape: true, noCache: true });
   return env.renderString(
@@ -304,7 +311,9 @@ describe('cross-project Asset Viewer template', () => {
     for (const [name, count] of [['presence', 3], ['usage', 3], ['sort', 2], ['order', 2], ['pageSize', 7]]) {
       expect((html.match(new RegExp(`name="${name}"[^>]+type="radio"`, 'g')) || [])).toHaveLength(count);
     }
-    expect((html.match(/data-cc-dropdown data-cc-dropdown-mode="(?:single|multiple)"/g) || [])).toHaveLength(10);
+    // Filter and defaults dropdowns only: B5b retired the legacy slideshow
+    // scaffold (and its speed dropdown) in favour of the unified viewer.
+    expect((withoutUnifiedViewer(html).match(/data-cc-dropdown data-cc-dropdown-mode="(?:single|multiple)"/g) || [])).toHaveLength(9);
     expect(html).not.toMatch(/<select[^>]+id="asset-(presence|usage|sort|order|page-size)"/);
     for (const [triggerId, optionsId] of [
       ['asset-presence-filter-trigger', 'asset-presence-filter-options'],
@@ -472,7 +481,7 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).toContain('<select id="asset-sort" name="sort" class="cc-dropdown-native-select" data-cc-dropdown-native-select');
     expect(html).toContain('<input id="asset-order" name="order" type="text" value="asc">');
     expect(html).toContain('<input id="asset-page-size" name="pageSize" type="number" value="25">');
-    expect((html.match(/data-cc-dropdown data-cc-dropdown-mode="single"/g) || [])).toHaveLength(5);
+    expect((withoutUnifiedViewer(html).match(/data-cc-dropdown data-cc-dropdown-mode="single"/g) || [])).toHaveLength(4);
     expect((html.match(/data-asset-viewer-filter-disclosure/g) || [])).toHaveLength(0);
     for (const id of [
       'asset-presence-filter-trigger',
@@ -624,10 +633,12 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).not.toContain('selectedAssetIds');
     expect(html).not.toContain('data-asset-grid-size-controls');
 
-    // Asset: Dashboard thumbnail box with the slideshow preview link, and a
-    // title that opens the information card instead of navigating.
+    // Asset: Dashboard thumbnail box with the unified-viewer preview link
+    // (project-qualified, Asset Library hook only), and a title that opens
+    // the information card instead of navigating.
     expect(alphaCard).toContain('class="asset-list-card-media dashboard-thumb" data-preview-enhancement data-preview-state="loading"');
-    expect(alphaCard).toContain('class="asset-list-card-media-link" href="/projects/1/assets/101" aria-label="View preview of shared.png from Alpha Project" data-project-assets-preview-id="101"');
+    expect(alphaCard).toContain('class="asset-list-card-media-link" href="/projects/1/assets/101" aria-label="View preview of shared.png from Alpha Project" data-asset-library-preview-id="101" data-asset-library-preview-project-id="1"');
+    expect(alphaCard).not.toContain('data-project-assets-preview-id');
     expect(alphaCard).toContain('src="/projects/1/assets/101/preview?v=alpha"');
     expect(alphaCard).not.toContain('src="/projects/1/assets/101/thumbnail?v=alpha"');
     expect(alphaCard).toMatch(/<div class="dashboard-title-info asset-list-card-title-info" data-dashboard-title-info>\s*<h2 class="asset-list-card-title">\s*<button class="dashboard-title-trigger dashboard-truncate" type="button" data-calendar-info-trigger aria-controls="asset-library-list-info-101" aria-expanded="false">shared\.png<\/button>\s*<\/h2>/);
@@ -1564,22 +1575,23 @@ describe('slideshow scaffold — static UI', () => {
     const html = renderPage();
     const toolbarDiv = html.match(/<div class="project-filter-actions project-filter-actions--projects">[\s\S]*?<\/div>/)?.[0] ?? '';
     const filterDialog = html.slice(html.indexOf('<dialog id="asset-viewer-filter-dialog"'));
-    expect(toolbarDiv).toContain('data-slideshow-trigger');
+    expect(toolbarDiv).toContain('data-asset-library-slideshow-trigger');
     expect(toolbarDiv).not.toContain('data-asset-library-reset');
     expect(filterDialog).toContain('data-asset-library-reset');
   });
 
   it('asset-viewer page: slideshow trigger has accessible label and styled tooltip', () => {
     const html = renderPage();
-    const trigger = html.match(/<button\b[^>]*data-slideshow-trigger[^>]*>/)?.[0] ?? '';
+    const trigger = html.match(/<button\b[^>]*data-asset-library-slideshow-trigger[^>]*>/)?.[0] ?? '';
     expect(trigger).toContain('aria-label="Start slideshow"');
     expect(trigger).toContain('data-tooltip="Start slideshow"');
+    expect(trigger).toContain('aria-haspopup="dialog"');
     expect(trigger).not.toContain('title=');
   });
 
   it('both asset pages use button-small sizing for Slideshow', () => {
-    const viewerTriggerClass = renderPage().match(/<button class="([^"]*\bslideshow-trigger\b[^"]*)"[^>]*data-slideshow-trigger/)?.[1] ?? '';
-    const projectTriggerClass = renderProjectAssetsPage().match(/<button class="([^"]*\bslideshow-trigger\b[^"]*)"[^>]*data-slideshow-trigger/)?.[1] ?? '';
+    const viewerTriggerClass = renderPage().match(/<button class="([^"]*\bslideshow-trigger\b[^"]*)"[^>]*data-asset-library-slideshow-trigger/)?.[1] ?? '';
+    const projectTriggerClass = renderProjectAssetsPage().match(/<button class="([^"]*\bslideshow-trigger\b[^"]*)"[^>]*data-project-assets-slideshow-trigger/)?.[1] ?? '';
     expect(viewerTriggerClass).toContain('button-secondary');
     expect(viewerTriggerClass).toContain('button-small');
     expect(projectTriggerClass).toContain('button-secondary');
@@ -1590,39 +1602,50 @@ describe('slideshow scaffold — static UI', () => {
     expect(css).toMatch(/\.asset-viewer-display-controls\s+\.project-filter-actions\s*\{[^}]*gap:\s*var\(--space-sm\)/);
   });
 
-  it('asset-viewer page: slideshow scaffold is present, hidden, and inert', () => {
-    const html = renderPage();
-    expect(html).toContain('data-slideshow-scaffold');
-    expect(html).toMatch(/data-slideshow-scaffold[^>]* hidden/);
-    expect(html).toMatch(/data-slideshow-scaffold[^>]* inert/);
+  // B5b: the Asset Library opens the unified viewer instead of the legacy
+  // slideshow scaffold; the legacy hooks are gone so slideshow.js cannot bind.
+  it('asset-viewer page: the unified viewer replaces the legacy slideshow scaffold', () => {
+    const entries = [
+      { id: 101, projectId: 1, filename: 'shared.png', previewUrl: '/projects/1/assets/101/preview?v=a', viewerUrl: '/projects/1/assets/101', revision: 'a' },
+      { id: 202, projectId: 2, filename: 'shared.png', previewUrl: '/projects/2/assets/202/preview?v=b', viewerUrl: '/projects/2/assets/202', revision: 'b' },
+    ];
+    const html = renderPage({ slideshowSequenceJson: JSON.stringify(entries) });
+    expect(html).not.toContain('data-slideshow-scaffold');
+    expect(html).not.toContain('data-slideshow-trigger');
+    expect(html).not.toContain('data-slideshow-play-pause');
+    expect(html).not.toContain('data-slideshow-preview');
+    expect(html).not.toContain('data-project-assets-preview-id');
+    expect(html).not.toContain('data-project-assets-slideshow-trigger');
+    expect(html).not.toContain('data-project-assets-viewer-sequence');
+    expect(html.match(/<dialog id="unified-viewer-dialog"/g)).toHaveLength(1);
   });
 
-  it('asset-viewer page: scaffold contains all required control hooks', () => {
-    const html = renderPage();
-    expect(html).toContain('data-slideshow-preview');
-    expect(html).toContain('data-slideshow-prev');
-    expect(html).toContain('data-slideshow-next');
-    expect(html).toContain('data-slideshow-play-pause');
-    expect(html).toContain('data-slideshow-speed');
-    expect(html).toContain('data-slideshow-status');
-    expect(html).toContain('data-slideshow-close');
-    expect(html).toContain('data-slideshow-fullscreen');
-    expect(html).toContain('data-slideshow-original-size');
-    expect(html).toContain('aria-label="View original size"');
-    expect(html).toContain('aria-pressed="false"');
-    expect(html).toContain('data-slideshow-media-status');
-    expect(html).toContain('aria-label="Enter fullscreen"');
-  });
-
-
-  it('asset-viewer page: speed select preserves 2 s, 4 s default, and 6 s options', () => {
-    const html = renderPage();
-    const speedSelect = html.match(/<select[^>]*data-slideshow-speed[^>]*>[\s\S]*?<\/select>/)?.[0] ?? '';
-    expect(speedSelect).toContain('class="cc-dropdown-native-select slideshow-speed"');
-    expect(speedSelect).toContain('data-cc-dropdown-native-select');
+  it('asset-viewer page: the viewer offers fullscreen, original size and 2/4/6 s speeds', () => {
+    const viewer = renderPage().match(/<dialog id="unified-viewer-dialog"[\s\S]*?<\/dialog>/)?.[0] ?? '';
+    expect(viewer).toContain('data-unified-viewer-fullscreen');
+    expect(viewer).toContain('aria-label="Enter fullscreen"');
+    expect(viewer).toContain('data-unified-viewer-original');
+    const speedSelect = viewer.match(/<select[^>]*data-unified-viewer-speed[^>]*>[\s\S]*?<\/select>/)?.[0] ?? '';
     expect(speedSelect).toContain('value="2000"');
     expect(speedSelect).toMatch(/value="4000" selected/);
     expect(speedSelect).toContain('value="6000"');
+  });
+
+  it('asset-viewer page: the sequence and viewer dialog stay outside the replaceable live region', () => {
+    const html = renderPage();
+    const regionStart = html.indexOf('<div data-asset-library-live-region>');
+    const filterDialogStart = html.indexOf('<dialog id="asset-viewer-filter-dialog"');
+    const sequenceStart = html.indexOf('data-asset-library-viewer-sequence');
+    const viewerStart = html.indexOf('<dialog id="unified-viewer-dialog"');
+    expect(regionStart).toBeGreaterThan(-1);
+    // The Slideshow button is region content; the overlay block (filter and
+    // defaults dialogs, then the sequence) and the layout-mounted viewer
+    // follow the region, so a replacement can never remove them.
+    const trigger = html.indexOf('data-asset-library-slideshow-trigger');
+    expect(trigger).toBeGreaterThan(regionStart);
+    expect(trigger).toBeLessThan(filterDialogStart);
+    expect(sequenceStart).toBeGreaterThan(html.indexOf('<dialog id="asset-viewer-defaults-dialog"'));
+    expect(viewerStart).toBeGreaterThan(sequenceStart);
   });
 
   it('asset-viewer page: toolbar has Filter, Defaults, NSFW, and Slideshow controls', () => {
@@ -1630,7 +1653,7 @@ describe('slideshow scaffold — static UI', () => {
     expect(html).toContain('data-dialog-open="asset-viewer-filter-dialog"');
     expect(html).toContain('data-dialog-open="asset-viewer-defaults-dialog"');
     expect(html).toContain('data-asset-library-nsfw-toggle');
-    expect(html).toContain('data-slideshow-trigger');
+    expect(html).toContain('data-asset-library-slideshow-trigger');
     expect(html).toContain('data-asset-library-reset');
     expect(html).toContain('href="/asset-viewer?defaults=1"');
     expect(html).not.toContain('<noscript>');
@@ -1638,7 +1661,7 @@ describe('slideshow scaffold — static UI', () => {
 
   it('project assets page: slideshow trigger exists before Filter in DOM order', () => {
     const html = renderProjectAssetsPage();
-    const triggerPos = html.indexOf('data-slideshow-trigger');
+    const triggerPos = html.indexOf('data-project-assets-slideshow-trigger');
     const filterPos = html.indexOf('id="asset-filters"');
     expect(triggerPos).toBeGreaterThan(-1);
     expect(filterPos).toBeGreaterThan(-1);
@@ -1647,49 +1670,58 @@ describe('slideshow scaffold — static UI', () => {
 
   it('project assets page: slideshow trigger has accessible label and tooltip', () => {
     const html = renderProjectAssetsPage();
-    const trigger = html.match(/<button\b[^>]*data-slideshow-trigger[^>]*>/)?.[0] ?? '';
+    const trigger = html.match(/<button\b[^>]*data-project-assets-slideshow-trigger[^>]*>/)?.[0] ?? '';
     expect(trigger).toContain('aria-label="Start slideshow"');
     expect(trigger).toContain('data-tooltip="Start slideshow"');
+    expect(trigger).toContain('aria-haspopup="dialog"');
     expect(trigger).not.toContain('title=');
   });
 
-  it('project assets page: slideshow scaffold is present, hidden, and inert', () => {
-    const html = renderProjectAssetsPage();
-    expect(html).toContain('data-slideshow-scaffold');
-    expect(html).toMatch(/data-slideshow-scaffold[^>]* hidden/);
-    expect(html).toMatch(/data-slideshow-scaffold[^>]* inert/);
+  // B5a: Project Assets opens the unified viewer instead of the legacy
+  // slideshow scaffold, which stays only on the Asset Library until B5b.
+  it('project assets page: the unified viewer replaces the legacy slideshow scaffold', () => {
+    const entries = [{ id: 5, projectId: 1, filename: 'a.png', previewUrl: '/p/5' }];
+    const html = renderProjectAssetsPage({ slideshowSequenceJson: JSON.stringify(entries) });
+    expect(html).not.toContain('data-slideshow-scaffold');
+    expect(html).not.toContain('data-slideshow-trigger');
+    expect(html).not.toContain('data-slideshow-play-pause');
+    expect(html.match(/<dialog id="unified-viewer-dialog"/g)).toHaveLength(1);
+
+    const sequence = html.match(/<script[^>]*data-project-assets-viewer-sequence[^>]*>([\s\S]*?)<\/script>/);
+    expect(sequence?.[0]).toContain('type="application/json"');
+    expect(sequence?.[0]).toContain('data-project-id="1"');
+    expect(sequence?.[0]).toContain('data-viewer-label="Test Project"');
+    expect(JSON.parse(sequence[1])).toEqual(entries);
+    expect(html.match(/data-project-assets-viewer-sequence/g)).toHaveLength(1);
+    // The authoritative sequence is page overlay data, after the live region's
+    // overlay dialogs rather than inside the replaceable region.
+    expect(html.indexOf('data-project-assets-viewer-sequence'))
+      .toBeGreaterThan(html.indexOf('<dialog id="project-assets-filter-dialog"'));
   });
 
-  it('project assets page: fullscreen control and speed options are present', () => {
+  it('project assets page: the viewer offers fullscreen, original size and 2/4/6 s speeds', () => {
     const html = renderProjectAssetsPage();
-    expect(html).toContain('data-slideshow-fullscreen');
-    expect(html).toContain('data-slideshow-original-size');
-    expect(html).toContain('aria-label="View original size"');
-    expect(html).toContain('data-slideshow-media-status');
-    expect(html).toContain('aria-label="Enter fullscreen"');
-    const speedSelect = html.match(/<select[^>]*data-slideshow-speed[^>]*>[\s\S]*?<\/select>/)?.[0] ?? '';
+    const viewer = html.match(/<dialog id="unified-viewer-dialog"[\s\S]*?<\/dialog>/)?.[0] ?? '';
+    expect(viewer).toContain('data-unified-viewer-fullscreen');
+    expect(viewer).toContain('aria-label="Enter fullscreen"');
+    expect(viewer).toContain('data-unified-viewer-original');
+    const speedSelect = viewer.match(/<select[^>]*data-unified-viewer-speed[^>]*>[\s\S]*?<\/select>/)?.[0] ?? '';
     expect(speedSelect).toContain('value="2000"');
     expect(speedSelect).toMatch(/value="4000" selected/);
     expect(speedSelect).toContain('value="6000"');
   });
 
-  it('project assets page: speed uses the compact shared dropdown beside play/pause', () => {
+  it('project assets page: the viewer speed uses the compact shared dropdown beside play/pause', () => {
     const html = renderProjectAssetsPage();
-    const controlsStart = html.indexOf('<div class="slideshow-controls">');
-    const nextStart = html.indexOf('data-slideshow-next', controlsStart);
-    const controls = html.slice(controlsStart, nextStart);
-    const playPauseStart = controls.indexOf('data-slideshow-play-pause');
-    const playPauseEnd = controls.indexOf('</button>', playPauseStart);
-    const speedFieldStart = controls.indexOf('<fieldset', playPauseEnd);
-    const speedDetails = html.match(/<details[^>]*id="slideshow-speed-dropdown"[^>]*>/)?.[0] || '';
+    const playback = html.match(/<div class="unified-viewer-playback"[\s\S]*?data-unified-viewer-next/)?.[0] ?? '';
+    const playPauseEnd = playback.indexOf('</button>', playback.indexOf('data-unified-viewer-play'));
+    const speedFieldStart = playback.indexOf('<fieldset', playPauseEnd);
+    const speedDetails = html.match(/<details[^>]*id="unified-viewer-speed-dropdown"[^>]*>/)?.[0] || '';
     const extensionDetails = html.match(/<details[^>]*id="asset-extension-filter"[^>]*>/)?.[0] || '';
 
-    expect(controlsStart).toBeGreaterThan(-1);
-    expect(nextStart).toBeGreaterThan(controlsStart);
-    expect(playPauseStart).toBeGreaterThan(-1);
-    expect(playPauseEnd).toBeGreaterThan(playPauseStart);
+    expect(playPauseEnd).toBeGreaterThan(-1);
     expect(speedFieldStart).toBeGreaterThan(playPauseEnd);
-    expect(controls.slice(speedFieldStart)).toContain('cc-dropdown-field--compact');
+    expect(playback.slice(speedFieldStart)).toContain('cc-dropdown-field--compact');
     expect(speedDetails).toContain('cc-dropdown--compact');
     expect(extensionDetails).toContain('cc-dropdown');
     expect(extensionDetails).not.toContain('cc-dropdown--compact');
@@ -1729,7 +1761,7 @@ describe('slideshow scaffold — static UI', () => {
 });
 
 describe('slideshow sequence — data contract', () => {
-  it('asset-viewer page: renders slideshow sequence script element inside the scaffold', () => {
+  it('asset-viewer page: renders the authoritative viewer sequence script element', () => {
     const html = renderPage({ slideshowSequenceJson: '[]' });
     expect(html).toContain('data-slideshow-sequence');
     const scriptMatch = html.match(/<script[^>]*data-slideshow-sequence[^>]*>([\s\S]*?)<\/script>/);
@@ -1760,12 +1792,19 @@ describe('slideshow sequence — data contract', () => {
     expect(parsed[0].thumbnailUrl).toBeUndefined();
   });
 
-  it('asset-viewer page: sequence script element is inside the scaffold element', () => {
-    const sequence = [{ id: 1, filename: 'a.png', previewUrl: '/projects/1/assets/1/preview?v=x', viewerUrl: '/projects/1/assets/1' }];
+  it('asset-viewer page: one Asset Library viewer sequence carries the complete server JSON unchanged', () => {
+    // Cross-project entries with equal filenames stay distinct by project.
+    const sequence = [
+      { id: 7, projectId: 2, filename: 'a.png', previewUrl: '/projects/2/assets/7/preview?v=x', viewerUrl: '/projects/2/assets/7', revision: 'x' },
+      { id: 1, projectId: 1, filename: 'a.png', previewUrl: '/projects/1/assets/1/preview?v=y', viewerUrl: '/projects/1/assets/1', revision: 'y' },
+    ];
     const html = renderPage({ slideshowSequenceJson: JSON.stringify(sequence) });
-    const scaffoldMatch = html.match(/<div[^>]*data-slideshow-scaffold[^>]*>([\s\S]*?)<\/div>/);
-    expect(scaffoldMatch).not.toBeNull();
-    expect(scaffoldMatch[0]).toContain('data-slideshow-sequence');
+    const script = html.match(/<script[^>]*data-asset-library-viewer-sequence[^>]*>([\s\S]*?)<\/script>/);
+    expect(script?.[0]).toContain('type="application/json"');
+    expect(script?.[0]).toContain('data-viewer-label="Asset Viewer"');
+    expect(JSON.parse(script[1])).toEqual(sequence);
+    expect(html.match(/data-asset-library-viewer-sequence/g)).toHaveLength(1);
+    expect(html.match(/data-slideshow-sequence/g)).toHaveLength(1);
   });
 
   it('asset-viewer page: sequence JSON is escaped so </script> in filenames cannot break the element', () => {
@@ -1810,6 +1849,56 @@ describe('slideshow sequence — data contract', () => {
   });
 });
 
+// B5b: only eligible image thumbnails carry the Asset Library viewer hook,
+// qualified by project so equal filenames in different projects stay apart.
+describe('Asset Library unified viewer hooks', () => {
+  const comicAsset = {
+    ...alphaAsset,
+    id: 404,
+    filename: 'issue.cbz',
+    relative_path: 'comics/issue.cbz',
+    extension: 'cbz',
+    mime_type: 'application/vnd.comicbook+zip',
+    preview: { kind: 'unsupported', previewable: false, comic: { format: 'cbz' } },
+    preview_state: 'unsupported',
+    thumbnail_url: null,
+    preview_url: null,
+  };
+  const missingAsset = { ...alphaAsset, id: 505, is_present: 0, preview_state: 'missing' };
+  // Same filename as alphaAsset, in another project.
+  const betaImage = {
+    ...alphaAsset,
+    id: 202,
+    project_id: 2,
+    project_title: 'Beta Project',
+    thumbnail_url: '/projects/2/assets/202/thumbnail?v=beta',
+    preview_url: '/projects/2/assets/202/preview?v=beta',
+  };
+
+  it.each(['grid', 'list'])('%s image thumbnails carry project-qualified hooks and keep their details href', (view) => {
+    const html = renderPage({ assets: [alphaAsset, betaImage], filters: { view }, presentation: { view } });
+    const links = [...html.matchAll(/<a class="asset-(?:list-)?card-media-link[^"]*"[^>]*>/g)].map((match) => match[0]);
+    expect(links).toHaveLength(2);
+    expect(links[0]).toContain('href="/projects/1/assets/101"');
+    expect(links[0]).toContain('data-asset-library-preview-id="101" data-asset-library-preview-project-id="1"');
+    expect(links[1]).toContain('href="/projects/2/assets/202"');
+    expect(links[1]).toContain('data-asset-library-preview-id="202" data-asset-library-preview-project-id="2"');
+    expect(html).not.toContain('data-project-assets-preview-id');
+    // Details links remain plain navigation.
+    if (view === 'grid') {
+      const details = [...html.matchAll(/<a class="asset-details-link[^>]*>/g)].map((match) => match[0]);
+      expect(details).toHaveLength(2);
+      details.forEach((link) => expect(link).not.toContain('data-asset-library-preview-id'));
+    }
+  });
+
+  it.each(['grid', 'list'])('%s comic and missing cards have no image viewer hook', (view) => {
+    const html = renderPage({ assets: [comicAsset, missingAsset], filters: { view }, presentation: { view } });
+    expect(html).not.toContain('data-asset-library-preview-id');
+    expect(html).toContain('href="/projects/1/assets/404"');
+  });
+});
+
 describe('Asset Library supported video presentation', () => {
   const videoAsset = {
     ...alphaAsset,
@@ -1837,6 +1926,7 @@ describe('Asset Library supported video presentation', () => {
     expect(card).not.toMatch(/autoplay|(?<!aria-)\bcontrols\b/);
     expect((card.match(/<video\b/g) || [])).toHaveLength(1);
     expect(card).not.toContain('data-project-assets-preview-id');
+    expect(card).not.toContain('data-asset-library-preview-id');
     // Unmodified clicks open the shared preview dialog; the href keeps library viewer navigation.
     expect(card).toContain('data-asset-video-preview-trigger data-video-src="/projects/1/assets/303/original" data-video-title="clip.mp4"');
     expect(card).toContain('data-asset-video-placeholder hidden');

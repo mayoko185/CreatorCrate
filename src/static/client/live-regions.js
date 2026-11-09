@@ -48,11 +48,14 @@ import {
   enhanceProjectGridSize,
 } from './size-preferences.js';
 import {
-  enhanceProjectAssetsPreviewSlideshow,
-  enhanceSlideshow,
-  SLIDESHOW_SCAFFOLD_SELECTOR,
-  SLIDESHOW_SEQUENCE_SELECTOR,
-} from './slideshow.js';
+  PROJECT_ASSETS_VIEWER_SEQUENCE_SELECTOR,
+  refreshProjectAssetsViewer,
+} from './project-assets-viewer.js';
+import {
+  ASSET_LIBRARY_VIEWER_SEQUENCE_SELECTOR,
+  refreshAssetLibraryViewer,
+} from './asset-library-viewer.js';
+import { refreshReleaseAssetsViewer } from './release-assets-viewer.js';
 import { enhanceNotesCodeBlocks } from './notes-editor.js';
 import { RELEASE_ARCHIVED_EVENT, RELEASE_DELETED_EVENT, RELEASE_EDIT_SAVED_EVENT } from './release-edit-dialog.js';
 import { removeStatusRetry, showStatusRetry } from './status-retry.js';
@@ -1927,6 +1930,9 @@ const releaseAssetsLiveEngine = createLiveRegionEngine({
   onRegionReplaced(state, region) {
     syncReleaseAssetsSelectionFormAction(state);
     reconcileReleaseAssetsSelection(state, region);
+    // Only a current response reaches this point. An open image viewer
+    // reconciles with the installed thumbnails; drafts are already restored.
+    refreshReleaseAssetsViewer(region);
   },
   onLoadError(state) {
     if (state.releaseAssetsSelection) state.releaseAssetsSelection.pendingFormAction = null;
@@ -2370,8 +2376,10 @@ function enhanceProjectAssetsLiveRegion(region) {
   enhanceAppConfirmationControls(region);
   enhanceProjectAssetCategoryFilter(liveRegionDocument(region));
   enhanceDropdowns(liveRegionDocument(region));
-  enhanceSlideshow(liveRegionDocument(region));
-  enhanceProjectAssetsPreviewSlideshow(region);
+  // Image previews and the Slideshow button open the unified viewer through
+  // one delegated binding; a replaced region only reconciles an open viewer
+  // with the sequence onResponseParsed has just copied in.
+  refreshProjectAssetsViewer(region);
 }
 
 const projectAssetsLiveEngine = createLiveRegionEngine({
@@ -2418,10 +2426,8 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
       currentResetForm.setAttribute?.('action', nextResetAction);
     }
 
-    const nextSequence = parsed.querySelector?.(`${SLIDESHOW_SCAFFOLD_SELECTOR} ${SLIDESHOW_SEQUENCE_SELECTOR}`);
-    const currentSequence = state.document.querySelector?.(
-      `${SLIDESHOW_SCAFFOLD_SELECTOR} ${SLIDESHOW_SEQUENCE_SELECTOR}`,
-    );
+    const nextSequence = parsed.querySelector?.(PROJECT_ASSETS_VIEWER_SEQUENCE_SELECTOR);
+    const currentSequence = state.document.querySelector?.(PROJECT_ASSETS_VIEWER_SEQUENCE_SELECTOR);
     if (nextSequence && currentSequence) currentSequence.textContent = nextSequence.textContent || '[]';
 
     const nextDefaultsReturn = parsed.querySelector?.('#project-assets-defaults-form input[name="returnTo"]');
@@ -3024,8 +3030,10 @@ function enhanceAssetLibraryLiveRegion(region) {
   enhanceAssetViewerFilterDisclosures(liveRegionDocument(region));
   enhanceAssetViewerInfoCards(region);
   enhanceDashboardTitleInfoCards(region);
-  enhanceSlideshow(liveRegionDocument(region));
-  enhanceProjectAssetsPreviewSlideshow(region);
+  // Image previews and the Slideshow button open the unified viewer through
+  // one delegated binding; a replaced region only reconciles an open viewer
+  // with the sequence onResponseParsed has just copied in.
+  refreshAssetLibraryViewer(region);
 }
 
 const assetLibraryLiveEngine = createLiveRegionEngine({
@@ -3055,10 +3063,8 @@ const assetLibraryLiveEngine = createLiveRegionEngine({
       currentResetForm.setAttribute?.('action', nextResetAction);
     }
 
-    const nextSequence = parsed.querySelector?.(`${SLIDESHOW_SCAFFOLD_SELECTOR} ${SLIDESHOW_SEQUENCE_SELECTOR}`);
-    const currentSequence = state.document.querySelector?.(
-      `${SLIDESHOW_SCAFFOLD_SELECTOR} ${SLIDESHOW_SEQUENCE_SELECTOR}`,
-    );
+    const nextSequence = parsed.querySelector?.(ASSET_LIBRARY_VIEWER_SEQUENCE_SELECTOR);
+    const currentSequence = state.document.querySelector?.(ASSET_LIBRARY_VIEWER_SEQUENCE_SELECTOR);
     if (nextSequence && currentSequence) currentSequence.textContent = nextSequence.textContent || '[]';
 
     const nextDefaultsReturn = parsed.querySelector?.('#asset-viewer-defaults-form input[name="returnTo"]');

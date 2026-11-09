@@ -8,6 +8,7 @@
 
 {% set page_title = "Projects — " ~ project.title %}
 {% set assetVideoPreview = true %}
+{% set unifiedViewer = true %}
 
 {% block body_class %}refined-page{% endblock %}
 
@@ -203,7 +204,21 @@
                           {{ assetPresentation.videoPlaceholder(thumbnail, 'list', thumbnail.viewerUrl, 'Play video ' ~ thumbnail.filename, { title: thumbnail.filename }) }}
                         </span>
                       {% else %}
-                        <a class="release-thumbnail-link" href="{{ thumbnail.viewerUrl }}" aria-label="View {{ thumbnail.filename }}">
+                        {# An eligible image opens only itself in the unified viewer
+                           (project-detail-viewer.js); the shared macro applies the
+                           eligibility rule and the release names the strip it sits in. #}
+                        {% set viewerAttributes = assetPresentation.viewerTriggerAttributes({
+                          id: thumbnail.assetId,
+                          project_id: thumbnail.projectId,
+                          filename: thumbnail.filename,
+                          is_present: thumbnail.preview and thumbnail.preview.previewable,
+                          preview: thumbnail.preview,
+                          preview_url: thumbnail.previewUrl,
+                          original_url: thumbnail.originalUrl,
+                          preview_revision: thumbnail.revision,
+                          viewerUrl: thumbnail.viewerUrl
+                        }, 'data-project-detail-viewer-trigger') %}
+                        <a class="release-thumbnail-link" href="{{ thumbnail.viewerUrl }}" aria-label="View {{ thumbnail.filename }}"{{ viewerAttributes }}{% if viewerAttributes | trim %} data-viewer-release="{{ r.id }}"{% endif %}>
                           <img class="release-thumbnail-image" src="{{ thumbnail.thumbnailUrl }}" alt="{{ thumbnail.filename }}" loading="lazy" decoding="async">
                         </a>
                       {% endif %}

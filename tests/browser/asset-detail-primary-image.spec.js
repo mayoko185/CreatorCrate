@@ -218,7 +218,7 @@ test('A: sets the Project primary image with one POST, no navigation, and keeps 
   expect(fixture.assetRow().filename).toBe('02-subject.png');
   expect(fixture.savedTagIds()).toEqual([]);
   await expect(page.locator('#asset-edit-dialog [aria-live]')).toHaveCount(1);
-  expect(await page.locator('[aria-live]').count()).toBe(1);
+  expect(await page.locator('[aria-live]:not(#unified-viewer-dialog *)').count()).toBe(1); // B6: the viewer's own regions live in its dialog
   expect(errors).toEqual([]);
 });
 
