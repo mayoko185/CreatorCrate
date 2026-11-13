@@ -212,7 +212,10 @@ describe('shared construction and automatic location', () => {
     expect(built.services[0].deps.admission).toBe(runtime.admission);
     expect(built.services[0].deps.renditions).toBe(runtime.renditions);
     expect(built.services[0].deps.preparationCache).toBe(cache);
-    expect(ctx.comicMediaService).toBe(built.services[0].service);
+    expect(ctx.comicMediaService.getComicManifest).toBe(built.services[0].service.getComicManifest);
+    expect(ctx.comicMediaService.getComicPage).toBe(built.services[0].service.getComicPage);
+    expect(ctx.comicMediaService.startComicCoverSource).toBe(built.services[0].service.startComicCoverSource);
+    expect(ctx.comicMediaService.pauseForMaintenance).not.toBe(built.services[0].service.pauseForMaintenance);
     expect(ctx.app.locals.comicMediaService).toBe(ctx.comicMediaService);
     // Existing image/video services are built as before, beside it.
     expect(ctx.app.locals.mediaService).toBeTruthy();
@@ -266,7 +269,10 @@ describe('shared construction and automatic location', () => {
     // Direct createApp callers keep the service's own default (unchanged convention).
     const app = createApp({ appName: APP_NAME, db: h.db, projectsRoot: h.projectsRoot, previewRoot: path.join(h.appDataRoot, 'previews') },
       { appDataRoot: h.appDataRoot, startGeneratedImageRebuild: false });
-    expect(app.locals.comicMediaService).toBe(built.services[2].service);
+    expect(app.locals.comicMediaService.getComicManifest).toBe(built.services[2].service.getComicManifest);
+    expect(app.locals.comicMediaService.getComicPage).toBe(built.services[2].service.getComicPage);
+    expect(app.locals.comicMediaService.startComicCoverSource).toBe(built.services[2].service.startComicCoverSource);
+    expect(app.locals.comicMediaService.pauseForMaintenance).not.toBe(built.services[2].service.pauseForMaintenance);
     expect(built.services[2].deps.admission).toBeUndefined();
     expect(built.services[2].deps.renditions).toBeUndefined();
     expect(app.locals.mediaService).toBeTruthy();

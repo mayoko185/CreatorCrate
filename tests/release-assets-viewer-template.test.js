@@ -168,7 +168,7 @@ describe('Release Manage Assets page scoping', () => {
   }
 
   const triggerIds = (html) => [...html.matchAll(/data-release-assets-viewer-trigger data-viewer-project="(\d+)" data-viewer-asset="(\d+)"/g)]
-    .map((match) => match[2]).sort();
+    .map((match) => match[2]).filter((id, index, all) => all.indexOf(id) === index).sort();
 
   it('marks only eligible image thumbnails in Grid and List', async () => {
     const f = await fixture();
@@ -212,5 +212,118 @@ describe('Release Manage Assets page scoping', () => {
     const projectAssets = (await agent.get(`/projects/${f.projectId}/assets`).expect(200)).text;
     expect(projectAssets).not.toContain(TRIGGER);
     expect(projectAssets).toContain('data-project-assets-preview-id');
+  });
+});
+
+// C2c: Release Manage Assets opts the shared partial's Read comic link in for
+// every eligible candidate comic (CBZ, CBR, CB7), selected or not, with its
+// own host-scoped attribute. Membership, Role and Save controls render as
+// before; missing comics keep their notice.
+describe('Release Manage Assets Read comic triggers (C2c)', () => {
+  const COMIC = 'data-release-assets-comic-trigger';
+  let db;
+  let app;
+  let agent;
+  let tmpDir;
+  let projectsRoot;
+
+  beforeEach(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-release-assets-comic-'));
+    projectsRoot = path.join(tmpDir, 'projects');
+    const appDataRoot = path.join(tmpDir, 'app');
+    fs.mkdirSync(projectsRoot, { recursive: true });
+    fs.mkdirSync(appDataRoot, { recursive: true });
+    db = openDatabase(path.join(tmpDir, 'test.db'));
+    runMigrations(db, MIGRATIONS_DIR);
+    const { csrfPepper } = ensureAuthEnablement(appDataRoot);
+    app = createApp({ appName: 'CreatorCrate', db, projectsRoot }, { appDataRoot, authState: { csrfPepper } });
+    ({ agent } = await getDisabledModeCsrf(app, appDataRoot));
+  });
+
+  afterEach(() => {
+    closeDatabase(db);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // A selected CBZ, an unselected CBR, an unselected CB7, a selected image and
+  // a selected CBZ that goes missing.
+  async function fixture() {
+    const project = app.locals.projectService.create({ title: 'Comic Scope', status: 'tbd' });
+    const dir = path.join(projectsRoot, project.project_dir);
+    fs.mkdirSync(dir, { recursive: true });
+    await sharp({ create: { width: 20, height: 20, channels: 3, background: { r: 1, g: 2, b: 3 } } }).png()
+      .toFile(path.join(dir, '04-a.png'));
+    for (const name of ['01-zip.cbz', '02-rar.cbr', '03-seven.cb7', '05-gone.cbz']) {
+      fs.writeFileSync(path.join(dir, name), Buffer.from(`comic ${name}`));
+    }
+    app.locals.assetScanner.scanProjectAssets(project.id);
+    const ids = Object.fromEntries(db.prepare('SELECT filename, id FROM assets WHERE project_id = ?')
+      .all(project.id).map((asset) => [asset.filename, String(asset.id)]));
+    const release = createReleaseService({ db }).createReleaseWithSelectedAssets(project.id, { title: 'Comic Scope Release' },
+      [Number(ids['01-zip.cbz']), Number(ids['04-a.png']), Number(ids['05-gone.cbz'])]);
+    fs.rmSync(path.join(dir, '05-gone.cbz'));
+    app.locals.assetScanner.scanProjectAssets(project.id);
+    return { projectId: String(project.id), releaseId: release.id, ids };
+  }
+
+  const comicIds = (html) => [...html.matchAll(new RegExp(`${COMIC} data-comic-project="(\\d+)" data-comic-asset="(\\d+)"`, 'g'))]
+    .map((match) => match[2]).filter((id, index, all) => all.indexOf(id) === index).sort();
+
+  function comicTag(html, assetId) {
+    const tag = html.match(new RegExp(`<a [^>]*${COMIC} [^>]*data-comic-asset="${assetId}"[^>]*>`))?.[0];
+    if (!tag) return null;
+    return Object.fromEntries([...tag.matchAll(/([\w-]+)(?:="([^"]*)")?/g)].slice(1).map((m) => [m[1], m[2] ?? '']));
+  }
+
+  it('offers Read comic for selected and unselected CBZ/CBR/CB7 candidates in Grid and List', async () => {
+    const f = await fixture();
+    const readable = ['01-zip.cbz', '02-rar.cbr', '03-seven.cb7'];
+    for (const view of ['grid', 'list']) {
+      const html = (await agent.get(`/releases/${f.releaseId}/assets?selection=all&view=${view}&pageSize=all`).expect(200)).text;
+      const region = html.match(/<section data-release-assets-live-region>[\s\S]*$/)?.[0] || '';
+      expect(comicIds(html)).toEqual(readable.map((name) => f.ids[name]).sort());
+      expect(comicIds(region)).toEqual(comicIds(html));
+      for (const [name, format] of [['01-zip.cbz', 'CBZ'], ['02-rar.cbr', 'CBR'], ['03-seven.cb7', 'CB7']]) {
+        const id = f.ids[name];
+        const attributes = comicTag(html, id);
+        expect(attributes).toMatchObject({
+          href: `/projects/${f.projectId}/assets/${id}`,
+          'data-comic-project': f.projectId,
+          'data-comic-asset': id,
+          'data-comic-filename': name,
+          'data-comic-project-name': 'Comic Scope',
+          'data-comic-details-url': `/projects/${f.projectId}/assets/${id}`,
+          'aria-label': `Read comic ${name}`,
+        });
+        expect(attributes['data-comic-source-revision']).toMatch(/\S/);
+        expect(attributes).not.toHaveProperty('data-release-assets-viewer-trigger');
+        expect(html).not.toContain(`${format} comic</span>`);
+        expect(html).not.toContain('data-comic-thumbnail=');
+        expect(html).toContain(`src="/projects/${f.projectId}/assets/${id}/preview?v=`);
+        expect(html).toContain('loading="lazy"');
+      }
+      // Membership controls are unchanged: the selected comic is checked, the
+      // unselected ones are not, and no control or card carries the trigger.
+      expect(html).toMatch(new RegExp(`id="release-asset-select-${f.ids['01-zip.cbz']}"[^>]*checked`));
+      expect(html).not.toMatch(new RegExp(`id="release-asset-select-${f.ids['02-rar.cbr']}"[^>]*checked`));
+      expect(html).not.toMatch(new RegExp(`<(input|select|label|form|article|button)[^>]*${COMIC}`));
+      // The missing comic keeps its notice and has no reader.
+      expect(comicTag(html, f.ids['05-gone.cbz'])).toBeNull();
+      // Images keep their own trigger; comic endpoints stay inert until loading.
+      expect(html.match(/data-release-assets-viewer-trigger data-viewer-project/g)).toHaveLength(1);
+      expect(html).not.toMatch(/<img[^>]+src=[^>]*\/comic|\/manifest|\/pages\//);
+      expect(html).not.toContain('data-release-detail-comic-trigger');
+      expect(html).not.toContain('data-project-assets-comic-trigger');
+    }
+  });
+
+  it('keeps Read comic on a published workspace without enabling edits', async () => {
+    const f = await fixture();
+    db.prepare("UPDATE releases SET published_date = '2026-01-02' WHERE id = ?").run(f.releaseId);
+    const html = (await agent.get(`/releases/${f.releaseId}/assets?selection=all&pageSize=all`).expect(200)).text;
+    expect(html).toContain('Asset selections are locked and read-only.');
+    expect(html).not.toContain('name="selectedAssetIds"');
+    // A read-only workspace lists only the saved selection: its readable comic.
+    expect(comicIds(html)).toEqual([f.ids['01-zip.cbz']]);
   });
 });

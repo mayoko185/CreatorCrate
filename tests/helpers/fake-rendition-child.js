@@ -1,8 +1,8 @@
-// F1a test helper: a misbehaving stand-in for comic-rendition-child.js, launched by
-// createComicRenditionSupervisor({ childModule, childArgs: [mode] }). Each mode breaks one rule
-// of the parent/child protocol. It never renders anything. F1b adds 'answer' (a well-behaved
-// child that answers its job at once with a valid result, and anything sent to it while idle
-// too) and two broken spares: 'garbage-ready' and 'ready-then-exit' <ms>.
+import { projectImageGeneratedOutput } from '../../src/services/project-image-policy.js';
+
+// Disposable protocol fixture launched with childArgs: [mode]. Derivative modes encode real
+// image bytes, then vary result identity, payload or termination. Reader and spare modes
+// exercise handshake, cancellation and malformed-message handling without native rendering.
 const mode = process.argv[2];
 const valid = { type: 'result', ok: true, unchanged: true, mimeType: 'image/png', width: 48, height: 64 };
 
@@ -11,7 +11,46 @@ function spin() {
   for (;;) { /* hold the CPU until killed */ }
 }
 
-process.on('message', (job) => {
+process.on('message', async (job) => {
+  if (mode.startsWith('derivative-')) {
+    const sharp = (await import('sharp')).default;
+    const output = projectImageGeneratedOutput(job.policy, false)[job.kind];
+    const buffer = await sharp({ create: { width: 48, height: 64, channels: 3, background: 'red' } })
+      [output.format]().toBuffer();
+    const result = { type: 'result', ok: true, purpose: job.purpose, jobId: job.jobId,
+      buffer, width: 48, height: 64, animated: false, frameCount: 1,
+      format: output.format, filename: `${job.kind}.${output.format}` };
+    if (mode === 'derivative-identity') result.jobId = '0'.repeat(36);
+    if (mode === 'derivative-purpose') result.purpose = 'thumbnail';
+    if (mode === 'derivative-extra') result.path = 'C:/secret.png';
+    if (mode === 'derivative-format') result.format = 'jpeg';
+    if (mode === 'derivative-dimensions') result.width = 49;
+    if (mode === 'derivative-animation') result.animated = true;
+    if (mode === 'derivative-malformed') result.buffer = Buffer.from('not an image');
+    if (mode === 'derivative-trailing') result.buffer = Buffer.concat([buffer, Buffer.from('trailing')]);
+    if (mode === 'derivative-oversized') result.buffer = Buffer.alloc(job.limits.maxOutputBytes + 1);
+    if (mode === 'derivative-corrupt-pixels') {
+      result.buffer = Buffer.from(buffer);
+      // Keep the PNG catalogue/header valid but invalidate its compressed pixel stream.
+      const offset = result.buffer.indexOf(Buffer.from('IDAT'));
+      result.buffer.fill(0, offset + 4, offset + 12);
+    }
+    process.send({ type: 'phase', phase: 'metadata' });
+    process.send({ type: 'phase', phase: 'stats' });
+    process.send({ type: 'phase', phase: 'convert' });
+    if (mode === 'derivative-hang') return;
+    if (mode === 'derivative-zero-no-result') { process.exit(0); return; }
+    if (mode === 'derivative-disconnect') { process.disconnect(); return; }
+    process.send(result, () => {
+      if (mode === 'derivative-duplicate') process.send(result);
+      if (mode === 'derivative-protocol-error') process.send({ type: 'unexpected' });
+      if (mode === 'derivative-stall') return;
+      if (mode === 'derivative-failed-exit') process.exit(3);
+      else if (mode === 'derivative-delayed-exit') setTimeout(() => process.disconnect(), 250);
+      else process.disconnect();
+    });
+    return;
+  }
   switch (mode) {
     case 'garbage':
       process.send('not a message');

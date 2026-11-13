@@ -86,7 +86,9 @@
     assetInformation: true,
     detailsPresenceStatus: true,
     hideBody: true,
-    viewerTrigger: 'data-release-assets-viewer-trigger'
+    projectName: project.title, viewerTrigger: 'data-release-assets-viewer-trigger',
+    comicCover: true,
+    comicTrigger: 'data-release-assets-comic-trigger'
   }) %}
     {% if slot == 'top-start' %}
       {{ releaseAssetSelectionControl(asset, readOnly) }}
@@ -119,7 +121,9 @@
     filenameLink: false,
     selected: asset.releaseContext.selected,
     selectable: not readOnly and (asset.is_present or asset.releaseContext.selected),
-    viewerTrigger: 'data-release-assets-viewer-trigger'
+    projectName: project.title, viewerTrigger: 'data-release-assets-viewer-trigger',
+    comicCover: true,
+    comicTrigger: 'data-release-assets-comic-trigger'
   }) %}
     {% if slot == 'select' %}
       {{ releaseAssetSelectionControl(asset, readOnly) }}

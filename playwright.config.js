@@ -15,6 +15,8 @@ export default defineConfig({
   reporter: 'list',
   preserveOutput: 'failures-only',
   use: {
+    // Native tab startup is not reliably reported by Chromium headless shell.
+    channel: 'chromium',
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     video: 'off',

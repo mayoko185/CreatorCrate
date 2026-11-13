@@ -1936,16 +1936,24 @@ extension alone, so previously indexed CBR files with generic
 repairs that metadata. Comic classification grants no image-only or
 video-only processing eligibility. Archive validation and page reading belong
 to the comic media backend, not ordinary asset scanning. Comics never enter the
-image viewer or its slideshows (§16, comic seam).
+ordinary-image sources or slideshows; the shared viewer has a separate comic
+reader source (§16).
 
-CreatorCrate-generated archives remain owned through `generated_artifacts`.
-During reconciliation, a discovered path owned by a generated-artifact row
-for the project is not inserted as a new ordinary asset record, preventing
-generated CBZ/CB7 archives from acquiring duplicate asset ownership. Matching
-uses the processing planner's platform path key. An asset row already indexed
-at such a path still receives ordinary reconciliation; it is not silently
-dropped or marked missing while its file is present. Generated-artifact
-retention and cleanup remain separate from asset reconciliation.
+Supported CreatorCrate-generated CBZ, CBR and CB7 comics enter the ordinary
+asset catalogue through normal scanning, even when `generated_artifacts`
+already records the path. Catalogue visibility grants no automated replacement
+authority: artifact provenance, project ownership, destination identity and
+stored-hash checks remain authoritative. Publication atomically synchronizes
+source metadata and advances the source generation of an already indexed
+generated comic in the artifact update's database transaction. This is not
+an atomic filesystem/database operation: existing staged publication,
+identity proofs and rollback own file safety. Discovery preserves the
+artifact's ownership/provenance and the catalogue row's stable ID; the row
+does not become another generated-output owner. Other new generated-artifact
+paths remain excluded, using the processing planner's platform path key.
+Existing asset rows at artifact-owned paths still reconcile normally, including
+missing/restored state. Generated-artifact retention and cleanup remain
+separate from asset reconciliation.
 
 Assets are soft-deleted: a vanished file is marked *missing*, not removed,
 so that a temporarily unmounted share or a moved file does not destroy tags,
@@ -2032,7 +2040,7 @@ different projects. Its default capacity is `availableParallelism()`, clamped
 to a minimum of 1 and a maximum of 4; every batch draws from that same
 application-wide capacity rather than creating an independent pool.
 
-Project thumbnail/preview generation shares this admission boundary. The
+Ordinary-image thumbnail/preview generation shares this admission boundary. The
 preview service acquires one permit (`run`) only after it holds the per-asset
 generation lock and has confirmed generation is still needed, and holds it
 for the whole staged attempt, including selective reuse copies and the bounded
@@ -2042,7 +2050,8 @@ take a permit, so cold browser previews, Book export's current-preview request,
 and rebuild generation queue fairly with conversion work while cached browsing
 stays outside the queue. The pool is not reentrant: no caller may hold a
 permit while calling into preview generation. Lock order is always per-asset
-lock, then processing permit.
+lock, then processing permit. Comic generation uses that same pool; warm
+comic reads retain archive-source admission without a generation permit (§12).
 
 Only selected staging and preparation work is bounded concurrently. Convert
 stages outputs per asset. Watermark stages per source, keeping all outputs for
@@ -2300,12 +2309,160 @@ serving resolves (below); the derivative bytes stay on disk. Deleting the
 whole preview root is always safe: the affected pairs fail byte validation and
 are regenerated.
 
+**Comic derivative sources.** Indexed CBZ, CBR (RAR4/RAR5), and CB7 assets
+remain comics: they do not become ordinary images or Image Slideshow members.
+Their card covers use the same Preview Service, image settings, encoder,
+processing pool, derivative storage, publication journal and media routes as
+ordinary generated images. The original Comic Reader is a separate consumer
+of archive pages; generated covers never replace those pages.
+
+Application construction supplies Preview Service with a lazy provider of the
+graph's one Comic Media Service. Its internal
+`startComicCoverSource(projectId, assetId, { signal?, deadlineMs? }, work)`
+authorizes the indexed project/asset and current comic format through the
+existing original-source descriptor, then safely opens the contained source
+inside existing comic admission. It uses `cbz-page-reader.js` or
+`cbr-cb7-page-reader.js` to inspect the canonical catalogue. A scoped, memoized
+`read()` extracts original image bytes of page position 1 only when generation
+needs them, never the first physical member or a later decodable page. Valid
+warm hits prove the full canonical input fingerprint without reading a page. Natural path ordering, nested paths, junk exclusion,
+member identity and the full catalogue remain the readers' authority. No
+extracted page file or image asset is created. Solid extraction can traverse a
+compressed prefix; cover generation never schedules whole-archive preparation.
+An existing verified preparation may supply original bytes under a released
+lease and fresh catalogue proof.
+
+The scoped input exposes canonical page identity, lazy original `read()`,
+sequential `encode(kind, policy)` and
+`acceptCurrent(callback)`. It exposes no file handle or arbitrary member/path
+selector. Full comic revisions bind indexed source generation, opened-file
+identity and the ordered catalogue; the indexed 16-hex Reader hint and the
+32-hex manifest revision are distinct from generated derivative revisions.
+Before synchronous acceptance, the adapter re-lists the pinned catalogue,
+checks source identity, closes the descriptor, and rechecks indexed ownership,
+presence, generation, canonical format, path, lifetime and physical identity.
+
+`image-derivative.js` is the maintained derivative encoder used by ordinary
+images and supervised comic jobs. The existing disposable rendition child
+validates the original first frame and invokes that encoder with server-resolved
+output settings: auto-orientation, inside fit, preserved aspect ratio, no
+enlargement and metadata stripping. Comic covers are static frame 0 for both
+outputs; ordinary animated Preview behavior remains unchanged. The supervisor
+uses the retained reader IPC channel, validates job/result identity and decoded
+output, and accepts a clean-exit result arriving between child exit and channel
+close. Nonzero exit, malformed/missing/duplicate results, cancellation, deadline
+and shutdown still refuse; native retirement requires confirmed close.
+
+The existing `images.thumbnail.*` and `images.preview.*` settings are
+resolved separately by `project-image-settings-service.js` and
+`project-image-policy.js`. Thumbnail defaults are WebP, quality 80, maximum
+256px; Preview defaults are WebP, quality 90, maximum 1600px. Supported generated
+formats are WebP and PNG. Thumbnail dimensions range from 64–512px and Preview
+from 320–2560px; WebP quality ranges from 1–95. PNG is lossless and does not use
+the WebP quality field. Comic Preview=original uses the existing non-inline
+generated fallback (WebP, quality 90, maximum 1600px), never archive bytes or an
+invented Original image URL. These are code defaults/ranges, not assertions
+about a user's saved settings. There is no comic-specific quality setting.
+
+Both image and comic requests resolve through `getDerivative()`,
+`publishedForPresentation()` and `probeCacheEntry()` in Preview Service.
+`committedPublication()` resolves the existing SQLite publication, not a second
+cover cache. A valid warm comic hit proves the canonical catalogue/input,
+current effective policy and graph authority, but performs no first-page read,
+encode, native rendition job or generation-permit admission.
+
+A miss uses the existing `withLock()` per-project/asset lock and
+`generateAndPublish()` -> `processingPool.run()` ->
+`generateAndPublishAdmitted()` lifecycle. Generation queues in the same FIFO
+pool as ordinary image work before archive admission or original-byte retention;
+there is no separate cover scheduler. The default shared capacity is
+max(1, min(availableParallelism, 4)). Compatible comic callers coalesce under
+that lock, bounded by comic admission's active plus foreground-queue capacity
+(35 with defaults). Each caller retains independent deadline/cancellation and
+current-source authority; one departure preserves surviving interests, while
+last departure aborts the worker. Warm catalogue proof still uses the existing
+archive-source admission and can refuse when that boundary is unavailable.
+
+The operation handle separates `result` (outcome) from `retired` (confirmed
+native/source cleanup and admission retirement). Preview Service captures and
+awaits the exact `retired` Promise before releasing its processing permit,
+including when `result` rejects. A failed source close retains its original
+descriptor, admission and graph ownership; explicit maintenance/stop retries
+cleanup. Unconfirmed closure remains pending rather than reporting success.
+`graphAuthority.isLive()` observes the originating graph generation after
+retirement: pause/stop invalidates it permanently and resume cannot revive it.
+It proves graph lifetime only, not current source/policy or resource closure.
+Worker-owned graph tokens are released with their interests and at worker
+completion; delivered descriptors retain only their necessary generation and
+caller proofs, independently of caller history.
+
+Within `generateAndPublishAdmitted()`, `readSourceForDerivative()` obtains
+the scoped canonical original; `generateDerivative()` is called directly for
+ordinary images and by `comic-rendition-child.js` for admitted comic input. Both
+use `projectImageGeneratedOutput()`, `encodeImageDerivative()` and
+`buildDerivativePipeline()`. `findReusableDerivatives()` and
+`stageReusedDerivative()` copy/validate unchanged kinds, so a one-kind policy
+change does not re-encode its unchanged counterpart. Comic generation stages
+the same complete Thumbnail+Preview pair described below. Its server-generated SHA-256 input fingerprint binds
+a version tag,
+canonical archive format, full manifest revision, page-1 entry index/path and
+frame 0. Migration `047_add_generated_image_input_fingerprint.sql` adds only
+nullable `source_input_fingerprint` to the existing publication table;
+`meta.json` records `source.inputFingerprint`. Ordinary publications retain
+NULL/absent compatibility and unchanged legacy revision identities. The same
+per-asset lock, staging/pointer steps, conditional SQLite intent/finalization,
+corrupt-cache repair and restore reset own these derivatives. Comic candidate
+publication and intent recovery require fresh input, policy and graph authority;
+an obsolete candidate is not relabelled with a current fingerprint. Rebuild
+traversal includes supported present comics without changing ordinary-image
+classification or legacy image backfill. Listing/scanning does not eagerly
+extract every cover, and derivative files remain separate from indexed assets
+and generated-artifact provenance (§10).
+
+Both `/projects/:p/assets/:a/thumbnail` and `/projects/:p/assets/:a/preview`
+serve actual PNG/WebP MIME through the normal authenticated media handlers.
+`prepareDerivativeResponse()` resolves the requested derivative once, opens it
+with `openDerivativeStream()`, and uses the ordinary
+`derivativeCacheControl()` and `sendPreparedMediaResponse()` path. Exact
+server-generated derivative revisions may receive private immutable caching
+and an ETag after current authorization; absent/inexact source/policy hints
+receive private revalidation. A card's `v` is only a presentation hint, not
+proof or authorization. Comic requests accept only that existing `v` query;
+page/member/path/policy selectors are refused. `nosniff` remains enforced.
+The outer public Preview Promise performs a synchronous final authority fence before plain-value fulfillment.
+Media Service repeats source/policy/publication/graph proof after stream setup;
+the route repeats it immediately before synchronous header commitment. Warm
+cache reuse does not bypass these fences. Source withdrawal, format/generation
+change, effective pair-policy change, cancellation/deadline and graph pause/stop
+refuse stale precommit success. Disconnect/refusal cleans up abandoned streams.
+These checks cannot revoke bytes after HTTP streaming has already committed or
+provide an immutable external filesystem snapshot.
+
+Existing refusal bounds include 2 GiB archives, 10,000 entries, 5,000 pages,
+1,024-character member paths, 64 MiB members, 4 GiB declared total output,
+65,535px input edges and 100 million input pixels; CBZ also limits declared
+compression ratio to 1,000. Native derivative output is limited to 32 MiB and
+25 million pixels, with existing 30-second operation deadlines and confirmed
+retirement ownership.
+Default comic admission allows 3 active operations, 2 decoders, 32 foreground
+waiters, a 15-second queue deadline and a 1,344 MiB estimated budget. Those
+estimates, bounded IPC validation and Sharp limits are not an OS RSS cap or a
+quota against a compromised bundled child. Oversized/invalid output is refused,
+not silently encoded at lower quality. HTTP maps existing invalid/missing/stale/
+unsupported/unreadable/busy outcomes to controlled 400/404/409/415/422/503 errors.
+
+The former fixed 512px/quality-90 cover renderer, encoded-cover LRU/TTL,
+independent queue/service and dedicated comic-thumbnail HTTP endpoint are
+removed. Retained comic admission, preparation and native Reader/source
+operations are required security/lifetime boundaries, not a duplicate cover
+backend.
+
 **Normalized publication state (the runtime authority).** Migration
 `041_add_generated_image_publications.sql` adds three SQLite tables that are the
 normalized runtime representation of a published pair:
 `generated_image_publications` (one committed publication per asset: revision
-directory basename, revision token, versions, source tuple and generation, and
-the optional legacy fields — policy fingerprint, animation, frame count, Krita
+directory basename, revision token, versions, source tuple and generation,
+nullable comic source input fingerprint, and the optional legacy fields — policy fingerprint, animation, frame count, Krita
 preview quality, identity version — kept `NULL` when absent rather than
 defaulted), `generated_image_derivatives` (exactly one `thumbnail` and one
 `preview` row: format, dimensions, byte size, optional generation identity),
@@ -2436,8 +2593,9 @@ generated-image consumer resolves the committed SQLite publication and never
 inspects `current.json` or a revision-local `meta.json` — no read, open,
 stat/lstat, access, or path inspection of either file, on the first request
 after an ordinary restart or on any later one. The consumers are the
-pre-lock presentation read (`getThumbnail`, `getPreview`, including
-prior-policy presentation), the locked serving path and its post-admission
+ordinary-image pre-lock presentation read (`getThumbnail`, `getPreview`,
+including prior-policy presentation), comic worker probes after admission,
+the locked serving path and its post-admission
 fresh recheck, `ensureCurrentPreview` (Book export), automatic
 `ensureTargetGeneration` probes, and selective derivative reuse discovery.
 There is no in-memory publication cache, TTL, watcher, or pointer stat check:
@@ -2457,22 +2615,36 @@ each request reads SQLite.
 - *Actual bytes stay filesystem-validated.* Both derivative files must exist
   as regular, non-symlinked files under the preview root (complete pair); the
   requested derivative is size-, decode-, dimension-, and animation-validated
-  (both, for prior-policy); then the existing source proof and final
+  (both, for ordinary prior-policy presentation); then the existing source proof and final
   DB/policy recheck run before the pair is served. SQLite replaces the JSON
   lookup, not byte validation, and source freshness remains request-time
   filesystem authority (source identity, source generation, animation
   classification, same-tuple replacement handling). JSON-only path checks
   are gone from this path.
-- *Pending intents.* Readers never consult the intent table. While committed
-  generation A has an unresolved candidate B — during staging, promotion,
-  after `current.json` already names B, while finalization is delayed or has
-  failed, and while recovery inspects B — requests keep evaluating A and serve
-  it when A passes its own checks, without waiting on the asset lock. The
-  runtime switch to B is the finalization transaction; a same-token force
-  rebuild is distinguished by directory name. A request already holding A
-  finishes under its own validation. If A itself is no longer servable (stale
-  source or policy), the request's republication meets the unresolved intent
-  and is refused as a retryable journal error (503) while recovery owns it.
+- *Pending intents.* Runtime readers do not use intent rows as delivery
+  authority. Ordinary-image requests keep evaluating committed generation A
+  while candidate B is unresolved — during staging, promotion, delayed/failed
+  finalization or recovery, even after `current.json` names B — and serve A
+  without waiting on the asset lock when A passes its own checks. A request
+  already holding A finishes under its own validation. If A is no longer
+  servable, republication meets the unresolved intent and refuses with a
+  retryable journal error (503) while recovery owns it.
+
+  Comic requests check the shared per-asset lock before probing a publication.
+  Non-force callers can join an unsealed comic worker with the same indexed
+  source identity and output policy, within the caller-interest bound; this
+  includes a compatible active force rebuild. They wait for that worker rather
+  than immediately receiving A. Incompatible/sealed or other lock ownership
+  and caller-interest limits can refuse busy (503); generation capacity uses
+  the ordinary processing queue.
+  An identity mismatch also aborts the obsolete comic worker. B becomes current
+  only at the finalization transaction; a same-token force rebuild is distinct
+  by directory name. Comic publication requires closed generation input and
+  fresh source proof; each surviving caller then revalidates its canonical
+  source, current policy, committed complete pair and graph authority before
+  settlement, with final delivery fences still applied. Cancellation/deadline
+  removes that caller; last departure aborts the worker. Failed or obsolete work
+  refuses rather than guaranteeing an old-pair fallback or uninterrupted covers.
 - *Missing or damaged state.* A missing committed row (a never-published
   asset, a restore reset, a deleted row) or a committed pair whose bytes are
   missing, wrong-sized, undecodable, or unsafe (including a deleted preview
@@ -2557,14 +2729,14 @@ replacement that no request observes against a pinned identity (for example
 while the published pair is already fresh) is still not detected; content
 hashing remains deferred. Managed Book covers retain their fixed WebP policy and revision identity.
 The project media route forwards the derivative service's path and MIME.
-Ordinary presentation requests (not `ensureCurrent` callers such as Book
+Ordinary-image presentation requests (not `ensureCurrent` callers such as Book
 export) read the published pair before taking the generation lock. A pair that
 is fresh for the current source and policy authority is served as-is, exactly
 as the locked path would serve it, so browsing never waits behind an in-flight
 generation of that asset, including a manual force rebuild that is only
 replacing it; published revision directories are immutable and the committed
 SQLite publication switches only at finalization. Absent, stale,
-source-mismatched, or corrupt pairs still queue on the lock. For a policy-only mismatch, presentation may likewise read
+source-mismatched, or corrupt pairs still queue on the lock. For an ordinary-image policy-only mismatch, presentation may likewise read
 the prior published pair before taking the generation lock. Both files, metadata, cache schema, source
 tuple, source descriptor/path identity, and animation authority must remain
 valid. The service reports the pair's actual revision and `prior-policy`
@@ -2599,7 +2771,8 @@ Image Settings saves persist an `images.project_rebuild.v1` JSON record in
 application-owned rebuild runner after commit. The record contains a version,
 run ID, mode, target policy, phase, eligible asset count and upper ID bound,
 progress counts, a bounded failure sample, and a monotonic asset-ID cursor.
-The runner reads present, previewable indexed project assets in keyset pages;
+The runner reads present indexed derivative sources (ordinary previewable
+images and supported comics) in keyset pages;
 archived projects remain eligible, while managed media is outside this query.
 It keeps a bounded window of up to `B = C > 1 ? min(C - 1, 2) : 1` logical
 assets in flight, where `C` is the shared processing pool's capacity (the runner only
@@ -2669,14 +2842,17 @@ Settings renders the durable rebuild state on the Defaults page and polls its
 authenticated status endpoint only while a run is queued or running. Successful
 image-setting saves and manual rebuild requests refresh that state immediately;
 the client ignores responses started before newer save or status requests.
-While rebuild runs, normal media requests may use the validated prior-policy
-pair described above; a cold asset still generates individually on demand.
+While rebuild runs, ordinary-image requests may use the validated prior-policy
+pair described above. Comic requests follow the lock/join/refusal behavior under
+Pending intents and require current source/policy authority. A cold asset can
+generate on demand subject to shared admission.
 The shared asset presentation model selects the existing authenticated
 `/original` URL for present PNG, JPEG, WebP, and GIF assets when Preview is
 Original; Krita keeps the generated `/preview` fallback. Generated URLs retain
 the policy-aware revision, while `/original` uses its existing no-store response.
-The unified image viewer (§16) fits the selected normal preview URL, and its
-Original Size loads the separate source URL on demand at natural size.
+The unified image viewer (§16) instead starts with the explicit optimized
+rendition, independently of ordinary card preview policy. Its source-quality
+control selects Original or Optimized; Actual Size changes only view scale.
 
 Supported browser video is WebM (`video/webm`) and MP4 (`video/mp4`), decided
 by `classifySupportedVideo()` in
@@ -3627,10 +3803,10 @@ creates observe its frozen change records (`open`, `navigate`, `update`,
 |---|---|
 | [`viewer-sequence.js`](src/static/client/viewer-sequence.js) | Pure data model: normalizes server entries into frozen sources of items keyed by project + asset (+ optional page position), never by index or filename; `single` vs `sequence` mode; explicit `wrap` and `slideshow` flags; initial selection, stepping, skipping unavailable items, and live-refresh reconciliation (`reconcileViewerSource`). Revisions are opaque strings and URLs are server-provided root-relative paths, compared by equality only. |
 | [`unified-viewer.js`](src/static/client/unified-viewer.js) | Dialog sessions: `open`, `close`, `next`/`previous`/`select`, session-bound `update`, header context (title, source label, View details link), Previous/position/Next, Arrow-key navigation, and replaced-opener focus fallback. It never fetches, renders media, schedules timers or reads page thumbnails, selection or filters. |
-| [`viewer-content.js`](src/static/client/viewer-content.js) | Media for the current item only: `fetch` with a fresh token and `AbortController` per load, HTTP status and `image/{jpeg,png,webp,gif}` content-type validation, decode, then an object URL in the media region; loading/failed/unavailable status with Retry; on-demand Original Size (decoded before it replaces the preview, which stays on failure); at most one neighbour preload. A result arriving under a stale token is released, not installed; every object URL, request and image it created is released on navigation, replacement or close. |
-| [`viewer-viewport.js`](src/static/client/viewer-viewport.js) | Geometry of the one shown image: contained, centred Fit (never upscaled past 1:1), button zoom, mouse/pen pan and Shift+Arrow pan bounded so no empty gap opens, re-measured on resize. Touch is left to the browser. |
-| [`viewer-playback.js`](src/static/client/viewer-playback.js) | Explicit slideshows only (`slideshow` source with at least two available items): Play/Pause and a 2/4/6 s speed dropdown (4 s default), autoplay on open unless reduced motion is preferred, at most one session-, item- and generation-bound advancement timer that starts only once the slide is loaded. Manual navigation, a failed or unavailable item, zoom, Original Size, a hidden tab and close pause it; nothing resumes it except Play. It advances through the controller's own `next`. |
-| [`viewer-fullscreen.js`](src/static/client/viewer-fullscreen.js) | Native fullscreen on the dialog's inner card (`[data-unified-viewer-card]`, since a `<dialog>` cannot itself be fullscreen) with no re-creation or reload; Escape exits fullscreen before the dialog closes (an open dropdown still takes Escape first); close, destroy and late grants exit or release fullscreen; deferred focus return once fullscreen has gone; fullscreen-only idle hiding of header, context bar and controls. |
+| [`viewer-content.js`](src/static/client/viewer-content.js) | Media for the current item only: `fetch` with a fresh token and `AbortController` per load, HTTP status and `image/{jpeg,png,webp,gif}` content-type validation, decode, then an object URL in the media region; loading/failed/unavailable status with Retry; session-local Original/Optimized quality selection (decoded before atomic replacement, retaining current media on failure); at most one neighbour preload. A result arriving under a stale token is released, not installed; every object URL, request and image it created is released on navigation, replacement or close. |
+| [`viewer-viewport.js`](src/static/client/viewer-viewport.js) | Geometry of the shown image or gapless comic spread: contained, centred Fit (never upscaled past 1:1), button zoom, mouse/pen pan and Shift+Arrow pan bounded so no empty gap opens, re-measured on resize. Touch is left to the browser. |
+| [`viewer-playback.js`](src/static/client/viewer-playback.js) | Explicit slideshows only (`slideshow` source with at least two available items): Play/Pause and a 2/4/6 s speed dropdown (4 s default), autoplay on open unless reduced motion is preferred, at most one session-, item- and generation-bound advancement timer that starts only once the slide is loaded. Manual navigation, a failed or unavailable item, zoom, Actual Size, a hidden tab and close pause it; nothing resumes these pauses except Play. A pending source-quality replacement suspends the countdown while keeping playing/paused state and speed; settlement starts one fresh interval. It advances through the controller's own `next`. |
+| [`viewer-fullscreen.js`](src/static/client/viewer-fullscreen.js) | Native fullscreen on the dialog's inner card (`[data-unified-viewer-card]`, since a `<dialog>` cannot itself be fullscreen) with no re-creation or reload; Escape exits fullscreen before the dialog closes (an open dropdown still takes Escape first); close, destroy and late grants exit or release fullscreen; deferred focus return once fullscreen has gone; fullscreen-only idle hiding of overlay close, context and navigation controls without changing media Fit geometry. |
 
 *Host adapters.* Each host module binds one delegated document click handler
 (guarded by a per-document bound key), acts only on an unmodified primary
@@ -3638,18 +3814,20 @@ click on its own trigger attribute, builds a B1 source from server-rendered
 data, and opens it with the clicked element as opener plus a host fallback
 focus target. Modified and middle clicks keep the link's own navigation;
 Details links, checkboxes, Role controls, info cards, release actions and
-video tiles are never triggers. Videos, comics, missing and unsupported files
-get no trigger: the server emits viewer attributes only for a present,
+video tiles are never image triggers. Missing and unsupported files get no
+image trigger: the server emits image viewer attributes only for a present,
 previewable image with a server-built preview URL (`viewerTriggerAttributes`
 in [`asset-presentation.njk`](src/views/partials/asset-presentation.njk)).
+Comics use separate host-specific reader attributes on their existing named
+Details links; their first-page thumbnails do not grant image eligibility.
 
 | Host (page) | Module | Entry points | Refresh path |
 |---|---|---|---|
-| Project Assets (`/projects/:id/assets`) | [`project-assets-viewer.js`](src/static/client/project-assets-viewer.js) | Thumbnail → single image; toolbar Slideshow → complete filtered sequence | `refreshProjectAssetsViewer()` from the live-region engine |
-| Asset Library (`/asset-viewer`) | [`asset-library-viewer.js`](src/static/client/asset-library-viewer.js) | Project-qualified thumbnail → single image; toolbar Slideshow → complete cross-project filtered sequence | `refreshAssetLibraryViewer()` from the live-region engine (filters, sort, paging, history) |
-| Asset Details (`/projects/:p/assets/:a`) | [`asset-details-viewer.js`](src/static/client/asset-details-viewer.js) | Preview (View original link, or a button for preview-only Krita/non-inline originals) → single image | `observeAssetViewerRefresh()` in [`asset-viewer-refresh.js`](src/static/client/asset-viewer-refresh.js): installed `file` region, or gone (404/retired) |
-| Release Manage Assets (`/releases/:id/assets`) | [`release-assets-viewer.js`](src/static/client/release-assets-viewer.js) | Eligible thumbnail → single image | `refreshReleaseAssetsViewer()` from the live-region engine |
-| Release Detail (`/releases/:id`) | [`release-detail-viewer.js`](src/static/client/release-detail-viewer.js) | Eligible selected-image thumbnail → single image | `observeReleaseDetailRefresh()` in [`release-detail-refresh.js`](src/static/client/release-detail-refresh.js): adopted current render, or retirement |
+| Project Assets (`/projects/:id/assets`) | [`project-assets-viewer.js`](src/static/client/project-assets-viewer.js) | Image thumbnail → single image; comic thumbnail → reader; toolbar Slideshow → complete filtered image sequence | `refreshProjectAssetsViewer()` from the live-region engine |
+| Asset Library (`/asset-viewer`) | [`asset-library-viewer.js`](src/static/client/asset-library-viewer.js) | Project-qualified image thumbnail → single image; comic thumbnail → reader; toolbar Slideshow → complete cross-project filtered image sequence | `refreshAssetLibraryViewer()` from the live-region engine (filters, sort, paging, history) |
+| Asset Details (`/projects/:p/assets/:a`) | [`asset-details-viewer.js`](src/static/client/asset-details-viewer.js) | Image preview → single image (link or preview-only button); comic preview → reader | `observeAssetViewerRefresh()` in [`asset-viewer-refresh.js`](src/static/client/asset-viewer-refresh.js): installed `file` region, or gone (404/retired) |
+| Release Manage Assets (`/releases/:id/assets`) | [`release-assets-viewer.js`](src/static/client/release-assets-viewer.js) | Eligible image thumbnail → single image; comic thumbnail → reader | `refreshReleaseAssetsViewer()` from the live-region engine |
+| Release Detail (`/releases/:id`) | [`release-detail-viewer.js`](src/static/client/release-detail-viewer.js) | Eligible selected-image thumbnail → single image; selected-comic thumbnail → reader | `observeReleaseDetailRefresh()` in [`release-detail-refresh.js`](src/static/client/release-detail-refresh.js): adopted current render, or retirement |
 | Project Detail (`/projects/:id`) release strips | [`project-detail-viewer.js`](src/static/client/project-detail-viewer.js) | Eligible strip thumbnail → single image, keyed by its release | none (strips sit outside every Project Detail refresh region); `project-deleted` retirement only |
 
 Only Project Assets and the Asset Library have explicit slideshows. A single
@@ -3690,6 +3868,49 @@ the saved selection no longer offers the asset; Asset Details persists a
 gone asset so neither the viewer nor its old trigger can reopen it. No viewer
 refresh adds a backend query or polling.
 
+*Image rendition ownership.* The additive server `imageSources` descriptor
+contains canonical `projectId`, `assetId`, `sourceRevision`,
+`optimized: { url, revision, eligible }`, `original: { url, eligible }`, and
+`toggleEligible`. The canonical source token and policy-aware optimized token
+are distinct opaque 16-character lowercase hexadecimal values. The shared
+normalizer validates identity, exact supplied route/query preconditions and
+eligibility. Indexed eligibility does not guarantee filesystem presence or a
+successful decode. Comics and videos never select image renditions; Krita has
+no inline Original. No filename-derived URLs or browser-local quality preference
+are used. A new image/slideshow session desires Optimized; desired quality
+carries through slideshow items, including optimized fallback for an item
+without an eligible Original. Displayed quality records only decoded media.
+
+Original uses `/original?sourceRevision=<s>`; explicit Optimized uses
+`/preview?rendition=optimized&sourceRevision=<s>&v=<r>`, even when normal Preview
+is Original. Both use existing authenticated, project-qualified delivery and
+source proofs; revisions are equality preconditions, never authorization or
+content hashes. Supplied malformed/repeated revision values return 400 and
+stale expectations return 409. Explicit delivery is private/no-store, rechecks
+current authority and never substitutes a prior-policy optimized publication.
+Original keeps its inline MIME allowlist and containment/symlink checks. Existing
+observable filesystem race limitations still apply; streaming bytes are not
+made immutable by revision tokens.
+
+The content participant fetches and decodes a candidate while leaving the
+current image visible. Each image attempt has a 30-second deadline and abort
+ownership; session/item token, request identity and accepted rendition metadata
+must still match before installation. A successful swap releases the obsolete
+object URL. Failures retain usable media and permit explicit retry. A 409
+quarantines the rejected descriptor and never automatically retries its URLs;
+the current source remains visible with a refresh status until an existing
+host's authoritative `update()` supplies changed metadata. The viewer adds no
+refresh polling/controller. Metadata-only updates preserve pending work and
+geometry; changed eligibility retires pending requests. The quality button is
+between Fullscreen and View details, uses a stable Original source name,
+`aria-pressed` for displayed Original and `aria-busy` while loading.
+
+Viewport `replaceContent()` preserves Fit, zoom relative to Fit and the
+normalized image point at the surface centre, then clamps pan to new bounds.
+Explicit Actual Size retains scale 1 for the displayed rendition; it performs
+no source fetch. Fullscreen ownership and stage geometry remain with the
+existing fullscreen participant.
+
 *Focus and cleanup.* Opening records the opener; closing returns focus there
 or, when a refresh replaced or removed it, to the host fallback (same asset's
 current thumbnail, the Slideshow button, the release title, the Preview
@@ -3698,8 +3919,8 @@ Closing from fullscreen exits it first and completes focus return afterwards;
 body scroll locking is released with the dialog. Closing or replacing a
 session aborts pending fetches, discards late decodes, revokes object URLs,
 clears the playback timer and resets the stage; the accepted retention is
-the current preview plus, after Original Size, its original until navigation
-or close, plus at most one neighbour preload. Listeners are installed once
+one displayed rendition plus at most one pending replacement and one optimized
+neighbour preload. Old decoded results are released immediately after a successful swap. Listeners are installed once
 per controller and per host document, so repeated viewing adds none.
 Project Detail's `project-deleted` retirement withdraws every strip trigger
 before closing its session.
@@ -3711,15 +3932,73 @@ elements keep a legacy `data-slideshow-sequence` attribute beside their host
 attribute. Removing the module and the `.slideshow-*` rules still in
 `creatorcrate.css` belongs to Milestone D.
 
-*Comic seam.* Comics (CBZ/CBR/CB7, §10) are recognized server-side and never
-reach the image viewer: they have no trigger and no slideshow membership, and
-no browser-side archive decoding exists. The Milestone A manifest and
-revision-bound page routes (`GET /projects/:p/assets/:a/comic` and
-`.../comic/pages/:position` in [`media.js`](src/routes/media.js)) are not yet
-fetched by any client. B1 already models what a reader needs (page
-positions in item keys, opaque revisions, unavailable items, non-wrapping
-non-slideshow sequences), and B3's validated content types include the comic
-page types; a comic content source and reader UI are Milestone C.
+*Comic cover delivery.* Comic cards use the normal generated `/preview`
+derivative, matching ordinary cards' Preview-first presentation. The shared
+generation, settings, lifetime, SQLite publication and current-only HTTP
+authority are documented in §12. Reader manifest/page delivery remains
+independent below; a card cover does not grant ordinary-image eligibility.
+
+*Comic cover presentation.* `buildAssetPreviewModel()` in
+[`asset-presentation.js`](src/services/asset-presentation.js) supplies
+`preview.comic.cover.urls.preview` through the existing `buildPreviewUrls()`.
+Present indexed metadata and valid project/asset IDs gate that URL without
+opening the archive. `cover.revisionHint` binds the indexed source, normalized
+canonical format and effective cover policy; the policy-independent
+`comic.sourceRevision` remains the Reader's change hint. Neither hint proves
+the full canonical input or generated revision: delivery owns those checks.
+Comics retain `previewable=false`, `kind=null` and null ordinary image URLs;
+they never gain ordinary Image Slideshow membership. Discovered generated
+comics follow this same contract.
+
+Project Assets and both release hosts use the existing `gridCard()`/`listCard()`
+image branches in
+[`asset-presentation.njk`](src/views/partials/asset-presentation.njk).
+Global Library uses its existing ordinary Grid/List branches; individual Asset
+Detail uses its existing ordinary figure/image. Each host's ordinary CSS owns
+sizing, aspect ratio, object-fit, Cropped/Uncropped behavior and clipping;
+Detail retains its viewport-height limit. Server-authored NSFW blur applies
+identically. There is no comic square wrapper, 512px cover cap or decorative
+CBZ/CBR/CB7 overlay.
+
+The ordinary `enhancePreviewMedia()`/`enhancePreview()` and
+`markPreviewLoaded()`/`markPreviewFailed()` helpers own native image state.
+Cards use native `src`, `loading="lazy"` and `decoding="async"` where their
+ordinary images defer; Detail retains its established eager figure behavior.
+Errors reveal the existing host fallback, with an accessible Reader anchor for
+readable comics. There is no automatic retry beyond supported accepted refresh.
+The custom comic fetch/Blob/observer loader, its initialization, legacy
+thumbnail descriptor, macros and cover-only CSS are removed; there is no second
+image loader or presentation system.
+
+Project Assets, Library and Manage Assets retain accepted live-region
+replacement. Asset Detail and Release Detail synchronize the native image
+source and ordinary state within retained media, preserving unchanged images,
+focus and request count. Source/policy/canonical-format hints change the native
+URL when needed; accepted unavailable/withdrawn comic sources clear old pixels
+and Reader authority. Release Detail withdraws ordinary image viewer descriptors
+when release context or saved membership is lost, retaining the static native
+image and Asset Details navigation. Superseded responses cannot revive withdrawn
+viewer authority. Host lookup prefers
+the visible Reader fallback on failure. Reader activation, keyboard focus,
+Details navigation, selection drafts, membership and release order remain
+host-owned and separate from cover loading. Project Detail release strips
+remain image/video-only: there is no applicable comic card or new Reader entry
+point there.
+
+*Comic reader.* [`comic-source.js`](src/static/client/comic-source.js) fetches
+and validates `GET /projects/:p/assets/:a/comic`, then adapts the server's
+canonical page positions and full revision into a non-wrapping, non-slideshow
+source. The server uses `getComicManifest()` and `getComicPage()`. Original page bytes
+come only from revision-bound `.../comic/pages/:position`;
+the browser never decodes an archive. The existing unified viewer owns CBZ/CBR/CB7
+reading, direction, single/two-page layout and cover alignment. Spread geometry
+belongs to `viewer-spread-layout.js`; page-specific loading/Retry and source
+retirement retain request/decode ownership. Reader preferences are browser-local
+per project/asset in `comic-reader-preferences.js`, validated and merged by edited
+field into the latest record; this is not atomic cross-tab storage. Compact
+reader dropdowns, overlay navigation and fullscreen close/footer chrome preserve
+the media's Fit geometry when chrome hides. Original/Optimized quality selection
+and Fit/Actual Size remain separate ordinary-image concerns.
 
 *Known qualifications.* Fullscreen relies on the browser's Fullscreen API
 (the button is hidden where it is unavailable) and is qualified in Chromium

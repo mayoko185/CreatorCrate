@@ -36,6 +36,19 @@ function makeElement(tagName, document) {
       for (let current = node; current; current = current.parentNode) if (current === element) return true;
       return false;
     },
+    closest(selector) {
+      for (let node = element; node; node = node.parentNode) {
+        if (selector.split(', ').some((part) => {
+          const tag = part.match(/^[a-z]+/)?.[0];
+          if (tag && tag !== node.tagName.toLowerCase()) return false;
+          if (!part.includes('[')) return part === node.tagName.toLowerCase();
+          const attributes = [...part.matchAll(/\[([^=\]]+)(?:="([^"]*)")?\]/g)];
+          return attributes.length > 0 && attributes.every(([, name, value]) => node.hasAttribute(name)
+            && (value === undefined || node.getAttribute(name) === value));
+        })) return node;
+      }
+      return null;
+    },
     addEventListener(type, handler, options) {
       element.listeners.push({ type, handler, capture: options === true || options?.capture === true });
     },
@@ -45,10 +58,15 @@ function makeElement(tagName, document) {
       if (index >= 0) element.listeners.splice(index, 1);
     },
     querySelector(selector) {
-      if (selector === '[data-cc-dropdown][open]') {
+      if (selector === '[data-unified-viewer-stage]') {
+        const find = (node) => node.hasAttribute('data-unified-viewer-stage') ? node
+          : node.children.map(find).find(Boolean);
+        return find(element) || null;
+      }
+      if (selector === '[data-cc-dropdown][open], [data-cc-viewport-disclosure][open]') {
         const visit = (node) => {
           for (const child of node.children) {
-            if (child.hasAttribute('data-cc-dropdown') && child.hasAttribute('open')) return child;
+            if ((child.hasAttribute('data-cc-dropdown') || child.hasAttribute('data-cc-viewport-disclosure')) && child.hasAttribute('open')) return child;
             const found = visit(child);
             if (found) return found;
           }
@@ -89,6 +107,7 @@ function makeHarness({ supported = true, requestMode = 'resolve', exitMode = 're
   const button = make('button', 'data-unified-viewer-fullscreen', context);
   button.hidden = true;
   const stage = make('div', 'data-stage', root);
+  stage.setAttribute('data-unified-viewer-stage', '');
   const controls = make('div', 'data-controls', root);
   const next = make('button', 'data-next', controls);
   const dropdown = make('details', 'data-cc-dropdown', controls);
@@ -137,6 +156,7 @@ function makeHarness({ supported = true, requestMode = 'resolve', exitMode = 're
   };
 
   const observers = new Set();
+  const dismissMenus = vi.fn(() => dropdown.removeAttribute('open'));
   let session = 0;
   let open = null;
   const notify = (type) => observers.forEach((listener) => listener(Object.freeze({ type, session: open })));
@@ -153,6 +173,7 @@ function makeHarness({ supported = true, requestMode = 'resolve', exitMode = 're
       return () => observers.delete(listener);
     },
     media,
+    dismissMenus,
     view,
   });
 
@@ -164,6 +185,8 @@ function makeHarness({ supported = true, requestMode = 'resolve', exitMode = 're
     media,
     view,
     frames,
+    dismissMenus,
+    navigate() { notify('navigate'); },
     parts: { card, header, close, root, context, button, stage, controls, next, dropdown },
     open() {
       if (open !== null) harness.close();
@@ -197,8 +220,10 @@ function makeHarness({ supported = true, requestMode = 'resolve', exitMode = 're
       dialog.listeners.filter((entry) => entry.type === 'keydown' && entry.capture).forEach((entry) => entry.handler(event));
       return event;
     },
-    pointer(target, type = 'pointermove') {
-      card.listeners.filter((entry) => entry.type === type).forEach((entry) => entry.handler({ type, target, pointerType: 'mouse' }));
+    pointer(target, type = 'pointermove', extra = {}) {
+      const event = { type, target, pointerType: 'mouse', preventDefault: vi.fn(), stopPropagation: vi.fn(), ...extra };
+      card.listeners.filter((entry) => entry.type === type).forEach((entry) => entry.handler(event));
+      return event;
     },
     focusin(target) {
       target.focus();
@@ -334,8 +359,10 @@ describe('viewer fullscreen Escape and close ordering', () => {
     expect(second.defaultPrevented).toBe(false);
   });
 
-  it('leaves Escape to an open dropdown even in fullscreen', async () => {
+  it.each(['data-cc-dropdown', 'data-cc-viewport-disclosure'])('leaves Escape to an open %s even in fullscreen', async (attribute) => {
     const h = makeHarness();
+    h.parts.dropdown.removeAttribute('data-cc-dropdown');
+    h.parts.dropdown.setAttribute(attribute, '');
     h.open();
     h.fullscreen.enter();
     await flush();
@@ -481,6 +508,9 @@ describe('viewer fullscreen idle chrome', () => {
     h.open();
     h.fullscreen.enter();
     await flush();
+    h.frames[0]();
+    h.media.refreshGeometry.mockClear();
+    h.view.requestAnimationFrame.mockClear();
     expect(VIEWER_CHROME_IDLE_DELAY).toBe(4000);
     vi.advanceTimersByTime(3999);
     expect(h.fullscreen.getState().chromeHidden).toBe(false);
@@ -497,6 +527,8 @@ describe('viewer fullscreen idle chrome', () => {
     h.pointer(h.parts.stage);
     h.pointer(h.parts.stage);
     expect(vi.getTimerCount()).toBe(1);
+    expect(h.media.refreshGeometry).not.toHaveBeenCalled();
+    expect(h.view.requestAnimationFrame).not.toHaveBeenCalled();
   });
 
   it('stays visible while keyboard focus is in the chrome, a dropdown is open, or the pointer is over it', async () => {
@@ -542,6 +574,220 @@ describe('viewer fullscreen idle chrome', () => {
     expect(h.fullscreen.getState().chromeHidden).toBe(false);
     expect(h.parts.card.hasAttribute('data-viewer-chrome-hidden')).toBe(false);
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe('viewer fullscreen viewing-area clicks', () => {
+  const pointer = { pointerId: 17, button: 0, isPrimary: true, clientX: 120, clientY: 160 };
+  function press(h, type, extra = {}, target = h.parts.stage) {
+    return h.pointer(target, type, { ...pointer, ...extra });
+  }
+  function tap(h, extra = {}, target = h.parts.stage) {
+    press(h, 'pointerdown', extra, target);
+    press(h, 'pointerup', extra, target);
+  }
+  async function entered(options) {
+    const h = makeHarness(options);
+    h.open();
+    h.fullscreen.enter();
+    await flush();
+    return h;
+  }
+
+  it('immediately hides once without refreshing geometry and keeps fullscreen and the open media', async () => {
+    const h = await entered();
+    const image = makeElement('img', h.document);
+    image.setAttribute('src', '/unchanged.webp');
+    h.parts.stage.appendChild(image);
+    const reasons = [];
+    h.fullscreen.observe((state, reason) => reasons.push(reason));
+    h.frames[0]();
+    h.media.refreshGeometry.mockClear();
+    h.view.requestAnimationFrame.mockClear();
+    tap(h, {}, image);
+    expect(h.fullscreen.getState()).toMatchObject({ active: true, chromeHidden: true });
+    expect(h.document.fullscreenElement).toBe(h.parts.card);
+    expect(h.parts.button.hidden).toBe(false);
+    expect(h.parts.stage.children).toEqual([image]);
+    expect(image.getAttribute('src')).toBe('/unchanged.webp');
+    expect(h.document.exitFullscreen).not.toHaveBeenCalled();
+    expect(h.media.refreshGeometry).not.toHaveBeenCalled();
+    expect(h.view.requestAnimationFrame).not.toHaveBeenCalled();
+    expect(reasons).toEqual(['chrome-hidden']);
+    h.click(image); // Browser compatibility click is not another hide command.
+    expect(reasons).toEqual(['chrome-hidden']);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('keeps already-hidden chrome hidden throughout a tap and stationary follow-up activity', async () => {
+    const h = await entered();
+    vi.advanceTimersByTime(4000);
+    const reasons = [];
+    h.fullscreen.observe((state, reason) => reasons.push(reason));
+    press(h, 'pointerdown');
+    press(h, 'pointermove', { clientX: 122 });
+    press(h, 'pointerup', { clientX: 122 });
+    press(h, 'pointermove', { clientX: 122 });
+    expect(h.fullscreen.getState().chromeHidden).toBe(true);
+    expect(reasons).toEqual([]);
+    press(h, 'pointermove', { clientX: 130 });
+    expect(h.fullscreen.getState().chromeHidden).toBe(false);
+    expect(vi.getTimerCount()).toBe(1);
+    vi.advanceTimersByTime(3999);
+    expect(h.fullscreen.getState().chromeHidden).toBe(false);
+    vi.advanceTimersByTime(1);
+    expect(h.fullscreen.getState().chromeHidden).toBe(true);
+    h.keydown(h.parts.stage, 'Tab');
+    expect(h.fullscreen.getState().chromeHidden).toBe(false);
+  });
+
+  it.each(['mouse', 'pen', 'touch'])('accepts a stationary %s tap with small jitter', async (pointerType) => {
+    const h = await entered();
+    press(h, 'pointerdown', { pointerType });
+    press(h, 'pointermove', { pointerType, clientX: 123, clientY: 162 });
+    press(h, 'pointerup', { pointerType, clientX: 123, clientY: 162 });
+    expect(h.fullscreen.getState().chromeHidden).toBe(true);
+  });
+
+  it.each(['mouse', 'pen', 'touch'])('rejects a %s drag even if it returns to its starting point', async (pointerType) => {
+    const h = await entered();
+    press(h, 'pointerdown', { pointerType });
+    press(h, 'pointermove', { pointerType, clientX: 140 });
+    press(h, 'pointermove', { pointerType });
+    press(h, 'pointerup', { pointerType });
+    expect(h.fullscreen.getState().chromeHidden).toBe(false);
+    expect(vi.getTimerCount()).toBe(1);
+  });
+
+  it.each(['pointercancel', 'lostpointercapture', 'scroll', 'wheel', 'pointerleave'])('rejects a gesture cancelled by %s', async (type) => {
+    const h = await entered();
+    press(h, 'pointerdown');
+    press(h, type);
+    press(h, 'pointerup');
+    expect(h.fullscreen.getState().chromeHidden).toBe(false);
+    expect(vi.getTimerCount()).toBe(1);
+  });
+
+  it.each([{ button: 2 }, { button: 1 }, { isPrimary: false }, { ctrlKey: true },
+    { altKey: true }, { shiftKey: true }, { metaKey: true }])('ignores nonprimary or modified actions: %j', async (extra) => {
+    const h = await entered();
+    tap(h, extra);
+    expect(h.fullscreen.getState().chromeHidden).toBe(false);
+    expect(h.dismissMenus).not.toHaveBeenCalled();
+  });
+
+  it('rejects mismatched pointers, a modifier added on release and movement only on release', async () => {
+    const h = await entered();
+    press(h, 'pointerdown');
+    press(h, 'pointerup', { pointerId: 23 });
+    expect(h.fullscreen.getState().chromeHidden).toBe(false);
+    press(h, 'pointerup', { shiftKey: true });
+    expect(h.fullscreen.getState().chromeHidden).toBe(false);
+    press(h, 'pointerdown');
+    press(h, 'pointerup', { clientX: 140 });
+    expect(h.fullscreen.getState().chromeHidden).toBe(false);
+    press(h, 'pointerdown');
+    press(h, 'pointerdown', { pointerId: 23, isPrimary: false });
+    press(h, 'pointerup');
+    expect(h.fullscreen.getState().chromeHidden).toBe(false);
+  });
+
+  it.each(['button', 'a', 'input', 'select', 'textarea', 'summary', 'custom', 'tabstop'])('excludes stage %s controls including Retry and custom surfaces', async (kind) => {
+    const h = await entered();
+    const control = makeElement(kind === 'custom' || kind === 'tabstop' ? 'div' : kind, h.document);
+    if (kind === 'a') control.setAttribute('href', '/details');
+    if (kind === 'custom') control.setAttribute('data-viewer-interactive', '');
+    if (kind === 'tabstop') control.setAttribute('tabindex', '0');
+    if (kind === 'button') control.setAttribute('data-unified-viewer-page-retry', '');
+    const child = makeElement('span', h.document);
+    control.appendChild(child);
+    h.parts.stage.appendChild(control);
+    const down = press(h, 'pointerdown', {}, child);
+    const up = press(h, 'pointerup', {}, child);
+    for (const event of [down, up]) {
+      expect(event.preventDefault).not.toHaveBeenCalled();
+      expect(event.stopPropagation).not.toHaveBeenCalled();
+    }
+    tap(h, {}, child);
+    expect(h.fullscreen.getState().chromeHidden).toBe(false);
+    expect(h.dismissMenus).not.toHaveBeenCalled();
+    // Crossing into and out of a control permanently invalidates this press.
+    press(h, 'pointerdown');
+    press(h, 'pointermove', {}, child);
+    press(h, 'pointerup');
+    expect(h.fullscreen.getState().chromeHidden).toBe(false);
+    press(h, 'pointerdown', {}, child);
+    press(h, 'pointerup');
+    expect(h.fullscreen.getState().chromeHidden).toBe(false);
+  });
+
+  it('hit-tests captured pointers crossing chrome and excludes all chrome surfaces', async () => {
+    const h = await entered();
+    for (const target of [h.parts.header, h.parts.next, h.parts.dropdown, h.parts.button]) tap(h, {}, target);
+    h.document.elementFromPoint = () => h.parts.next;
+    tap(h);
+    expect(h.fullscreen.getState().chromeHidden).toBe(false);
+  });
+
+  it('closes owned menus before hiding, moves focus out of chrome and keeps keyboard reveal', async () => {
+    const h = await entered();
+    h.parts.dropdown.setAttribute('open', '');
+    h.parts.next.focus();
+    h.fullscreen.observe((state) => {
+      if (state.chromeHidden) expect(h.parts.dropdown.hasAttribute('open')).toBe(false);
+    });
+    tap(h);
+    expect(h.dismissMenus).toHaveBeenCalledTimes(1);
+    expect(h.document.activeElement).toBe(h.parts.card);
+    expect(h.parts.card.hasAttribute('tabindex')).toBe(false);
+    expect(h.fullscreen.getState().chromeHidden).toBe(true);
+    h.keydown(h.parts.card, 'Tab');
+    h.focusin(h.parts.next);
+    vi.advanceTimersByTime(8000);
+    expect(h.fullscreen.getState().chromeHidden).toBe(false);
+  });
+
+  it('does nothing outside fullscreen or while entry/exit is pending', async () => {
+    const h = makeHarness({ requestMode: 'hold', exitMode: 'hold' });
+    h.open();
+    tap(h);
+    h.fullscreen.enter();
+    press(h, 'pointerdown');
+    h.grant();
+    await flush();
+    press(h, 'pointerup');
+    expect(h.fullscreen.getState().chromeHidden).toBe(false);
+    press(h, 'pointerdown');
+    h.fullscreen.exit();
+    press(h, 'pointerup');
+    expect(h.fullscreen.getState().chromeHidden).toBe(false);
+    h.leave();
+    tap(h);
+    expect(h.fullscreen.getState().chromeHidden).toBe(false);
+  });
+
+  it.each(['navigate', 'reopen', 'leave', 'destroy'])('retires a gesture on %s and ignores the stale release', async (action) => {
+    const h = await entered();
+    press(h, 'pointerdown');
+    if (action === 'navigate') h.navigate();
+    if (action === 'reopen') {
+      h.close();
+      h.leave();
+      await flush();
+      h.open();
+      h.fullscreen.enter();
+      await flush();
+    }
+    if (action === 'leave') h.leave();
+    if (action === 'destroy') h.fullscreen.destroy();
+    press(h, 'pointerup');
+    expect(h.fullscreen.getState().chromeHidden).toBe(false);
+    if (action === 'navigate') {
+      expect(vi.getTimerCount()).toBe(1);
+      vi.advanceTimersByTime(4000);
+      expect(h.fullscreen.getState().chromeHidden).toBe(true);
+    }
+    if (action === 'destroy') expect(h.parts.card.listeners).toHaveLength(0);
   });
 });
 

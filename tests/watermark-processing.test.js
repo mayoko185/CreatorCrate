@@ -34,11 +34,13 @@ import { read7zArchiveEntries } from '../src/services/watermark-7z.js';
 import { createSourceAnimationService } from '../src/services/source-animation-service.js';
 import { inspectSourceAnimation } from '../src/services/source-animation.js';
 import { buildAssetRevisionToken } from '../src/services/preview-service.js';
+import { buildAssetPreviewModel } from '../src/services/asset-presentation.js';
 import { createProjectDirectoryOwnershipRepository } from '../src/data/project-directory-ownership-repository.js';
 import { createApplicationLogger } from '../src/services/application-logger.js';
 import { processingRecoveryEvidenceDependencies } from './helpers/processing-recovery-evidence.js';
 import { createProcessingRecoveryEvidenceRepository } from '../src/data/processing-recovery-evidence-repository.js';
 import { stagingWorkspaces, stageNames, stageArtifact } from './helpers/processing-staging.js';
+import * as ownedPathContent from '../src/services/owned-path-content.js';
 
 function createAssetProcessingService(dependencies) {
   const service = createAssetProcessingServiceRaw({
@@ -707,6 +709,179 @@ describe('watermark asset processing', () => {
       modifiedAt: stats.mtime.toISOString(),
     });
   }
+
+  describe('indexed comic archive publication', () => {
+    const options = { mode: 'custom', outputFormat: 'png', deleteSource: false,
+      makeArchives: true, makeCbz: true, setName: 'Indexed' };
+
+    async function indexedArchive() {
+      const source = await writeIndexedImage('Final/indexed.png');
+      const first = await processingService.watermarkAssets(project.id, [source.id], options);
+      const relativePath = first.artifacts.find((artifact) => artifact.relativePath.endsWith('.cbz')).relativePath;
+      const stats = fs.statSync(path.join(projectDir, relativePath));
+      const comic = assetRepository.upsert(project.id, relativePath, {
+        filename: relativePath, extension: 'cbz', mimeType: 'application/vnd.comicbook+zip',
+        categoryId: null, nestedPath: '', sizeBytes: stats.size, modifiedAt: stats.mtime.toISOString(),
+      });
+      return { source, first, comic };
+    }
+
+    it('keeps ordinary image publication and unindexed archives free of comic source updates', async () => {
+      const source = await writeIndexedImage('Final/unindexed.png');
+      const apply = vi.spyOn(assetRepository, 'applyAssetWatermarks');
+      try {
+        await processingService.watermarkAssets(project.id, [source.id], {
+          mode: 'custom', outputFormat: 'png', deleteSource: false,
+        });
+        await processingService.watermarkAssets(project.id, [source.id], { ...options, overwrite: true });
+        expect(apply).toHaveBeenCalledTimes(2);
+        expect(apply.mock.calls.map(([, changes]) => changes.comicSourceUpdates)).toEqual([[], []]);
+        expect(assetRepository.findByProjectIdAndPath(project.id, 'Indexed_jpg_q85.cbz')).toBeFalsy();
+        expect(db.prepare("SELECT COUNT(*) AS n FROM assets WHERE extension IN ('cbz', 'zip')").get().n).toBe(0);
+      } finally { apply.mockRestore(); }
+    });
+
+    it('uses verified public size/mtime, preserves the comic and advances its source hint once', async () => {
+      const { source, first, comic } = await indexedArchive();
+      const publicTime = new Date('2025-04-05T06:07:08.000Z');
+      const archivePath = path.resolve(projectDir, comic.relative_path);
+      const hook = hookOwnedCreate((target) => target === archivePath, {
+        after: (target) => fs.utimesSync(target, publicTime, publicTime),
+      });
+      const apply = vi.spyOn(assetRepository, 'applyAssetWatermarks');
+      try {
+        const result = await processingService.watermarkAssets(project.id, [source.id], {
+          ...options, overwrite: true, replaceExistingArchives: true,
+        });
+        expect(apply).toHaveBeenCalledTimes(1);
+        const changes = apply.mock.calls[0][1];
+        const stats = fs.statSync(archivePath);
+        expect(changes.comicSourceUpdates).toEqual([{
+          assetId: comic.id, relativePath: comic.relative_path,
+          expectedExtension: comic.extension, expectedSizeBytes: comic.size_bytes,
+          expectedModifiedAt: comic.modified_at, expectedIsPresent: comic.is_present,
+          expectedSourceAnimated: comic.source_animated, expectedSourceGeneration: comic.source_generation,
+          data: { sizeBytes: stats.size, modifiedAt: publicTime.toISOString() },
+        }]);
+        const updated = assetRepository.findById(comic.id);
+        expect(updated).toEqual({ ...comic, size_bytes: stats.size, modified_at: stats.mtime.toISOString(),
+          source_generation: comic.source_generation + 1, last_seen_at: updated.last_seen_at, updated_at: updated.updated_at });
+        expect(buildAssetRevisionToken(updated)).not.toBe(buildAssetRevisionToken(comic));
+        expect(result.generatedAssetIds).toEqual(first.generatedAssetIds);
+        expect(result.artifacts.map((artifact) => artifact.id)).toEqual(first.artifacts.map((artifact) => artifact.id));
+        expect(db.prepare('SELECT COUNT(*) AS n FROM assets').get().n).toBe(3);
+        assetScanner.scanProjectAssets(project.id);
+        assetScanner.scanProjectAssets(project.id);
+        expect(assetRepository.findById(comic.id).source_generation).toBe(updated.source_generation);
+      } finally { apply.mockRestore(); hook.restore(); }
+    });
+
+    it.each([
+      ['generation', 'source_generation = source_generation + 1'],
+      ['size', 'size_bytes = size_bytes + 1'],
+      ['mtime', "modified_at = '2024-01-01T00:00:00.000Z'"],
+      ['presence', 'is_present = 0'],
+      ['classification', "extension = 'png'"],
+      ['missing row', null],
+    ])('rejects stale comic %s and restores image outputs and every archive', async (_label, mutation) => {
+      const { source, first, comic } = await indexedArchive();
+      const beforeAssets = db.prepare('SELECT * FROM assets WHERE id != ? ORDER BY id').all(comic.id);
+      const beforeArtifacts = generatedArtifactRepository.listByProjectId(project.id);
+      const paths = [...first.generatedPaths, ...first.artifacts.map((artifact) => artifact.relativePath)];
+      const bytes = paths.map((name) => fs.readFileSync(path.join(projectDir, name)));
+      let stale;
+      const hook = hookOwnedCreate((target) => target === path.resolve(projectDir, comic.relative_path), {
+        times: 1,
+        after: () => {
+          if (mutation) db.prepare(`UPDATE assets SET ${mutation} WHERE id = ?`).run(comic.id);
+          else db.prepare('DELETE FROM assets WHERE id = ?').run(comic.id);
+          stale = assetRepository.findById(comic.id);
+        },
+      });
+      try {
+        await expect(processingService.watermarkAssets(project.id, [source.id], {
+          ...options, overwrite: true, replaceExistingArchives: true,
+        })).rejects.toMatchObject({ code: 'DATABASE_OPERATION_FAILED', cause: { code: 'STALE_STATE' } });
+        expect(hook.calls).toBe(1);
+        expect(assetRepository.findById(comic.id)).toEqual(stale);
+        // Restored generated images receive new provenance; their source state is rolled back.
+        const withoutProvenance = (rows) => rows.map(({ generated_output_provenance: _, ...row }) => row);
+        expect(withoutProvenance(db.prepare('SELECT * FROM assets WHERE id != ? ORDER BY id').all(comic.id)))
+          .toEqual(withoutProvenance(beforeAssets));
+        expect(paths.map((name) => fs.readFileSync(path.join(projectDir, name)))).toEqual(bytes);
+        const artifactContent = (rows) => rows.map(({ output_provenance: _, ...row }) => row);
+        expect(artifactContent(generatedArtifactRepository.listByProjectId(project.id))).toEqual(artifactContent(beforeArtifacts));
+        expect(stagingWorkspaces(projectDir, '.creatorcrate-watermark-')).toEqual([]);
+      } finally { hook.restore(); }
+    });
+
+    it('rolls back comic and image updates when artifact persistence fails', async () => {
+      const { source, comic } = await indexedArchive();
+      const before = assetRepository.findById(comic.id);
+      const bytes = fs.readFileSync(path.join(projectDir, comic.relative_path));
+      db.exec(`CREATE TRIGGER reject_watermark_artifact BEFORE UPDATE OF sha256 ON generated_artifacts
+        BEGIN SELECT RAISE(ABORT, 'injected watermark artifact failure'); END`);
+      await expect(processingService.watermarkAssets(project.id, [source.id], {
+        ...options, overwrite: true, replaceExistingArchives: true,
+      })).rejects.toMatchObject({ code: 'DATABASE_OPERATION_FAILED' });
+      expect(assetRepository.findById(comic.id)).toEqual(before);
+      expect(fs.readFileSync(path.join(projectDir, comic.relative_path))).toEqual(bytes);
+    });
+
+    it('constructs catalogue updates without filesystem reads after the final backup sweep', async () => {
+      const { source } = await indexedArchive();
+      let finalBackupSweeps = 0;
+      let afterSweep = false;
+      const lateReads = [];
+      const continuity = ownedPathContent.ownedPathContinuityFailure;
+      const sweep = vi.spyOn(ownedPathContent, 'ownedPathContinuityFailure').mockImplementation((target, ...args) => {
+        const result = continuity(target, ...args);
+        if (path.basename(target).endsWith('archive-2.destination')) {
+          finalBackupSweeps += 1;
+          // This backup is swept once before unlink and last again before the transaction.
+          if (finalBackupSweeps === 2) afterSweep = true;
+        }
+        return result;
+      });
+      const spies = ['statSync', 'lstatSync', 'fstatSync', 'openSync', 'readSync', 'readFileSync', 'realpathSync']
+        .map((method) => {
+          const original = fs[method].bind(fs);
+          return vi.spyOn(fs, method).mockImplementation((...args) => {
+            if (afterSweep) lateReads.push(method);
+            return original(...args);
+          });
+        });
+      const apply = assetRepository.applyAssetWatermarks.bind(assetRepository);
+      const persistence = vi.spyOn(assetRepository, 'applyAssetWatermarks').mockImplementation((...args) => {
+        afterSweep = false;
+        expect(finalBackupSweeps).toBe(2);
+        expect(lateReads).toEqual([]);
+        return apply(...args);
+      });
+      try {
+        await processingService.watermarkAssets(project.id, [source.id], {
+          ...options, overwrite: true, replaceExistingArchives: true,
+        });
+        expect(persistence).toHaveBeenCalledTimes(1);
+      } finally {
+        persistence.mockRestore();
+        spies.reverse().forEach((spy) => spy.mockRestore());
+        sweep.mockRestore();
+      }
+    });
+
+    it('keeps archive replacement disabled even when the destination is indexed', async () => {
+      const { source, comic } = await indexedArchive();
+      const apply = vi.spyOn(assetRepository, 'applyAssetWatermarks');
+      try {
+        await expect(processingService.watermarkAssets(project.id, [source.id], {
+          ...options, overwrite: true,
+        })).rejects.toMatchObject({ code: 'ARCHIVE_DESTINATION_CONFLICT' });
+        expect(apply).not.toHaveBeenCalled();
+        expect(assetRepository.findById(comic.id)).toEqual(comic);
+      } finally { apply.mockRestore(); }
+    });
+  });
 
   describe('Watermark recovery evidence', () => {
     const options = { mode: 'custom', outputFormat: 'png' };
@@ -1566,13 +1741,32 @@ describe('watermark asset processing', () => {
     expect((await sharp(cbzEntries[0].data).metadata()).format).toBe('jpeg');
     expect(generatedArtifactRepository.listByProjectId(project.id)).toHaveLength(3);
 
-    // Comic recognition must not turn the generated CBZ into a second, manual asset owner.
+    // Catalogue discovery does not transfer generated artifact ownership to the asset row.
     const artifactsBefore = generatedArtifactRepository.listByProjectId(project.id);
     assetScanner.scanProjectAssets(project.id);
+    const comic = assetRepository.findByProjectIdAndPath(project.id, 'Patreon August_jpg_q85.cbz');
+    expect(comic).toMatchObject({ extension: 'cbz', mime_type: 'application/vnd.comicbook+zip',
+      is_present: 1, generated_by: null });
+    const revisionHint = buildAssetRevisionToken(comic, 'cbz:');
+    expect(revisionHint).toMatch(/^[a-f0-9]{16}$/);
+    expect(buildAssetPreviewModel(comic)).toEqual({
+      state: 'unsupported', previewable: false, kind: null, sourceMetadataValid: false,
+      revision: null, urls: { thumbnail: null, preview: null }, playbackUrl: null,
+      comic: {
+        format: 'cbz', sourceRevision: buildAssetRevisionToken(comic),
+        cover: { revisionHint, urls: {
+          thumbnail: `/projects/${project.id}/assets/${comic.id}/thumbnail?v=${revisionHint}`,
+          preview: `/projects/${project.id}/assets/${comic.id}/preview?v=${revisionHint}`,
+        } },
+      },
+    });
     assetScanner.scanProjectAssets(project.id);
-    expect(assetRepository.findByProjectIdAndPath(project.id, 'Patreon August_jpg_q85.cbz')).toBeFalsy();
+    expect(assetRepository.findByProjectIdAndPath(project.id, 'Patreon August_jpg_q85.cbz')).toEqual(comic);
     expect(db.prepare("SELECT COUNT(*) AS c FROM assets WHERE project_id = ? AND extension IN ('zip', 'cbz')")
-      .get(project.id).c).toBe(0);
+      .get(project.id).c).toBe(1);
+    for (const relativePath of ['Patreon August_jpg_q80.zip', 'Patreon August_webp_q90.zip']) {
+      expect(assetRepository.findByProjectIdAndPath(project.id, relativePath)).toBeFalsy();
+    }
     expect(generatedArtifactRepository.listByProjectId(project.id)).toEqual(artifactsBefore);
   });
 

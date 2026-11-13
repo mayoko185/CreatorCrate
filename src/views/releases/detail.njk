@@ -30,7 +30,7 @@
 {% endmacro %}
 
 {% macro releaseGridCard(asset, clockFormat) %}
-  {% call(slot) assetCards.gridCard(asset, { filenameLink: true, clockFormat: clockFormat, viewerTrigger: 'data-release-detail-viewer-trigger' }) %}
+  {% call(slot) assetCards.gridCard(asset, { filenameLink: true, clockFormat: clockFormat, projectName: project.title, viewerTrigger: 'data-release-detail-viewer-trigger', comicCover: true, comicTrigger: 'data-release-detail-comic-trigger' }) %}
     {% if slot == 'body' %}
       {{ releaseAssetMetadata(asset) }}
     {% endif %}
@@ -43,7 +43,7 @@
    thumbnail and the card's Open asset action. #}
 {% macro releaseListCard(asset, clockFormat, columns) %}
   {% set detailId = 'release-asset-list-info-' ~ asset.id %}
-  {% call(slot) assetCards.listCard(asset, { columns: columns, cardClass: 'asset-list-card--release', clockFormat: clockFormat, titleInfoId: detailId, viewerTrigger: 'data-release-detail-viewer-trigger' }) %}
+  {% call(slot) assetCards.listCard(asset, { columns: columns, cardClass: 'asset-list-card--release', clockFormat: clockFormat, titleInfoId: detailId, projectName: project.title, viewerTrigger: 'data-release-detail-viewer-trigger', comicCover: true, comicTrigger: 'data-release-detail-comic-trigger' }) %}
     {% if slot == 'order' and asset.releaseContext.sortOrder is not none %}
       {{ asset.releaseContext.sortOrder }}
     {% elif slot == 'role' %}
@@ -224,8 +224,9 @@
   {% endif %}
   </div>
 
-  {# An eligible image thumbnail opens only that image in the unified viewer
-     (release-detail-viewer.js); viewing never changes the release. #}
+  {# An eligible image thumbnail opens only that image in the unified viewer,
+     and an eligible comic's Read comic link opens that comic in the same
+     viewer (release-detail-viewer.js); viewing never changes the release. #}
   <section class="asset-browser-layout" aria-label="Selected assets" data-selected-assets>
     <div class="asset-browser-content">
       {% set selectedAssets = assetPresentation.selected or [] %}

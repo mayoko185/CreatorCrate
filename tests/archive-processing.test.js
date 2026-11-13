@@ -35,6 +35,8 @@ import {
   replaceWithForeignFile,
 } from './helpers/processing-fs-races.js';
 import { stagingWorkspaces, stageArtifact } from './helpers/processing-staging.js';
+import { createAssetScanner } from '../src/services/asset-scanner.js';
+import { buildAssetRevisionToken } from '../src/services/preview-service.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -596,6 +598,289 @@ describe('standalone archive processing', () => {
       modifiedAt: stats.mtime.toISOString(),
     });
   }
+
+  describe('indexed comic publication', () => {
+    const options = { archives: [
+      { archiveFormat: 'cbz', imageFormat: 'png', baseName: 'first' },
+      { archiveFormat: 'cbz', imageFormat: 'jpeg', baseName: 'second' },
+      { archiveFormat: 'zip', imageFormat: 'png', baseName: 'other' },
+    ] };
+
+    function indexComic(relativePath) {
+      const stats = fs.statSync(path.join(projectDir, relativePath));
+      return assetRepository.upsert(project.id, relativePath, {
+        filename: path.posix.basename(relativePath), extension: path.posix.extname(relativePath).slice(1),
+        mimeType: 'application/octet-stream', categoryId: finalCategory.id, nestedPath: '',
+        sizeBytes: stats.size, modifiedAt: stats.mtime.toISOString(),
+      });
+    }
+
+    async function indexedBatch() {
+      const source = await writeIndexedImage('Final/comic.png');
+      const first = await processingService.createArchives(project.id, [source.id], options);
+      const comics = first.generatedPaths.slice(0, 2).map(indexComic);
+      return { source, first, comics };
+    }
+
+    function unchangedArtifactContent(rows) {
+      return rows.map(({ output_provenance: _, ...row }) => row);
+    }
+
+    function scanProject() {
+      return createAssetScanner(db, projectsRoot, {
+        projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
+        projectService, assetCategoryService, projectOperationCoordinator: createProjectOperationCoordinator(),
+        previewCategorySettingsService: { getPreviewCategory: () => '__disabled__' },
+        projectPrimaryImageRepository: { findByProjectId: () => undefined, setPrimaryImage: () => undefined },
+      }).scanProjectAssets(project.id);
+    }
+
+    it('publishes without inserting catalogue rows and sends no comic updates when none exist', async () => {
+      const source = await writeIndexedImage('Final/unindexed.png');
+      const apply = vi.spyOn(assetRepository, 'applyAssetWatermarks');
+      try {
+        const result = await processingService.createArchives(project.id, [source.id], options);
+        expect(apply).toHaveBeenCalledTimes(1);
+        expect(apply.mock.calls[0][1].comicSourceUpdates).toEqual([]);
+        expect(result.generatedPaths.every((name) => !assetRepository.findByProjectIdAndPath(project.id, name))).toBe(true);
+        expect(db.prepare('SELECT COUNT(*) AS n FROM assets').get().n).toBe(1);
+      } finally { apply.mockRestore(); }
+    });
+
+    it('binds each comic to its verified public metadata and preserves identity, metadata and links', async () => {
+      const { source, comics } = await indexedBatch();
+      db.prepare("INSERT INTO tags (display_name, normalized_name) VALUES ('Keep', 'keep')").run();
+      db.prepare('INSERT INTO asset_tags (asset_id, tag_id) VALUES (?, 1)').run(comics[0].id);
+      const releaseId = db.prepare("INSERT INTO releases (project_id, title) VALUES (?, 'Keep')").run(project.id).lastInsertRowid;
+      db.prepare("INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, 'preview', 7)")
+        .run(releaseId, comics[0].id);
+      const tags = db.prepare('SELECT * FROM asset_tags').all();
+      const releases = db.prepare('SELECT * FROM release_assets').all();
+      const times = [new Date('2025-02-03T04:05:06.000Z'), new Date('2025-03-04T05:06:07.000Z')];
+      const hook = hookOwnedCreate((target) => comics.some((comic) => path.resolve(projectDir, comic.relative_path) === target), {
+        after: (target) => {
+          const index = comics.findIndex((comic) => path.resolve(projectDir, comic.relative_path) === target);
+          fs.utimesSync(target, times[index], times[index]);
+        },
+      });
+      const apply = vi.spyOn(assetRepository, 'applyAssetWatermarks');
+      try {
+        await processingService.createArchives(project.id, [source.id], { ...options, replaceExistingArchives: true });
+        expect(hook.calls).toBe(2);
+        expect(apply).toHaveBeenCalledTimes(1);
+        const changes = apply.mock.calls[0][1];
+        expect(changes.comicSourceUpdates).toHaveLength(2);
+        for (const [index, comic] of comics.entries()) {
+          const stats = fs.statSync(path.join(projectDir, comic.relative_path));
+          const update = changes.comicSourceUpdates[index];
+          expect(update).toEqual({
+            assetId: comic.id, relativePath: comic.relative_path,
+            expectedExtension: comic.extension, expectedSizeBytes: comic.size_bytes,
+            expectedModifiedAt: comic.modified_at, expectedIsPresent: comic.is_present,
+            expectedSourceAnimated: comic.source_animated, expectedSourceGeneration: comic.source_generation,
+            data: { sizeBytes: stats.size, modifiedAt: times[index].toISOString() },
+          });
+          const updated = assetRepository.findById(comic.id);
+          expect(updated).toEqual({
+            ...comic, size_bytes: stats.size, modified_at: stats.mtime.toISOString(),
+            source_generation: comic.source_generation + 1,
+            last_seen_at: updated.last_seen_at, updated_at: updated.updated_at,
+          });
+          expect(buildAssetRevisionToken(updated)).not.toBe(buildAssetRevisionToken(comic));
+          expect(changes.artifactReplacements.find((artifact) => artifact.relativePath === comic.relative_path).sizeBytes)
+            .toBe(stats.size);
+        }
+        expect(db.prepare('SELECT * FROM asset_tags').all()).toEqual(tags);
+        expect(db.prepare('SELECT * FROM release_assets').all()).toEqual(releases);
+        expect(db.prepare('SELECT COUNT(*) AS n FROM assets').get().n).toBe(3);
+      } finally { apply.mockRestore(); hook.restore(); }
+    });
+
+    it('advances generation once even with identical size/mtime, then leaves unchanged scans stable', async () => {
+      const source = await writeIndexedImage('Final/stable.png');
+      const single = { archives: [options.archives[0]] };
+      const first = await processingService.createArchives(project.id, [source.id], single);
+      const comic = indexComic(first.generatedPaths[0]);
+      const hook = hookOwnedCreate((target) => target === path.resolve(projectDir, comic.relative_path), {
+        after: (target) => fs.utimesSync(target, new Date(comic.modified_at), new Date(comic.modified_at)),
+      });
+      try {
+        await processingService.createArchives(project.id, [source.id], { ...single, replaceExistingArchives: true });
+      } finally { hook.restore(); }
+      const updated = assetRepository.findById(comic.id);
+      expect(updated).toMatchObject({ size_bytes: comic.size_bytes, modified_at: comic.modified_at,
+        source_generation: comic.source_generation + 1 });
+      scanProject();
+      scanProject();
+      expect(assetRepository.findById(comic.id).source_generation).toBe(updated.source_generation);
+    });
+
+    it.each([0.0004, 0.0008])('keeps scanner-compatible mtime rounding for fractional seconds %s', async (fraction) => {
+      const source = await writeIndexedImage('Final/fraction.png');
+      const single = { archives: [options.archives[0]] };
+      const first = await processingService.createArchives(project.id, [source.id], single);
+      const comic = indexComic(first.generatedPaths[0]);
+      const target = path.resolve(projectDir, comic.relative_path);
+      const seconds = Date.parse('2025-01-01T00:00:00.000Z') / 1000 + fraction;
+      const hook = hookOwnedCreate((filePath) => filePath === target, {
+        after: (filePath) => fs.utimesSync(filePath, seconds, seconds),
+      });
+      try {
+        await processingService.createArchives(project.id, [source.id], { ...single, replaceExistingArchives: true });
+        const updated = assetRepository.findById(comic.id);
+        expect(updated.modified_at).toBe(fs.statSync(target).mtime.toISOString());
+        expect(updated.source_generation).toBe(comic.source_generation + 1);
+        scanProject();
+        scanProject();
+        expect(assetRepository.findById(comic.id).source_generation).toBe(updated.source_generation);
+      } finally { hook.restore(); }
+    });
+
+    it('synchronizes an existing CB7 without changing its asset identity', async () => {
+      const source = await writeIndexedImage('Final/seven.png');
+      const single = { archives: [{ archiveFormat: 'cb7', imageFormat: 'png', baseName: 'seven' }] };
+      const first = await processingService.createArchives(project.id, [source.id], single);
+      const comic = indexComic(first.generatedPaths[0]);
+      await processingService.createArchives(project.id, [source.id], { ...single, replaceExistingArchives: true });
+      const stats = fs.statSync(path.join(projectDir, comic.relative_path));
+      expect(assetRepository.findById(comic.id)).toMatchObject({ id: comic.id, size_bytes: stats.size,
+        modified_at: stats.mtime.toISOString(), source_generation: comic.source_generation + 1 });
+    });
+
+    it.each([
+      ['generation', 'source_generation = source_generation + 1'],
+      ['size', 'size_bytes = size_bytes + 1'],
+      ['mtime', "modified_at = '2024-01-01T00:00:00.000Z'"],
+      ['presence', 'is_present = 0'],
+      ['animation', 'source_animated = 1'],
+      ['classification', "extension = 'png'"],
+      ['destination', "relative_path = 'moved.cbz'"],
+      ['project', 'category_id = NULL, project_id = (SELECT MAX(id) FROM projects)'],
+      ['missing row', null],
+    ])('rejects stale %s in a later comic and rolls the complete batch back', async (_label, mutation) => {
+      const { source, comics } = await indexedBatch();
+      projectService.create(projectInput('Other Project'));
+      const bytes = comics.map((comic) => fs.readFileSync(path.join(projectDir, comic.relative_path)));
+      const beforeArtifacts = generatedArtifactRepository.listByProjectId(project.id);
+      let stale;
+      const hook = hookOwnedCreate((target) => target === path.resolve(projectDir, comics[1].relative_path), {
+        times: 1,
+        after: () => {
+          if (mutation) db.prepare(`UPDATE assets SET ${mutation} WHERE id = ?`).run(comics[1].id);
+          else db.prepare('DELETE FROM assets WHERE id = ?').run(comics[1].id);
+          stale = assetRepository.findById(comics[1].id);
+        },
+      });
+      try {
+        await expect(processingService.createArchives(project.id, [source.id], {
+          ...options, replaceExistingArchives: true,
+        })).rejects.toMatchObject({ code: 'DATABASE_OPERATION_FAILED', cause: { code: 'STALE_STATE' } });
+        expect(hook.calls).toBe(1);
+        expect(assetRepository.findById(comics[0].id)).toEqual(comics[0]);
+        expect(assetRepository.findById(comics[1].id)).toEqual(stale);
+        expect(comics.map((comic) => fs.readFileSync(path.join(projectDir, comic.relative_path)))).toEqual(bytes);
+        expect(unchangedArtifactContent(generatedArtifactRepository.listByProjectId(project.id)))
+          .toEqual(unchangedArtifactContent(beforeArtifacts));
+        expect(stagingWorkspaces(projectDir, '.creatorcrate-watermark-')).toEqual([]);
+      } finally { hook.restore(); }
+    });
+
+    it('rolls catalogue updates back when a later artifact mutation fails, including repeated failures', async () => {
+      const { source, comics } = await indexedBatch();
+      const bytes = comics.map((comic) => fs.readFileSync(path.join(projectDir, comic.relative_path)));
+      const artifacts = generatedArtifactRepository.listByProjectId(project.id);
+      db.exec(`CREATE TRIGGER reject_comic_artifact BEFORE UPDATE OF sha256 ON generated_artifacts
+        BEGIN SELECT RAISE(ABORT, 'injected artifact failure'); END`);
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await expect(processingService.createArchives(project.id, [source.id], {
+          ...options, replaceExistingArchives: true,
+        })).rejects.toMatchObject({ code: 'DATABASE_OPERATION_FAILED' });
+        expect(comics.map((comic) => assetRepository.findById(comic.id))).toEqual(comics);
+        expect(comics.map((comic) => fs.readFileSync(path.join(projectDir, comic.relative_path)))).toEqual(bytes);
+        expect(unchangedArtifactContent(generatedArtifactRepository.listByProjectId(project.id)))
+          .toEqual(unchangedArtifactContent(artifacts));
+      }
+    });
+
+    it('keeps catalogue and artifact updates atomic with recovery-evidence settlement', async () => {
+      const { source, comics } = await indexedBatch();
+      const artifacts = generatedArtifactRepository.listByProjectId(project.id);
+      const dependencies = processingRecoveryEvidenceDependencies(db);
+      const transact = dependencies.processingRecoveryEvidenceRecorder.runInTransaction;
+      const apply = assetRepository.applyAssetWatermarks.bind(assetRepository);
+      let applied = false;
+      const persistence = vi.spyOn(assetRepository, 'applyAssetWatermarks').mockImplementation((...args) => {
+        const result = apply(...args);
+        applied = true;
+        return result;
+      });
+      dependencies.processingRecoveryEvidenceRecorder = {
+        ...dependencies.processingRecoveryEvidenceRecorder,
+        runInTransaction: (callback) => transact(() => {
+          const result = callback();
+          if (applied) throw new Error('injected evidence settlement failure');
+          return result;
+        }),
+      };
+      try {
+        await expect(makeProcessingService(dependencies).createArchives(project.id, [source.id], {
+          ...options, replaceExistingArchives: true,
+        })).rejects.toMatchObject({ code: 'DATABASE_OPERATION_FAILED' });
+        expect(applied).toBe(true);
+        expect(comics.map((comic) => assetRepository.findById(comic.id))).toEqual(comics);
+        expect(unchangedArtifactContent(generatedArtifactRepository.listByProjectId(project.id)))
+          .toEqual(unchangedArtifactContent(artifacts));
+      } finally { persistence.mockRestore(); }
+    });
+
+    it('retains recovery evidence and the old catalogue state when a foreign publication prevents rollback', async () => {
+      const { source, comics } = await indexedBatch();
+      const target = path.resolve(projectDir, comics[0].relative_path);
+      const hook = hookOwnedCreate((filePath) => filePath === target, {
+        times: 1, after: () => replaceWithForeignFile(target, Buffer.from('foreign output')),
+      });
+      try {
+        await expect(processingService.createArchives(project.id, [source.id], {
+          ...options, replaceExistingArchives: true,
+        })).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+        expect(comics.map((comic) => assetRepository.findById(comic.id))).toEqual(comics);
+        expect(fs.readFileSync(target).toString()).toBe('foreign output');
+        expect(createProcessingRecoveryEvidenceRepository(db).listUnresolvedEvidenceByProject(project.id))
+          .toEqual(expect.arrayContaining([expect.objectContaining({ lifecycle: 'recovery-critical' })]));
+      } finally { hook.restore(); }
+    });
+
+    it.each(['replacement disabled', 'foreign file', 'cross operation'])('retains %s refusal despite an indexed comic', async (mode) => {
+      const { source, comics } = await indexedBatch();
+      if (mode === 'foreign file') replaceWithForeignFile(path.join(projectDir, comics[0].relative_path), Buffer.from('foreign'));
+      if (mode === 'cross operation') db.prepare("UPDATE generated_artifacts SET generated_by = 'watermark'").run();
+      const apply = vi.spyOn(assetRepository, 'applyAssetWatermarks');
+      try {
+        await expect(processingService.createArchives(project.id, [source.id], {
+          ...options, replaceExistingArchives: mode !== 'replacement disabled',
+        })).rejects.toMatchObject({ code: 'ARCHIVE_DESTINATION_CONFLICT' });
+        expect(apply).not.toHaveBeenCalled();
+        expect(comics.map((comic) => assetRepository.findById(comic.id))).toEqual(comics);
+      } finally { apply.mockRestore(); }
+    });
+
+    it.each(['project', 'destination', 'classification'])('refuses an inconsistent %s lookup before publication', async (field) => {
+      const { source, comics } = await indexedBatch();
+      const find = assetRepository.findByProjectIdAndPath.bind(assetRepository);
+      const lookup = vi.spyOn(assetRepository, 'findByProjectIdAndPath').mockImplementation((projectId, relativePath) => {
+        const asset = find(projectId, relativePath);
+        if (asset?.id !== comics[0].id) return asset;
+        return { ...asset, ...({ project: { project_id: project.id + 1 },
+          destination: { relative_path: 'elsewhere.cbz' }, classification: { extension: 'png' } }[field]) };
+      });
+      try {
+        await expect(processingService.createArchives(project.id, [source.id], {
+          ...options, replaceExistingArchives: true,
+        })).rejects.toMatchObject({ code: 'ARCHIVE_DESTINATION_CONFLICT' });
+        expect(assetRepository.findById(comics[0].id)).toEqual(comics[0]);
+      } finally { lookup.mockRestore(); }
+    });
+  });
 
   describe('Archive recovery evidence', () => {
     const options = { setName: 'Evidence', makeCbz: true };

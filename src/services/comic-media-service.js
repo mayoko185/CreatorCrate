@@ -1,4 +1,4 @@
-// A3.3a — Comic media service (internal; no HTTP routes yet)
+// Comic media authority, revision-bound pages and scoped canonical first-page input.
 //
 // Connects the A3 comic archive readers (cbz-page-reader.js, cbr-cb7-page-reader.js) to the
 // established media-service architecture:
@@ -415,6 +415,11 @@ export async function renderComicPageStill(bytes, image, {
 
 // ─── Service ─────────────────────────────────────────────────────────────────────────────
 
+// Retain only the graph generation's signal, never a source scope, handle or operation.
+function captureGraphAuthority(graphSignal) {
+  return Object.freeze({ isLive: () => !graphSignal.aborted });
+}
+
 /**
  * @param {object} deps
  * @param {import('./preview-service.js').PreviewService} deps.previewService - established
@@ -487,6 +492,38 @@ export function createComicMediaService({
   let stopped = false;
   let operations = 0;
   const idleWaiters = new Set();
+  // Failed cover closes retain their original admission and graph operation. Maintenance
+  // retries each owned handle once; an unconfirmed close must never make the graph idle.
+  const pendingSourceClosures = new Set();
+  function retrySourceClosures() {
+    for (const retry of pendingSourceClosures) void retry();
+  }
+
+  async function closeCoverSource(source) {
+    const handle = source.opened.handle;
+    source.closeFd ??= handle.fd;
+    const detached = handle.fd === -1;
+    try {
+      await handle.close();
+      if (handle.fd !== -1) throw new Error('Comic source close did not retire its handle.');
+      if (detached) {
+        // A second close on an already detached FileHandle can resolve without native work.
+        let retired = false;
+        try { fs.fstatSync(source.closeFd); }
+        catch (probe) { retired = probe.code === 'EBADF'; }
+        if (!retired) throw new Error('Comic source retirement is unconfirmed.');
+      }
+      source.closed = true;
+    } catch (error) {
+      // FileHandle can detach its fd before native close settles. A rejected close and fd=-1
+      // alone are not proof of retirement; never close a raw fd that may have been reused.
+      try { fs.fstatSync(source.closeFd); }
+      catch (probe) { if (handle.fd === -1 && probe.code === 'EBADF') source.closed = true; }
+      if (source.closeFailure) source.closeFailure.cleanupError = error;
+      else source.closeFailure = internal(error);
+      throw source.closeFailure;
+    }
+  }
 
   function waitForIdle() {
     if (operations === 0) return Promise.resolve();
@@ -502,6 +539,7 @@ export function createComicMediaService({
   function pauseForMaintenance() {
     pauses += 1;
     graphController.abort();
+    retrySourceClosures();
     let released = false;
     return Object.freeze({
       waitForIdle,
@@ -517,6 +555,7 @@ export function createComicMediaService({
   function stop() {
     stopped = true;
     graphController.abort();
+    retrySourceClosures();
   }
 
   // Runs one operation of this graph. Refused before it touches anything while the graph is
@@ -626,11 +665,16 @@ export function createComicMediaService({
   }
 
   // Opens the authorized original and proves it is the indexed source. The caller closes it.
-  async function openSource(projectId, assetId) {
+  async function openSource(projectId, assetId, cleanup) {
     const { descriptor, format } = authorize(projectId, assetId);
     let opened;
     try {
-      opened = await openAssetFileAsync(projectsRoot, descriptor.projectDir, descriptor.relativePath);
+      opened = await openAssetFileAsync(projectsRoot, descriptor.projectDir, descriptor.relativePath,
+        cleanup && (async (acquired, error) => {
+          const failure = notFound('SOURCE_MISSING', error);
+          await cleanup({ opened: acquired }, failure);
+          throw failure;
+        }));
     } catch (err) {
       if (err instanceof StorageError) throw notFound('SOURCE_MISSING', err);
       throw err;
@@ -654,7 +698,8 @@ export function createComicMediaService({
         relativePath: descriptor.relativePath,
       };
     } catch (err) {
-      await closeAssetFileAsync(opened);
+      if (cleanup) await cleanup({ opened }, err);
+      else await closeAssetFileAsync(opened);
       throw err;
     }
   }
@@ -702,24 +747,27 @@ export function createComicMediaService({
   // Authority is checked before queueing (an unauthorized or non-comic request never takes a
   // queue place) and again by openSource once admitted, since the row, the file or the asset's
   // project may change while the request waits. No descriptor exists until admission.
-  // F2: the whole operation, from the first authorization to the settled admission, is one
+  // The whole operation, from the first authorization to the settled admission, is one
   // tracked operation of this graph; `work` receives the operation's signal.
-  function withSource(projectId, assetId, requestSignal, stage, work) {
+  function withSource(projectId, assetId, requestSignal, stage, work, cleanup) {
     return tracked(requestSignal, maintenance, async (signal) => {
       checkSignal(signal);
       const { format } = authorize(projectId, assetId);
       return comicAdmission.run(async () => {
-        const source = await openSource(projectId, assetId);
+        const source = await openSource(projectId, assetId, cleanup);
+        let failure;
         try {
           // The weight was chosen for the format seen before queueing.
           if (source.format !== format) throw sourceChanged();
           return await work(source, signal);
         } catch (err) {
-          throw fromArchiveError(err, stage);
+          failure = fromArchiveError(err, stage);
+          throw failure;
         } finally {
-          await closeAssetFileAsync(source.opened);
+          if (cleanup) await cleanup(source, failure);
+          else if (!source.closed) await closeAssetFileAsync(source.opened);
         }
-      // F1b-P3: CBR/CB7 manifests and pages count against the admission's decoder bound.
+      // CBR/CB7 manifests and pages count against the admission's decoder bound.
       }, { signal, lane: 'foreground', weightBytes: weights[stage][format], decoder: format !== 'cbz' });
     });
   }
@@ -966,5 +1014,244 @@ export function createComicMediaService({
     }
   }
 
-  return Object.freeze({ getComicManifest, getComicPage, pauseForMaintenance, isIdle, stop });
+  /**
+   * Starts one scoped cover operation on the next microtask. Register permit ownership on
+   * retired before awaiting result: rejection can leave a source owned by the original
+   * admission. retired never rejects and resolves only after that operation's native/source
+   * cleanup, admission and graph accounting settle; unconfirmed ownership keeps it pending.
+   * graphAuthority.isLive() synchronously observes this graph generation even after retirement.
+   * Pause/stop invalidates it permanently; resume/replacement cannot revive it. It proves only
+   * graph liveness, not operation success, resource ownership or current source/policy authority.
+   * Delivery still needs a fresh authorized source/catalogue and policy proof, then this fence
+   * after asynchronous preparation, immediately before success/response commitment.
+   */
+  function startComicCoverSource(projectId, assetId, options = {}, work) {
+    const graphAuthority = captureGraphAuthority(graphController.signal);
+    let retire;
+    const retired = new Promise(resolve => { retire = resolve; });
+    let lifetimeStarted = false;
+    const result = Promise.resolve().then(() => {
+      // A pause/resume before execution must not move this operation to a newer generation.
+      if (!graphAuthority.isLive()) throw maintenance();
+      return runComicCoverSource(projectId, assetId, options, work, lifetime => {
+        lifetimeStarted = true;
+        void lifetime.then(() => retire(), () => retire());
+      });
+    }).finally(() => {
+      // Validation can fail before an admitted/tracked lifetime exists.
+      if (!lifetimeStarted) retire();
+    });
+    return Object.freeze({ result, retired, graphAuthority });
+  }
+
+  function withComicCoverSource(projectId, assetId, options = {}, work) {
+    return startComicCoverSource(projectId, assetId, options, work).result;
+  }
+
+  /**
+   * Internal, scoped original cover input. The page admission and graph lifetime cover work,
+   * native execution and cleanup. No page file, image asset or derivative is published here.
+   * Catalogue proof does not read a page; read() memoizes original bytes inside this scope.
+   * acceptCurrent re-lists the pinned catalogue, closes the source, then invokes a synchronous
+   * acceptance callback with fresh indexed/format/path authority and no awaited gap.
+   */
+  async function runComicCoverSource(projectId, assetId, options, work, ownLifetime) {
+    if (typeof work !== 'function' || !options || Object.keys(options).some((key) => !['signal', 'deadlineMs'].includes(key))) {
+      throw new TypeError('A scoped comic cover callback and lifetime options are required.');
+    }
+    const { signal, deadlineMs } = options;
+    const budget = Math.min(rendition.timeoutSeconds * 1000,
+      cbzLimits.timeoutMs ?? CBZ_READER_LIMITS.timeoutMs,
+      cbrCb7Limits.timeoutMs ?? CBR_CB7_READER_LIMITS.timeoutMs);
+    if (deadlineMs !== undefined && (!Number.isSafeInteger(deadlineMs) || deadlineMs < 1 || deadlineMs > budget)) {
+      throw outcome(MediaBadRequestError, 'DEADLINE_INVALID', 'Invalid comic input deadline.');
+    }
+    const deadline = performance.now() + (deadlineMs ?? budget);
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    if (signal?.aborted) abort();
+    signal?.addEventListener('abort', abort, { once: true });
+    const timer = setTimeout(abort, Math.max(0, deadline - performance.now()));
+    const checkpoint = (operationSignal) => {
+      if (signal?.aborted) throw cancelled();
+      if (performance.now() >= deadline) throw renditionUnavailable('TIMEOUT');
+      checkSignal(operationSignal);
+    };
+    let completedProof;
+    let failCleanup;
+    const cleanupFailed = new Promise((_, reject) => { failCleanup = reject; });
+    const cleanup = async (source, failure) => {
+      if (source.closed) return;
+      try { await closeCoverSource(source); }
+      catch (error) {
+        if (failure && failure !== error) failure.cleanupError = error;
+        if (!source.closed) {
+          // Report failure to the caller while withSource continues owning the reservation.
+          // No polling or unbounded close loop: retry only on explicit graph teardown.
+          let retired;
+          const retirement = new Promise(resolve => { retired = resolve; });
+          let retrying = false;
+          const retry = async () => {
+            if (retrying) return;
+            retrying = true;
+            try { await closeCoverSource(source); }
+            catch (next) { if (next !== error) error.cleanupError = next; }
+            finally {
+              retrying = false;
+              if (source.closed) { pendingSourceClosures.delete(retry); retired(); }
+            }
+          };
+          pendingSourceClosures.add(retry);
+          if (stopped || pauses > 0) void retry();
+          failCleanup(failure ?? error);
+          await retirement;
+        }
+        if (!failure) throw error;
+      }
+    };
+    try {
+      const lifetime = withSource(projectId, assetId, controller.signal, 'page', async (source, operationSignal) => {
+        let active = true;
+        let pending = null;
+        let reading = null;
+        let originalRead = null;
+        let accepting = false;
+        let acceptance = null;
+        const check = () => {
+          if (!active) throw cancelled();
+          checkpoint(operationSignal);
+        };
+        const inspect = () => source.format === 'cbz'
+          ? inspectCbz(source.opened, readerOptions(source, operationSignal))
+          : inspectCbrCb7(source.opened, readerOptions(source, operationSignal));
+        const finalProof = () => {
+          checkpoint(operationSignal);
+          if (stopped || pauses > 0) throw maintenance();
+          const { descriptor, format } = authorize(projectId, assetId);
+          let identity;
+          try { identity = bigintIdentity(fs.statSync(source.opened.absolutePath, { bigint: true })); }
+          catch (error) { throw notFound('SOURCE_MISSING', error); }
+          if (format !== source.format || descriptor.revision !== source.indexedRevision
+            || descriptor.projectDir !== source.projectDir || descriptor.relativePath !== source.relativePath
+            || !sameIdentity(identity, source.identity)) throw revisionStale();
+        };
+        try {
+          check();
+          const catalog = await inspect();
+          check();
+          const first = catalog.pages[0];
+          if (!first) throw notFound('PAGE_NOT_FOUND');
+          if (first.problem) throw pageUnavailable(first.problem);
+          const revision = identityHalf(source) + catalogHalf(catalog);
+          await assertUnchanged(source);
+          check();
+          const identity = Object.freeze({ projectId, assetId, format: source.format, revision,
+            sourceRevision: source.indexedRevision, sourceIdentity: identityHalf(source),
+            page: Object.freeze({ position: 1, entryIndex: first.member.entryIndex, path: first.member.path, frame: 0 }),
+            pageCount: catalog.pageCount });
+          const read = async () => {
+            check();
+            if (source.closed || accepting) throw new TypeError('Cover reading must remain scoped.');
+            if (!originalRead) {
+              reading = (async () => {
+                let page = await readPreparedPage(source, identityKeyOf(source), revision, 1, operationSignal);
+                const prepared = page !== null;
+                if (!prepared) {
+                  page = source.format === 'cbz'
+                    ? await readCbzPage(source.opened, 1, readerOptions(source, operationSignal))
+                    : await readCbrCb7Page(source.opened, 1, readerOptions(source, operationSignal));
+                }
+                if (catalogHalf(page.catalog) !== revision.slice(16) || page.page.position !== 1
+                  || page.page.member.entryIndex !== first.member.entryIndex || page.page.member.path !== first.member.path) throw revisionStale();
+                await hooks.afterRead?.({ stage: 'cover-input', projectId, assetId, position: 1 });
+                check();
+                await assertUnchanged(source);
+                check();
+                return Object.freeze({ buffer: page.bytes, image: Object.freeze({ ...page.image }),
+                  sourceAnimated: page.image.animated, prepared });
+              })();
+              originalRead = reading.finally(() => { reading = null; });
+            }
+            const result = await originalRead;
+            check();
+            return result;
+          };
+          const acceptCurrent = async (accept) => {
+            check();
+            if (source.closed || pending || reading || accepting || typeof accept !== 'function') throw new TypeError('Invalid cover acceptance.');
+            accepting = true;
+            acceptance = (async () => {
+              if (identityHalf(source) + catalogHalf(await inspect()) !== revision) throw revisionStale();
+              await assertUnchanged(source);
+              check();
+              try { await closeCoverSource(source); }
+              catch (error) {
+                try { check(); finalProof(); }
+                catch (authorityError) { authorityError.cleanupError = error; throw authorityError; }
+                throw error;
+              }
+              await hooks.coverAuthority?.({ projectId, assetId, current: identity });
+              check();
+              finalProof();
+              const accepted = accept(identity);
+              if (accepted && typeof accepted.then === 'function') throw new TypeError('Cover acceptance must be synchronous.');
+              return accepted;
+            })();
+            return acceptance;
+          };
+          const encode = async (kind, policy) => {
+            check();
+            if (source.closed || accepting || pending) throw new TypeError('Cover encoding must be scoped and sequential.');
+            pending = (async () => {
+              const original = await read();
+              return renditionSupervisor.run({ purpose: 'image-derivative', kind, policy,
+                bytes: original.buffer, image: original.image, maxInputPixels: maxInputPixels(source), limits: rendition },
+              { signal: operationSignal, deadlineMs: Math.max(1, Math.floor(deadline - performance.now())),
+                onPhase: hooks.renditionPhase && ((phase) => hooks.renditionPhase({ phase, projectId, assetId, position: 1 })) });
+            })();
+            try {
+              const result = await pending;
+              check();
+              return result;
+            } catch (error) {
+              throw error instanceof ComicRenditionProcessError ? fromRenditionError(error, operationSignal) : error;
+            }
+            finally { pending = null; }
+          };
+          const result = await work(Object.freeze({ ...identity, read, signal: operationSignal,
+            remainingMs: () => { check(); return Math.max(1, Math.floor(deadline - performance.now())); },
+            checkpoint: check, encode, acceptCurrent }));
+          if (pending) await pending;
+          if (reading) await reading;
+          if (acceptance) await acceptance;
+          else await acceptCurrent(() => {});
+          if (source.closeFailure) throw source.closeFailure;
+          finalProof();
+          completedProof = finalProof;
+          return result;
+        } finally {
+          // Await lazy reads, native exit and acceptance before source cleanup can settle
+          // admission, including when work throws or neglects to await its operations.
+          active = false;
+          if (pending || reading) controller.abort();
+          if (pending) await pending.catch(() => {});
+          if (reading) await reading.catch(() => {});
+          if (acceptance) await acceptance.catch(() => {});
+        }
+      }, cleanup);
+      ownLifetime(lifetime);
+      const result = await Promise.race([lifetime, cleanupFailed]);
+      completedProof();
+      return result;
+    } catch (error) {
+      if (!signal?.aborted && performance.now() >= deadline) throw renditionUnavailable('TIMEOUT', error);
+      throw fromArchiveError(error, 'page');
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+    }
+  }
+
+  return Object.freeze({ getComicManifest, getComicPage, withComicCoverSource, startComicCoverSource,
+    pauseForMaintenance, isIdle, stop });
 }

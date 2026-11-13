@@ -41,6 +41,8 @@ import {
   CONTENT_DISPOSITION_HEADER_MAX,
 } from '../src/services/media-service.js';
 import { createPreviewService, buildAssetRevisionToken } from '../src/services/preview-service.js';
+import { buildAssetPreviewModel } from '../src/services/asset-presentation.js';
+import { AUTH_CONFIG } from './helpers/auth.js';
 import { createWorkflowQueryService } from '../src/services/workflow-query-service.js';
 import { Readable } from 'node:stream';
 import http from 'node:http';
@@ -2895,5 +2897,251 @@ describe('media routes — video originals and byte ranges', () => {
 
       await expectOpenedAndClosedOnce(counts);
     });
+  });
+});
+
+
+describe('media routes — explicit image source qualities', () => {
+  let h;
+  beforeEach(() => { h = makeHarness(); });
+  afterEach(() => { vi.restoreAllMocks(); h.cleanup(); });
+
+  async function fixture(policy = 'webp') {
+    createAppMetaRepository(h.db).setValue('images.preview.format', policy);
+    const { project, absPath } = h.createProject('Image source qualities');
+    const bytes = await makePng(1800, 1200);
+    const file = writeProjectFile(absPath, 'art.png', bytes);
+    const asset = h.indexAsset(project, 'art.png');
+    const settings = createProjectImageSettingsService({ appMetaRepository: createAppMetaRepository(h.db) });
+    const model = buildAssetPreviewModel(asset, settings.getPresentationPolicy());
+    return { project, asset, file, bytes, model, sources: model.imageSources,
+      base: `/projects/${project.id}/assets/${asset.id}` };
+  }
+
+  function expectControlled(res, status) {
+    expect(res.status).toBe(status);
+    expect(res.headers['cache-control']).toBe('no-store');
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
+    expect(res.text).not.toContain(h.tmpDir);
+    expect(res.text).not.toMatch(/Error:|stack|[A-Z]:\\/);
+  }
+
+  it.each(['webp', 'original'])('serves separate generated and original bytes with Preview=%s', async (policy) => {
+    const { sources, bytes, model, base } = await fixture(policy);
+    expect(sources.toggleEligible).toBe(true);
+    expect(sources.optimized.revision).not.toBe(sources.sourceRevision);
+    const optimized = await request(h.app).get(sources.optimized.url).expect(200);
+    expect(optimized.headers['content-type']).toBe('image/webp');
+    expect(optimized.headers['cache-control']).toBe('private, no-store');
+    expect(optimized.headers['x-content-type-options']).toBe('nosniff');
+    expect(optimized.headers.etag).toBeUndefined();
+    expect((await (await sharp())(optimized.body).metadata()).width).toBe(1600);
+    const original = await request(h.app).get(sources.original.url).expect(200);
+    expect(original.body.equals(bytes)).toBe(true);
+    expect(original.headers['content-type']).toBe('image/png');
+    expect(original.headers['content-disposition']).toMatch(/^inline; filename="art.png"; filename\*=/);
+    expect(original.headers['cache-control']).toBe('private, no-store');
+    expect(original.headers['x-content-type-options']).toBe('nosniff');
+    expect(model.urls.preview).toBe(policy === 'original' ? `${base}/original`
+      : `${base}/preview?v=${model.revision}`);
+    const normal = await request(h.app).get(model.urls.preview).expect(200);
+    expect(normal.headers['content-type']).toBe(policy === 'original' ? 'image/png' : 'image/webp');
+    await request(h.app).get(`${base}/original`).expect(200);
+    await request(h.app).get(`${base}/preview`).expect(200);
+  });
+
+  it.each(['original', 'optimized'])('rejects a stale canonical revision for %s before generating bytes', async (quality) => {
+    const { sources } = await fixture();
+    const url = new URL(sources[quality].url, 'http://test');
+    url.searchParams.set('sourceRevision', '0000000000000000');
+    const res = await request(h.app).get(url.pathname + url.search);
+    expectControlled(res, 409);
+    expect(fs.readdirSync(h.previewRoot)).toEqual([]);
+    expect(res.text).not.toContain(sources.sourceRevision);
+  });
+
+  it('rejects a stale rendition and never uses a canonical token as the rendition token', async () => {
+    const { sources } = await fixture();
+    const url = new URL(sources.optimized.url, 'http://test');
+    for (const revision of ['0000000000000000', sources.sourceRevision]) {
+      url.searchParams.set('v', revision);
+      expectControlled(await request(h.app).get(url.pathname + url.search), 409);
+    }
+    expect(fs.readdirSync(h.previewRoot)).toEqual([]);
+  });
+
+  it.each(['sourceRevision=', 'sourceRevision=invalid', 'sourceRevision=ABCDEF0123456789',
+    'sourceRevision=0123456789abcdef&sourceRevision=0123456789abcdef', 'sourceRevision[x]=0123456789abcdef'])
+  ('rejects malformed optional source preconditions: %s', async (query) => {
+    const { base } = await fixture();
+    for (const route of ['original?', 'preview?rendition=optimized&']) {
+      expectControlled(await request(h.app).get(`${base}/${route}${query}`), 400);
+    }
+  });
+
+  it.each(['v=', 'v=bad', 'v=0123456789abcdef&v=0123456789abcdef', 'v[x]=0123456789abcdef',
+    'rendition=original', 'rendition=optimized&rendition=optimized'])
+  ('rejects malformed explicit selection: %s', async (query) => {
+    const { base } = await fixture();
+    const prefix = query.startsWith('rendition=') ? '' : 'rendition=optimized&';
+    expectControlled(await request(h.app).get(`${base}/preview?${prefix}${query}`), 400);
+  });
+
+  it('keeps explicit optimized delivery usable without optional revisions', async () => {
+    const { base } = await fixture('original');
+    const res = await request(h.app).get(`${base}/preview?rendition=optimized`).expect(200);
+    expect(res.headers['content-type']).toBe('image/webp');
+    expect(res.headers['cache-control']).toBe('private, no-store');
+  });
+
+  it('rejects old canonical identities after source_generation advances with the same tuple', async () => {
+    const { asset, sources, base } = await fixture();
+    await request(h.app).get(sources.optimized.url).expect(200);
+    h.db.prepare('UPDATE assets SET source_generation = source_generation + 1 WHERE id = ?').run(asset.id);
+    expectControlled(await request(h.app).get(sources.original.url), 409);
+    expectControlled(await request(h.app).get(sources.optimized.url), 409);
+    await request(h.app).get(`${base}/original`).expect(200);
+    const settings = createProjectImageSettingsService({ appMetaRepository: createAppMetaRepository(h.db) });
+    const next = buildAssetPreviewModel(h.assetRepo.findById(asset.id), settings.getPresentationPolicy()).imageSources;
+    expect(next.sourceRevision).not.toBe(sources.sourceRevision);
+    expect(next.optimized.revision).not.toBe(sources.optimized.revision);
+    await request(h.app).get(next.original.url).expect(200);
+    await request(h.app).get(next.optimized.url).expect(200);
+  });
+
+  it('refuses an unscanned source replacement rather than returning the old cached preview', async () => {
+    const { sources, file } = await fixture();
+    await request(h.app).get(sources.optimized.url).expect(200);
+    fs.writeFileSync(file, await makePng(100, 80));
+    expectControlled(await request(h.app).get(sources.original.url), 409);
+    expectControlled(await request(h.app).get(sources.optimized.url), 409);
+  });
+
+  it('keeps policy changes separate from canonical source revisions and rejects old rendition URLs', async () => {
+    const { sources, asset } = await fixture();
+    await request(h.app).get(sources.optimized.url).expect(200);
+    createAppMetaRepository(h.db).setValue('images.preview.max_dimension', '800');
+    expectControlled(await request(h.app).get(sources.optimized.url), 409);
+    await request(h.app).get(sources.original.url).expect(200);
+    const settings = createProjectImageSettingsService({ appMetaRepository: createAppMetaRepository(h.db) });
+    const next = buildAssetPreviewModel(asset, settings.getPresentationPolicy()).imageSources;
+    expect(next.sourceRevision).toBe(sources.sourceRevision);
+    expect(next.optimized.revision).not.toBe(sources.optimized.revision);
+    const res = await request(h.app).get(next.optimized.url).expect(200);
+    expect((await (await sharp())(res.body).metadata()).width).toBe(800);
+  });
+
+  it('reports missing sources and unavailable generation without substituting Original', async () => {
+    const { sources, file, asset, project } = await fixture('original');
+    const cacheDir = path.join(h.previewRoot, 'projects', String(project.id), String(asset.id));
+    fs.mkdirSync(path.dirname(cacheDir), { recursive: true });
+    fs.writeFileSync(cacheDir, 'blocker');
+    expectControlled(await request(h.app).get(sources.optimized.url), 503);
+    await request(h.app).get(sources.original.url).expect(200);
+    fs.unlinkSync(file);
+    expectControlled(await request(h.app).get(sources.original.url), 404);
+    expectControlled(await request(h.app).get(sources.optimized.url), 404);
+  });
+
+  it('retains project qualification, missing identity and unsupported-original refusal', async () => {
+    const { sources, asset, base } = await fixture();
+    const other = h.createProject('Other source owner');
+    for (const url of [sources.original.url, sources.optimized.url]) {
+      expectControlled(await request(h.app).get(url.replace(`/projects/${asset.project_id}/`, `/projects/${other.project.id}/`)), 404);
+      expectControlled(await request(h.app).get(url.replace(`/assets/${asset.id}/`, '/assets/999999/')), 404);
+      expectControlled(await request(h.app).get(url.replace(`/projects/${asset.project_id}/`, '/projects/999999/')), 404);
+    }
+    h.db.prepare('UPDATE assets SET mime_type = ? WHERE id = ?').run('application/octet-stream', asset.id);
+    expectControlled(await request(h.app).get(sources.original.url), 415);
+    expectControlled(await request(h.app).get(sources.optimized.url), 415);
+    h.db.prepare('UPDATE assets SET is_present = 0 WHERE id = ?').run(asset.id);
+    expectControlled(await request(h.app).get(`${base}/original`), 404);
+  });
+
+  it('retains traversal and symlink refusal for versioned originals and optimized previews', async () => {
+    const { sources, asset, file } = await fixture();
+    h.db.prepare('UPDATE assets SET relative_path = ? WHERE id = ?').run('../outside.png', asset.id);
+    const revision = buildAssetRevisionToken(h.assetRepo.findById(asset.id));
+    for (const url of [sources.original.url, sources.optimized.url]) {
+      const res = await request(h.app).get(url);
+      expect([404, 409]).toContain(res.status);
+      expect(res.headers['cache-control']).toBe('no-store');
+    }
+    h.db.prepare('UPDATE assets SET relative_path = ? WHERE id = ?').run('art.png', asset.id);
+    const outside = path.join(h.tmpDir, 'outside');
+    fs.mkdirSync(outside);
+    fs.renameSync(file, path.join(outside, 'art.png'));
+    const link = path.join(path.dirname(file), 'linked');
+    fs.symlinkSync(outside, link, process.platform === 'win32' ? 'junction' : 'dir');
+    h.db.prepare('UPDATE assets SET relative_path = ? WHERE id = ?').run('linked/art.png', asset.id);
+    const settings = createProjectImageSettingsService({ appMetaRepository: createAppMetaRepository(h.db) });
+    const linked = buildAssetPreviewModel(h.assetRepo.findById(asset.id), settings.getPresentationPolicy()).imageSources;
+    expectControlled(await request(h.app).get(linked.original.url), 404);
+    expectControlled(await request(h.app).get(linked.optimized.url), 404);
+    expect(revision).toBeNull();
+  });
+
+  it('keeps both source-quality routes behind authentication', async () => {
+    const { sources } = await fixture();
+    const app = createApp({ appName: 'CreatorCrate', db: h.db, projectsRoot: h.projectsRoot, previewRoot: h.previewRoot },
+      { authConfig: AUTH_CONFIG, previewService: h.previewService, mediaService: h.mediaService });
+    for (const url of [sources.original.url, sources.optimized.url]) {
+      const res = await request(app).get(url).expect(302);
+      expect(res.headers.location).toMatch(/^\/login\?/);
+    }
+  });
+
+  it('releases a prepared optimized stream when the client disconnected during preparation', async () => {
+    const { sources } = await fixture();
+    let release;
+    let prepared;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const prepare = h.mediaService.prepareDerivativeResponse;
+    let completed;
+    const completion = new Promise((resolve) => { completed = resolve; });
+    vi.spyOn(h.mediaService, 'prepareDerivativeResponse').mockImplementation(async (...args) => {
+      await gate;
+      prepared = await prepare(...args);
+      completed();
+      return prepared;
+    });
+    try {
+      await request(h.app).get(sources.optimized.url).timeout({ deadline: 300 });
+      throw new Error('Expected client timeout');
+    } catch (err) {
+      expect(err.code).toBe('ECONNABORTED');
+    } finally {
+      release();
+    }
+    await completion;
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(prepared.stream.destroyed).toBe(true);
+    await new Promise((resolve) => {
+      if (prepared.stream.closed) resolve();
+      else prepared.stream.once('close', resolve);
+    });
+    expect(prepared.stream.closed).toBe(true);
+  });
+
+  it('closes the one original descriptor when indexed authority changes during open', async () => {
+    const { sources, asset, file } = await fixture();
+    const open = fs.openSync;
+    const close = fs.closeSync;
+    let tracked;
+    let closed = 0;
+    vi.spyOn(fs, 'openSync').mockImplementation(function (target, ...args) {
+      const fd = open.call(fs, target, ...args);
+      if (target === file) {
+        tracked = fd;
+        h.db.prepare('UPDATE assets SET source_generation = source_generation + 1 WHERE id = ?').run(asset.id);
+      }
+      return fd;
+    });
+    vi.spyOn(fs, 'closeSync').mockImplementation(function (fd) {
+      if (fd === tracked) closed++;
+      return close.call(fs, fd);
+    });
+    expectControlled(await request(h.app).get(sources.original.url), 409);
+    expect(closed).toBe(1);
   });
 });

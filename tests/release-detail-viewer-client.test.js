@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   enhanceReleaseDetailViewer,
+  openReleaseDetailComic,
   openReleaseDetailImage,
   reconcileReleaseDetailViewer,
   retireReleaseDetailViewer,
@@ -83,6 +84,7 @@ function makeNode(tagName = 'div', attrs = {}) {
     checked: false,
     value: '',
     get hidden() { return attributes.has('hidden'); },
+    set hidden(value) { if (value) attributes.set('hidden', ''); else attributes.delete('hidden'); },
     setAttribute(name, value) { attributes.set(name, String(value)); },
     getAttribute(name) { return attributes.has(name) ? attributes.get(name) : null; },
     hasAttribute(name) { return attributes.has(name); },
@@ -181,10 +183,54 @@ function makeNode(tagName = 'div', attrs = {}) {
 
 // ─── Controller double (mirrors unified-viewer.js open/update/getState) ─────
 
+// Comic sources' host hint (mirrors unified-viewer.js normalizeSourceHint).
+function comicHint(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return typeof value === 'string' && value.length > 0 && value.length <= 512 ? value : null;
+}
+
 function makeViewer() {
   let counter = 0;
   let active = null;
-  return {
+  const viewer = {
+    // C2c comic sessions (mirror unified-viewer.js openComic/reconcileComic):
+    // every manifest request the real controller would start is recorded.
+    manifestRequests: [],
+    openComic: vi.fn((descriptor, options = {}) => {
+      counter += 1;
+      active = {
+        session: counter,
+        source: null,
+        key: null,
+        options,
+        comic: {
+          projectId: descriptor.projectId,
+          assetId: descriptor.assetId,
+          title: descriptor.title,
+          sourceHint: comicHint(descriptor.sourceRevision),
+        },
+      };
+      viewer.manifestRequests.push({ session: counter, projectId: descriptor.projectId, assetId: descriptor.assetId });
+      return counter;
+    }),
+    reconcileComic: vi.fn((hint, options = {}) => {
+      if (!active?.comic || options.session !== active.session) return null;
+      if (hint === null) {
+        active = null;
+        return { outcome: 'closed' };
+      }
+      if (!hint || typeof hint !== 'object') return null;
+      if (`${hint.projectId}:${hint.assetId}` !== `${active.comic.projectId}:${active.comic.assetId}`) return null;
+      if (hint.eligible === false) {
+        active = null;
+        return { outcome: 'closed' };
+      }
+      const next = comicHint(hint.sourceRevision);
+      if (next === null || next === active.comic.sourceHint) return { outcome: 'unchanged' };
+      active.comic.sourceHint = next;
+      viewer.manifestRequests.push({ session: active.session, projectId: active.comic.projectId, assetId: active.comic.assetId });
+      return { outcome: 'reloading' };
+    }),
     open: vi.fn((source, options = {}) => {
       const normalized = createViewerSource(source);
       const initial = selectInitialViewerItem(normalized);
@@ -194,7 +240,8 @@ function makeViewer() {
       return counter;
     }),
     update: vi.fn((replacement, options = {}) => {
-      if (!active) return null;
+      // A comic's pages come only from its manifest: item lists are ignored.
+      if (!active || active.comic) return null;
       if (options.session !== undefined && options.session !== active.session) return null;
       const result = reconcileViewerSource(active.source, active.key, replacement);
       if (result.outcome === VIEWER_RECONCILE_CLOSED || result.outcome === VIEWER_RECONCILE_IDLE || !result.item) {
@@ -212,10 +259,12 @@ function makeViewer() {
         session: active ? active.session : null,
         key: active ? active.key : null,
         source: active ? active.source : null,
+        comic: active?.comic ? { ...active.comic } : null,
       };
     },
     active: () => active,
   };
+  return viewer;
 }
 
 // ─── Page fixture (releases/detail.njk shape) ────────────────────────────────
@@ -249,6 +298,35 @@ function triggerAttributes(asset) {
   };
 }
 
+// C2c: an eligible saved comic's Read comic link (comicReaderLink's attributes).
+function comic(id, extra = {}) {
+  return {
+    id,
+    kind: 'readable-comic',
+    projectId: 7,
+    filename: `book-${id}.cbz`,
+    detailsUrl: `/projects/7/assets/${id}`,
+    sourceRevision: `s${id}`,
+    role: 'attachment',
+    order: id,
+    ...extra,
+  };
+}
+
+function comicAttributes(asset, view) {
+  return {
+    class: `${view === 'grid' ? 'asset-card-media-link' : 'asset-list-card-media-link'} asset-comic-link`,
+    href: asset.detailsUrl,
+    'aria-label': `Read comic ${asset.filename}`,
+    'data-release-detail-comic-trigger': '',
+    'data-comic-project': String(asset.projectId),
+    'data-comic-asset': String(asset.id),
+    'data-comic-title': asset.filename.replace(/\.\w+$/, ''),
+    ...(asset.sourceRevision ? { 'data-comic-source-revision': asset.sourceRevision } : {}),
+    ...(asset.attributes || {}),
+  };
+}
+
 // One read-only selected card: Role and Order details, the Details link, the
 // filename link and the media frame (image trigger, video link or placeholder).
 function buildCard(asset, view) {
@@ -275,11 +353,18 @@ function buildCard(asset, view) {
       href: asset.detailsUrl,
       ...triggerAttributes(asset),
     });
-    link.appendChild(makeNode('img', { 'data-preview-image': '' }));
+    link.appendChild(makeNode('img', { 'data-preview-image': '', src: asset.previewUrl }));
     media.appendChild(link);
   } else if (asset.kind === 'video') {
     link = makeNode('a', { class: 'asset-video-link', href: asset.detailsUrl, 'data-asset-video-preview-trigger': '' });
     media.appendChild(link);
+  } else if (asset.kind === 'readable-comic') {
+    link = makeNode('a', comicAttributes(asset, view));
+    media.setAttribute('data-preview-enhancement', '');
+    media.setAttribute('data-preview-state', 'loaded');
+    link.appendChild(makeNode('img', { 'data-preview-image': '', src: asset.previewUrl || `/projects/7/assets/${asset.id}/preview?v=${asset.sourceRevision}`, alt: asset.filename }));
+    media.appendChild(link);
+    media.appendChild(makeNode('a', { ...comicAttributes(asset, view), 'data-preview-fallback': '', hidden: '' }));
   } else if (asset.kind === 'comic') {
     // A comic with a cover thumbnail: the plain Asset Details link, no trigger.
     media.setAttribute('data-preview-enhancement', '');
@@ -591,6 +676,33 @@ describe('Release Detail viewer: authoritative refresh', () => {
     expect(page.cards.get(1).link.dispatch('click').defaultPrevented).toBe(true);
   });
 
+  it.each(['grid', 'list'])('keeps the static %s image and Details actions when saved membership is withdrawn', (view) => {
+    const page = makePage({ view });
+    openOn(page, 2);
+    const { article, media, link, details, title, role, order } = page.cards.get(2);
+    const image = link.querySelector('[data-preview-image]');
+    const source = image.getAttribute('src');
+    const next = defaultAssets().filter((asset) => asset.id !== 2);
+    reconcileReleaseDetailViewer(page.document, render({ assets: next, view }));
+
+    expect(page.viewer.getState().open).toBe(false);
+    expect(page.selected.contains(article)).toBe(true);
+    expect(media.querySelector('[data-preview-image]')).toBe(image);
+    expect(image.getAttribute('src')).toBe(source);
+    expect(image.hidden).toBe(false);
+    expect(link.hidden).toBe(false);
+    expect(media.getAttribute('data-preview-state')).toBe('loaded');
+    for (const action of [link, details, title]) {
+      expect(action.getAttribute('href')).toBe('/projects/7/assets/2');
+      expect(action.dispatch('click').defaultPrevented).toBe(false);
+    }
+    expect(link.hasAttribute('data-release-detail-viewer-trigger')).toBe(false);
+    expect(link.getAttribute('data-viewer-preview-url')).toBeNull();
+    expect(openReleaseDetailImage(page.document, link)).toBe(0);
+    expect(role.getAttribute('data-role')).toBe('attachment');
+    expect(order.getAttribute('data-order')).toBe('1');
+  });
+
   it('closes when the underlying asset is missing (rendered without a trigger)', () => {
     const page = makePage();
     openOn(page, 2);
@@ -698,12 +810,20 @@ describe('Release Detail authoritative 404 retirement', () => {
     const page = fixture({ opened });
     const old = page.cards.get(2).link;
     const cached = old.cloneNode(true);
+    const image = old.querySelector('[data-preview-image]');
+    const source = image.getAttribute('src');
     const options = page.viewer.active()?.options;
     page.fetch.mockResolvedValue(response(404));
     expect(await refreshReleaseDetail(page.document, '5')).toBe('retired');
     expect(page.changes).toEqual([{ type: 'retired', releaseId: '5' }]);
     expect(page.viewer.getState().open).toBe(false);
     expect(page.document.querySelectorAll('[data-release-detail-viewer-trigger]')).toHaveLength(0);
+    expect(image.isConnected).toBe(true);
+    expect(image.getAttribute('src')).toBe(source);
+    expect(image.hidden).toBe(false);
+    expect(image.closest('[data-preview-enhancement]').getAttribute('data-preview-state')).toBe('loaded');
+    expect(image.closest('a').getAttribute('href')).toBe('/projects/7/assets/2');
+    expect(image.closest('a').dispatch('click').defaultPrevented).toBe(false);
     expect(Object.values(descriptorOf(old))).toEqual(new Array(8).fill(null));
     expect(old.getAttribute('href')).toBe('/projects/7/assets/2');
     expect(old.dispatch('click').defaultPrevented).toBe(false);
@@ -809,5 +929,399 @@ describe('Release Detail authoritative 404 retirement', () => {
     expect(await refreshReleaseDetail(page.document, '5')).toBe('retired');
     expect(page.viewer.getState()).toMatchObject({ open: true, session });
     expect(page.viewer.update).not.toHaveBeenCalled();
+  });
+});
+
+// ─── C2c: Read comic on Release Detail ──────────────────────────────────────
+
+describe('Release Detail Read comic (C2c)', () => {
+  const comicAssets = () => [
+    image(1, { role: 'cover', order: 0 }),
+    comic(40, { order: 1 }),
+    comic(41, { order: 2 }),
+    { ...image(3), kind: 'video', order: 3 },
+  ];
+  const withComic = (id, extra) => comicAssets().map((asset) => (asset.id === id ? { ...asset, ...extra } : asset));
+  const response = (status, extra = {}) => ({ status, ok: status === 200, ...extra });
+  function held() {
+    let resolve;
+    const promise = new Promise((done) => { resolve = done; });
+    return { promise, resolve };
+  }
+
+  function comicPage(options = {}) {
+    const page = makePage({ assets: comicAssets(), ...options });
+    enhanceReleaseDetailViewer(page.document);
+    const changes = [];
+    observeReleaseDetailRefresh(page.document, (change) => changes.push(change));
+    // Accepted refreshes parse whatever the test says the server now renders.
+    page.serve = (assets, releaseId = '5') => {
+      page.document.defaultView.DOMParser = class {
+        parseFromString() { return render({ releaseId, assets }); }
+      };
+    };
+    page.serve(comicAssets());
+    return { ...page, changes };
+  }
+
+  function openOn(page, id) {
+    const event = page.cards.get(id).link.dispatch('click');
+    expect(event.defaultPrevented).toBe(true);
+    return page.viewer.getState().session;
+  }
+
+  const isWithdrawn = (link) => !link.hasAttribute('data-release-detail-comic-trigger')
+    && link.hasAttribute('data-release-detail-comic-withdrawn')
+    && ['data-comic-project', 'data-comic-asset', 'data-comic-source-revision', 'data-comic-title']
+      .every((name) => !link.hasAttribute(name));
+
+  it('forwards authoritative comic metadata on opening and an accepted render', () => {
+    const page = comicPage();
+    const link = page.cards.get(41).link;
+    link.setAttribute('data-comic-filename', '巻 01 & final!.cbz');
+    link.setAttribute('data-comic-project-name', 'Project name');
+    link.setAttribute('data-comic-details-url', '/projects/7/assets/41');
+    openOn(page, 41);
+    expect(page.viewer.openComic.mock.calls[0][0]).toMatchObject({ filename: '巻 01 & final!.cbz', projectName: 'Project name', detailsUrl: '/projects/7/assets/41' });
+    reconcileReleaseDetailViewer(page.document, render({ releaseId: '5', assets: comicAssets().map((asset) => asset.id === 41 ? { ...asset, attributes: { 'data-comic-filename': '巻 02 final.cbz', 'data-comic-project-name': '' } } : asset) }));
+    expect(page.viewer.reconcileComic.mock.lastCall[0]).toMatchObject({ filename: '巻 02 final.cbz', projectName: '' });
+    expect(page.viewer.reconcileComic.mock.lastCall[0]).not.toHaveProperty('detailsUrl');
+    expect(page.viewer.manifestRequests).toHaveLength(1);
+  });
+
+  it.each(['grid', 'list'])('an unmodified %s click opens that saved comic through openComic', (view) => {
+    const page = comicPage({ view });
+    const { link } = page.cards.get(41);
+    expect(link.dispatch('click').defaultPrevented).toBe(true);
+    expect(page.viewer.open).not.toHaveBeenCalled();
+    const [descriptor, options] = page.viewer.openComic.mock.calls[0];
+    expect(descriptor).toEqual({ projectId: 7, assetId: 41, title: 'book-41', label: '', sourceRevision: 's41' });
+    expect(options.opener).toBe(link);
+    expect(page.viewer.manifestRequests).toEqual([{ session: 1, projectId: 7, assetId: 41 }]);
+    // Each saved comic opens on its own; the next one replaces the source.
+    openOn(page, 40);
+    expect(page.viewer.getState()).toMatchObject({ open: true, session: 2, comic: { assetId: 40 } });
+  });
+
+  it('leaves modified, middle and already-handled clicks to the Asset Details link', () => {
+    const page = comicPage();
+    const { link } = page.cards.get(40);
+    for (const props of [{ ctrlKey: true }, { metaKey: true }, { shiftKey: true }, { altKey: true }, { button: 1 }]) {
+      expect(link.dispatch('click', props).defaultPrevented).toBe(false);
+    }
+    expect(link.dispatch('click', { defaultPrevented: true }).defaultPrevented).toBe(true);
+    expect(page.viewer.openComic).not.toHaveBeenCalled();
+  });
+
+  it('reading is presentation-only: no request, Role/Order and release actions untouched, one listener', () => {
+    const page = comicPage();
+    const roles = [...page.cards.values()].map((card) => card.role.getAttribute('data-role'));
+    const orders = [...page.cards.values()].map((card) => card.order.getAttribute('data-order'));
+    openOn(page, 40);
+    page.viewer.close();
+    openOn(page, 41);
+    expect(page.fetch).not.toHaveBeenCalled();
+    expect(page.viewer.update).not.toHaveBeenCalled();
+    expect([...page.cards.values()].map((card) => card.role.getAttribute('data-role'))).toEqual(roles);
+    expect([...page.cards.values()].map((card) => card.order.getAttribute('data-order'))).toEqual(orders);
+    expect(page.publish.isConnected).toBe(true);
+    expect(page.edit.isConnected).toBe(true);
+    enhanceReleaseDetailViewer(page.document);
+    expect(page.document.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
+    expect(page.document.__creatorCrateReleaseDetailRefresh.observers.size).toBe(2);
+  });
+
+  it('refuses malformed, foreign, mismatched, inert and out-of-section comic links', () => {
+    const page = comicPage();
+    const tampered = [
+      comic(50, { attributes: { 'data-comic-asset': '5x' } }),
+      comic(51, { attributes: { 'data-comic-project': '8' } }),
+      comic(52, { attributes: { href: '/projects/7/assets/53' } }),
+    ].map((asset) => {
+      const parts = buildCard(asset, 'grid');
+      page.selected.appendChild(parts.article);
+      return parts.link;
+    });
+    const misplaced = buildCard(comic(55), 'grid');
+    misplaced.article.setAttribute('data-asset-id', '56');
+    page.selected.appendChild(misplaced.article);
+    const inert = buildCard(comic(57), 'grid');
+    inert.article.setAttribute('inert', '');
+    page.selected.appendChild(inert.article);
+    const outside = buildCard(comic(58), 'grid');
+    page.main.appendChild(outside.article);
+    [...tampered, misplaced.link, inert.link, outside.link].forEach((link) => {
+      expect(link.dispatch('click').defaultPrevented).toBe(false);
+    });
+    expect(page.viewer.openComic).not.toHaveBeenCalled();
+    expect(page.viewer.manifestRequests).toEqual([]);
+  });
+
+  describe('accepted renders (complete saved selection)', () => {
+    it('keeps an unchanged hint without a request, through the real refresh', async () => {
+      const page = comicPage();
+      openOn(page, 41);
+      page.fetch.mockResolvedValue(response(200, { text: async () => 'render' }));
+      expect(await refreshReleaseDetail(page.document, '5')).toBe('refreshed');
+      expect(page.changes.map(({ type }) => type)).toEqual(['adopted']);
+      expect(page.viewer.reconcileComic).toHaveBeenCalledTimes(1);
+      expect(page.viewer.reconcileComic.mock.calls[0][0]).toEqual({ projectId: 7, assetId: 41, sourceRevision: 's41' });
+      expect(page.viewer.manifestRequests).toHaveLength(1);
+      expect(page.viewer.getState()).toMatchObject({ open: true, session: 1 });
+    });
+
+    it('a new indexed-source hint requests one manifest and updates the page link; its repeat requests none', async () => {
+      const page = comicPage();
+      openOn(page, 41);
+      page.serve(withComic(41, { sourceRevision: 's41b', filename: 'renamed.cbz' }));
+      page.fetch.mockResolvedValue(response(200, { text: async () => 'render' }));
+      expect(await refreshReleaseDetail(page.document, '5')).toBe('refreshed');
+      expect(await refreshReleaseDetail(page.document, '5')).toBe('refreshed');
+      expect(page.viewer.manifestRequests).toHaveLength(2);
+      expect(page.viewer.reconcileComic.mock.results.map(({ value }) => value.outcome)).toEqual(['reloading', 'unchanged']);
+      const link = page.cards.get(41).link;
+      expect(link.getAttribute('data-comic-source-revision')).toBe('s41b');
+      expect(link.getAttribute('data-comic-title')).toBe('renamed');
+      // The next opening uses the current hint.
+      page.viewer.close();
+      openOn(page, 41);
+      expect(page.viewer.openComic.mock.calls[1][0].sourceRevision).toBe('s41b');
+    });
+
+    it('retires the reader and withdraws its link when the comic leaves the saved selection', () => {
+      const page = comicPage();
+      openOn(page, 41);
+      const opener = page.cards.get(41).link;
+      const result = reconcileReleaseDetailViewer(page.document, render({ assets: comicAssets().filter((asset) => asset.id !== 41) }));
+      expect(result).toEqual({ outcome: 'closed', hostReason: 'removed' });
+      expect(page.viewer.reconcileComic.mock.calls[0][0]).toEqual({ projectId: 7, assetId: 41, eligible: false });
+      expect(page.viewer.getState().open).toBe(false);
+      // The static card stays, as its plain Asset Details link.
+      expect(opener.isConnected).toBe(true);
+      expect(isWithdrawn(opener)).toBe(true);
+      expect(opener.getAttribute('href')).toBe('/projects/7/assets/41');
+      expect(opener.getAttribute('aria-label')).toBe('View details for book-41.cbz');
+      expect(opener.querySelector('[data-preview-image]').hasAttribute('src')).toBe(false);
+      expect(page.cards.get(41).media.querySelector('[data-preview-fallback]').hasAttribute('data-release-detail-comic-trigger')).toBe(false);
+      expect(opener.dispatch('click').defaultPrevented).toBe(false);
+      expect(openReleaseDetailComic(page.document, opener)).toBe(0);
+      // A later render offering it again does not revive the withdrawn link.
+      expect(reconcileReleaseDetailViewer(page.document, render({ assets: comicAssets() }))).toBeNull();
+      expect(isWithdrawn(opener)).toBe(true);
+      // The other saved comic is still readable.
+      openOn(page, 40);
+      expect(page.viewer.openComic).toHaveBeenCalledTimes(2);
+    });
+
+    it('retires the reader when its saved card is rendered without Read comic (missing or unreadable)', () => {
+      const page = comicPage();
+      openOn(page, 41);
+      const result = reconcileReleaseDetailViewer(page.document, render({ assets: withComic(41, { kind: 'missing' }) }));
+      expect(result).toEqual({ outcome: 'closed', hostReason: 'ineligible' });
+      expect(page.viewer.getState().open).toBe(false);
+      expect(isWithdrawn(page.cards.get(41).link)).toBe(true);
+      expect(page.cards.get(40).link.hasAttribute('data-release-detail-comic-trigger')).toBe(true);
+    });
+
+    it('withdraws a closed comic\'s link without reopening anything', () => {
+      const page = comicPage();
+      openOn(page, 41);
+      page.viewer.close();
+      expect(reconcileReleaseDetailViewer(page.document, render({ assets: withComic(41, { kind: 'missing' }) }))).toBeNull();
+      expect(page.viewer.reconcileComic).not.toHaveBeenCalled();
+      expect(page.viewer.getState().open).toBe(false);
+      expect(isWithdrawn(page.cards.get(41).link)).toBe(true);
+    });
+
+    it('ignores a render of another release or without the selected assets', () => {
+      const page = comicPage();
+      openOn(page, 41);
+      expect(reconcileReleaseDetailViewer(page.document, render({ releaseId: '6', assets: [] }))).toBeNull();
+      const bare = makeNode('document');
+      bare.nodeType = 9;
+      expect(reconcileReleaseDetailViewer(page.document, bare)).toBeNull();
+      expect(page.viewer.reconcileComic).not.toHaveBeenCalled();
+      expect(page.viewer.getState()).toMatchObject({ open: true, session: 1 });
+      expect(page.cards.get(41).link.hasAttribute('data-release-detail-comic-trigger')).toBe(true);
+    });
+
+    it('never touches a replacement comic, a replacement image or another host\'s session', () => {
+      const page = comicPage();
+      openOn(page, 41);
+      openOn(page, 40);
+      // The first comic's removal cannot close the second.
+      expect(reconcileReleaseDetailViewer(page.document, render({ assets: comicAssets().filter((asset) => asset.id !== 41) })))
+        .toEqual({ outcome: 'unchanged', hostReason: 'updated' });
+      expect(page.viewer.getState()).toMatchObject({ open: true, session: 2, comic: { assetId: 40 } });
+
+      openOn(page, 1);
+      expect(reconcileReleaseDetailViewer(page.document, render({ assets: withComic(40, { sourceRevision: 'x' }) }))).toBeNull();
+      expect(page.viewer.reconcileComic).toHaveBeenCalledTimes(1);
+      expect(page.viewer.getState()).toMatchObject({ open: true, session: 3, key: 'p:7|a:1' });
+
+      const other = comicPage();
+      openOn(other, 41);
+      other.viewer.openComic({ projectId: 7, assetId: 41, sourceRevision: 's41' });
+      expect(reconcileReleaseDetailViewer(other.document, render({ assets: [] }))).toBeNull();
+      expect(other.viewer.getState()).toMatchObject({ open: true, session: 2 });
+    });
+
+    it('falls back to the same comic\'s link, else the Grid/List switch', () => {
+      const page = comicPage();
+      openOn(page, 41);
+      const { fallbackFocus } = page.viewer.openComic.mock.calls[0][1];
+      expect(fallbackFocus()).toBe(page.cards.get(41).link);
+      reconcileReleaseDetailViewer(page.document, render({ assets: withComic(41, { kind: 'missing' }) }));
+      expect(fallbackFocus()).toBe(page.nav.children[0]);
+      expect(fallbackFocus().isConnected).toBe(true);
+    });
+  });
+
+  describe('authoritative 404 retirement', () => {
+    it.each([true, false])('retires an open=%s comic once, withdraws every Read comic link and refuses cached activation', async (opened) => {
+      const page = comicPage();
+      if (opened) openOn(page, 41);
+      const old = page.cards.get(41).link;
+      const cached = old.cloneNode(true);
+      const options = page.viewer.openComic.mock.calls[0]?.[1];
+      page.fetch.mockResolvedValue(response(404));
+      expect(await refreshReleaseDetail(page.document, '5')).toBe('retired');
+      expect(page.changes).toEqual([{ type: 'retired', releaseId: '5' }]);
+      expect(page.viewer.getState().open).toBe(false);
+      expect(page.document.querySelectorAll('[data-release-detail-comic-trigger]')).toHaveLength(0);
+      expect(page.document.querySelectorAll('[data-release-detail-viewer-trigger]')).toHaveLength(0);
+      if (opened) {
+        expect(page.viewer.reconcileComic).toHaveBeenCalledTimes(1);
+        expect(page.viewer.reconcileComic.mock.calls[0]).toEqual([null, { session: 1 }]);
+        // The opener was detached, so focus goes to the connected switch.
+        expect(options.opener.isConnected).toBe(false);
+        expect(options.fallbackFocus()).toBe(page.nav.children[0]);
+      }
+      const current = page.selected.querySelector('article[data-asset-id="41"] a.asset-comic-link');
+      expect(isWithdrawn(current)).toBe(true);
+      expect(current.getAttribute('href')).toBe('/projects/7/assets/41');
+      expect(current.dispatch('click').defaultPrevented).toBe(false);
+      expect(openReleaseDetailComic(page.document, old)).toBe(0);
+      expect(openReleaseDetailComic(page.document, current)).toBe(0);
+      // Back inside its own card, with its full descriptor: still refused.
+      page.cards.get(41).article.appendChild(cached);
+      expect(cached.dispatch('click').defaultPrevented).toBe(false);
+      expect(openReleaseDetailComic(page.document, cached)).toBe(0);
+      // Repeated, late or direct retirement changes nothing more.
+      expect(reconcileReleaseDetailViewer(page.document, render({ assets: comicAssets() }))).toBeNull();
+      expect(await refreshReleaseDetail(page.document, '5')).toBe('superseded');
+      expect(retireReleaseDetailRefresh(page.document)).toBe(false);
+      expect(retireReleaseDetailViewer(page.document)).toBeNull();
+      expect(page.viewer.reconcileComic).toHaveBeenCalledTimes(opened ? 1 : 0);
+      expect(page.viewer.openComic).toHaveBeenCalledTimes(opened ? 1 : 0);
+      expect(page.viewer.manifestRequests).toHaveLength(opened ? 1 : 0);
+      expect(page.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([500, 503])('does not retire a comic after HTTP %s', async (status) => {
+      const page = comicPage();
+      openOn(page, 41);
+      page.fetch.mockResolvedValue(response(status));
+      expect(await refreshReleaseDetail(page.document, '5')).toBe('failed');
+      expect(page.changes).toEqual([]);
+      expect(page.viewer.getState()).toMatchObject({ open: true, comic: { assetId: 41 } });
+      expect(page.cards.get(41).link.hasAttribute('data-release-detail-comic-trigger')).toBe(true);
+    });
+
+    it('does not retire a comic after a network failure', async () => {
+      const page = comicPage();
+      openOn(page, 41);
+      page.fetch.mockRejectedValue(Object.assign(new Error('offline'), { name: 'TypeError' }));
+      expect(await refreshReleaseDetail(page.document, '5')).toBe('failed');
+      expect(page.viewer.getState().open).toBe(true);
+    });
+
+    it('a superseded 404 cannot retire a newer comic session', async () => {
+      const page = comicPage();
+      openOn(page, 41);
+      const old = held();
+      page.fetch.mockReturnValueOnce(old.promise).mockResolvedValueOnce(response(200, { text: async () => 'current' }));
+      const first = refreshReleaseDetail(page.document, '5');
+      expect(await refreshReleaseDetail(page.document, '5')).toBe('refreshed');
+      openOn(page, 40);
+      old.resolve(response(404));
+      expect(await first).toBe('superseded');
+      expect(page.changes.map(({ type }) => type)).toEqual(['adopted']);
+      expect(page.viewer.getState()).toMatchObject({ open: true, session: 2, comic: { assetId: 40 } });
+      expect(page.cards.get(40).link.hasAttribute('data-release-detail-comic-trigger')).toBe(true);
+    });
+
+    it('a foreign release notification cannot retire the current comic', async () => {
+      const page = comicPage();
+      openOn(page, 41);
+      // Another page identity: the refresh refuses to fetch at all.
+      expect(await refreshReleaseDetail(page.document, '99')).toBe('superseded');
+      page.fetch.mockResolvedValue(response(404, { url: 'http://localhost/releases/99' }));
+      expect(await refreshReleaseDetail(page.document, '5')).toBe('failed');
+      expect(page.changes).toEqual([]);
+      expect(page.viewer.getState().open).toBe(true);
+    });
+
+    it('retires the triggers without closing a replacement session owned by another host', async () => {
+      const page = comicPage();
+      openOn(page, 41);
+      const session = page.viewer.openComic({ projectId: 7, assetId: 41, sourceRevision: 's41' });
+      page.fetch.mockResolvedValue(response(404));
+      expect(await refreshReleaseDetail(page.document, '5')).toBe('retired');
+      expect(page.viewer.getState()).toMatchObject({ open: true, session });
+      expect(page.viewer.reconcileComic).not.toHaveBeenCalled();
+      expect(page.document.querySelectorAll('[data-release-detail-comic-trigger]')).toHaveLength(0);
+    });
+
+    it('an open image is still retired as before when comics share the page', async () => {
+      const page = comicPage();
+      openOn(page, 1);
+      page.fetch.mockResolvedValue(response(404));
+      expect(await refreshReleaseDetail(page.document, '5')).toBe('retired');
+      expect(page.viewer.getState().open).toBe(false);
+      expect(page.viewer.reconcileComic).not.toHaveBeenCalled();
+      expect(page.document.querySelectorAll('[data-release-detail-viewer-trigger], [data-release-detail-comic-trigger]')).toHaveLength(0);
+    });
+  });
+});
+
+
+describe('retained release native Preview media', () => {
+  it.each(['grid', 'list'])('keeps the %s card/image and updates both Reader links once per source', (view) => {
+    const first = comic(41, { previewUrl: '/current-preview?v=one' });
+    const page = makePage({ assets: [first, image(1)], view });
+    const card = page.cards.get(41);
+    const nativeImage = card.media.querySelector('[data-preview-image]');
+    const write = vi.spyOn(nativeImage, 'setAttribute');
+    reconcileReleaseDetailViewer(page.document, render({ assets: [first, image(1)], view }));
+    expect(write.mock.calls.filter(([name]) => name === 'src')).toHaveLength(0);
+    const next = comic(41, { previewUrl: '/current-preview?v=two', sourceRevision: 'new-source', filename: 'new.cbz' });
+    reconcileReleaseDetailViewer(page.document, render({ assets: [next, image(1)], view }));
+    expect(page.cards.get(41).article).toBe(card.article);
+    expect(card.media.querySelector('[data-preview-image]')).toBe(nativeImage);
+    expect(write.mock.calls.filter(([name]) => name === 'src')).toEqual([['src', '/current-preview?v=two']]);
+    const triggers = card.media.querySelectorAll('[data-release-detail-comic-trigger]');
+    expect(triggers).toHaveLength(2);
+    triggers.forEach(trigger => {
+      expect(trigger.getAttribute('data-comic-source-revision')).toBe('new-source');
+      expect(trigger.getAttribute('aria-label')).toBe('Read comic new.cbz');
+    });
+    nativeImage.dispatch('load');
+    expect(card.media.getAttribute('data-preview-state')).toBe('loaded');
+    reconcileReleaseDetailViewer(page.document, render({ assets: [image(1)], view }));
+    expect(nativeImage.hasAttribute('src')).toBe(false);
+    expect(nativeImage.hidden).toBe(true);
+    expect(card.media.querySelectorAll('[data-release-detail-comic-trigger]')).toHaveLength(0);
+  });
+
+  it('uses the visible failed-image fallback for Reader close focus', () => {
+    const page = makePage({ assets: [comic(41)] });
+    enhanceReleaseDetailViewer(page.document);
+    const card = page.cards.get(41);
+    const fallback = card.media.querySelector('[data-preview-fallback]');
+    card.link.setAttribute('hidden', '');
+    fallback.removeAttribute('hidden');
+    expect(openReleaseDetailComic(page.document, fallback)).toBe(1);
+    expect(page.viewer.openComic.mock.calls[0][1].fallbackFocus()).toBe(fallback);
   });
 });

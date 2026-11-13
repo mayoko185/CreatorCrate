@@ -777,6 +777,8 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
       ? createPreviewService({ db, projectsRoot, previewRoot,
         projectImageSettingsService: app.locals.projectImageSettingsService,
         processingConcurrencyService,
+        comicSourceProvider: () => app.locals.comicMediaService,
+        comicAdmissionLimits: () => opts.comicRuntime?.admission?.limits,
         projectDirectoryOwnershipRepository,
         // Runtime publication authority for every reader; also journals each publication.
         generatedImagePublicationRepository,
@@ -810,12 +812,6 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
         maintenanceState, managedUploadTracker, applicationLogger,
       }) : null);
   app.locals.generatedImagePublicationLifecycle = generatedImagePublicationLifecycle;
-  if (opts.startGeneratedImageRebuild !== false) {
-    generatedImageRebuildService?.recover();
-    generatedImagePublicationLifecycle?.prepare();
-    generatedImageRebuildService?.signal();
-    generatedImagePublicationLifecycle?.signal();
-  }
 
   const projectPrimaryImageService = createProjectPrimaryImageService({
     db,
@@ -899,7 +895,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   // A graph whose (injected) preview service has no original-descriptor authority has no
   // comic service, exactly as a rootless graph.
   const comicRuntime = opts.comicRuntime || null;
-  const comicMediaService =
+  let comicMediaService =
     opts.comicMediaService ||
     (typeof previewService?.getOriginalDescriptor === 'function' && projectsRoot
       ? createComicMediaService({
@@ -909,8 +905,33 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
         ...(comicRuntime?.preparationCache ? { preparationCache: comicRuntime.preparationCache } : {}),
       })
       : null);
+  if (comicMediaService && !opts.comicMediaService && previewService?.pauseComicGeneration) {
+    const source = comicMediaService;
+    // One source service; graph retirement also drains its normal derivative lock
+    // across source-scope boundaries and publication cleanup.
+    comicMediaService = Object.freeze({
+      ...source,
+      isIdle: () => source.isIdle() && previewService.comicGenerationIsIdle(),
+      pauseForMaintenance() {
+        const generation = previewService.pauseComicGeneration();
+        const input = source.pauseForMaintenance();
+        return {
+          waitForIdle: () => Promise.all([generation.waitForIdle(), input.waitForIdle()]),
+          release() { input.release(); generation.release(); },
+        };
+      },
+      stop() { previewService.stopComicGeneration(); source.stop(); },
+    });
+  }
   app.locals.comicRuntime = comicRuntime;
   app.locals.comicMediaService = comicMediaService;
+  if (opts.startGeneratedImageRebuild !== false) {
+    generatedImageRebuildService?.recover();
+    generatedImagePublicationLifecycle?.prepare();
+    generatedImageRebuildService?.signal();
+    generatedImagePublicationLifecycle?.signal();
+  }
+
 
   const bookExportService = opts.bookExportService || createBookExportService({
     db,

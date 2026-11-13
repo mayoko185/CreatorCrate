@@ -60,6 +60,7 @@ describe('generated-image publication repository', () => {
       sourceSizeBytes: 4096,
       sourceMtime: '2026-09-25T10:00:00.000Z',
       sourceGeneration: 0,
+      sourceInputFingerprint: null,
       policyFingerprint: 'aaaaaaaaaaaaaaaa',
       animated: false,
       frameCount: 1,

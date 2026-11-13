@@ -7,6 +7,7 @@ import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
 import { createTagRepository } from '../src/data/tag-repository.js';
+import { buildAssetRevisionToken } from '../src/services/preview-service.js';
 import slugify from '@sindresorhus/slugify';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
@@ -2876,6 +2877,318 @@ describe('asset repository', () => {
     });
   });
 
+  describe('applyAssetWatermarks comic source updates', () => {
+    const OLD_TIME = '2026-01-01T00:00:00.000Z';
+    const NEW_TIME = '2026-01-02T00:00:00.000Z';
+
+    function storedComic(extension = 'cbz', generatedBy = 'archives') {
+      const relativePath = `comics/book.${extension}`;
+      const category = createCategory(projectId, `Comics ${extension}`, `comics-${extension}`);
+      const asset = assetRepo.upsert(projectId, relativePath, {
+        filename: `book.${extension}`, extension, mimeType: 'application/octet-stream',
+        categoryId: category.id, nestedPath: 'custom', sizeBytes: 100, modifiedAt: OLD_TIME,
+      });
+      const { artifactOutputs: [artifact] } = assetRepo.applyAssetWatermarks(projectId, {
+        artifactOutputs: [{
+          relativePath, kind: generatedBy === 'archives' ? 'archive-cbz' : 'watermark-cbz',
+          generatedBy, generatedMode: generatedBy === 'archives' ? 'standalone' : 'patreon',
+          sha256: 'a'.repeat(64), sizeBytes: 100, outputProvenance: 'v1:1:2:3',
+        }],
+      });
+      const tag = tagRepo.create({ displayName: `Comic ${extension}`, normalizedName: `comic-${extension}` });
+      db.prepare('INSERT INTO asset_tags (asset_id, tag_id) VALUES (?, ?)').run(asset.id, tag.id);
+      const release = insertRelease(db, { projectId, title: 'Comic release' });
+      linkAssetToRelease(db, { releaseId: release.id, assetId: asset.id, role: 'preview', sortOrder: 7 });
+      return { asset, artifact };
+    }
+
+    function changesFor({ asset, artifact }) {
+      return {
+        comicSourceUpdates: [{
+          assetId: asset.id, relativePath: asset.relative_path,
+          expectedExtension: asset.extension, expectedSizeBytes: asset.size_bytes,
+          expectedModifiedAt: asset.modified_at, expectedIsPresent: asset.is_present,
+          expectedSourceAnimated: asset.source_animated, expectedSourceGeneration: asset.source_generation,
+          data: { sizeBytes: 200, modifiedAt: NEW_TIME },
+        }],
+        artifactReplacements: [{
+          id: artifact.id, relativePath: artifact.relative_path, kind: artifact.kind,
+          generatedBy: artifact.generated_by, generatedMode: artifact.generated_mode,
+          expectedSha256: artifact.sha256, expectedGeneratedWatermarkId: artifact.generated_watermark_id,
+          expectedOutputProvenance: artifact.output_provenance,
+          sha256: 'b'.repeat(64), sizeBytes: 200, outputProvenance: 'v1:1:4:5',
+        }],
+      };
+    }
+
+    function snapshot() {
+      return {
+        assets: db.prepare('SELECT * FROM assets ORDER BY id').all(),
+        artifacts: db.prepare('SELECT * FROM generated_artifacts ORDER BY id').all(),
+        tags: db.prepare('SELECT * FROM asset_tags ORDER BY asset_id, tag_id').all(),
+        releases: db.prepare('SELECT * FROM release_assets ORDER BY release_id, asset_id').all(),
+      };
+    }
+
+    it.each(['cbz', 'cbr', 'cb7'])('atomically refreshes an existing %s and preserves all unrelated columns and links', (extension) => {
+      const stored = storedComic(extension);
+      const before = snapshot();
+      const result = assetRepo.applyAssetWatermarks(projectId, changesFor(stored));
+      const after = snapshot();
+      const updated = result.comicSourceUpdated[0];
+      expect(result.comicSourceUpdated).toHaveLength(1);
+      expect(updated).toMatchObject({
+        id: stored.asset.id, size_bytes: 200, modified_at: NEW_TIME,
+        is_present: 1, missing_since: null, source_animated: null, source_generation: 1,
+      });
+      expect(updated.last_seen_at).toBeTruthy();
+      expect(after.assets).toEqual([{
+        ...before.assets[0], size_bytes: 200, modified_at: NEW_TIME, source_generation: 1,
+        last_seen_at: updated.last_seen_at, updated_at: updated.updated_at,
+      }]);
+      expect(after.tags).toEqual(before.tags);
+      expect(after.releases).toEqual(before.releases);
+      expect(result.artifactReplaced[0]).toMatchObject({
+        id: stored.artifact.id, project_id: projectId, sha256: 'b'.repeat(64), size_bytes: 200,
+        output_provenance: 'v1:1:4:5', generated_by: 'archives',
+      });
+      expect(after.artifacts).toEqual(result.artifactReplaced);
+    });
+
+    it.each([
+      ['unchanged size', 100, NEW_TIME],
+      ['unchanged mtime', 200, OLD_TIME],
+      ['unchanged size and mtime', 100, OLD_TIME],
+    ])('advances generation and the indexed viewer revision with %s', (_label, sizeBytes, modifiedAt) => {
+      const stored = storedComic();
+      const changes = changesFor(stored);
+      changes.comicSourceUpdates[0].data = { sizeBytes, modifiedAt };
+      changes.artifactReplacements[0].sizeBytes = sizeBytes;
+      const { comicSourceUpdated: [updated] } = assetRepo.applyAssetWatermarks(projectId, changes);
+      expect(updated).toMatchObject({ size_bytes: sizeBytes, modified_at: modifiedAt, source_generation: 1 });
+      expect(buildAssetRevisionToken(updated)).not.toBe(buildAssetRevisionToken(stored.asset));
+      expect(() => assetRepo.applyAssetWatermarks(projectId, changes)).toThrow();
+      expect(assetRepo.findById(updated.id).source_generation).toBe(1);
+    });
+
+    it('restores a missing indexed comic with cleared missing state and animation', () => {
+      const stored = storedComic();
+      db.prepare("UPDATE assets SET is_present = 0, missing_since = ?, last_seen_at = NULL, source_animated = 1 WHERE id = ?")
+        .run(OLD_TIME, stored.asset.id);
+      stored.asset = assetRepo.findById(stored.asset.id);
+      const { comicSourceUpdated: [updated] } = assetRepo.applyAssetWatermarks(projectId, changesFor(stored));
+      expect(updated).toMatchObject({ id: stored.asset.id, is_present: 1, missing_since: null, source_animated: null, source_generation: 1 });
+      expect(updated.last_seen_at).toBeTruthy();
+    });
+
+    it('binds a new artifact publication to an already indexed destination without inserting an asset', () => {
+      const stored = storedComic();
+      db.prepare('DELETE FROM generated_artifacts WHERE id = ?').run(stored.artifact.id);
+      const changes = changesFor(stored);
+      changes.artifactOutputs = changes.artifactReplacements;
+      changes.artifactReplacements = [];
+      const result = assetRepo.applyAssetWatermarks(projectId, changes);
+      expect(result.comicSourceUpdated[0].id).toBe(stored.asset.id);
+      expect(assetRepo.findByProjectId(projectId)).toHaveLength(1);
+      expect(result.artifactOutputs).toHaveLength(1);
+    });
+
+    it('rejects a foreign project even when its artifact destination matches', () => {
+      const stored = storedComic();
+      const other = createProject('Other comic project');
+      const changes = changesFor(stored);
+      changes.artifactReplacements = [];
+      changes.artifactOutputs = [{
+        relativePath: stored.asset.relative_path, kind: 'archive-cbz', generatedBy: 'archives',
+        sha256: 'b'.repeat(64), sizeBytes: 200,
+      }];
+      const before = snapshot();
+      expect(() => assetRepo.applyAssetWatermarks(other.id, changes)).toThrow(expect.objectContaining({ code: 'STALE_STATE' }));
+      expect(snapshot()).toEqual(before);
+    });
+
+    it.each([
+      ['wrong asset', { assetId: 999999 }],
+      ['wrong destination', { relativePath: 'comics/other.cbz' }],
+      ['stale generation', { expectedSourceGeneration: 1 }],
+      ['stale size', { expectedSizeBytes: 101 }],
+      ['stale mtime', { expectedModifiedAt: null }],
+      ['stale presence', { expectedIsPresent: 0 }],
+      ['stale animation', { expectedSourceAnimated: 1 }],
+    ])('rejects %s without committing catalogue or artifact changes', (_label, override) => {
+      const changes = changesFor(storedComic());
+      Object.assign(changes.comicSourceUpdates[0], override);
+      const before = snapshot();
+      expect(() => assetRepo.applyAssetWatermarks(projectId, changes)).toThrow();
+      expect(snapshot()).toEqual(before);
+    });
+
+    it('rejects a different existing asset at another path', () => {
+      const changes = changesFor(storedComic());
+      const other = assetRepo.upsert(projectId, 'other.cbz', {
+        filename: 'other.cbz', extension: 'cbz', mimeType: 'application/octet-stream', sizeBytes: 100, modifiedAt: OLD_TIME,
+      });
+      changes.comicSourceUpdates[0].assetId = other.id;
+      const before = snapshot();
+      expect(() => assetRepo.applyAssetWatermarks(projectId, changes)).toThrow(expect.objectContaining({ code: 'STALE_STATE' }));
+      expect(snapshot()).toEqual(before);
+    });
+
+    it('does not insert a missing asset', () => {
+      const stored = storedComic();
+      const changes = changesFor(stored);
+      assetRepo.deleteMany(projectId, [{ assetId: stored.asset.id, relativePath: stored.asset.relative_path }]);
+      const before = snapshot();
+      expect(() => assetRepo.applyAssetWatermarks(projectId, changes)).toThrow(expect.objectContaining({ code: 'STALE_STATE' }));
+      expect(snapshot()).toEqual(before);
+      expect(assetRepo.findByProjectId(projectId)).toEqual([]);
+    });
+
+    it('rejects an older publication after same-tuple reconciliation advanced the real row', () => {
+      const stored = storedComic();
+      const changes = changesFor(stored);
+      assetRepo.reconcileSource(stored.asset, { size: 100, mtime: OLD_TIME }, { replaced: true });
+      const before = snapshot();
+      expect(before.assets[0].source_generation).toBe(1);
+      expect(() => assetRepo.applyAssetWatermarks(projectId, changes)).toThrow(expect.objectContaining({ code: 'STALE_STATE' }));
+      expect(snapshot()).toEqual(before);
+    });
+
+    it('compares a captured null mtime without treating it as an omitted expectation', () => {
+      const stored = storedComic();
+      stored.asset = assetRepo.upsert(projectId, stored.asset.relative_path, {
+        filename: stored.asset.filename, extension: 'cbz', mimeType: stored.asset.mime_type,
+        categoryId: stored.asset.category_id, nestedPath: stored.asset.nested_path,
+        sizeBytes: 100, modifiedAt: null,
+      });
+      const { comicSourceUpdated: [updated] } = assetRepo.applyAssetWatermarks(projectId, changesFor(stored));
+      expect(updated.modified_at).toBe(NEW_TIME);
+      expect(updated.source_generation).toBe(stored.asset.source_generation + 1);
+    });
+
+    it('requires the exact asset destination even when the artifact mutation matches the wrong path', () => {
+      const changes = changesFor(storedComic());
+      changes.comicSourceUpdates[0].relativePath = 'comics/other.cbz';
+      changes.artifactReplacements[0].relativePath = 'comics/other.cbz';
+      const before = snapshot();
+      expect(() => assetRepo.applyAssetWatermarks(projectId, changes)).toThrow(expect.objectContaining({ code: 'STALE_STATE' }));
+      expect(snapshot()).toEqual(before);
+    });
+
+    it.each([
+      ['duplicate asset', (changes) => changes.comicSourceUpdates.push(structuredClone(changes.comicSourceUpdates[0]))],
+      ['duplicate destination', (changes) => changes.comicSourceUpdates.push({ ...changes.comicSourceUpdates[0], assetId: 999 })],
+      ['conflicting artifact mutations', (changes) => { changes.artifactOutputs = [changes.artifactReplacements[0]]; }],
+      ['unbound publication', (changes) => { changes.artifactReplacements = []; }],
+      ['different published size', (changes) => { changes.artifactReplacements[0].sizeBytes = 201; }],
+      ['delete overlap', (changes) => { changes.deletes = [{ assetId: changes.comicSourceUpdates[0].assetId, relativePath: 'other.cbz' }]; }],
+      ['output overlap', (changes) => { changes.outputs = [{ relativePath: changes.comicSourceUpdates[0].relativePath }]; }],
+      ['replacement overlap', (changes) => { changes.replacements = [{ assetId: changes.comicSourceUpdates[0].assetId, data: {} }]; }],
+    ])('rejects %s before mutation', (_label, mutate) => {
+      const changes = changesFor(storedComic());
+      mutate(changes);
+      const before = snapshot();
+      expect(() => assetRepo.applyAssetWatermarks(projectId, changes)).toThrow(expect.objectContaining({ code: 'DESTINATION_CONFLICT' }));
+      expect(snapshot()).toEqual(before);
+    });
+
+    it.each(['../book.cbz', '/book.cbz', 'comics\\book.cbz', 'comics//book.cbz', 'comics/./book.cbz', 'C:/book.cbz', 'book.zip', 'book.7z', 'book.png', 'book.mp4'])('rejects a noncanonical or noncomic destination %s', (relativePath) => {
+      const changes = changesFor(storedComic());
+      changes.comicSourceUpdates[0].relativePath = relativePath;
+      changes.comicSourceUpdates[0].expectedExtension = relativePath.split('.').at(-1);
+      const before = snapshot();
+      expect(() => assetRepo.applyAssetWatermarks(projectId, changes)).toThrow(TypeError);
+      expect(snapshot()).toEqual(before);
+    });
+
+    it.each(['expectedSourceGeneration', 'expectedSizeBytes', 'expectedModifiedAt', 'expectedIsPresent', 'expectedSourceAnimated', 'expectedExtension'])('requires explicit %s', (field) => {
+      const changes = changesFor(storedComic());
+      delete changes.comicSourceUpdates[0][field];
+      const before = snapshot();
+      expect(() => assetRepo.applyAssetWatermarks(projectId, changes)).toThrow(TypeError);
+      expect(snapshot()).toEqual(before);
+    });
+
+    it.each([
+      ['hash', { expectedSha256: 'c'.repeat(64) }],
+      ['artifact identity', { id: 999999 }],
+      ['kind', { kind: 'foreign-operation' }],
+      ['watermark identity', { expectedGeneratedWatermarkId: 999 }],
+      ['file provenance', { expectedOutputProvenance: 'v1:9:8:7' }],
+    ])('rolls back the asset update when existing artifact %s checks fail', (_label, override) => {
+      const changes = changesFor(storedComic());
+      Object.assign(changes.artifactReplacements[0], override);
+      const before = snapshot();
+      expect(() => assetRepo.applyAssetWatermarks(projectId, changes)).toThrow(expect.objectContaining({ code: 'STALE_STATE' }));
+      expect(snapshot()).toEqual(before);
+    });
+
+    it('rolls back assets and an already updated artifact when later artifact persistence fails', () => {
+      const changes = changesFor(storedComic());
+      changes.artifactOutputs = [{
+        relativePath: 'other.cbz', kind: 'archive-cbz', generatedBy: 'archives',
+        sha256: 'c'.repeat(64), sizeBytes: -1,
+      }];
+      const before = snapshot();
+      expect(() => assetRepo.applyAssetWatermarks(projectId, changes)).toThrow(/CHECK constraint/);
+      expect(snapshot()).toEqual(before);
+    });
+
+    it('rolls back an earlier comic update and ordinary asset mutation when a later comic is stale', () => {
+      const first = changesFor(storedComic());
+      const second = changesFor(storedComic('cb7'));
+      second.comicSourceUpdates[0].expectedSourceGeneration = 1;
+      const ordinary = assetRepo.upsert(projectId, 'ordinary.png', {
+        filename: 'ordinary.png', extension: 'png', mimeType: 'image/png', sizeBytes: 10, modifiedAt: null,
+      });
+      const before = snapshot();
+      expect(() => assetRepo.applyAssetWatermarks(projectId, {
+        comicSourceUpdates: [...first.comicSourceUpdates, ...second.comicSourceUpdates],
+        artifactReplacements: [...first.artifactReplacements, ...second.artifactReplacements],
+        deletes: [{ assetId: ordinary.id, relativePath: ordinary.relative_path }],
+      })).toThrow(expect.objectContaining({ code: 'STALE_STATE' }));
+      expect(snapshot()).toEqual(before);
+    });
+
+    it('commits multiple indexed destinations together', () => {
+      const first = changesFor(storedComic());
+      const second = changesFor(storedComic('cb7'));
+      const result = assetRepo.applyAssetWatermarks(projectId, {
+        comicSourceUpdates: [...first.comicSourceUpdates, ...second.comicSourceUpdates],
+        artifactReplacements: [...first.artifactReplacements, ...second.artifactReplacements],
+      });
+      expect(result.comicSourceUpdated.map((asset) => asset.source_generation)).toEqual([1, 1]);
+      expect(result.artifactReplaced.map((artifact) => artifact.sha256)).toEqual(['b'.repeat(64), 'b'.repeat(64)]);
+    });
+
+    it('participates in the caller transaction so a later failure rolls back assets and artifacts', () => {
+      const changes = changesFor(storedComic());
+      const before = snapshot();
+      expect(() => db.transaction(() => {
+        assetRepo.applyAssetWatermarks(projectId, changes);
+        throw new Error('recovery evidence failed');
+      })()).toThrow('recovery evidence failed');
+      expect(snapshot()).toEqual(before);
+    });
+
+    it.each(['archives', 'watermark'])('preserves %s publication without optional comic updates or indexed destinations', (generatedBy) => {
+      const changes = changesFor(storedComic('cbz', generatedBy));
+      delete changes.comicSourceUpdates;
+      const before = snapshot();
+      const result = assetRepo.applyAssetWatermarks(projectId, changes);
+      expect(snapshot().assets).toEqual(before.assets);
+      expect(result.comicSourceUpdated).toEqual([]);
+      expect(result.artifactReplaced).toHaveLength(1);
+      const outputs = assetRepo.applyAssetWatermarks(projectId, { artifactOutputs: [{
+        relativePath: 'unindexed.cbz', kind: 'archive-cbz', generatedBy,
+        sha256: 'c'.repeat(64), sizeBytes: 10,
+      }] });
+      expect(outputs.artifactOutputs).toHaveLength(1);
+      expect(assetRepo.findByProjectIdAndPath(projectId, 'unindexed.cbz')).toBeUndefined();
+      expect(assetRepo.applyAssetWatermarks(projectId, { comicSourceUpdates: [] }).comicSourceUpdated).toEqual([]);
+    });
+  });
+
   describe('reconcileScannedAssets', () => {
     function discoveredFile(overrides = {}) {
       return {
@@ -2890,6 +3203,176 @@ describe('asset repository', () => {
         ...overrides,
       };
     }
+
+    describe('generated comic discovery', () => {
+      function registerArtifact(relativePath, generatedBy = 'archives', owner = projectId) {
+        return assetRepo.applyAssetWatermarks(owner, { artifactOutputs: [{
+          relativePath, kind: 'archive-cbz', generatedBy, generatedMode: 'standalone',
+          sha256: 'a'.repeat(64), sizeBytes: 100, outputProvenance: 'v1:1:2:3',
+        }] }).artifactOutputs[0];
+      }
+
+      function comicFile(extension = 'cbz', overrides = {}) {
+        return discoveredFile({ relativePath: `comics/book.${extension}`, filename: `book.${extension}`,
+          extension, mimeType: 'application/octet-stream', nestedPath: 'comics', ...overrides });
+      }
+
+      const artifacts = () => db.prepare('SELECT * FROM generated_artifacts ORDER BY id').all();
+
+      it.each(['cbz', 'cbr', 'cb7', 'CbZ', 'CBR', 'cB7'])(
+        'indexes a new generated %s without changing artifact identity or provenance', (extension) => {
+          const file = comicFile(extension);
+          registerArtifact(file.relativePath);
+          const before = artifacts();
+          expect(assetRepo.findByProjectIdAndPath(projectId, file.relativePath)).toBeUndefined();
+          expect(assetRepo.reconcileScannedAssets(projectId, [file]))
+            .toEqual({ added: 1, updated: 0, removed: 0, total: 1 });
+          const row = assetRepo.findByProjectIdAndPath(projectId, file.relativePath);
+          expect(row).toMatchObject({ extension, mime_type: file.mimeType, is_present: 1, source_generation: 0,
+            generated_by: null });
+          expect(db.prepare('SELECT generated_output_provenance FROM assets WHERE id = ?').get(row.id))
+            .toEqual({ generated_output_provenance: null });
+          expect(assetRepo.reconcileScannedAssets(projectId, [file]))
+            .toEqual({ added: 0, updated: 0, removed: 0, total: 1 });
+          expect(assetRepo.findById(row.id)).toEqual(row);
+          expect(artifacts()).toEqual(before);
+        },
+      );
+
+      it('also preserves Watermark producer provenance', () => {
+        const file = comicFile();
+        registerArtifact(file.relativePath, 'watermark');
+        const before = artifacts();
+        assetRepo.reconcileScannedAssets(projectId, [file]);
+        expect(assetRepo.findByProjectIdAndPath(projectId, file.relativePath)).toBeTruthy();
+        expect(artifacts()).toEqual(before);
+      });
+
+      it.each(['png', 'webp', 'jpg', 'jpeg', 'mp4', 'webm', 'zip', '7z', 'rar', 'tar', 'cbt'])(
+        'keeps new generated %s output excluded', (extension) => {
+          const file = comicFile(extension);
+          registerArtifact(file.relativePath);
+          const before = artifacts();
+          expect(assetRepo.reconcileScannedAssets(projectId, [file]))
+            .toEqual({ added: 0, updated: 0, removed: 0, total: 0 });
+          expect(assetRepo.findByProjectId(projectId)).toEqual([]);
+          expect(artifacts()).toEqual(before);
+        },
+      );
+
+      it('keeps existing noncomic asset reconciliation at an artifact-owned path', () => {
+        const file = comicFile('png');
+        const row = assetRepo.upsert(projectId, file.relativePath, { ...file, sizeBytes: 1 });
+        registerArtifact(file.relativePath);
+        const before = artifacts();
+        expect(assetRepo.reconcileScannedAssets(projectId, [file]))
+          .toEqual({ added: 0, updated: 1, removed: 0, total: 1 });
+        expect(assetRepo.findById(row.id)).toMatchObject({ size_bytes: 100, is_present: 1, source_generation: 1 });
+        expect(artifacts()).toEqual(before);
+      });
+
+      it('preserves category, tags and releases through repeat, missing and restored scans', () => {
+        const category = createCategory(projectId, 'Comics', 'comics');
+        const file = comicFile('cbz', { categoryId: category.id, nestedPath: '' });
+        registerArtifact(file.relativePath);
+        assetRepo.reconcileScannedAssets(projectId, [file]);
+        const row = assetRepo.findByProjectIdAndPath(projectId, file.relativePath);
+        const tag = tagRepo.create({ displayName: 'Comic', normalizedName: 'comic' });
+        db.prepare('INSERT INTO asset_tags (asset_id, tag_id) VALUES (?, ?)').run(row.id, tag.id);
+        const release = insertRelease(db, { projectId, title: 'Comic release' });
+        linkAssetToRelease(db, { releaseId: release.id, assetId: row.id, role: 'preview', sortOrder: 7 });
+        const links = () => ({ tags: db.prepare('SELECT * FROM asset_tags').all(),
+          releases: db.prepare('SELECT * FROM release_assets').all() });
+        const beforeLinks = links();
+        const beforeArtifacts = artifacts();
+        assetRepo.reconcileScannedAssets(projectId, [file]);
+        expect(assetRepo.findById(row.id)).toEqual(row);
+        expect(assetRepo.reconcileScannedAssets(projectId, []).removed).toBe(1);
+        expect(assetRepo.findById(row.id)).toMatchObject({ is_present: 0, source_generation: 0 });
+        expect(assetRepo.reconcileScannedAssets(projectId, [file]).updated).toBe(1);
+        expect(assetRepo.findById(row.id)).toMatchObject({ id: row.id, category_id: category.id,
+          is_present: 1, missing_since: null, source_generation: 1 });
+        assetRepo.reconcileScannedAssets(projectId, [file]);
+        expect(assetRepo.findById(row.id).source_generation).toBe(1);
+        expect(links()).toEqual(beforeLinks);
+        expect(artifacts()).toEqual(beforeArtifacts);
+      });
+
+      it('does not fabricate artifact provenance for an imported comic', () => {
+        assetRepo.reconcileScannedAssets(projectId, [comicFile()]);
+        expect(assetRepo.findByProjectId(projectId)).toHaveLength(1);
+        expect(artifacts()).toEqual([]);
+      });
+
+      it('keeps artifact path matching platform-specific and scoped to its project', () => {
+        registerArtifact('Comics/Book.PNG');
+        const file = comicFile('png', { relativePath: 'comics/book.png' });
+        expect(assetRepo.reconcileScannedAssets(projectId, [file]).added)
+          .toBe(process.platform === 'win32' ? 0 : 1);
+        const other = createProject('Foreign artifact owner');
+        registerArtifact('foreign.png', 'archives', other.id);
+        expect(assetRepo.reconcileScannedAssets(projectId,
+          [discoveredFile({ relativePath: 'foreign.png', filename: 'foreign.png' })]).added).toBe(1);
+        expect(artifacts()).toHaveLength(2);
+      });
+
+      it('rolls back a comic insertion and earlier updates when a foreign category fails', () => {
+        const file = comicFile();
+        registerArtifact(file.relativePath);
+        assetRepo.reconcileScannedAssets(projectId, [discoveredFile()]);
+        const before = assetRepo.findByProjectId(projectId);
+        const beforeArtifacts = artifacts();
+        const other = createProject('Foreign comic category');
+        const category = createCategory(other.id, 'Comics', 'comics');
+        expect(() => assetRepo.reconcileScannedAssets(projectId, [
+          discoveredFile({ sizeBytes: 200 }), file,
+          comicFile('cb7', { categoryId: category.id }),
+        ])).toThrow();
+        expect(assetRepo.findByProjectId(projectId)).toEqual(before);
+        expect(artifacts()).toEqual(beforeArtifacts);
+      });
+
+      it('rolls back inserted comics and missing transitions when missing handling fails', () => {
+        const file = comicFile();
+        registerArtifact(file.relativePath);
+        assetRepo.reconcileScannedAssets(projectId, [discoveredFile()]);
+        const before = assetRepo.findByProjectId(projectId);
+        const beforeArtifacts = artifacts();
+        db.exec(`CREATE TEMP TRIGGER fail_comic_missing AFTER UPDATE OF is_present ON assets
+          WHEN NEW.is_present = 0 BEGIN SELECT RAISE(ABORT, 'missing failure'); END`);
+        expect(() => assetRepo.reconcileScannedAssets(projectId, [file])).toThrow('missing failure');
+        expect(assetRepo.findByProjectId(projectId)).toEqual(before);
+        expect(artifacts()).toEqual(beforeArtifacts);
+      });
+
+      it('supports atomic publication after discovery without a second generation advance on scan', () => {
+        const file = comicFile();
+        const artifact = registerArtifact(file.relativePath);
+        assetRepo.reconcileScannedAssets(projectId, [file]);
+        const row = assetRepo.findByProjectIdAndPath(projectId, file.relativePath);
+        const data = { sizeBytes: 200, modifiedAt: '2026-01-02T00:00:00.000Z' };
+        const changes = {
+          comicSourceUpdates: [{ assetId: row.id, relativePath: file.relativePath,
+            expectedExtension: row.extension, expectedSizeBytes: row.size_bytes,
+            expectedModifiedAt: row.modified_at, expectedIsPresent: row.is_present,
+            expectedSourceAnimated: row.source_animated, expectedSourceGeneration: row.source_generation, data }],
+          artifactReplacements: [{ id: artifact.id, relativePath: file.relativePath, kind: artifact.kind,
+            generatedBy: artifact.generated_by, generatedMode: artifact.generated_mode,
+            expectedSha256: artifact.sha256, expectedGeneratedWatermarkId: artifact.generated_watermark_id,
+            expectedOutputProvenance: artifact.output_provenance,
+            sha256: 'b'.repeat(64), sizeBytes: 200, outputProvenance: 'v1:1:4:5' }],
+        };
+        expect(assetRepo.applyAssetWatermarks(projectId, changes).comicSourceUpdated[0])
+          .toMatchObject({ id: row.id, source_generation: 1 });
+        expect(assetRepo.reconcileScannedAssets(projectId, [{ ...file, ...data }]))
+          .toEqual({ added: 0, updated: 0, removed: 0, total: 1 });
+        expect(assetRepo.findById(row.id)).toMatchObject({ size_bytes: 200, source_generation: 1 });
+        expect(artifacts()[0]).toMatchObject({ id: artifact.id, sha256: 'b'.repeat(64) });
+        const before = { rows: assetRepo.findByProjectId(projectId), artifacts: artifacts() };
+        expect(() => assetRepo.applyAssetWatermarks(projectId, changes)).toThrow();
+        expect({ rows: assetRepo.findByProjectId(projectId), artifacts: artifacts() }).toEqual(before);
+      });
+    });
 
     it('inserts newly discovered files', () => {
       const result = assetRepo.reconcileScannedAssets(projectId, [discoveredFile()]);

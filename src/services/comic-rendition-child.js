@@ -1,30 +1,16 @@
-// Milestone A F1a — Comic page rendition child (one job per process)
+// Disposable rendition child, launched only by comic-rendition-process.js. Receives one
+// bounded image job over IPC; it has no file paths, database, archive, cache or authority.
+// Sharp is configured before ready. Parent disconnect, duplicate jobs and a watchdog terminate
+// it, including native work that JavaScript cancellation cannot interrupt.
 //
-// Launched only by comic-rendition-process.js, never imported by the application. It receives
-// one job over IPC (image bytes, the reader's header inspection and numeric bounds), runs the
-// comic rendition algorithm with Sharp, sends exactly one terminal result and is then
-// terminated by its parent. It opens no file, resolves no path, performs no authorization,
-// touches no database, archive or cache, and launches nothing.
-//
-// It kills itself when its IPC channel disconnects (the parent exited or crashed), when a
-// second job or a malformed message arrives, and when its watchdog (the job's deadline plus a
-// margin) expires, so it cannot outlive its owner. A cold child also has a watchdog while it
-// waits for its job; a preloaded spare (F1b, CREATORCRATE_RENDITION_SPARE) may wait for the
-// application's lifetime and relies on the disconnect alone while idle.
-//
-// Sharp is loaded and configured before 'ready' is sent, so a ready child (cold or spare) needs
-// no further initialization; no image is processed before a job arrives.
-//
-// Rendition algorithm (unchanged from A3.3a, which ran it in-process): every page is fully
-// decoded (metadata(), then stats() over every pixel of the first frame, failOn 'error') before
-// anything is returned; a valid static page within the bounds is reported unchanged, so the
-// parent serves the bytes it already holds; animated GIF/WebP pages are rendered as their first
-// frame; pages over the pixel bound (or, for WebP output, libwebp's 16,383-pixel edge) are
-// downscaled preserving their displayed aspect ratio, with EXIF orientation applied; output over
-// the byte bound is refused.
+// Reader renditions fully decode the first frame and preserve eligible original page bytes.
+// Shared derivatives validate the original first frame, then invoke image-derivative.js with
+// the ordinary effective policy over the reader IPC channel; they also exit cleanly.
 
 import sharp from 'sharp';
-import { COMIC_RENDITION_MIME, COMIC_RENDITION_PROTOCOL } from './comic-rendition-process.js';
+import { COMIC_RENDITION_MIME, COMIC_RENDITION_PROTOCOL,
+  validComicDerivativePolicy } from './comic-rendition-process.js';
+import { generateDerivative } from './image-derivative.js';
 import { sharpRuntime } from './sharp-runtime.js';
 
 const JPEG_QUALITY = 90;
@@ -125,6 +111,39 @@ function positiveInteger(value) {
   return Number.isSafeInteger(value) && value > 0;
 }
 
+async function renderDerivative(job, onPhase) {
+  const bytes = job.bytes;
+  const invalid = () => new RenditionFailure('PAGE_INVALID_IMAGE');
+  const signatures = {
+    jpeg: bytes.length >= 3 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255,
+    png: bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])),
+    gif: bytes.length >= 6 && /^GIF8[79]a$/.test(bytes.toString('latin1', 0, 6)),
+    webp: bytes.length >= 12 && bytes.toString('latin1', 0, 4) === 'RIFF' && bytes.toString('latin1', 8, 12) === 'WEBP',
+  };
+  if (!signatures[job.image.format]) throw invalid();
+  const inputOptions = { failOn: 'error', limitInputPixels: job.maxInputPixels,
+    sequentialRead: true, page: 0, pages: 1 };
+  const pipeline = () => sharp(bytes, inputOptions).timeout({ seconds: job.limits.timeoutSeconds });
+  try {
+    onPhase('metadata');
+    const metadata = await pipeline().metadata();
+    if (metadata.format !== job.image.format || metadata.width !== job.image.width
+      || (metadata.pageHeight ?? metadata.height) !== job.image.height
+      || ((metadata.pages ?? 1) > 1) !== job.image.animated) throw invalid();
+    onPhase('stats');
+    await pipeline().stats();
+    onPhase('convert');
+    const result = await generateDerivative(bytes, job.kind, false, job.policy,
+    { inputOptions, timeoutSeconds: job.limits.timeoutSeconds });
+    if (result.buffer.length > job.limits.maxOutputBytes
+      || (result.format === 'webp' && Math.max(result.width, result.height) > job.limits.maxWebpDimension)
+      || result.width * result.height > job.limits.maxPixels) throw new RenditionFailure('RENDITION_LIMIT_EXCEEDED');
+    return result;
+  } catch (error) {
+    throw error instanceof RenditionFailure ? error : invalid();
+  }
+}
+
 // The parent validated the job; the child checks it again before decoding anything.
 function parseJob(message) {
   if (message === null || typeof message !== 'object' || message.type !== 'job'
@@ -138,7 +157,18 @@ function parseJob(message) {
     if (!positiveInteger(limits[key])) return null;
   }
   if (limits.maxOutputBytes > COMIC_RENDITION_PROTOCOL.maxOutputBytes) return null;
+  const derivative = message.purpose === 'image-derivative';
+  if (message.purpose !== undefined && !derivative) return null;
+  if (derivative && (typeof message.jobId !== 'string' || !/^[a-f0-9-]{36}$/.test(message.jobId)
+    || Object.keys(message).some((key) => !['type', 'v', 'purpose', 'jobId', 'bytes', 'image', 'maxInputPixels', 'limits',
+      ...(derivative ? ['kind', 'policy'] : [])].includes(key))
+    || maxInputPixels > 100_000_000 || image.width * image.height > maxInputPixels
+    || Math.max(image.width, image.height) > 65_535 || limits.timeoutSeconds > 30)) return null;
+  if (derivative && (!validComicDerivativePolicy(message.kind, message.policy)
+    || limits.maxPixels > 25_000_000 || limits.maxWebpDimension > 16_383)) return null;
   return {
+    ...(derivative ? { purpose: message.purpose, jobId: message.jobId } : {}),
+    ...(derivative ? { kind: message.kind, policy: message.policy } : {}),
     bytes: Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength),
     image,
     maxInputPixels,
@@ -164,15 +194,22 @@ function main() {
   let received = false;
   let finished = false;
 
+  let derivativeIdentity = null;
+  const send = (message, callback) => process.send(message, callback);
   const finish = (message) => {
     if (finished) return;
     finished = true;
-    process.send(message, (err) => {
+    send({ ...message, ...derivativeIdentity }, (err) => {
       if (err) hardExit();
+      if (derivativeIdentity) {
+        clearTimeout(watchdog);
+        process.removeListener('disconnect', hardExit);
+        process.disconnect();
+      }
     });
   };
 
-  process.on('message', (message) => {
+  const receive = (message) => {
     if (received) {
       hardExit();
       return;
@@ -183,17 +220,22 @@ function main() {
       finish({ type: 'result', ok: false, code: 'JOB_INVALID' });
       return;
     }
+    if (job.purpose) derivativeIdentity = { purpose: job.purpose, jobId: job.jobId };
     clearTimeout(watchdog);
     watchdog = setTimeout(hardExit, job.limits.timeoutSeconds * 1000 + COMIC_RENDITION_PROTOCOL.watchdogMarginMs);
-    render(job.bytes, job.image, job.maxInputPixels, job.limits, (phase) => process.send({ type: 'phase', phase }))
+    const onPhase = (phase) => send({ type: 'phase', phase });
+    const running = job.purpose === 'image-derivative' ? renderDerivative(job, onPhase)
+      : render(job.bytes, job.image, job.maxInputPixels, job.limits, onPhase);
+    running
       .then((result) => finish({ type: 'result', ok: true, ...result }))
       .catch((err) => {
         const code = err instanceof RenditionFailure ? err.code : 'INTERNAL';
         const detail = detailOf(err);
         finish({ type: 'result', ok: false, code, ...(detail ? { detail } : {}) });
       });
-  });
-  process.send({ type: 'ready', v: COMIC_RENDITION_PROTOCOL.version });
+  };
+  process.on('message', receive);
+  send({ type: 'ready', v: COMIC_RENDITION_PROTOCOL.version });
 }
 
 main();

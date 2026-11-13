@@ -14,7 +14,8 @@ const ARTIFACT_COLUMNS = [
 ];
 
 /**
- * Read access for non-asset files generated inside a project. Mutations are
+ * Read access for generated-file provenance and automated replacement authority.
+ * Supported comics may also have ordinary catalogue rows. Mutations are
  * intentionally performed by the owning operation's existing DB transaction.
  */
 export function createGeneratedArtifactRepository(db) {

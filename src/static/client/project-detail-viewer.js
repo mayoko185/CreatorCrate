@@ -40,7 +40,7 @@ import { isEnhancementBound, liveRegionDocument, markEnhancementBound } from './
 import { PROJECT_DELETED_EVENT } from './project-edit-dialog.js';
 import { PROJECT_DELETED_HOST_ATTRIBUTE } from './project-delete.js';
 import { unifiedViewerFor } from './unified-viewer.js';
-import { createSingleImageSource } from './viewer-sequence.js';
+import { imageSourcesFromViewerTrigger, createSingleImageSource } from './viewer-sequence.js';
 
 export const PROJECT_DETAIL_VIEWER_TRIGGER_ATTRIBUTE = 'data-project-detail-viewer-trigger';
 const TRIGGER_SELECTOR = `[${PROJECT_DETAIL_VIEWER_TRIGGER_ATTRIBUTE}]`;
@@ -52,9 +52,11 @@ const DESCRIPTOR_ATTRIBUTES = Object.freeze([
   'data-viewer-asset',
   'data-viewer-release',
   'data-viewer-filename',
+  'data-viewer-project-name',
   'data-viewer-preview-url',
   'data-viewer-original-url',
   'data-viewer-revision',
+  'data-viewer-image-sources',
   'data-viewer-details-url',
 ]);
 const BOUND_KEY = 'projectDetailViewerBound';
@@ -110,10 +112,12 @@ function readEntry(trigger, identity) {
     id: identity.assetId,
     projectId: identity.projectId,
     filename: trigger.getAttribute?.('data-viewer-filename') || '',
+    projectName: trigger.getAttribute?.('data-viewer-project-name') || null,
     previewUrl: trigger.getAttribute?.('data-viewer-preview-url') || '',
     ...(detailsUrl ? { viewerUrl: detailsUrl } : {}),
     ...(originalUrl ? { originalUrl } : {}),
     revision: revision || null,
+    imageSources: imageSourcesFromViewerTrigger(trigger),
   };
 }
 

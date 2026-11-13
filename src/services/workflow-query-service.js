@@ -1978,6 +1978,7 @@ function normalizeAssetBrowserQuery(
           is_present: row.is_present,
         }) : null,
         revision: hasThumbnail ? previewModel.revision : null,
+        ...(previewModel.imageSources ? { imageSources: previewModel.imageSources } : {}),
       });
     }
 
@@ -2299,6 +2300,7 @@ function normalizeAssetBrowserQuery(
         viewerUrl: buildAssetViewerUrl(asset.project_id, asset.id),
         ...(originalUrl ? { originalUrl } : {}),
         revision: preview.revision,
+        imageSources: preview.imageSources,
       });
     }
     return result;

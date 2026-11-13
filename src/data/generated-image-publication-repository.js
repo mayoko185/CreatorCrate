@@ -91,7 +91,7 @@ function normalizeDerivative(input, kind) {
  *   sourceRelativePath: string, sourceSizeBytes: number, sourceMtime: string,
  *   sourceGeneration: number, policyFingerprint: string|null, animated: boolean|null,
  *   frameCount: number|null, sourcePreviewQuality: 'merged'|'thumbnail'|null,
- *   generationIdentityVersion: number|null,
+ *   generationIdentityVersion: number|null, sourceInputFingerprint: string|null,
  *   derivatives: Readonly<{ thumbnail: object, preview: object }>,
  * }>}
  * @throws {InvalidGeneratedImagePublicationError}
@@ -138,6 +138,10 @@ export function normalizeGeneratedImagePublication(input) {
     sourceSizeBytes: requireNonNegativeInteger(input.sourceSizeBytes, 'sourceSizeBytes'),
     sourceMtime: requireNonEmptyString(input.sourceMtime, 'sourceMtime'),
     sourceGeneration: requireNonNegativeInteger(input.sourceGeneration, 'sourceGeneration'),
+    sourceInputFingerprint: nullable(input.sourceInputFingerprint, (value) => {
+      if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value)) invalid('sourceInputFingerprint is invalid.');
+      return value;
+    }),
     policyFingerprint: nullable(input.policyFingerprint, (value) => {
       if (typeof value !== 'string' || !HEX16_RE.test(value)) invalid('policyFingerprint is invalid.');
       return value;
@@ -185,7 +189,7 @@ const PUBLICATION_COLUMNS = [
   'asset_id', 'project_id', 'directory_name', 'revision', 'generated_at',
   'cache_schema_version', 'derivative_config_version', 'source_relative_path',
   'source_size_bytes', 'source_mtime', 'source_generation', 'policy_fingerprint',
-  'animated', 'frame_count', 'source_preview_quality', 'generation_identity_version',
+  'animated', 'frame_count', 'source_preview_quality', 'generation_identity_version', 'source_input_fingerprint',
 ];
 const DERIVATIVE_COLUMNS = ['format', 'width', 'height', 'size_bytes', 'generation_identity'];
 const INTENT_COLUMNS = [
@@ -214,6 +218,7 @@ function mapSnapshotRow(row) {
     sourceSizeBytes: row.source_size_bytes,
     sourceMtime: row.source_mtime,
     sourceGeneration: row.source_generation,
+    sourceInputFingerprint: row.source_input_fingerprint,
     policyFingerprint: row.policy_fingerprint,
     animated: row.animated === null ? null : row.animated === 1,
     frameCount: row.frame_count,
@@ -303,7 +308,7 @@ export function createGeneratedImagePublicationRepository(db) {
       publication.policyFingerprint,
       publication.animated === null ? null : Number(publication.animated),
       publication.frameCount, publication.sourcePreviewQuality,
-      publication.generationIdentityVersion,
+      publication.generationIdentityVersion, publication.sourceInputFingerprint,
     );
     deleteDerivativesStmt.run(assetId);
     for (const kind of GENERATED_IMAGE_DERIVATIVE_KINDS) {

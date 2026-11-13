@@ -17,13 +17,22 @@
 //   lists. A `sequence` source holds the complete ordered collection.
 // - `wrap` and `slideshow` are explicit source settings; nothing assumes a
 //   slideshow. A comic reader is a non-wrapping, non-slideshow sequence.
-// - Revisions are opaque strings and URLs are server-provided root-relative
-//   paths; both are compared by equality only and never constructed here.
+// - Revisions are opaque strings and media URLs are server-provided
+//   root-relative paths. Details may also use the canonical numeric asset route.
 // - Every returned source/item is frozen, and no function throws on malformed
 //   input.
+// - A source has a `kind`: 'image' (the default, every Milestone B source) or
+//   'comic'. A comic source is always a non-wrapping, non-slideshow sequence
+//   of numbered pages (items without a position are dropped) and opens on its
+//   first page, available or not. Reading direction and spread grouping are
+//   presentation concerns computed from this canonical order, never stored in
+//   it (comic-source.js builds these sources from a validated manifest).
 
 export const VIEWER_SOURCE_MODE_SINGLE = 'single';
 export const VIEWER_SOURCE_MODE_SEQUENCE = 'sequence';
+
+export const VIEWER_SOURCE_KIND_IMAGE = 'image';
+export const VIEWER_SOURCE_KIND_COMIC = 'comic';
 
 export const VIEWER_UNAVAILABLE_MISSING_MEDIA = 'missing-media';
 export const VIEWER_UNAVAILABLE_DEFAULT = 'unavailable';
@@ -47,12 +56,15 @@ const MAX_TOKEN_LENGTH = 512;
  * @property {string|null} projectId Project identity where known.
  * @property {string} assetId        Asset identity.
  * @property {number|null} position  One-based page position for multi-part assets (comics).
+ * @property {string} filename       Complete authoritative filename, or empty.
+ * @property {string|null} projectName Optional authoritative project display name.
  * @property {string} title          Plain-text display title.
  * @property {string} alt            Plain-text alternative text.
  * @property {string|null} mediaUrl  Server-provided display media URL.
  * @property {string|null} originalUrl Server-provided original media URL.
- * @property {string|null} detailsUrl  Server-provided Asset Details URL.
+ * @property {string|null} detailsUrl  Supplied Asset Details URL; context resolves a canonical fallback.
  * @property {string|null} revision  Opaque revision token.
+ * @property {Readonly<object>|null} [imageSources] Authoritative rendition descriptor; separate from legacy display fields.
  * @property {boolean} available     Whether the item has displayable media.
  * @property {string|null} unavailableReason Short code when unavailable.
  */
@@ -61,7 +73,9 @@ const MAX_TOKEN_LENGTH = 512;
  * @typedef {object} ViewerSource
  * @property {string|null} key
  * @property {string} label
+ * @property {'image'|'comic'} kind
  * @property {'single'|'sequence'} mode
+ * @property {Readonly<ViewerAssetContext>|null} context Comic asset metadata, independent of pages.
  * @property {ReadonlyArray<ViewerItem>} items
  * @property {string|null} initialKey
  * @property {boolean} wrap
@@ -111,6 +125,40 @@ export function normalizeViewerUrl(value) {
   return value;
 }
 
+/**
+ * @typedef {object} ViewerAssetContext
+ * @property {string|null} projectId
+ * @property {string} assetId
+ * @property {string} filename Complete filename, never derived from a title or URL.
+ * @property {string|null} projectName Optional display name, never a source label.
+ * @property {string|null} detailsUrl
+ */
+
+/** Normalize asset metadata without conflating it with page or source labels. */
+export function normalizeViewerAssetContext(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const assetId = normalizeIdentity(raw.assetId);
+  const projectId = normalizeIdentity(raw.projectId);
+  if (!assetId || projectId === null) return null;
+  const isRouteId = (id) => typeof id === 'string' && /^[1-9]\d*$/.test(id)
+    && Number.isSafeInteger(Number(id));
+  const canonical = isRouteId(projectId) && isRouteId(assetId)
+    ? `/projects/${projectId}/assets/${assetId}` : null;
+  return Object.freeze({
+    projectId: projectId ?? null,
+    assetId,
+    filename: typeof raw.filename === 'string' ? raw.filename : '',
+    projectName: typeof raw.projectName === 'string' && raw.projectName.trim() ? raw.projectName : null,
+    detailsUrl: normalizeViewerUrl(raw.detailsUrl) || canonical,
+  });
+}
+
+/** Current asset context: a comic's archive, or the active image item only. */
+export function getViewerAssetContext(source, key) {
+  if (source?.kind === VIEWER_SOURCE_KIND_COMIC) return source.context ?? null;
+  return normalizeViewerAssetContext(getViewerItem(source, key));
+}
+
 function normalizeRevision(value) {
   if (typeof value === 'number') return Number.isFinite(value) ? String(value) : null;
   if (typeof value !== 'string') return null;
@@ -137,13 +185,59 @@ export function buildViewerItemKey(identity) {
   return parts.join('|');
 }
 
+// Parse only the optional server-authored descriptor; malformed JSON is absent.
+export function imageSourcesFromViewerTrigger(trigger) {
+  try {
+    return JSON.parse(trigger?.getAttribute?.('data-viewer-image-sources') || 'null');
+  } catch {
+    return null;
+  }
+}
+
+// Eligibility is indexed capability, never a client probe or a delivery guarantee.
+function normalizeImageSources(raw, context) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)
+    || normalizeIdentity(raw.projectId) !== context.projectId
+    || normalizeIdentity(raw.assetId) !== context.assetId) return null;
+  const revision = (value) => typeof value === 'string' && /^[a-f0-9]{16}$/.test(value) ? value : null;
+  const sourceRevision = revision(raw.sourceRevision);
+  const renditionRevision = revision(raw.optimized?.revision);
+  const ownedUrl = (value, kind) => {
+    const safe = normalizeViewerUrl(value);
+    if (!safe || !sourceRevision) return null;
+    try {
+      const url = new URL(safe, 'https://viewer.invalid');
+      const base = `/projects/${encodeURIComponent(context.projectId)}/assets/${encodeURIComponent(context.assetId)}`;
+      const expected = kind === 'optimized'
+        ? { rendition: 'optimized', sourceRevision, v: renditionRevision }
+        : { sourceRevision };
+      if (url.pathname !== `${base}/${kind === 'optimized' ? 'preview' : 'original'}`
+        || url.hash || [...url.searchParams].length !== Object.keys(expected).length
+        || Object.entries(expected).some(([key, value]) => !value || url.searchParams.get(key) !== value)) return null;
+      return safe;
+    } catch {
+      return null;
+    }
+  };
+  const optimizedUrl = raw.optimized?.eligible === true ? ownedUrl(raw.optimized.url, 'optimized') : null;
+  const originalUrl = raw.original?.eligible === true ? ownedUrl(raw.original.url, 'original') : null;
+  return Object.freeze({
+    projectId: context.projectId,
+    assetId: context.assetId,
+    sourceRevision,
+    optimized: Object.freeze({ url: optimizedUrl, revision: renditionRevision, eligible: Boolean(optimizedUrl) }),
+    original: Object.freeze({ url: originalUrl, eligible: Boolean(originalUrl) }),
+    toggleEligible: raw.toggleEligible === true && Boolean(optimizedUrl && originalUrl),
+  });
+}
+
 // ─── Items ───────────────────────────────────────────────────────────────────
 
 /**
  * Normalize one raw item. Returns null when its identity is missing or
  * malformed; every other field degrades to a safe default.
  *
- * Raw fields: assetId (required), projectId, position, title, alt, mediaUrl,
+ * Raw fields: assetId (required), projectId, filename, projectName, position, title, alt, mediaUrl,
  * originalUrl, detailsUrl, revision, available (false marks it unavailable),
  * unavailableReason.
  *
@@ -155,8 +249,8 @@ export function normalizeViewerItem(raw) {
   const key = buildViewerItemKey(raw);
   if (!key) return null;
 
-  const assetId = normalizeIdentity(raw.assetId);
-  const projectId = normalizeIdentity(raw.projectId) ?? null;
+  const context = normalizeViewerAssetContext(raw);
+  const { assetId } = context;
   const position = normalizePosition(raw.position) ?? null;
   const mediaUrl = normalizeViewerUrl(raw.mediaUrl);
   const fallbackTitle = position !== null ? `Page ${position}` : `Asset ${assetId}`;
@@ -176,13 +270,15 @@ export function normalizeViewerItem(raw) {
 
   return Object.freeze({
     key,
-    projectId,
-    assetId,
+    ...context,
     position,
     title,
     alt,
     mediaUrl,
     originalUrl: available ? normalizeViewerUrl(raw.originalUrl) : null,
+    ...(raw.imageSources !== undefined ? {
+      imageSources: available && position === null ? normalizeImageSources(raw.imageSources, context) : null,
+    } : {}),
     detailsUrl: normalizeViewerUrl(raw.detailsUrl),
     revision: normalizeRevision(raw.revision),
     available,
@@ -190,7 +286,7 @@ export function normalizeViewerItem(raw) {
   });
 }
 
-function normalizeItemList(rawItems) {
+function normalizeItemList(rawItems, { requirePosition = false } = {}) {
   const list = Array.isArray(rawItems) ? rawItems : [];
   const items = [];
   const seen = new Set();
@@ -198,7 +294,7 @@ function normalizeItemList(rawItems) {
   for (const raw of list) {
     // Already-normalized items pass through by re-normalizing their fields.
     const item = normalizeViewerItem(raw);
-    if (!item || seen.has(item.key)) {
+    if (!item || seen.has(item.key) || (requirePosition && item.position === null)) {
       droppedCount += 1;
       continue;
     }
@@ -244,11 +340,16 @@ function sourceKey(value) {
  *   first valid item); it never wraps and never plays a slideshow.
  * - `mode: 'sequence'` (the default for anything else) keeps every valid item
  *   in the given order. `wrap` and `slideshow` default to false.
+ * - `kind: 'comic'` forces a non-wrapping, non-slideshow sequence, drops
+ *   items without a page position and, without a valid `initialKey`, opens on
+ *   the first page even when it is unavailable. Any other kind is 'image'.
  *
  * @param {object} [options]
  * @param {string} [options.key]
  * @param {string} [options.label]
+ * @param {'image'|'comic'} [options.kind]
  * @param {'single'|'sequence'} [options.mode]
+ * @param {ViewerAssetContext} [options.context] Comic archive metadata; never inferred from pages.
  * @param {Array<object>} [options.items]
  * @param {string} [options.initialKey]
  * @param {boolean} [options.wrap]
@@ -257,8 +358,11 @@ function sourceKey(value) {
  */
 export function createViewerSource(options = {}) {
   const opts = options && typeof options === 'object' ? options : {};
-  const mode = opts.mode === VIEWER_SOURCE_MODE_SINGLE ? VIEWER_SOURCE_MODE_SINGLE : VIEWER_SOURCE_MODE_SEQUENCE;
-  const normalized = normalizeItemList(opts.items);
+  const isComic = opts.kind === VIEWER_SOURCE_KIND_COMIC;
+  const mode = !isComic && opts.mode === VIEWER_SOURCE_MODE_SINGLE
+    ? VIEWER_SOURCE_MODE_SINGLE
+    : VIEWER_SOURCE_MODE_SEQUENCE;
+  const normalized = normalizeItemList(opts.items, { requirePosition: isComic });
   let { items } = normalized;
   let { droppedCount } = normalized;
   const requestedInitial = typeof opts.initialKey === 'string' ? opts.initialKey : null;
@@ -269,19 +373,23 @@ export function createViewerSource(options = {}) {
     items = [chosen];
   }
 
-  const initialKey = requestedInitial && items.some((item) => item.key === requestedInitial)
+  let initialKey = requestedInitial && items.some((item) => item.key === requestedInitial)
     ? requestedInitial
     : null;
+  // A comic opens on page 1 even when it is unavailable, never on a later page.
+  if (isComic && initialKey === null && items.length > 0) initialKey = items[0].key;
   const isSequence = mode === VIEWER_SOURCE_MODE_SEQUENCE;
 
   return Object.freeze({
     key: sourceKey(opts.key),
     label: normalizeText(opts.label),
+    kind: isComic ? VIEWER_SOURCE_KIND_COMIC : VIEWER_SOURCE_KIND_IMAGE,
     mode,
+    context: isComic ? normalizeViewerAssetContext(opts.context) : null,
     items: Object.freeze(items),
     initialKey,
-    wrap: isSequence && opts.wrap === true,
-    slideshow: isSequence && opts.slideshow === true,
+    wrap: !isComic && isSequence && opts.wrap === true,
+    slideshow: !isComic && isSequence && opts.slideshow === true,
     droppedCount,
   });
 }
@@ -300,12 +408,15 @@ export function viewerItemFromSlideshowEntry(entry) {
   return {
     projectId: entry.projectId,
     assetId: entry.id,
+    filename: entry.filename,
+    projectName: entry.projectName,
     title: entry.filename,
     alt: entry.filename,
     mediaUrl: entry.previewUrl,
     originalUrl: entry.originalUrl,
     detailsUrl: entry.viewerUrl,
     revision: entry.revision,
+    ...(entry.imageSources !== undefined ? { imageSources: entry.imageSources } : {}),
   };
 }
 
@@ -381,8 +492,8 @@ export function getViewerItem(source, key) {
 
 /**
  * The item a viewer opens on: the source's initial item when present (even
- * if unavailable, so the viewer can say so), else the first available item,
- * else the first item, else null.
+ * if unavailable, so the viewer can say so), else the first available item
+ * (a comic: its first page), else the first item, else null.
  *
  * @param {ViewerSource} source
  * @returns {{ key: string|null, index: number }}
@@ -390,7 +501,8 @@ export function getViewerItem(source, key) {
 export function selectInitialViewerItem(source) {
   const items = sourceItems(source);
   let index = findViewerItemIndex(source, source?.initialKey);
-  if (index === -1) index = items.findIndex((item) => item.available);
+  // A comic never skips ahead to a later available page.
+  if (index === -1 && source?.kind !== VIEWER_SOURCE_KIND_COMIC) index = items.findIndex((item) => item.available);
   if (index === -1 && items.length > 0) index = 0;
   return { key: index === -1 ? null : items[index].key, index };
 }
@@ -490,7 +602,7 @@ function neighborAfterRemoval(previousItems, previousIndex, nextSource) {
  * refresh.
  *
  * `replacement` is the refreshed raw item list (or `{ key?, label?, items }`).
- * The previous source's mode, wrap and slideshow settings carry over; a
+ * The previous source's kind, mode, wrap and slideshow settings carry over; a
  * single source narrows the refreshed list back to its own item. A
  * replacement naming a different source key invalidates the source.
  *
@@ -523,6 +635,8 @@ export function reconcileViewerSource(previous, currentKey, replacement) {
   const settings = {
     key: priorKey ?? incomingKey ?? undefined,
     label: incoming.label !== undefined ? incoming.label : prior.label,
+    kind: prior.kind,
+    context: prior.context,
     mode: isSingle ? VIEWER_SOURCE_MODE_SINGLE : VIEWER_SOURCE_MODE_SEQUENCE,
     wrap: prior.wrap === true,
     slideshow: prior.slideshow === true,
@@ -547,7 +661,7 @@ export function reconcileViewerSource(previous, currentKey, replacement) {
     return closed(createViewerSource({ ...settings, items: [] }), 'source-changed');
   }
 
-  const full = normalizeItemList(incoming.items).items;
+  const full = normalizeItemList(incoming.items, { requirePosition: prior.kind === VIEWER_SOURCE_KIND_COMIC }).items;
   let nextItems = full;
   if (isSingle) {
     const singleKey = priorItems[0]?.key ?? null;
@@ -613,4 +727,268 @@ export function reconcileViewerSource(previous, currentKey, replacement) {
     preserveView: false,
     reason: 'removed',
   };
+}
+
+// ─── Comic reading direction and page grouping (C1c) ─────────────────────────
+//
+// Presentation/navigation model over a comic source's canonical order. A
+// comic page's canonical position is its one-based place in that order
+// (comic-source.js guarantees item.position === index + 1). Nothing here
+// reorders, copies or renumbers the source:
+// - `direction` ('ltr' | 'rtl') only changes visual placement within a group.
+// - `layout` 'single' groups each page alone; 'spread' groups one or two
+//   consecutive positions, by `alignment`:
+//   'cover-alone'      [1] [2,3] [4,5] …
+//   'pair-from-first'  [1,2] [3,4] [5,6] …
+//   An unpaired last page stands alone; no blank page is invented.
+// - The reader tracks one anchor page. A layout or alignment change keeps it
+//   and derives its containing group; stepping moves to the first page of
+//   the adjacent group. Navigation never wraps and never skips unavailable
+//   pages.
+
+export const VIEWER_READING_LTR = 'ltr';
+export const VIEWER_READING_RTL = 'rtl';
+export const VIEWER_LAYOUT_SINGLE = 'single';
+export const VIEWER_LAYOUT_SPREAD = 'spread';
+export const VIEWER_SPREAD_COVER_ALONE = 'cover-alone';
+export const VIEWER_SPREAD_PAIR_FROM_FIRST = 'pair-from-first';
+
+const READER_OPTION_VALUES = Object.freeze({
+  direction: Object.freeze([VIEWER_READING_LTR, VIEWER_READING_RTL]),
+  layout: Object.freeze([VIEWER_LAYOUT_SINGLE, VIEWER_LAYOUT_SPREAD]),
+  alignment: Object.freeze([VIEWER_SPREAD_COVER_ALONE, VIEWER_SPREAD_PAIR_FROM_FIRST]),
+});
+
+/** Comic reader defaults: Left-to-Right, Single Page, Cover Alone. */
+export const VIEWER_COMIC_READER_DEFAULTS = Object.freeze({
+  direction: VIEWER_READING_LTR,
+  layout: VIEWER_LAYOUT_SINGLE,
+  alignment: VIEWER_SPREAD_COVER_ALONE,
+});
+
+/**
+ * @typedef {object} ComicReaderOptions
+ * @property {'ltr'|'rtl'} direction
+ * @property {'single'|'spread'} layout
+ * @property {'cover-alone'|'pair-from-first'} alignment
+ */
+
+function validReaderOptions(options) {
+  return Boolean(options) && typeof options === 'object'
+    && Object.keys(READER_OPTION_VALUES).every((name) => READER_OPTION_VALUES[name].includes(options[name]));
+}
+
+/**
+ * Apply a partial reader-options patch to `base` (the defaults when absent
+ * or malformed). Only `direction`, `layout` and `alignment` are read; other
+ * properties are ignored. A patch that is not an object, or gives any of
+ * those three a value outside its enum, is rejected whole (null).
+ *
+ * @param {Partial<ComicReaderOptions>} patch
+ * @param {ComicReaderOptions} [base]
+ * @returns {Readonly<ComicReaderOptions>|null}
+ */
+export function normalizeComicReaderOptions(patch, base = VIEWER_COMIC_READER_DEFAULTS) {
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return null;
+  const from = validReaderOptions(base) ? base : VIEWER_COMIC_READER_DEFAULTS;
+  const next = {};
+  for (const name of Object.keys(READER_OPTION_VALUES)) {
+    if (patch[name] === undefined) {
+      next[name] = from[name];
+    } else if (READER_OPTION_VALUES[name].includes(patch[name])) {
+      next[name] = patch[name];
+    } else {
+      return null;
+    }
+  }
+  return Object.freeze(next);
+}
+
+// Partial options fill in from the defaults; malformed options are the defaults.
+function readerOptions(options) {
+  if (validReaderOptions(options)) return options;
+  return normalizeComicReaderOptions(options) || VIEWER_COMIC_READER_DEFAULTS;
+}
+
+function validPageCount(value) {
+  return Number.isSafeInteger(value) && value >= 0;
+}
+
+/**
+ * The group containing a canonical position, as inclusive one-based bounds.
+ * Null for a malformed count or a position outside 1..pageCount. Invalid
+ * options fall back to the defaults.
+ *
+ * @param {number} position
+ * @param {number} pageCount
+ * @param {Partial<ComicReaderOptions>} [options]
+ * @returns {Readonly<{ first: number, last: number }>|null}
+ */
+export function comicPageGroupBounds(position, pageCount, options) {
+  if (!validPageCount(pageCount) || !Number.isSafeInteger(position) || position < 1 || position > pageCount) {
+    return null;
+  }
+  const { layout, alignment } = readerOptions(options);
+  let first = position;
+  if (layout === VIEWER_LAYOUT_SPREAD) {
+    if (alignment === VIEWER_SPREAD_COVER_ALONE) {
+      if (position > 1) first = position % 2 === 0 ? position : position - 1;
+    } else {
+      first = position % 2 === 1 ? position : position - 1;
+    }
+  }
+  const pairs = layout === VIEWER_LAYOUT_SPREAD && !(alignment === VIEWER_SPREAD_COVER_ALONE && first === 1);
+  const last = pairs ? Math.min(first + 1, pageCount) : first;
+  return Object.freeze({ first, last });
+}
+
+/**
+ * Every group of a comic in canonical order: a partition of 1..pageCount.
+ * Empty for zero or a malformed count.
+ *
+ * @param {number} pageCount
+ * @param {Partial<ComicReaderOptions>} [options]
+ * @returns {ReadonlyArray<Readonly<{ first: number, last: number }>>}
+ */
+export function listComicPageGroups(pageCount, options) {
+  const groups = [];
+  if (!validPageCount(pageCount)) return Object.freeze(groups);
+  let position = 1;
+  while (position <= pageCount) {
+    const bounds = comicPageGroupBounds(position, pageCount, options);
+    groups.push(bounds);
+    position = bounds.last + 1;
+  }
+  return Object.freeze(groups);
+}
+
+/**
+ * Visual left-to-right order of a group's members. LTR keeps canonical
+ * ascending order (earlier page on the left); RTL puts the earlier page on
+ * the right. The input is never mutated.
+ *
+ * @template T
+ * @param {ReadonlyArray<T>} members  group members in canonical order
+ * @param {'ltr'|'rtl'} direction
+ * @returns {ReadonlyArray<T>}
+ */
+export function placeComicPageGroup(members, direction) {
+  const list = Array.isArray(members) ? members.slice() : [];
+  if (direction === VIEWER_READING_RTL) list.reverse();
+  return Object.freeze(list);
+}
+
+/**
+ * Human-readable position of a group, always in canonical ascending page
+ * numbers: "Page 1 of 7", "Pages 2–3 of 7".
+ *
+ * @param {{ first: number, last: number }} bounds
+ * @param {number} pageCount
+ * @returns {string}
+ */
+export function formatComicPageGroupLabel(bounds, pageCount) {
+  if (!bounds || !validPageCount(pageCount) || pageCount === 0) return '';
+  return bounds.last > bounds.first
+    ? `Pages ${bounds.first}–${bounds.last} of ${pageCount}`
+    : `Page ${bounds.first} of ${pageCount}`;
+}
+
+// The source's canonical page count, or -1 when it is not a well-formed comic
+// (positions must be exactly 1..n in order).
+function comicSourcePageCount(source) {
+  if (source?.kind !== VIEWER_SOURCE_KIND_COMIC) return -1;
+  const items = sourceItems(source);
+  return items.every((item, index) => item?.position === index + 1) ? items.length : -1;
+}
+
+/**
+ * @typedef {object} ComicPageGroup
+ * @property {string} anchorKey        The tracked page (unchanged by grouping).
+ * @property {number} anchorPosition
+ * @property {number} first            First canonical position of the group.
+ * @property {number} last             Last canonical position of the group.
+ * @property {ReadonlyArray<number>} positions  Canonical ascending order.
+ * @property {ReadonlyArray<string>} keys       Canonical ascending order.
+ * @property {ReadonlyArray<ViewerItem>} items  Canonical ascending order.
+ * @property {ReadonlyArray<ViewerItem>} visibleItems Visual left-to-right order.
+ * @property {number} groupIndex       Zero-based group number.
+ * @property {number} groupCount
+ * @property {number} pageCount
+ * @property {string|null} previousKey First page of the previous group.
+ * @property {string|null} nextKey     First page of the next group.
+ * @property {string} label
+ * @property {Readonly<ComicReaderOptions>} options
+ */
+
+/**
+ * Resolve an anchor page of a comic source to its group. Null when the
+ * source is not a well-formed comic or the anchor is not one of its pages.
+ *
+ * @param {ViewerSource} source
+ * @param {string|null} anchorKey
+ * @param {Partial<ComicReaderOptions>} [options]
+ * @returns {Readonly<ComicPageGroup>|null}
+ */
+export function resolveComicPageGroup(source, anchorKey, options) {
+  const pageCount = comicSourcePageCount(source);
+  const anchorIndex = findViewerItemIndex(source, anchorKey);
+  if (pageCount < 1 || anchorIndex === -1) return null;
+  const opts = readerOptions(options);
+  const items = source.items;
+  const anchorPosition = anchorIndex + 1;
+  const bounds = comicPageGroupBounds(anchorPosition, pageCount, opts);
+  const groupItems = items.slice(bounds.first - 1, bounds.last);
+  const groups = listComicPageGroups(pageCount, opts);
+  const groupIndex = groups.findIndex((group) => group.first === bounds.first);
+  const previousGroup = groupIndex > 0 ? groups[groupIndex - 1] : null;
+  const nextGroup = groupIndex < groups.length - 1 ? groups[groupIndex + 1] : null;
+  return Object.freeze({
+    anchorKey: items[anchorIndex].key,
+    anchorPosition,
+    first: bounds.first,
+    last: bounds.last,
+    positions: Object.freeze(groupItems.map((item) => item.position)),
+    keys: Object.freeze(groupItems.map((item) => item.key)),
+    items: Object.freeze(groupItems),
+    visibleItems: placeComicPageGroup(groupItems, opts.direction),
+    groupIndex,
+    groupCount: groups.length,
+    pageCount,
+    previousKey: previousGroup ? items[previousGroup.first - 1].key : null,
+    nextKey: nextGroup ? items[nextGroup.first - 1].key : null,
+    label: formatComicPageGroupLabel(bounds, pageCount),
+    options: opts,
+  });
+}
+
+/**
+ * Step a comic reader by one group (one page in Single Page layout), with
+ * the stepViewerSequence result shape. The destination anchor is the first
+ * canonical page of the adjacent group; unavailable pages are never skipped
+ * and the comic never wraps. Null when the source is not a well-formed
+ * comic (callers fall back to stepViewerSequence).
+ *
+ * @param {ViewerSource} source
+ * @param {string|null} anchorKey
+ * @param {1|-1|'next'|'previous'} direction  canonical, not visual
+ * @param {Partial<ComicReaderOptions>} [options]
+ */
+export function stepComicPageGroup(source, anchorKey, direction, options) {
+  const pageCount = comicSourcePageCount(source);
+  if (pageCount === -1) return null;
+  const delta = direction === 'previous' || direction === -1 ? -1 : 1;
+  const result = (key, index, extra = {}) => ({
+    key, index, moved: false, wrapped: false, boundary: null, reason: null, ...extra,
+  });
+  if (pageCount === 0) return result(null, -1, { reason: 'empty' });
+  const group = resolveComicPageGroup(source, anchorKey, options);
+  if (!group) {
+    const initial = selectInitialViewerItem(source);
+    return result(initial.key, initial.index, { reason: 'unknown-current' });
+  }
+  const target = delta > 0 ? group.nextKey : group.previousKey;
+  if (target === null) {
+    return result(group.anchorKey, group.anchorPosition - 1, { boundary: delta < 0 ? 'start' : 'end' });
+  }
+  return result(target, findViewerItemIndex(source, target), { moved: true });
 }

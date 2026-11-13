@@ -149,9 +149,14 @@ export function createGeneratedImagePublicationLifecycleService({
         case 'finalize': {
           let finalized;
           try {
-            finalized = publications.finalizePublication(intent.intentId, decision.snapshot);
+            const accept = () => {
+              if (halted()) throw new Error('Publication recovery is paused.');
+              return publications.finalizePublication(intent.intentId, decision.snapshot);
+            };
+            finalized = previewService.acceptRecoveredPublication
+              ? await previewService.acceptRecoveredPublication(intent, decision.snapshot, accept) : accept();
           } catch (error) {
-            if (error instanceof InvalidGeneratedImagePublicationError) return abandon('candidate-mismatch');
+            if (error instanceof InvalidGeneratedImagePublicationError || [404, 409, 415].includes(error?.status)) return abandon('candidate-mismatch');
             throw error;
           }
           return { outcome: finalized ? 'finalized' : 'superseded' };

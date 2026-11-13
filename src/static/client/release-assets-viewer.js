@@ -33,16 +33,36 @@
 //     it even under the same query, so the session is left as it is.
 //   Sessions that have since closed, been replaced or were opened by another
 //   host are never touched.
+// - Comics (C2c): an eligible CBZ/CBR/CB7 card carries a Read comic link
+//   (`[data-release-assets-comic-trigger]`, emitted by the shared partial's
+//   comicReaderAttributes for this page) whether or not the asset is selected for
+//   the release. An unmodified primary click (or keyboard activation) opens
+//   that one comic through the shared controller's openComic(); its pages come
+//   only from the comic's own manifest, never from the image source or from
+//   release membership. Modified and middle clicks keep the link's Asset
+//   Details navigation. The link's project/asset ids must agree with its
+//   server-built Asset Details href and its own card, so a malformed or
+//   foreign identity opens nothing.
+// - An open comic session is reconciled with the same installed region, with
+//   the same paginated-absence rule as images, through reconcileComic():
+//   * its Read comic link is rendered -> the server's indexed-source hint
+//     (an unchanged hint reloads nothing, a new one requests one manifest);
+//   * its card is rendered without one (missing, no longer readable) ->
+//     `eligible: false` retires the reader;
+//   * its card is not rendered -> nothing is known, the reader stays open;
+//   * another release's workspace -> retired, like an image session.
 //
 // Click handling is delegated from the document and bound once, so thumbnails
 // re-rendered by live filtering need no rebinding and never collect listeners.
 
 import { isEnhancementBound, liveRegionDocument, markEnhancementBound } from './dom.js';
 import { unifiedViewerFor } from './unified-viewer.js';
-import { createSingleImageSource, viewerItemFromSlideshowEntry } from './viewer-sequence.js';
+import { imageSourcesFromViewerTrigger, createSingleImageSource, viewerItemFromSlideshowEntry } from './viewer-sequence.js';
 
 export const RELEASE_ASSETS_VIEWER_TRIGGER_ATTRIBUTE = 'data-release-assets-viewer-trigger';
+export const RELEASE_ASSETS_COMIC_TRIGGER_ATTRIBUTE = 'data-release-assets-comic-trigger';
 const TRIGGER_SELECTOR = `[${RELEASE_ASSETS_VIEWER_TRIGGER_ATTRIBUTE}]`;
+const COMIC_TRIGGER_SELECTOR = `[${RELEASE_ASSETS_COMIC_TRIGGER_ATTRIBUTE}]`;
 const REGION_SELECTOR = '[data-release-assets-live-region]';
 const WORKSPACE_PATH = /^\/releases\/([1-9]\d*)\/assets$/;
 const PREVIEW_ROOT_SELECTOR = '[data-preview-enhancement]';
@@ -76,9 +96,12 @@ function sourceKey(releaseId) {
   return `release-assets:${releaseId}`;
 }
 
+// `session`/`key`/`identity`/`entryText` belong to an image session; `comic`
+// to a comic session ({ session, key, projectId, assetId }). Only one of them
+// can be the viewer's open session at a time.
 function hostState(document) {
   if (!document[STATE_PROPERTY]) {
-    document[STATE_PROPERTY] = { session: 0, key: null, identity: null, entryText: null };
+    document[STATE_PROPERTY] = { session: 0, key: null, identity: null, entryText: null, comic: null };
   }
   return document[STATE_PROPERTY];
 }
@@ -115,10 +138,12 @@ function readEntry(trigger) {
     id: identity.assetId,
     projectId: identity.projectId,
     filename: trigger.getAttribute?.('data-viewer-filename') || '',
+    projectName: trigger.getAttribute?.('data-viewer-project-name') || null,
     previewUrl: trigger.getAttribute?.('data-viewer-preview-url') || '',
     ...(detailsUrl ? { viewerUrl: detailsUrl } : {}),
     ...(originalUrl ? { originalUrl } : {}),
     revision: revision || null,
+    imageSources: imageSourcesFromViewerTrigger(trigger),
   };
 }
 
@@ -142,6 +167,12 @@ function isUsableTrigger(trigger) {
   return trigger.closest?.(PREVIEW_ROOT_SELECTOR)?.getAttribute?.('data-preview-state') !== 'failed';
 }
 
+function viewSwitchFocus(region) {
+  return region?.querySelector?.(`${VIEW_SWITCHER_SELECTOR}[aria-current="page"]`)
+    || region?.querySelector?.(VIEW_SWITCHER_SELECTOR)
+    || null;
+}
+
 // Focus return when the opener was replaced by a live refresh: the same
 // asset's re-rendered thumbnail, else the current Grid/List switch of the
 // release workspace (the controller falls back to #main-content after that).
@@ -149,9 +180,47 @@ function fallbackFocus(document, identity) {
   const region = regionElement(document);
   const trigger = triggerFor(region, identity);
   if (isUsableTrigger(trigger)) return trigger;
-  return region?.querySelector?.(`${VIEW_SWITCHER_SELECTOR}[aria-current="page"]`)
-    || region?.querySelector?.(VIEW_SWITCHER_SELECTOR)
-    || null;
+  return viewSwitchFocus(region);
+}
+
+// Absent attributes are partial hints; an empty attribute explicitly clears metadata.
+function comicMetadata(trigger) {
+  return Object.fromEntries([
+    ['filename', 'data-comic-filename'],
+    ['projectName', 'data-comic-project-name'],
+    ['detailsUrl', 'data-comic-details-url'],
+  ].flatMap(([field, attribute]) => {
+    const value = trigger.getAttribute?.(attribute);
+    return value == null ? [] : [[field, value]];
+  }));
+}
+
+// The rendered Read comic link of one project-qualified comic in a region.
+function comicTriggerFor(region, projectId, assetId) {
+  if (!region || !NUMERIC_ID.test(String(projectId)) || !NUMERIC_ID.test(String(assetId))) return null;
+  const selector = `${COMIC_TRIGGER_SELECTOR}[data-comic-project="${projectId}"][data-comic-asset="${assetId}"]`;
+  const triggers = Array.from(region.querySelectorAll?.(selector) || []);
+  return triggers.find((trigger) => trigger.hasAttribute?.('data-preview-fallback') && !trigger.hasAttribute?.('hidden'))
+    || triggers.find((trigger) => !trigger.hasAttribute?.('hidden')) || triggers[0] || null;
+}
+
+// The identity of a Read comic link, only when its ids are well formed and
+// agree with the server-built Asset Details href and with its own card.
+function comicTriggerIdentity(trigger) {
+  const projectId = trigger?.getAttribute?.('data-comic-project') || '';
+  const assetId = trigger?.getAttribute?.('data-comic-asset') || '';
+  if (!NUMERIC_ID.test(projectId) || !NUMERIC_ID.test(assetId)) return null;
+  if (trigger.getAttribute?.('href') !== `/projects/${projectId}/assets/${assetId}`) return null;
+  const card = trigger.closest?.('article[data-asset-id]');
+  if (!card || card.getAttribute?.('data-asset-id') !== assetId) return null;
+  return { projectId, assetId };
+}
+
+// Focus return for a comic whose opener a live refresh replaced: the same
+// comic's re-rendered Read comic link, else the Grid/List switch.
+function comicFallbackFocus(document, identity) {
+  const region = regionElement(document);
+  return comicTriggerFor(region, identity.projectId, identity.assetId) || viewSwitchFocus(region);
 }
 
 /**
@@ -189,7 +258,79 @@ export function openReleaseAssetsImage(document, trigger) {
   state.key = key;
   state.identity = identity;
   state.entryText = JSON.stringify(entry);
+  state.comic = null;
   return session;
+}
+
+/**
+ * Open the comic of one Read comic link of the current release workspace in
+ * the shared viewer. Reading never touches the release's membership, roles,
+ * order or drafts. Returns 0 (and opens nothing) for a link outside the
+ * workspace region or with a malformed or inconsistent identity.
+ *
+ * @param {Document} document
+ * @param {Element} trigger  the clicked `[data-release-assets-comic-trigger]`
+ * @returns {number} the viewer session, or 0 when nothing opened
+ */
+export function openReleaseAssetsComic(document, trigger) {
+  const viewer = unifiedViewerFor(document);
+  const region = regionElement(document);
+  const releaseId = releaseIdOf(document);
+  if (!viewer || typeof viewer.openComic !== 'function') return 0;
+  if (!region || !releaseId || !trigger || !region.contains?.(trigger)) return 0;
+  if (!trigger.hasAttribute?.(RELEASE_ASSETS_COMIC_TRIGGER_ATTRIBUTE)) return 0;
+  const identity = comicTriggerIdentity(trigger);
+  if (!identity) return 0;
+  const sourceRevision = trigger.getAttribute?.('data-comic-source-revision') || undefined;
+  const session = viewer.openComic({
+    projectId: Number(identity.projectId),
+    assetId: Number(identity.assetId),
+    ...comicMetadata(trigger),
+    title: trigger.getAttribute?.('data-comic-title') || '',
+    label: trigger.getAttribute?.('data-comic-label') || '',
+    sourceRevision,
+  }, {
+    opener: trigger,
+    fallbackFocus: () => comicFallbackFocus(document, identity),
+  });
+  if (!session) return 0;
+  const state = hostState(document);
+  forget(state);
+  state.comic = { session, key: sourceKey(releaseId), ...identity };
+  return session;
+}
+
+// Reconcile an open comic session with the installed region (see header).
+function refreshComicSession(document, state, viewer) {
+  const { comic } = state;
+  const viewerState = viewer?.getState?.();
+  if (!viewerState?.open || viewerState.session !== comic.session || !viewerState.comic) {
+    state.comic = null;
+    return null;
+  }
+  const region = regionElement(document);
+  const releaseId = releaseIdOf(document);
+  if (!region || !releaseId) return null;
+  const identity = { projectId: Number(comic.projectId), assetId: Number(comic.assetId) };
+  let hint = null;
+  if (sourceKey(releaseId) !== comic.key) {
+    // Another release's workspace: like an image session, it is retired.
+    hint = { ...identity, eligible: false };
+  } else {
+    const trigger = comicTriggerFor(region, comic.projectId, comic.assetId);
+    if (trigger) {
+      const sourceRevision = trigger.getAttribute?.('data-comic-source-revision');
+      hint = sourceRevision ? { ...identity, ...comicMetadata(trigger), sourceRevision } : { ...identity, ...comicMetadata(trigger) };
+    } else if (rendersAsset(region, comic)) {
+      hint = { ...identity, eligible: false };
+    } else {
+      // A limited result cannot prove removal, even for the same page/query.
+      return null;
+    }
+  }
+  const result = viewer.reconcileComic(hint, { session: comic.session });
+  if (!viewer.getState().open) state.comic = null;
+  return result;
 }
 
 /**
@@ -205,6 +346,7 @@ export function refreshReleaseAssetsViewer(scope = globalThis.document) {
   const document = liveRegionDocument(scope);
   if (!document) return null;
   const state = document[STATE_PROPERTY];
+  if (state?.comic) return refreshComicSession(document, state, unifiedViewerFor(document));
   if (!state?.session) return null;
   const viewer = unifiedViewerFor(document);
   const viewerState = viewer?.getState?.();
@@ -244,7 +386,8 @@ export function refreshReleaseAssetsViewer(scope = globalThis.document) {
 }
 
 /**
- * Bind Release Manage Assets image thumbnail activation once per document.
+ * Bind Release Manage Assets image thumbnail and Read comic activation once
+ * per document.
  * A page without the Release Manage Assets region is left untouched.
  *
  * @param {Document|Element} [scope]
@@ -259,6 +402,11 @@ export function enhanceReleaseAssetsViewer(scope = globalThis.document) {
 
   document.addEventListener('click', (event) => {
     if (!isUnmodifiedPrimaryClick(event)) return;
+    const comicTrigger = event.target?.closest?.(COMIC_TRIGGER_SELECTOR);
+    if (comicTrigger) {
+      if (openReleaseAssetsComic(document, comicTrigger)) event.preventDefault?.();
+      return;
+    }
     const trigger = event.target?.closest?.(TRIGGER_SELECTOR);
     if (!trigger) return;
     if (openReleaseAssetsImage(document, trigger)) event.preventDefault?.();

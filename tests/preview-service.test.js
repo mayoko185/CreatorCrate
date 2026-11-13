@@ -56,8 +56,115 @@ import { makeZip } from './helpers/zip-fixture.js';
 import { makeAnimatedWebp, makeSolidAnimatedWebp } from './helpers/animated-webp.js';
 import { bindTestProjectOwnership } from './helpers/project-ownership.js';
 import { createProjectDirectoryOwnershipRepository } from '../src/data/project-directory-ownership-repository.js';
+import { encodeImageDerivative, buildDerivativePipeline as sharedDerivativePipeline,
+  IMAGE_DERIVATIVE_CONFIG as sharedDerivativeConfig } from '../src/services/image-derivative.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
+
+// Frozen pre-extraction algorithm: compare actual encoded bytes and assembled metadata,
+// independently of the shared implementation under test.
+async function legacyDerivative(input, { kind, width, height, quality, animated, format }) {
+  const sh = await sharp();
+  const pipeline = sh(input, animated ? { animated: true } : {}).autoOrient()
+    .resize({ width, height, fit: 'inside', withoutEnlargement: true });
+  const { data, info } = await (format === 'webp' ? pipeline.webp({ quality }) : pipeline.png())
+    .toBuffer({ resolveWithObject: true });
+  const outAnimated = (info.pages ?? 1) > 1;
+  return { buffer: data, width: info.width, height: outAnimated ? (info.pageHeight ?? info.height) : info.height,
+    animated: outAnimated, frameCount: info.pages ?? 1, format, filename: `${kind}.${format}` };
+}
+
+describe('shared image encoder equivalence', () => {
+  it('preserves the established builder export and default configuration', async () => {
+    const compatibility = await import('../src/services/preview-service.js');
+    expect(buildDerivativePipeline).toBe(sharedDerivativePipeline);
+    expect(compatibility.IMAGE_DERIVATIVE_CONFIG).toBe(sharedDerivativeConfig);
+    expect(sharedDerivativeConfig).toEqual({ thumbnail: { width: 256, height: 256, quality: 80 },
+      preview: { width: 1600, height: 1600, quality: 90 } });
+    expect(compatibility).toMatchObject({ THUMBNAIL_MAX: 256, PREVIEW_MAX: 1600, THUMBNAIL_QUALITY: 80, PREVIEW_QUALITY: 90 });
+  });
+
+  it.each(['jpeg', 'png', 'webp', 'gif', 'oriented', 'small', 'portrait', 'animated-webp', 'animated-gif'])
+  ('preserves actual WebP/PNG bytes and metadata for %s', async type => {
+    const sh = await sharp();
+    const raw = Buffer.alloc(1800 * 900 * 3);
+    for (let i = 0; i < raw.length; i++) raw[i] = (i * 17 + Math.floor(i / 127)) & 255;
+    let input;
+    if (type === 'animated-webp') input = await makeAnimatedWebp(3, { width: 30, height: 40 });
+    else if (type === 'animated-gif') input = await makeAnimatedGif(30, 40, 3);
+    else if (type === 'small') input = await makePng(23, 31);
+    else if (type === 'portrait') input = await makePng(900, 1800);
+    else {
+      let pipeline = sh(raw, { raw: { width: 1800, height: 900, channels: 3 } });
+      if (type === 'oriented') pipeline = pipeline.jpeg().withMetadata({ orientation: 6 });
+      else pipeline = pipeline[type]();
+      input = await pipeline.toBuffer();
+    }
+    const animated = type.startsWith('animated');
+    for (const [kind, dimension, quality] of [['thumbnail', 128, 29], ['preview', 1024, 91]]) {
+      for (const requestedFormat of ['webp', 'png']) {
+        const format = kind === 'preview' && animated && requestedFormat === 'png' ? 'webp' : requestedFormat;
+        const options = { kind, width: dimension, height: dimension, quality, animated: kind === 'preview' && animated, format };
+        const before = await legacyDerivative(input, options);
+        const after = await encodeImageDerivative(input, options);
+        expect(after).toEqual(before);
+        const metadata = await sh(after.buffer, { animated: true }).metadata();
+        expect(metadata.format).toBe(format);
+        expect(metadata.orientation).toBeUndefined();
+        expect(metadata.exif).toBeUndefined();
+        expect(metadata.pages ?? 1).toBe(kind === 'preview' && animated ? 3 : 1);
+        expect(Math.max(after.width, after.height)).toBeLessThanOrEqual(dimension);
+        if (type === 'small') expect(after).toMatchObject({ width: 23, height: 31 });
+        if (type === 'oriented') expect(after.height).toBeGreaterThan(after.width);
+      }
+    }
+  }, 15_000);
+
+  it('retains path inputs and the same malformed-input errors', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-shared-encoder-'));
+    try {
+      const file = path.join(root, 'source.png');
+      fs.writeFileSync(file, await makePng(80, 40));
+      const options = { kind: 'thumbnail', width: 256, height: 256, quality: 80, animated: false, format: 'webp' };
+      expect(await encodeImageDerivative(file, options)).toEqual(await legacyDerivative(file, options));
+      for (const input of [Buffer.from('invalid image'), Buffer.alloc(0), path.join(root, 'missing.png')]) {
+        const before = await legacyDerivative(input, options).catch(error => error);
+        const after = await encodeImageDerivative(input, options).catch(error => error);
+        expect(after.constructor).toBe(before.constructor);
+        expect(after.message).toBe(before.message);
+      }
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each(['webp', 'png', 'original'])('preserves real Preview Service publication bytes under %s policy', async format => {
+    const h = makeHarness();
+    try {
+      const settings = createAppMetaRepository(h.db);
+      settings.setValue('images.thumbnail.format', 'png');
+      settings.setValue('images.thumbnail.max_dimension', '128');
+      settings.setValue('images.preview.format', format);
+      settings.setValue('images.preview.webp_quality', '37');
+      settings.setValue('images.preview.max_dimension', '640');
+      const { project, absPath } = h.createProject('Shared encoder publication');
+      const input = await makeJpeg(1800, 900);
+      writeProjectFile(absPath, 'source.jpg', input);
+      const asset = h.indexAsset(project, 'source.jpg');
+      await h.service.getThumbnail(project.id, asset.id);
+      const expectedThumbnail = await legacyDerivative(input, { kind: 'thumbnail', width: 128, height: 128,
+        quality: null, animated: false, format: 'png' });
+      const effectiveFormat = format === 'original' ? 'webp' : format;
+      const expectedPreview = await legacyDerivative(input, { kind: 'preview',
+        width: format === 'original' ? 1600 : 640, height: format === 'original' ? 1600 : 640,
+        quality: format === 'original' ? 90 : 37, animated: false, format: effectiveFormat });
+      expect(fs.readFileSync(publishedFile(h, project.id, asset.id, 'thumbnail.png'))).toEqual(expectedThumbnail.buffer);
+      expect(fs.readFileSync(publishedFile(h, project.id, asset.id, `preview.${effectiveFormat}`))).toEqual(expectedPreview.buffer);
+      const meta = readMetaFile(publishedFile(h, project.id, asset.id, META_FILENAME)).meta;
+      expect(meta.thumbnail).toMatchObject({ width: 128, height: 64 });
+      expect(meta.preview).toMatchObject({ width: expectedPreview.width, height: expectedPreview.height });
+      expect(meta).toMatchObject({ animated: false, frameCount: 1 });
+    } finally { h.cleanup(); }
+  });
+});
 
 // ─── Fixture builders ────────────────────────────────────────────────────
 
@@ -5057,5 +5164,78 @@ describe('classifyPreviewable', () => {
     expect(classifyPreviewable({ extension: 'png', mime_type: 'application/octet-stream' }).supported).toBe(false);
     expect(classifyPreviewable({ extension: 'png', mime_type: 'image/jpeg' }).supported).toBe(false);
     expect(classifyPreviewable({ extension: 'bin', mime_type: 'image/png' }).supported).toBe(false);
+  });
+});
+
+
+describe('preview-service explicit optimized revision continuity', () => {
+  let h;
+  beforeEach(() => { h = makeHarness(); });
+  afterEach(() => h.cleanup());
+
+  async function fixture() {
+    const { project, absPath } = h.createProject('Optimized continuity');
+    const file = writeProjectFile(absPath, 'art.png', await makePng(64, 64));
+    const asset = h.indexAsset(project, 'art.png');
+    const settings = createProjectImageSettingsService({ appMetaRepository: createAppMetaRepository(h.db) });
+    const model = buildAssetPreviewModel(asset, settings.getPresentationPolicy());
+    return { project, asset, file, sources: model.imageSources };
+  }
+
+  it('rechecks revision authority after waiting on the existing per-asset lock', async () => {
+    const { project, asset, sources } = await fixture();
+    let entered;
+    let release;
+    const ready = new Promise((resolve) => { entered = resolve; });
+    const gate = new Promise((resolve) => { release = resolve; });
+    const held = h.service.withPublicationLock(project.id, asset.id, async () => { entered(); await gate; });
+    await ready;
+    const pending = h.service.getOptimizedPreview(project.id, asset.id, sources.optimized.revision, sources.sourceRevision);
+    const checked = expect(pending).rejects.toMatchObject({ name: 'PreviewRevisionConflictError' });
+    h.db.prepare('UPDATE assets SET source_generation = source_generation + 1 WHERE id = ?').run(asset.id);
+    release();
+    await held;
+    await checked;
+    expect(fs.readdirSync(h.previewRoot)).toEqual([]);
+    expect(_lockCountForTests()).toBe(0);
+  });
+
+  it('rejects a same-size/mtime replacement while waiting to select cached bytes', async () => {
+    const { project, asset, sources, file } = await fixture();
+    await h.service.getPreview(project.id, asset.id);
+    const replacement = `${file}.replacement`;
+    fs.copyFileSync(file, replacement);
+    const originalStat = fs.statSync(file);
+    fs.utimesSync(replacement, originalStat.atime, originalStat.mtime);
+    const service = h.service;
+    // Use the existing publication lock to create a deterministic replacement
+    // after the request pins its source, before it can select cached bytes.
+    let release;
+    let entered;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const ready = new Promise((resolve) => { entered = resolve; });
+    const held = service.withPublicationLock(project.id, asset.id, async () => { entered(); await gate; });
+    await ready;
+    const pending = service.getOptimizedPreview(project.id, asset.id, sources.optimized.revision, sources.sourceRevision);
+    const checked = expect(pending).rejects.toMatchObject({ name: 'PreviewRevisionConflictError' });
+    fs.renameSync(replacement, file);
+    release();
+    await held;
+    await checked;
+    expect(_lockCountForTests()).toBe(0);
+  });
+
+  it('does not deliver another rendition after policy changes during generation', async () => {
+    const { project, asset, sources } = await fixture();
+    let changed = false;
+    const service = makeHookedService(h, { beforePreviewTransform: () => {
+      if (changed) return;
+      changed = true;
+      createAppMetaRepository(h.db).setValue('images.preview.max_dimension', '800');
+    } });
+    await expect(service.getOptimizedPreview(project.id, asset.id, sources.optimized.revision, sources.sourceRevision))
+      .rejects.toMatchObject({ name: 'PreviewRevisionConflictError' });
+    expect(changed).toBe(true);
+    expect(_lockCountForTests()).toBe(0);
   });
 });

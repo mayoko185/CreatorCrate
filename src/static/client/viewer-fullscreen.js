@@ -4,9 +4,9 @@
 // viewer is a native modal dialog, and a <dialog> itself cannot be made
 // fullscreen (Chromium rejects dialog.requestFullscreen() with a TypeError),
 // so the target is the dialog's card: the inner container that holds the
-// header with Close, the context bar with the view tools, the media stage
-// and the Previous / playback / Next controls. The same controller, content
-// and playback participants keep running; nothing is re-created or reloaded.
+// header with Close, the media stage, navigation and shared footer tools.
+// The same controller, content and playback participants keep running;
+// nothing is re-created or reloaded.
 //
 // - Enter/Exit through the viewer's fullscreen button; the UI state is
 //   always re-derived from `document.fullscreenElement` on fullscreenchange.
@@ -17,19 +17,26 @@
 // - Closing the viewer, or a request that settles after the viewer closed,
 //   moved to another session or was destroyed, exits fullscreen. Fullscreen
 //   held by any other element (a video, say) is never touched.
-// - In fullscreen only, the chrome (header, context bar, controls) hides
+// - In fullscreen only, the chrome (header, footer, navigation) hides
 //   after VIEWER_CHROME_IDLE_DELAY without pointer or keyboard activity. It
-//   stays while a dropdown is open, while the pointer is over it, and while
-//   keyboard focus is inside it. Hidden chrome is transparent, not removed:
-//   it stays in the focus order and the first key or focus reveals it.
+//   also hides immediately on a completed viewing-area click. It stays
+//   while a dropdown is open, while the pointer is over it, and while
+//   keyboard focus is inside it. Chrome overlays the full media area;
+//   keyboard or pointer input reveals it.
 // - Geometry is re-measured through the content participant's
-//   refreshGeometry() after each change (B3's ResizeObserver also follows).
+//   refreshGeometry() on fullscreen entry/exit; the viewport's ResizeObserver
+//   follows actual stage resizing. Chrome visibility never changes geometry.
+
+import { VIEWER_INTERACTIVE_SELECTOR } from './viewer-viewport.js';
 
 export const VIEWER_CHROME_IDLE_DELAY = 4000;
 
+// Allow small pointer jitter without mistaking a pan or scroll for a tap.
+const CLICK_MOVEMENT = 6;
+
 const CHROME_HIDDEN_ATTRIBUTE = 'data-viewer-chrome-hidden';
 const FULLSCREEN_ATTRIBUTE = 'data-viewer-fullscreen';
-const DROPDOWN_OPEN_SELECTOR = '[data-cc-dropdown][open]';
+const DROPDOWN_OPEN_SELECTOR = '[data-cc-dropdown][open], [data-cc-viewport-disclosure][open]';
 const OPEN_DIALOG_SELECTOR = 'dialog[open]';
 
 // Fullscreen ownership of a target element. A participant can be destroyed
@@ -168,6 +175,7 @@ export function viewerFullscreenSupported(document, target) {
  * @param {Array<HTMLElement>} [options.chrome]  surfaces that idle-hide in fullscreen
  * @param {(listener: Function) => Function} options.observe  controller observe()
  * @param {{ refreshGeometry: Function }} [options.media]
+ * @param {() => void} [options.dismissMenus]  closes viewer-owned disclosures
  * @param {Window|null} [options.view]
  */
 export function createViewerFullscreen(options = {}) {
@@ -176,6 +184,7 @@ export function createViewerFullscreen(options = {}) {
   const root = options.root || null;
   const button = options.button || null;
   const chrome = (options.chrome || []).filter(Boolean);
+  const stage = root?.querySelector?.('[data-unified-viewer-stage]') || null;
   const timers = {
     set: typeof view?.setTimeout === 'function' ? view.setTimeout.bind(view) : globalThis.setTimeout.bind(globalThis),
     clear: typeof view?.clearTimeout === 'function' ? view.clearTimeout.bind(view) : globalThis.clearTimeout.bind(globalThis),
@@ -204,6 +213,8 @@ export function createViewerFullscreen(options = {}) {
   let frame = null;
   let modality = 'pointer';
   let pointerInChrome = false;
+  let gesture = null;
+  let dismissedPointer = null;
   // A focus return owed by a closed viewer (deferFocus):
   // { target, fallback, latest, superseded, track }.
   let deferredFocus = null;
@@ -427,6 +438,8 @@ export function createViewerFullscreen(options = {}) {
       active = mine;
     }
     if (!active) {
+      gesture = null;
+      dismissedPointer = null;
       clearIdle();
       setChromeHidden(false);
       pointerInChrome = false;
@@ -527,6 +540,7 @@ export function createViewerFullscreen(options = {}) {
   function focusTarget(plan) {
     const connected = (element) => Boolean(element)
       && (typeof document?.contains !== 'function' || document.contains(element))
+      && !element.hidden && !element.disabled && !element.closest?.('[hidden], [inert]')
       && !dialog?.contains?.(element);
     if (connected(plan.latest)) return plan.latest;
     if (connected(plan.target)) return plan.target;
@@ -657,6 +671,10 @@ export function createViewerFullscreen(options = {}) {
 
   function onSessionChange(change) {
     if (destroyed || !change) return;
+    if (change.type !== 'open' && change.session !== session) return;
+    const interruptedGesture = gesture !== null;
+    gesture = null;
+    dismissedPointer = null;
     if (change.type === 'open') {
       session = change.session;
       sync();
@@ -668,6 +686,8 @@ export function createViewerFullscreen(options = {}) {
       frame = null;
       // Releases fullscreen this viewer holds (sync exits it for no session).
       sync();
+    } else if (interruptedGesture) {
+      scheduleIdle();
     }
   }
 
@@ -677,6 +697,8 @@ export function createViewerFullscreen(options = {}) {
   const onFullscreenError = () => sync('rejected');
 
   const onKeydown = (event) => {
+    gesture = null;
+    dismissedPointer = null;
     modality = 'keyboard';
     if (active) revealChrome();
     if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return;
@@ -686,18 +708,95 @@ export function createViewerFullscreen(options = {}) {
     event.preventDefault?.();
     exit();
   };
+  function viewingContent(element) {
+    return Boolean(stage?.contains?.(element)) && !inChrome(element)
+      && !element?.closest?.(`${VIEWER_INTERACTIVE_SELECTOR}, [tabindex], ${DROPDOWN_OPEN_SELECTOR}`);
+  }
+
+  function overViewingContent(event) {
+    // Pan captures the pointer on the media surface. Hit-test as well so a
+    // captured gesture crossing a control cannot become a viewing-area click.
+    const hit = document?.elementFromPoint?.(event.clientX, event.clientY);
+    return viewingContent(event.target) && (hit === undefined || viewingContent(hit));
+  }
+
+  function primaryClick(event) {
+    return event.button === 0 && event.isPrimary !== false
+      && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
+  }
+
+  function moved(event, start) {
+    return Math.hypot(event.clientX - start.x, event.clientY - start.y) > CLICK_MOVEMENT;
+  }
+
   const onPointerMove = (event) => {
     if (event?.pointerType && event.pointerType !== 'touch') modality = 'pointer';
     pointerInChrome = inChrome(event?.target);
+    if (gesture && event.pointerId === gesture.pointerId) {
+      if (moved(event, gesture) || !overViewingContent(event)) gesture.cancelled = true;
+      // A tap that starts with hidden chrome never flashes it during jitter.
+      if (!gesture.cancelled) return;
+    }
+    if (dismissedPointer && event.pointerId === dismissedPointer.pointerId
+      && event.clientX === dismissedPointer.x && event.clientY === dismissedPointer.y) return;
+    dismissedPointer = null;
     if (active) revealChrome();
   };
   const onPointerDown = (event) => {
     modality = 'pointer';
     pointerInChrome = inChrome(event?.target);
+    dismissedPointer = null;
+    if (gesture) {
+      gesture.cancelled = true;
+      return;
+    }
+    if (!destroyed && active && !exiting && ownClaim() && primaryClick(event)
+      && Number.isFinite(event.clientX) && Number.isFinite(event.clientY) && overViewingContent(event)) {
+      gesture = { pointerId: event.pointerId, x: event.clientX, y: event.clientY,
+        session, hidden: chromeHidden, cancelled: false };
+      clearIdle();
+      return;
+    }
     if (active) revealChrome();
   };
-  const onPointerLeave = () => { pointerInChrome = false; };
+  const onPointerUp = (event) => {
+    if (!gesture || event.pointerId !== gesture.pointerId) return;
+    const completed = gesture;
+    gesture = null;
+    if (destroyed || !active || exiting || !isMine() || !ownClaim() || session !== completed.session) return;
+    if (completed.cancelled || !primaryClick(event) || moved(event, completed) || !overViewingContent(event)) {
+      scheduleIdle();
+      return;
+    }
+    options.dismissMenus?.();
+    if (destroyed || !active || exiting || session !== completed.session || !ownClaim()) return;
+    // Menu cleanup can focus its trigger. Move focus into the fullscreen card
+    // before collapsing chrome; the next keyboard activity reveals controls.
+    if (inChrome(document?.activeElement)) {
+      const tabindex = target?.getAttribute?.('tabindex');
+      target?.setAttribute?.('tabindex', '-1');
+      target?.focus?.({ preventScroll: true });
+      if (tabindex === null) target?.removeAttribute?.('tabindex');
+      else target?.setAttribute?.('tabindex', tabindex);
+    }
+    if (destroyed || !active || exiting || session !== completed.session || !ownClaim()) return;
+    clearIdle();
+    pointerInChrome = false;
+    dismissedPointer = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+    if (completed.hidden && chromeHidden) return;
+    setChromeHidden(true);
+  };
+  const onPointerCancel = (event) => {
+    if (!gesture || (event?.pointerId !== undefined && event.pointerId !== gesture.pointerId)) return;
+    gesture = null;
+    scheduleIdle();
+  };
+  const onPointerLeave = () => {
+    pointerInChrome = false;
+    onPointerCancel();
+  };
   const onFocusIn = () => {
+    dismissedPointer = null;
     if (active) revealChrome();
   };
   const onButton = (event) => {
@@ -711,7 +810,12 @@ export function createViewerFullscreen(options = {}) {
   }
   dialog?.addEventListener?.('keydown', onKeydown, true);
   target?.addEventListener?.('pointermove', onPointerMove);
-  target?.addEventListener?.('pointerdown', onPointerDown);
+  target?.addEventListener?.('pointerdown', onPointerDown, true);
+  target?.addEventListener?.('pointerup', onPointerUp, true);
+  target?.addEventListener?.('pointercancel', onPointerCancel);
+  target?.addEventListener?.('lostpointercapture', onPointerCancel);
+  target?.addEventListener?.('scroll', onPointerCancel, true);
+  target?.addEventListener?.('wheel', onPointerCancel, { passive: true });
   target?.addEventListener?.('pointerleave', onPointerLeave);
   target?.addEventListener?.('focusin', onFocusIn);
   button?.addEventListener?.('click', onButton);
@@ -751,7 +855,12 @@ export function createViewerFullscreen(options = {}) {
     }
     dialog?.removeEventListener?.('keydown', onKeydown, true);
     target?.removeEventListener?.('pointermove', onPointerMove);
-    target?.removeEventListener?.('pointerdown', onPointerDown);
+    target?.removeEventListener?.('pointerdown', onPointerDown, true);
+    target?.removeEventListener?.('pointerup', onPointerUp, true);
+    target?.removeEventListener?.('pointercancel', onPointerCancel);
+    target?.removeEventListener?.('lostpointercapture', onPointerCancel);
+    target?.removeEventListener?.('scroll', onPointerCancel, true);
+    target?.removeEventListener?.('wheel', onPointerCancel);
     target?.removeEventListener?.('pointerleave', onPointerLeave);
     target?.removeEventListener?.('focusin', onFocusIn);
     button?.removeEventListener?.('click', onButton);

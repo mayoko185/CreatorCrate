@@ -24,7 +24,7 @@ function selectedSection(html) {
 }
 
 const triggerIds = (html) => [...html.matchAll(new RegExp(`${TRIGGER} data-viewer-project="(\\d+)" data-viewer-asset="(\\d+)"`, 'g'))]
-  .map((match) => match[2]);
+  .map((match) => match[2]).filter((id, index, all) => all.indexOf(id) === index);
 
 const articleIds = (html) => [...html.matchAll(/<article [^>]*data-asset-id="(\d+)"/g)].map((match) => match[1]);
 
@@ -165,5 +165,151 @@ describe('Release Detail unified viewer triggers', () => {
     const manage = (await agent.get(`/releases/${f.releaseId}/assets`).expect(200)).text;
     expect(manage).not.toContain(TRIGGER);
     expect(manage).toContain(B7A_TRIGGER);
+  });
+});
+
+// C2c: Release Detail opts the shared partial's Read comic link in for its
+// saved comics (CBZ, CBR, CB7), with its own host-scoped attribute. The
+// link replaces the "preview not supported" placeholder in the same media
+// area, keeps the Asset Details href and carries the server's indexed-source
+// hint; missing comics keep their notice and nothing is extracted to render.
+const COMIC = 'data-release-detail-comic-trigger';
+const COMIC_HOSTS = ['data-release-assets-comic-trigger', 'data-project-assets-comic-trigger'];
+
+function comicTag(html, assetId) {
+  const tag = html.match(new RegExp(`<a [^>]*${COMIC} [^>]*data-comic-asset="${assetId}"[^>]*>`))?.[0];
+  if (!tag) return null;
+  return Object.fromEntries([...tag.matchAll(/([\w-]+)(?:="([^"]*)")?/g)].slice(1).map((m) => [m[1], m[2] ?? '']));
+}
+
+const comicIds = (html) => [...html.matchAll(new RegExp(`${COMIC} data-comic-project="(\\d+)" data-comic-asset="(\\d+)"`, 'g'))]
+  .map((match) => match[2]).filter((id, index, all) => all.indexOf(id) === index);
+
+describe('Release Detail Read comic triggers (C2c)', () => {
+  let db;
+  let app;
+  let agent;
+  let tmpDir;
+  let projectsRoot;
+
+  beforeEach(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-release-detail-comic-'));
+    projectsRoot = path.join(tmpDir, 'projects');
+    const appDataRoot = path.join(tmpDir, 'app');
+    fs.mkdirSync(projectsRoot, { recursive: true });
+    fs.mkdirSync(appDataRoot, { recursive: true });
+    db = openDatabase(path.join(tmpDir, 'test.db'));
+    runMigrations(db, MIGRATIONS_DIR);
+    const { csrfPepper } = ensureAuthEnablement(appDataRoot);
+    app = createApp({ appName: 'CreatorCrate', db, projectsRoot }, { appDataRoot, authState: { csrfPepper } });
+    ({ agent } = await getDisabledModeCsrf(app, appDataRoot));
+  });
+
+  afterEach(() => {
+    closeDatabase(db);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // Saved, in order: a CB7, an image, a CBZ, a CBR and a CBZ that goes
+  // missing. 09-unselected.cbz is a project comic outside the release.
+  async function fixture() {
+    const project = app.locals.projectService.create({ title: 'Comic Detail', status: 'tbd' });
+    const dir = path.join(projectsRoot, project.project_dir);
+    fs.mkdirSync(dir, { recursive: true });
+    await sharp({ create: { width: 20, height: 20, channels: 3, background: { r: 1, g: 2, b: 3 } } }).png()
+      .toFile(path.join(dir, '02-a.png'));
+    // Card rendering never opens an archive, so placeholder bytes suffice.
+    for (const name of ['01-seven.cb7', '03-zip.cbz', '04-rar.cbr', '05-gone.cbz', '09-unselected.cbz']) {
+      fs.writeFileSync(path.join(dir, name), Buffer.from(`comic ${name}`));
+    }
+    app.locals.assetScanner.scanProjectAssets(project.id);
+    const ids = Object.fromEntries(db.prepare('SELECT filename, id FROM assets WHERE project_id = ?')
+      .all(project.id).map((asset) => [asset.filename, String(asset.id)]));
+    const order = ['01-seven.cb7', '02-a.png', '03-zip.cbz', '04-rar.cbr', '05-gone.cbz'];
+    const release = createReleaseService({ db }).createReleaseWithSelectedAssets(project.id, { title: 'Comic Release' },
+      order.map((name) => Number(ids[name])));
+    fs.rmSync(path.join(dir, '05-gone.cbz'));
+    app.locals.assetScanner.scanProjectAssets(project.id);
+    return { projectId: String(project.id), releaseId: release.id, ids, order };
+  }
+
+  it('offers Read comic for present CBZ, CBR and CB7 in Grid and List with the indexed-source hint', async () => {
+    const f = await fixture();
+    const revisions = {};
+    for (const view of ['grid', 'list']) {
+      const html = (await agent.get(`/releases/${f.releaseId}${view === 'list' ? '?view=list' : ''}`).expect(200)).text;
+      const section = selectedSection(html);
+      // Saved order; only present comics; nothing outside the selected assets.
+      expect(comicIds(section)).toEqual(['01-seven.cb7', '03-zip.cbz', '04-rar.cbr'].map((name) => f.ids[name]));
+      expect(comicIds(html)).toEqual(comicIds(section));
+      for (const [name, format] of [['01-seven.cb7', 'CB7'], ['03-zip.cbz', 'CBZ'], ['04-rar.cbr', 'CBR']]) {
+        const id = f.ids[name];
+        const attributes = comicTag(section, id);
+        expect(attributes).toMatchObject({
+          href: `/projects/${f.projectId}/assets/${id}`,
+          [COMIC]: '',
+          'data-comic-project': f.projectId,
+          'data-comic-asset': id,
+          'data-comic-filename': name,
+          'data-comic-project-name': 'Comic Detail',
+          'data-comic-details-url': `/projects/${f.projectId}/assets/${id}`,
+          'data-comic-title': name.replace(/\.\w+$/, ''),
+        });
+        expect(attributes.class).toContain(view === 'grid' ? 'asset-card-media-link' : 'asset-list-card-media-link');
+        expect(attributes['aria-label']).toBe(`Read comic ${name}`);
+        expect(attributes['data-comic-source-revision']).toMatch(/\S/);
+        // The same server hint in both views; never an image trigger.
+        revisions[id] ??= attributes['data-comic-source-revision'];
+        expect(attributes['data-comic-source-revision']).toBe(revisions[id]);
+        expect(attributes).not.toHaveProperty(TRIGGER);
+        expect(attributes).not.toHaveProperty('data-viewer-project');
+        expect(section).not.toContain(`${format} comic</span>`);
+        expect(section).not.toContain('data-comic-thumbnail=');
+        expect(section).toContain(`src="/projects/${f.projectId}/assets/${id}/preview?v=`);
+        expect(section).toContain('loading="lazy"');
+      }
+      // Cards carry a thumbnail descriptor but never a reader page source.
+      expect(section).not.toMatch(/<img[^>]+src=[^>]*\/comic|\/manifest|\/pages\//);
+      // The missing comic keeps its notice and has no reader.
+      expect(comicTag(section, f.ids['05-gone.cbz'])).toBeNull();
+      expect(section).toContain(view === 'grid' ? 'Missing at last scan</span>' : 'title="Missing at last scan"');
+      // The unselected project comic is not part of Release Detail.
+      expect(articleIds(section)).not.toContain(f.ids['09-unselected.cbz']);
+      // Saved membership and order unchanged; the image keeps its own trigger.
+      expect(articleIds(section)).toEqual(f.order.map((name) => f.ids[name]));
+      expect(triggerIds(section)).toEqual([f.ids['02-a.png']]);
+      // Never on a card, Details link or filename link; never another host's.
+      expect(html).not.toMatch(new RegExp(`<(article|button|li|section|form|input)[^>]*${COMIC}`));
+      expect(html).not.toMatch(new RegExp(`class="asset-details-link[^>]*${COMIC}`));
+      expect(html).not.toMatch(new RegExp(`class="[^"]*asset-file-link[^>]*${COMIC}`));
+      COMIC_HOSTS.forEach((other) => expect(html).not.toContain(other));
+    }
+  });
+
+  it('keeps Role/Order presentation for saved comics and Read comic on published and archived releases', async () => {
+    const f = await fixture();
+    const grid = selectedSection((await agent.get(`/releases/${f.releaseId}`).expect(200)).text);
+    expect(grid.match(/<strong>Role<\/strong> \w+/g)).toHaveLength(f.order.length);
+    expect(grid.match(/<strong>Order<\/strong> \d+/g)).toHaveLength(f.order.length);
+    const expected = ['01-seven.cb7', '03-zip.cbz', '04-rar.cbr'].map((name) => f.ids[name]);
+
+    db.prepare("UPDATE releases SET published_date = '2026-01-02' WHERE id = ?").run(f.releaseId);
+    const published = (await agent.get(`/releases/${f.releaseId}`).expect(200)).text;
+    expect(published).toContain('This release is published.');
+    expect(published).not.toContain('data-dialog-open="release-publish-dialog"');
+    expect(comicIds(selectedSection(published))).toEqual(expected);
+
+    db.prepare("UPDATE releases SET archived_at = '2026-02-03 10:00:00' WHERE id = ?").run(f.releaseId);
+    const archived = (await agent.get(`/releases/${f.releaseId}?view=list`).expect(200)).text;
+    expect(archived).toContain('This release is archived and read-only.');
+    expect(archived).not.toContain('data-release-edit-id=');
+    expect(comicIds(selectedSection(archived))).toEqual(expected);
+  });
+
+  it('leaves Project Detail release strips without Read comic', async () => {
+    const f = await fixture();
+    const projectDetail = (await agent.get(`/projects/${f.projectId}`).expect(200)).text;
+    expect(projectDetail).not.toContain(COMIC);
+    COMIC_HOSTS.forEach((other) => expect(projectDetail).not.toContain(other));
   });
 });

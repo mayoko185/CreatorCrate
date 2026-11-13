@@ -41,6 +41,12 @@ function setPreviewState(root, state) {
   }
 }
 
+function previewImageLink(image, fallback) {
+  // An actionable fallback must not sit under the failed image's empty link.
+  return image?.closest?.('.asset-preview-link')
+    || (fallback?.matches?.('a') ? image?.closest?.('a') : null);
+}
+
 export function markPreviewLoaded(root) {
   if (!root || root.dataset?.previewState === 'failed') return 'failed';
   const image = root.querySelector?.(PREVIEW_IMAGE_SELECTOR);
@@ -49,6 +55,7 @@ export function markPreviewLoaded(root) {
 
   setPreviewState(root, 'loaded');
   showElement(image);
+  showElement(previewImageLink(image, fallback));
   hideElement(loading);
   hideElement(fallback);
   return 'loaded';
@@ -61,7 +68,7 @@ export function markPreviewFailed(root) {
   const image = root.querySelector?.(PREVIEW_IMAGE_SELECTOR);
   const loading = root.querySelector?.(PREVIEW_LOADING_SELECTOR);
   const fallback = root.querySelector?.(PREVIEW_FALLBACK_SELECTOR);
-  const previewLink = image?.closest?.('.asset-preview-link');
+  const previewLink = previewImageLink(image, fallback);
 
   setPreviewState(root, 'failed');
   hideElement(image);

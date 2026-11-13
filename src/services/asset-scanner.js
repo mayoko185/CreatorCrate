@@ -20,9 +20,9 @@ const SKIP_FILENAMES = new Set([
   'Thumbs.db',
   'desktop.ini',
 ]);
-// Generic archives stay unindexed. Comic archives (cbz/cbr/cb7) are indexed as
-// comic assets; CreatorCrate's own generated archive outputs are kept out of
-// the asset index by their generated_artifacts ownership during reconciliation.
+// Generic ZIP/7Z archives stay unindexed. Supported comics, including generated
+// comics, enter the normal catalogue; artifact provenance retains replacement
+// authority. Other new artifact-owned outputs are excluded in reconciliation.
 const SKIP_EXTENSIONS = new Set(['zip', '7z']);
 
 /**

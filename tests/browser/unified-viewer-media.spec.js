@@ -240,6 +240,7 @@ test('zooms with keyboard-operable buttons and resets to Fit on navigation', asy
   const zoomIn = dialog.getByRole('button', { name: 'Zoom in' });
   const zoomOut = dialog.getByRole('button', { name: 'Zoom out' });
   const fit = dialog.getByRole('button', { name: 'Fit to viewer' });
+  await expect(fit).toHaveAttribute('aria-pressed', 'true');
   await expect(dialog.getByRole('group', { name: 'Image view' })).toBeVisible();
   await expect(zoomOut).toBeDisabled();
   await expect(fit).toBeDisabled();
@@ -257,6 +258,7 @@ test('zooms with keyboard-operable buttons and resets to Fit on navigation', asy
   for (let index = 0; index < 12; index += 1) {
     if (await zoomIn.isDisabled()) break;
     await zoomIn.click();
+  await expect(fit).toHaveAttribute('aria-pressed', 'false');
   }
   await expect(zoomIn).toBeDisabled();
   await expect(dialog.locator('[data-unified-viewer-zoom-level]')).toHaveText('800%');
@@ -332,56 +334,18 @@ test('pans a magnified image within bounds without dismissing the viewer', async
   await page.mouse.up();
 });
 
-test('inspects the original on demand, keeping the preview while it loads', async ({ page }) => {
+test('Actual Size uses the displayed rendition without fetching a legacy original', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   const media = await serveMedia(page);
   await openLibrary(page);
   await openViewer(page, [{ id: 1, media: 'landscape', original: 'original' }], { mode: 'single' });
   await waitForStatus(page, 'loaded');
+  const dialog = page.locator(DIALOG);
+  await dialog.getByRole('button', { name: 'Actual size (100%)', exact: true }).click();
+  expect((await mediaState(page)).view.scale).toBe(1);
+  expect((await boxes(page)).natural).toEqual({ width: IMAGES.landscape.width, height: IMAGES.landscape.height });
   expect(media.count('original')).toBe(0);
-  const dialog = page.locator(DIALOG);
-  const original = dialog.getByRole('button', { name: 'Original size' });
-  await expect(original).toBeVisible();
-
-  media.hold('original');
-  await original.click();
-  await expect(dialog.locator('[data-unified-viewer-status]')).toHaveText('Loading original size…');
-  await expect(original).toBeDisabled();
-  expect((await boxes(page)).content).toBe('preview');
-  await expect(page.locator(SHOWN)).toBeVisible();
-  media.release('original');
-
-  await expect.poll(async () => (await mediaState(page)).original.status).toBe('active');
-  const geometry = await boxes(page);
-  expect(geometry.content).toBe('original');
-  expect(geometry.natural).toEqual({ width: 3200, height: 1800 });
-  expect(geometry.image.width).toBeCloseTo(3200, 0);
-  await expect(dialog.locator('[data-unified-viewer-zoom-level]')).toHaveText('100%');
-  await expect(dialog.locator('[data-unified-viewer-status]')).toHaveText('Showing original size, 3200 × 1800 pixels.');
-  expectCovering(geometry);
-
-  await dialog.getByRole('button', { name: 'Fit to viewer' }).click();
-  expectContained(await boxes(page), IMAGES.original);
-  await original.click();
-  expect((await boxes(page)).image.width).toBeCloseTo(3200, 0);
-  expect(media.count('original')).toBe(1);
-});
-
-test('keeps the fitted preview when the original fails', async ({ page }) => {
-  await page.setViewportSize({ width: 1280, height: 800 });
-  const media = await serveMedia(page);
-  media.fail('original', { status: 415, contentType: 'text/plain', body: 'Unsupported media type' });
-  await openLibrary(page);
-  await openViewer(page, [{ id: 1, media: 'portrait', original: 'original' }], { mode: 'single' });
-  await waitForStatus(page, 'loaded');
-  const dialog = page.locator(DIALOG);
-  await dialog.getByRole('button', { name: 'Original size' }).click();
-  await expect(dialog.locator('[data-unified-viewer-status]'))
-    .toHaveText('The original could not be loaded. Showing the fitted image.');
-  const geometry = await boxes(page);
-  expect(geometry.content).toBe('preview');
-  expectContained(geometry, IMAGES.portrait);
-  await expect(dialog).not.toContainText('Unsupported media type');
+  await expect(dialog.getByRole('button', { name: 'Original source', exact: true })).toBeHidden();
 });
 
 test('shows only the latest item after rapid navigation and survives close/reopen during loads', async ({ page }) => {
@@ -462,9 +426,11 @@ test('re-fits and re-clamps on resize and stays usable at phone width', async ({
   }).toBe(true);
   expectContained(await boxes(page), IMAGES.large);
 
+  await dialog.getByRole('button', { name: 'More viewer tools' }).click();
   await dialog.getByRole('button', { name: 'Zoom in' }).click();
   await dialog.getByRole('button', { name: 'Zoom in' }).click();
   await dialog.getByRole('button', { name: 'Zoom in' }).click();
+  await page.keyboard.press('Escape');
   const start = await boxes(page);
   await page.mouse.move(start.surface.x + 50, start.surface.y + 50);
   await page.mouse.down();
@@ -480,11 +446,15 @@ test('re-fits and re-clamps on resize and stays usable at phone width', async ({
     const geometry = await boxes(page);
     return geometry.image.width <= geometry.surface.width + 0.5;
   }).toBe(true);
-  for (const name of ['Zoom out', 'Zoom in', 'Fit to viewer', 'Close Viewer', 'Next']) {
+  for (const name of ['Fit to viewer', 'Close Image Preview', 'Next']) {
     const box = await dialog.getByRole('button', { name }).boundingBox();
     expect(box.x).toBeGreaterThanOrEqual(0);
     expect(box.x + box.width).toBeLessThanOrEqual(375);
   }
+  await dialog.getByRole('button', { name: 'More viewer tools' }).click();
+  await expect(dialog.getByRole('button', { name: 'Zoom in' })).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Zoom out' })).toBeVisible();
+  await page.keyboard.press('Escape');
   const overflow = await page.evaluate((selector) => {
     const card = document.querySelector(selector);
     return card.scrollWidth - card.clientWidth;

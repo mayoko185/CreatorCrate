@@ -131,9 +131,11 @@ const OBSERVERS_KEY = '__creatorCrateAssetViewerRefreshObservers';
 // (B6): kept in step with the server's current render, like the image itself.
 export const ASSET_DETAILS_VIEWER_ATTRIBUTES = Object.freeze([
   'data-viewer-filename',
+  'data-viewer-project-name',
   'data-viewer-preview-url',
   'data-viewer-original-url',
   'data-viewer-revision',
+  'data-viewer-image-sources',
 ]);
 
 // Observer notifications.
@@ -381,7 +383,7 @@ function mediaSignature(host) {
   return mediaChildren(host).map((child) => {
     if (child.tagName === 'FIGURE' && child.hasAttribute('data-preview-enhancement')) {
       const link = child.querySelector('a.asset-preview-link');
-      return `image|${child.getAttribute('class') || ''}|${link ? 'link' : 'nolink'}`;
+      return `${child.hasAttribute('data-asset-comic-preview') ? 'comic' : 'image'}|${child.getAttribute('class') || ''}|${link ? 'link' : 'nolink'}`;
     }
     if (child.tagName === 'FIGURE' && child.hasAttribute('data-asset-video-playback')) return 'video';
     if (child.tagName === 'NOSCRIPT') return 'noscript';
@@ -408,9 +410,11 @@ function updateMediaInPlace(host, parsedHost) {
   if (figure && parsedFigure) {
     const image = figure.querySelector('img[data-preview-image]');
     const parsedImage = parsedFigure.querySelector('img[data-preview-image]');
+    const comic = figure.hasAttribute('data-asset-comic-preview');
+    const sourceChanged = image && parsedImage && image.getAttribute('src') !== parsedImage.getAttribute('src');
     // An image that failed is hidden behind its fallback: rebuilt instead, so
     // the new URL gets a fresh preview state.
-    if (image && parsedImage && image.getAttribute('src') !== parsedImage.getAttribute('src')
+    if (!comic && sourceChanged
       && figure.getAttribute('data-preview-state') === 'failed') {
       return { replace: true, changes };
     }
@@ -419,6 +423,17 @@ function updateMediaInPlace(host, parsedHost) {
     const parsedLink = parsedFigure.querySelector('a.asset-preview-link');
     if (syncAttribute(link, parsedLink, 'href')) changes.push('original');
     syncAttribute(link, parsedLink, 'aria-label');
+    if (comic) {
+      syncAttribute(figure, parsedFigure, 'data-comic-format');
+      const currentTriggers = Array.from(figure.querySelectorAll('[data-asset-details-comic-trigger]'));
+      const parsedTriggers = Array.from(parsedFigure.querySelectorAll('[data-asset-details-comic-trigger]'));
+      currentTriggers.forEach((current, index) => {
+        const next = parsedTriggers[index];
+        ['href', 'aria-label', 'data-comic-project', 'data-comic-asset', 'data-comic-title',
+          'data-comic-filename', 'data-comic-project-name', 'data-comic-details-url',
+          'data-comic-label', 'data-comic-source-revision'].forEach((name) => syncAttribute(current, next, name));
+      });
+    }
     // The unified viewer trigger (the link, or the preview-only button): its
     // label and the server descriptor the viewer opens from (B6).
     const trigger = figure.querySelector(VIEWER_TRIGGER_SELECTOR);
@@ -427,7 +442,16 @@ function updateMediaInPlace(host, parsedHost) {
       if (trigger !== link) syncAttribute(trigger, parsedTrigger, 'aria-label');
       ASSET_DETAILS_VIEWER_ATTRIBUTES.forEach((name) => syncAttribute(trigger, parsedTrigger, name));
     }
-    if (image && parsedImage && image.getAttribute('src') !== parsedImage.getAttribute('src')) {
+    if (sourceChanged) {
+      if (comic) {
+        const fallback = figure.querySelector('[data-preview-fallback]');
+        const fallbackHadFocus = fallback === host.ownerDocument?.activeElement;
+        figure.setAttribute('data-preview-state', 'loading');
+        image.removeAttribute('hidden');
+        link?.removeAttribute('hidden');
+        fallback?.setAttribute('hidden', '');
+        if (fallbackHadFocus) link?.focus?.({ preventScroll: true });
+      }
       image.addEventListener?.('load', () => { if (figure.isConnected !== false) markPreviewLoaded(figure); }, { once: true });
       image.addEventListener?.('error', () => { if (figure.isConnected !== false) markPreviewFailed(figure); }, { once: true });
       image.setAttribute('src', parsedImage.getAttribute('src'));
@@ -519,7 +543,13 @@ function planFile(document, parsed) {
         ? updateMediaInPlace(host, parsedHost)
         : { replace: true, changes: [] };
       if (update.replace) {
+        const mediaHadFocus = mediaChildren(host).some((child) => child === document.activeElement || child.contains?.(document.activeElement));
         replaceMedia(document, host, parsedHost);
+        if (mediaHadFocus) {
+          const heading = document.querySelector(PREVIEW_HEADING_SELECTOR);
+          if (heading && !heading.hasAttribute('tabindex')) heading.setAttribute('tabindex', '-1');
+          heading?.focus?.({ preventScroll: true });
+        }
         mediaReplaced = true;
       } else {
         mediaChanges = update.changes;

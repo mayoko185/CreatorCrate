@@ -245,7 +245,7 @@ describe('generated-image publication backfill (one-time upgrade import)', () =>
       directoryName: pointer.dir, revision: pointer.revision, generatedAt: meta.generatedAt,
       cacheSchemaVersion: meta.schemaVersion, derivativeConfigVersion: meta.derivativeConfigVersion,
       sourceRelativePath: meta.source.relativePath, sourceSizeBytes: meta.source.size,
-      sourceMtime: meta.source.mtime, sourceGeneration: meta.source.generation ?? 0,
+      sourceMtime: meta.source.mtime, sourceGeneration: meta.source.generation ?? 0, sourceInputFingerprint: null,
       policyFingerprint: meta.policyFingerprint, animated: meta.animated, frameCount: meta.frameCount,
       sourcePreviewQuality: null, generationIdentityVersion: meta.generationIdentities.version,
       derivatives: {

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   enhanceAssetLibraryViewer,
+  openAssetLibraryComic,
   openAssetLibraryImage,
   openAssetLibrarySlideshow,
   refreshAssetLibraryViewer,
@@ -44,6 +45,8 @@ function matchesSimple(node, selector) {
     } else if ((match = rest.match(/^\[([^\]=]+)(?:="([^"]*)")?\]/))) {
       const actual = node.getAttribute(match[1]);
       if (actual === null || (match[2] !== undefined && actual !== match[2])) return false;
+    } else if ((match = rest.match(/^:not\(\[([^\]]+)\]\)/))) {
+      if (node.getAttribute(match[1]) !== null) return false;
     } else {
       throw new Error(`Unsupported selector: ${selector}`);
     }
@@ -134,10 +137,48 @@ function makeNode(tagName = 'div', attrs = {}) {
 
 // ─── Controller double (mirrors unified-viewer.js open/update/getState) ─────
 
+function comicHint(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return typeof value === 'string' && value.length > 0 && value.length <= 512 ? value : null;
+}
+
 function makeViewer() {
   let counter = 0;
   let active = null;
-  return {
+  const viewer = {
+    // Comic sessions (mirrors unified-viewer.js openComic/reconcileComic):
+    // every manifest request the real controller would start is recorded.
+    manifestRequests: [],
+    openComic: vi.fn((descriptor, options = {}) => {
+      counter += 1;
+      active = {
+        session: counter,
+        source: null,
+        key: null,
+        options,
+        comic: { projectId: descriptor.projectId, assetId: descriptor.assetId, sourceHint: comicHint(descriptor.sourceRevision) },
+      };
+      viewer.manifestRequests.push({ session: counter, projectId: descriptor.projectId, assetId: descriptor.assetId });
+      return counter;
+    }),
+    reconcileComic: vi.fn((hint, options = {}) => {
+      if (!active?.comic || options.session !== active.session) return null;
+      if (hint === null) {
+        active = null;
+        return { outcome: 'closed' };
+      }
+      if (!hint || typeof hint !== 'object') return null;
+      if (`${hint.projectId}:${hint.assetId}` !== `${active.comic.projectId}:${active.comic.assetId}`) return null;
+      if (hint.eligible === false) {
+        active = null;
+        return { outcome: 'closed' };
+      }
+      const next = comicHint(hint.sourceRevision);
+      if (next === null || next === active.comic.sourceHint) return { outcome: 'unchanged' };
+      active.comic.sourceHint = next;
+      viewer.manifestRequests.push({ session: active.session, projectId: active.comic.projectId, assetId: active.comic.assetId });
+      return { outcome: 'reloading' };
+    }),
     open: vi.fn((source, options = {}) => {
       const normalized = createViewerSource(source);
       const initial = selectInitialViewerItem(normalized);
@@ -147,7 +188,8 @@ function makeViewer() {
       return counter;
     }),
     update: vi.fn((replacement, options = {}) => {
-      if (!active) return null;
+      // A comic's pages come only from its manifest: item lists are ignored.
+      if (!active || active.comic) return null;
       if (options.session !== undefined && options.session !== active.session) return null;
       const result = reconcileViewerSource(active.source, active.key, replacement);
       if (result.outcome === VIEWER_RECONCILE_CLOSED || result.outcome === VIEWER_RECONCILE_IDLE || !result.item) {
@@ -165,10 +207,12 @@ function makeViewer() {
         session: active ? active.session : null,
         key: active ? active.key : null,
         source: active ? active.source : null,
+        comic: active?.comic ? { ...active.comic } : null,
       };
     },
     active: () => active,
   };
+  return viewer;
 }
 
 // ─── Page fixture ────────────────────────────────────────────────────────────
@@ -626,5 +670,238 @@ describe('Asset Library unified viewer — live refresh reconciliation', () => {
     const slideshowFallback = page.viewer.open.mock.calls[1][1].fallbackFocus;
     const last = page.replaceRegion([[1, 12]]);
     expect(slideshowFallback()).toBe(last.trigger);
+  });
+});
+
+// ─── Read Comic ──────────────────────────────────────────────────────────────
+
+// A Library comic card as the server renders it: the card <article> carries
+// both halves of its identity, and holds either the Read Comic link
+// (eligible) or only its ordinary placeholder (missing / unreadable).
+function addComicCard(region, {
+  projectId, assetId, revision = `c${projectId}-${assetId}`, eligible = true, view = 'grid',
+} = {}) {
+  const item = makeNode('li', { class: view === 'grid' ? 'asset-grid-item' : 'asset-list-item' });
+  const article = makeNode('article', {
+    class: view === 'grid' ? 'asset-card' : 'asset-list-card',
+    'data-asset-id': String(assetId),
+    'data-asset-project-id': String(projectId),
+  });
+  let link = null;
+  if (eligible) {
+    link = makeNode('a', {
+      class: `${view === 'grid' ? 'asset-card-media-link' : 'asset-list-card-media-link'} asset-comic-link`,
+      href: `/projects/${projectId}/assets/${assetId}`,
+      'data-asset-library-comic-trigger': '',
+      'data-comic-project': String(projectId),
+      'data-comic-asset': String(assetId),
+      'data-comic-title': 'issue.cbz',
+      'data-comic-label': `Project ${projectId}`,
+      'data-comic-source-revision': revision,
+    });
+    link.appendChild(makeNode('span', { class: 'asset-list-card-media-placeholder' }));
+    article.appendChild(link);
+  } else {
+    article.appendChild(makeNode('span', { class: 'asset-card-placeholder' }));
+  }
+  const details = makeNode('a', { class: 'asset-details-link', href: `/projects/${projectId}/assets/${assetId}` });
+  article.appendChild(details);
+  item.appendChild(article);
+  region.appendChild(item);
+  return { item, article, link, details };
+}
+
+// The same asset id (40) and filename in projects 1 and 2.
+function openComicPage({ view = 'grid', comics = [{ projectId: 1, assetId: 40 }, { projectId: 2, assetId: 40 }] } = {}) {
+  const page = makePage({ view });
+  const comicCards = new Map(comics.map((spec) => [
+    `${spec.projectId}:${spec.assetId}`, addComicCard(page.region, { view, ...spec }),
+  ]));
+  enhanceAssetLibraryViewer(page.document);
+  return { ...page, comicCards };
+}
+
+describe('Asset Library unified viewer — Read Comic activation', () => {
+  it.each(['grid', 'list'])('an unmodified %s click opens exactly that project-qualified comic', (view) => {
+    const page = openComicPage({ view });
+    const { link } = page.comicCards.get('2:40');
+    expect(link.children[0].dispatch('click').defaultPrevented).toBe(true);
+    expect(page.viewer.openComic).toHaveBeenCalledTimes(1);
+    const [descriptor, options] = page.viewer.openComic.mock.calls[0];
+    expect(descriptor).toEqual({ projectId: 2, assetId: 40, title: 'issue.cbz', label: 'Project 2', sourceRevision: 'c2-40' });
+    expect(options.opener).toBe(link);
+    expect(page.viewer.manifestRequests).toEqual([{ session: 1, projectId: 2, assetId: 40 }]);
+    expect(page.viewer.open).not.toHaveBeenCalled();
+
+    page.comicCards.get('1:40').link.dispatch('click');
+    expect(page.viewer.openComic.mock.calls[1][0]).toMatchObject({ projectId: 1, assetId: 40, sourceRevision: 'c1-40' });
+    expect(page.viewer.getState()).toMatchObject({ session: 2, comic: { projectId: 1, assetId: 40 } });
+  });
+
+  it('modified, middle and already-handled clicks keep the details navigation', () => {
+    const page = openComicPage();
+    const { link } = page.comicCards.get('1:40');
+    for (const props of [{ ctrlKey: true }, { metaKey: true }, { shiftKey: true }, { altKey: true }, { button: 1 }]) {
+      expect(link.dispatch('click', props).defaultPrevented).toBe(false);
+    }
+    link.addEventListener('click', (event) => event.preventDefault());
+    link.dispatch('click');
+    expect(page.viewer.openComic).not.toHaveBeenCalled();
+  });
+
+  it('a link without both halves of its identity, Details links and ineligible cards open nothing', () => {
+    const page = openComicPage({ comics: [{ projectId: 1, assetId: 40 }, { projectId: 2, assetId: 41, eligible: false }] });
+    const { link, details } = page.comicCards.get('1:40');
+    link.setAttribute('data-comic-project', '');
+    expect(link.dispatch('click').defaultPrevented).toBe(false);
+    expect(details.dispatch('click').defaultPrevented).toBe(false);
+    expect(page.comicCards.get('2:41').article.dispatch('click').defaultPrevented).toBe(false);
+    expect(openAssetLibraryComic(page.document, page.cards.get('2:21').link)).toBe(0);
+    expect(page.viewer.openComic).not.toHaveBeenCalled();
+  });
+
+  it('the two hosts never intercept one another\'s Read Comic links', () => {
+    const page = openComicPage();
+    enhanceProjectAssetsViewer(page.document);
+    page.comicCards.get('1:40').link.dispatch('click');
+    expect(page.viewer.openComic).toHaveBeenCalledTimes(1);
+    expect(refreshProjectAssetsViewer(page.document)).toBeNull();
+  });
+
+  it('opening a comic sends no request from the host and the slideshow stays image-only', () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    const page = openComicPage();
+    page.comicCards.get('1:40').link.dispatch('click');
+    refreshAssetLibraryViewer(page.region);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    page.trigger.dispatch('click');
+    expect(keys(page.viewer.getState().source)).toEqual(DEFAULT_SEQUENCE.map((item) => `p:${item.projectId}|a:${item.id}`));
+    expect(page.viewer.getState().comic).toBeNull();
+  });
+});
+
+describe('Asset Library unified viewer — comic live refresh reconciliation', () => {
+  function openComic(options) {
+    const page = openComicPage(options);
+    page.comicCards.get('1:40').link.dispatch('click');
+    return page;
+  }
+
+  it('an equivalent card keeps the reader with no new manifest request; a changed hint reloads once', () => {
+    const page = openComic();
+    let next = page.replaceRegion();
+    addComicCard(next.region, { projectId: 1, assetId: 40 });
+    expect(refreshAssetLibraryViewer(next.region)).toEqual({ outcome: 'unchanged' });
+    expect(page.viewer.manifestRequests).toHaveLength(1);
+    for (let index = 0; index < 2; index += 1) {
+      next = page.replaceRegion();
+      addComicCard(next.region, { projectId: 1, assetId: 40, revision: 'c1-40-b' });
+      refreshAssetLibraryViewer(next.region);
+    }
+    expect(page.viewer.manifestRequests).toHaveLength(2);
+    expect(page.viewer.getState()).toMatchObject({ open: true, session: 1 });
+  });
+
+  it('another project\'s card for the same asset id never reconciles, retires or reloads the reader', () => {
+    const page = openComic();
+    let next = page.replaceRegion();
+    addComicCard(next.region, { projectId: 2, assetId: 40, revision: 'c2-40-b' });
+    expect(refreshAssetLibraryViewer(next.region)).toBeNull();
+    next = page.replaceRegion();
+    addComicCard(next.region, { projectId: 2, assetId: 40, eligible: false });
+    expect(refreshAssetLibraryViewer(next.region)).toBeNull();
+    expect(page.viewer.reconcileComic).not.toHaveBeenCalled();
+    expect(page.viewer.manifestRequests).toHaveLength(1);
+    expect(page.viewer.getState()).toMatchObject({ open: true, comic: { projectId: 1, assetId: 40 } });
+  });
+
+  it('absence from the installed region (pagination, filters, sorting) keeps the reader open', () => {
+    const page = openComic();
+    const next = page.replaceRegion([[1, 12]]);
+    expect(refreshAssetLibraryViewer(next.region)).toBeNull();
+    page.setSequence([entry(12, 1)]);
+    expect(refreshAssetLibraryViewer(page.document)).toBeNull();
+    expect(page.viewer.update).not.toHaveBeenCalled();
+    expect(page.viewer.getState()).toMatchObject({ open: true, comic: { projectId: 1, assetId: 40 } });
+  });
+
+  it('the comic\'s own card without Read Comic retires the reader', () => {
+    const page = openComic();
+    const next = page.replaceRegion();
+    addComicCard(next.region, { projectId: 1, assetId: 40, eligible: false });
+    expect(refreshAssetLibraryViewer(next.region)).toEqual({ outcome: 'closed' });
+    expect(page.viewer.reconcileComic.mock.calls[0][0]).toEqual({ projectId: 1, assetId: 40, eligible: false });
+    expect(page.viewer.getState().open).toBe(false);
+  });
+
+  it('a session closed or replaced elsewhere is never touched', () => {
+    const page = openComic();
+    page.viewer.openComic({ projectId: 2, assetId: 40, sourceRevision: 'c2-40' });
+    const next = page.replaceRegion();
+    addComicCard(next.region, { projectId: 1, assetId: 40, eligible: false });
+    addComicCard(next.region, { projectId: 2, assetId: 40, eligible: false });
+    expect(refreshAssetLibraryViewer(next.region)).toBeNull();
+    expect(page.viewer.reconcileComic).not.toHaveBeenCalled();
+    expect(page.viewer.getState()).toMatchObject({ open: true, session: 2, comic: { projectId: 2 } });
+  });
+
+  it('restores focus to the visible Reader fallback after a failed cover is replaced', () => {
+    const page = openComic();
+    const { fallbackFocus } = page.viewer.openComic.mock.calls[0][1];
+    const next = page.replaceRegion();
+    const replacement = addComicCard(next.region, { projectId: 1, assetId: 40 });
+    const fallback = makeNode('a', {
+      'data-asset-library-comic-trigger': '',
+      'data-comic-project': '1',
+      'data-comic-asset': '40',
+      'data-preview-fallback': '',
+    });
+    replacement.article.appendChild(fallback);
+    expect(fallbackFocus()).toBe(fallback);
+    fallback.setAttribute('hidden', '');
+    expect(fallbackFocus()).toBe(replacement.link);
+  });
+
+  it('a replaced opener resolves to the same project-qualified Read Comic link, never another project\'s', () => {
+    const page = openComic();
+    const { fallbackFocus } = page.viewer.openComic.mock.calls[0][1];
+    let next = page.replaceRegion();
+    addComicCard(next.region, { projectId: 2, assetId: 40 });
+    const replacement = addComicCard(next.region, { projectId: 1, assetId: 40 });
+    expect(fallbackFocus()).toBe(replacement.link);
+    next = page.replaceRegion();
+    addComicCard(next.region, { projectId: 2, assetId: 40 });
+    expect(fallbackFocus()).toBe(next.trigger);
+  });
+});
+
+
+describe('asset-library authoritative comic metadata', () => {
+  it('forwards exact metadata, partial hints and explicit clearing without another open', () => {
+    const page = openComicPage();
+    const link = page.comicCards.get('1:40').link;
+    link.setAttribute('data-comic-filename', '巻 01 & final!.cbz');
+    link.setAttribute('data-comic-project-name', 'Authoritative project');
+    link.setAttribute('data-comic-details-url', '/projects/1/assets/40');
+    link.dispatch('click');
+    expect(page.viewer.openComic.mock.calls[0][0]).toMatchObject({
+      filename: '巻 01 & final!.cbz', projectName: 'Authoritative project',
+      detailsUrl: '/projects/1/assets/40',
+    });
+    link.setAttribute('data-comic-filename', '巻 02 final.cbz');
+    refreshAssetLibraryViewer(page.document);
+    expect(page.viewer.reconcileComic.mock.lastCall[0]).toMatchObject({ filename: '巻 02 final.cbz' });
+    // This shim omits removeAttribute; null models an absent DOM attribute.
+    const getAttribute = link.getAttribute.bind(link);
+    link.getAttribute = (name) => name === 'data-comic-project-name' ? null : getAttribute(name);
+    refreshAssetLibraryViewer(page.document);
+    expect(page.viewer.reconcileComic.mock.lastCall[0]).not.toHaveProperty('projectName');
+    link.getAttribute = getAttribute;
+    link.setAttribute('data-comic-project-name', '');
+    refreshAssetLibraryViewer(page.document);
+    expect(page.viewer.reconcileComic.mock.lastCall[0]).toHaveProperty('projectName', '');
+    expect(page.viewer.openComic).toHaveBeenCalledTimes(1);
+    expect(page.viewer.manifestRequests).toHaveLength(1);
   });
 });

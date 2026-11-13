@@ -171,6 +171,9 @@
       nsfwBlur: asset.nsfwBlur,
       categoryLabel: asset.categoryLabel,
       previewSlideshowAssetId: asset.id,
+      comicTrigger: 'data-project-assets-comic-trigger',
+      comicCover: true,
+      comicLabel: project.title,
       assetInformation: true,
       detailsPresenceStatus: true,
       hideBody: true
@@ -314,6 +317,9 @@
       mediaContextLabel: project.title,
       nsfwBlur: asset.nsfwBlur,
       previewSlideshowAssetId: asset.id,
+      comicTrigger: 'data-project-assets-comic-trigger',
+      comicCover: true,
+      comicLabel: project.title,
       titleInfoId: 'project-asset-list-info-' ~ asset.id
     }) %}
       {% if slot == 'select' %}

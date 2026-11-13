@@ -30,10 +30,27 @@ function buildPreviewUrls(asset, revision) {
  * Asset Viewer's native player.
  *
  * A comic archive (CBZ/CBR/CB7) keeps the `unsupported` (or `missing`) state
- * and null URLs — it is never previewable, never an image `kind`, and so never
- * a slideshow member or image-processing source. `comic` identifies it by
- * extension for later reader/format-indicator callers; it is `null` for every
- * other asset. It is a type classification, not proof the archive is valid.
+ * and null image-preview URLs — it is never previewable, never an image
+ * `kind`, and so never a slideshow member. Hosts may opt its cover into the
+ * ordinary image card media without changing that classification.
+ * `comic.cover` uses the same Preview URLs with source, canonical-format and
+ * effective-policy hints; delivery proves the actual derivative authority.
+ * `comic` identifies it by extension; it is `null` for every other asset. It is a type classification,
+ * not proof the archive is valid, and building it never opens the archive.
+ *
+ * `comic.sourceRevision` is the indexed-source revision of a present comic:
+ * the same unfingerprinted `buildAssetRevision` token (project, asset,
+ * relative path, recorded size/mtime, source generation) the comic media
+ * service anchors every manifest to. Hosts pass it to the shared reader only
+ * as a change hint for an open session; it is never a manifest revision and
+ * never authorizes a page request. It is `null` for a missing comic or a row
+ * whose scan metadata cannot anchor a revision — the comic service refuses
+ * such a source, so no reader is offered for it.
+ *
+ * `imageSources` is additive only for present, previewable images/Krita.
+ * Other media retain their existing descriptor shape. The source revision is
+ * policy-independent; optimized.revision includes the generated-output policy.
+ * Eligibility is indexed capability, revalidated by delivery on every request.
  *
  * @param {object} asset
  * @returns {{
@@ -44,7 +61,8 @@ function buildPreviewUrls(asset, revision) {
  *   revision: string|null,
  *   urls: { thumbnail: string|null, preview: string|null },
  *   playbackUrl: string|null,
- *   comic: { format: 'cbz'|'cbr'|'cb7' }|null,
+ *   imageSources: object|undefined,
+ *   comic: { format: 'cbz'|'cbr'|'cb7', sourceRevision: string|null, cover: { revisionHint: string|null, urls: { thumbnail: string|null, preview: string|null } } }|null,
  * }}
  */
 export function buildAssetPreviewModel(asset, presentationPolicy) {
@@ -58,7 +76,7 @@ export function buildAssetPreviewModel(asset, presentationPolicy) {
       revision: null,
       urls: { thumbnail: null, preview: null },
       playbackUrl: null,
-      comic: buildComicDescriptor(resolvedAsset),
+      comic: buildComicDescriptor(resolvedAsset, { present: false }, presentationPolicy),
     };
   }
 
@@ -85,7 +103,7 @@ export function buildAssetPreviewModel(asset, presentationPolicy) {
       revision: null,
       urls: { thumbnail: null, preview: null },
       playbackUrl: null,
-      comic: buildComicDescriptor(resolvedAsset),
+      comic: buildComicDescriptor(resolvedAsset, { present: true }, presentationPolicy),
     };
   }
 
@@ -106,12 +124,55 @@ export function buildAssetPreviewModel(asset, presentationPolicy) {
     urls,
     playbackUrl: null,
     comic: null,
+    imageSources: buildImageSources(resolvedAsset, typeof fingerprint === 'string'
+      && /^[a-f0-9]{16}$/.test(fingerprint) ? revision : null),
   };
 }
 
-function buildComicDescriptor(asset) {
+// Eligibility describes the indexed source, not a filesystem or decode probe.
+// Delivery revalidates it; a generated source may need on-demand generation.
+function buildImageSources(asset, renditionRevision) {
+  const sourceRevision = buildAssetRevisionToken(asset);
+  const base = sourceRevision
+    ? buildAssetViewerUrl(asset.project_id, asset.id) : null;
+  const optimized = Boolean(base && renditionRevision);
+  const original = base ? buildAssetOriginalUrl(asset) : null;
+  return {
+    projectId: asset.project_id,
+    assetId: asset.id,
+    sourceRevision,
+    optimized: {
+      url: optimized ? `${base}/preview?${new URLSearchParams({
+        rendition: 'optimized', sourceRevision, v: renditionRevision,
+      })}` : null,
+      revision: renditionRevision,
+      eligible: optimized,
+    },
+    original: {
+      url: original ? `${original}?${new URLSearchParams({ sourceRevision })}` : null,
+      eligible: Boolean(original),
+    },
+    toggleEligible: Boolean(optimized && original),
+  };
+}
+
+function buildComicDescriptor(asset, { present }, presentationPolicy) {
   const comic = classifyComicAsset(asset);
-  return comic.comic ? { format: comic.format } : null;
+  if (!comic.comic) return null;
+  // No policy fingerprint: a comic's source identity does not depend on the
+  // image presentation policy.
+  const sourceRevision = present ? buildAssetRevisionToken(asset) : null;
+  const validId = (value) => Number.isSafeInteger(value) && value > 0;
+  const eligible = Boolean(sourceRevision && validId(asset.project_id) && validId(asset.id));
+  // Canonical format changes must change the native image URL even when the
+  // indexed Reader hint is unchanged. Delivery still authorizes the bytes.
+  const revisionHint = eligible
+    ? buildAssetRevisionToken(asset, `${comic.format}:${presentationPolicy?.comicCoverFingerprint ?? ''}`) : null;
+  return {
+    format: comic.format,
+    sourceRevision,
+    cover: { revisionHint, urls: buildPreviewUrls(asset, revisionHint) },
+  };
 }
 
 /**

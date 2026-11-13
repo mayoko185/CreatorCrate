@@ -692,10 +692,19 @@ test('video keeps its player; comics, missing and unsupported files never open t
   await page.keyboard.press('Escape');
   await expect(page.locator(VIDEO_DIALOG)).toBeHidden();
 
-  // Their media area is just part of the selectable card: a click is the
-  // existing selection toggle (twice restores it), never the viewer.
+  // A comic's media links open the Reader, never the image viewer. Native
+  // cover /preview requests occur normally; Reader manifest/pages wait for
+  // activation (covered in tests/browser/comic-release-hosts.spec.js).
+  const comicLinks = card(page, comic).locator('a[data-release-assets-comic-trigger]');
+  await expect(comicLinks).toHaveCount(2);
+  await expect(card(page, comic).locator('a[data-release-assets-comic-trigger]:visible')).toHaveCount(1);
+  for (let index = 0; index < 2; index += 1) {
+    await expect(comicLinks.nth(index)).toHaveAttribute('href', `/projects/${f.projectId}/assets/${comic}`);
+  }
+  // A missing file's media area is just part of the selectable card: a click
+  // is the existing selection toggle (twice restores it), never the viewer.
   const draftBefore = await draftMembership(page);
-  for (const id of [comic, missing]) {
+  for (const id of [missing]) {
     const media = card(page, id).locator('.asset-card-media');
     await media.click();
     await expect(page.locator(DIALOG)).toBeHidden();

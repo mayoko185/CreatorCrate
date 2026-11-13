@@ -232,6 +232,7 @@ export function createGeneratedImageRebuildService({
           );
         }
       } catch (error) {
+        if (error?.code === 'PROCESSING_BUSY') { markFatal(error); return; }
         failed = true;
         assetError = error;
       }

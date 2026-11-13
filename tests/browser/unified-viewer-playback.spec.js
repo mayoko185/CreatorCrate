@@ -264,7 +264,7 @@ test('reduced motion opens the slideshow paused; Play still works', async ({ pag
   await expect(dialog.locator('[data-unified-viewer-position]')).toHaveText('3 of 3', { timeout: 8000 });
 });
 
-test('manual navigation, a failed slide and original-size inspection pause playback', async ({ page }) => {
+test('manual navigation, a failed slide and Actual Size inspection pause playback', async ({ page }) => {
   const media = await serveMedia(page);
   await openLibrary(page);
   media.fail('c');
@@ -301,17 +301,15 @@ test('manual navigation, a failed slide and original-size inspection pause playb
   await expect(position).toHaveText('3 of 3');
   expect((await viewerState(page)).playback.playing).toBe(false);
 
-  // Original size pauses at once, stays paused while loading and after Fit.
+  // Actual Size inspects the displayed rendition without fetching another source.
   await play.click();
   await expect(position).toHaveText('1 of 3', { timeout: 8000 });
   await expect(page.locator(SHOWN)).toBeVisible();
-  media.hold('original');
-  await dialog.getByRole('button', { name: 'Original size' }).click();
+  await dialog.getByRole('button', { name: 'Actual size (100%)' }).click();
   await expect(play).toHaveAccessibleName('Play slideshow');
-  await expect(play).toBeDisabled();
+  await expect(play).toBeEnabled();
   expect((await viewerState(page)).playbackDetail).toMatchObject({ playing: false, scheduled: false, pauseReason: 'inspection' });
-  media.release('original');
-  await expect(page.locator(SHOWN)).toHaveAttribute('data-viewer-content', 'original');
+  await expect(page.locator(SHOWN)).toHaveAttribute('data-viewer-content', 'preview');
   await dialog.getByRole('button', { name: 'Fit to viewer' }).click();
   await page.waitForTimeout(3000);
   await expect(position).toHaveText('1 of 3');
@@ -364,9 +362,10 @@ test('fullscreen uses the same viewer on the dialog card, and Escape exits it be
   expect(after.width).toBe(1280);
   expect(after.height).toBe(800);
   expect(after.height).toBeGreaterThan(before.height);
-  await expect.poll(async () => (await viewerState(page)).media.view.viewportHeight).toBe(800);
+  const viewportHeight = await page.locator(MEDIA).evaluate((element) => element.clientHeight);
+  await expect.poll(async () => (await viewerState(page)).media.view.viewportHeight).toBe(viewportHeight);
   const image = await page.locator(SHOWN).boundingBox();
-  expect(image.height).toBeCloseTo(800 * Math.min(1, 1280 / 1600 * 900 / 800), 0);
+  expect(image.height).toBeCloseTo(900 * Math.min(1, 1280 / 1600, viewportHeight / 900), 0);
   await expect(page.locator(DIALOG)).toHaveAttribute('open', '');
   await expect(page.locator('body')).toHaveCSS('overflow', 'hidden');
 
@@ -431,7 +430,7 @@ test('closing from fullscreen exits it cleanly, and repeated fullscreen and reop
     await dialog.getByRole('button', { name: 'Enter fullscreen' }).click();
     await expect.poll(async () => (await viewerState(page)).fullscreenElement).toBe('card');
     await page.mouse.move(10, 10);
-    await dialog.getByRole('button', { name: 'Close Viewer' }).click();
+    await dialog.getByRole('button', { name: 'Close Slideshow' }).click();
     await expect(dialog).toBeHidden();
     await expect.poll(async () => (await viewerState(page)).fullscreenElement).toBe(null);
     await expect(page.locator('#test-opener')).toBeFocused();
@@ -524,22 +523,29 @@ test('the playback controls fit a narrow viewport', async ({ page }) => {
     return {
       dialog: { left: rect.left, right: rect.right, bottom: rect.bottom },
       play: box('[data-unified-viewer-play]'),
-      speed: box('#unified-viewer-speed-dropdown summary'),
+      tools: box('[data-unified-viewer-overflow] > summary'),
       next: box('[data-unified-viewer-next]'),
+      previous: box('[data-unified-viewer-previous]'),
       fullscreen: box('[data-unified-viewer-fullscreen]'),
-      controlsOverflow: element.querySelector('[data-unified-viewer-controls]').scrollWidth
-        - element.querySelector('[data-unified-viewer-controls]').clientWidth,
+      navigation: box('[data-unified-viewer-controls]'),
       pageOverflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth,
     };
   });
-  for (const control of ['play', 'speed', 'next', 'fullscreen']) {
+  for (const control of ['play', 'tools', 'next', 'fullscreen']) {
     expect(geometry[control].left).toBeGreaterThanOrEqual(geometry.dialog.left);
     expect(geometry[control].right).toBeLessThanOrEqual(geometry.dialog.right);
     expect(geometry[control].bottom).toBeLessThanOrEqual(geometry.dialog.bottom);
     expect(geometry[control].width).toBeGreaterThan(0);
   }
-  expect(geometry.controlsOverflow).toBeLessThanOrEqual(0);
+  // Tooltip boxes can extend beyond content-sized navigation while invisible.
+  for (const control of ['previous', 'next']) {
+    expect(geometry[control].left).toBeGreaterThanOrEqual(geometry.navigation.left);
+    expect(geometry[control].right).toBeLessThanOrEqual(geometry.navigation.right);
+  }
   expect(geometry.pageOverflowX).toBeLessThanOrEqual(0);
+  await dialog.getByRole('button', { name: 'More viewer tools' }).click();
+  await dialog.getByRole('combobox', { name: 'Slideshow speed', exact: true }).selectOption('2000');
+  await page.keyboard.press('Escape');
   await dialog.locator('[data-unified-viewer-play]').click();
   await expect(dialog.locator('[data-unified-viewer-play]')).toHaveAccessibleName('Pause slideshow');
   await dialog.getByRole('button', { name: 'Enter fullscreen' }).click();

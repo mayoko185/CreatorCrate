@@ -13,7 +13,7 @@ import { makeZip } from './helpers/zip-fixture.js';
 import { makeAnimatedWebp } from './helpers/animated-webp.js';
 import { bindTestProjectOwnership } from './helpers/project-ownership.js';
 
-const handles = vi.hoisted(() => ({ opened: [], closed: 0 }));
+const handles = vi.hoisted(() => ({ opened: [], closed: 0, beforeClose: null }));
 
 vi.mock('../src/storage/asset-file.js', async (importOriginal) => {
   const actual = await importOriginal();
@@ -25,8 +25,11 @@ vi.mock('../src/storage/asset-file.js', async (importOriginal) => {
       return opened;
     },
     closeAssetFileAsync: async (opened) => {
-      handles.closed += 1;
-      return actual.closeAssetFileAsync(opened);
+      try { await handles.beforeClose?.(); }
+      finally {
+        handles.closed += 1;
+        await actual.closeAssetFileAsync(opened);
+      }
     },
   };
 });
@@ -81,12 +84,12 @@ function makeCbz() {
   ]);
 }
 
-async function make7z(entries) {
+async function make7z(entries, { solid = true } = {}) {
   const module = await SevenZip({ print() {}, printErr() {} });
   module.FS.mkdirTree('/w');
   module.FS.chdir('/w');
   for (const [name, data] of entries) module.FS.writeFile('/w/' + name, data);
-  const code = module.callMain(['a', '-t7z', '-mtc=off', '-mta=off', '-mtm=off', '-mmt=1', '-bsp0', '-bso0', '-bse0',
+  const code = module.callMain(['a', '-t7z', ...(solid ? [] : ['-ms=off']), '-mtc=off', '-mta=off', '-mtm=off', '-mmt=1', '-bsp0', '-bso0', '-bse0',
     '/out.7z', ...entries.map(([name]) => name)]);
   if (code !== 0) throw new Error('7z-wasm failed with ' + code);
   return Buffer.from(module.FS.readFile('/out.7z'));
@@ -132,7 +135,7 @@ function makeHarness(serviceOptions = {}) {
   }
 
   return {
-    tmpDir, projectsRoot, db, service, createProject, addAsset,
+    tmpDir, projectsRoot, db, previewService, service, createProject, addAsset,
     withService: (options) => createComicMediaService({ previewService, projectsRoot, ...options }),
     cleanup() {
       closeDatabase(db);
@@ -168,10 +171,13 @@ function rewriteInPlace(full, mutate) {
 beforeEach(() => {
   handles.opened.length = 0;
   handles.closed = 0;
+  handles.beforeClose = null;
   h = makeHarness();
 });
 
 afterEach(() => {
+  handles.beforeClose = null;
+  vi.restoreAllMocks();
   expectHandlesReleased();
   h.cleanup();
 });

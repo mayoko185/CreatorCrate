@@ -879,7 +879,7 @@ export function buildBrowserRenderModel(
     nsfwFilterEnabled: effectiveNsfwFilterEnabled,
     projectAssetsNsfwReturnUrl: pageUrl({}),
     projectAssetsNsfwError: null,
-    slideshowSequenceJson: JSON.stringify(data.slideshowSequence || []).replace(/<\//g, '<\\/'),
+    slideshowSequenceJson: JSON.stringify((data.slideshowSequence || []).map((entry) => ({ ...entry, projectName: project.title }))).replace(/<\//g, '<\\/'),
     // Complete project membership, independent of the rendered filter or page:
     // a refresh confirms a deletion from this list, never from the visible HTML.
     projectAssetIdsJson: JSON.stringify(workflowQueryService?.getProjectAssetIds?.(project.id) ?? null),

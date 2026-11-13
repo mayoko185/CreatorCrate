@@ -6,6 +6,7 @@ import {
   normalizeAssetPickerQuery,
 } from './asset-picker-pagination.js';
 import { pathKey } from '../services/asset-processing-contracts.js';
+import { classifyComicAsset } from '../services/asset-metadata.js';
 
 /**
  * Asset repository — SQL operations for the assets table.
@@ -629,6 +630,20 @@ export function createAssetRepository(db) {
       RETURNING ${ASSET_COLUMNS.join(', ')}
   `);
 
+  // A validated publication is a new source even when size and mtime match.
+  // Compare the captured source authority without changing catalogue ownership.
+  const updateComicSourceStmt = db.prepare(`
+    UPDATE assets
+    SET size_bytes = ?, modified_at = ?, source_animated = NULL,
+        source_generation = source_generation + 1,
+        is_present = 1, last_seen_at = datetime('now'), missing_since = NULL,
+        updated_at = datetime('now')
+    WHERE project_id = ? AND id = ? AND relative_path = ?
+      AND extension = ? AND size_bytes = ? AND modified_at IS ?
+      AND is_present = ? AND source_animated IS ? AND source_generation = ?
+    RETURNING ${ASSET_COLUMNS.join(', ')}
+  `);
+
   // An in-place re-encode is one new source instance: the new tuple, the new
   // bytes' animation classification and the generation advance land together
   // so a later scan or Preview reconciliation finds nothing left to correct.
@@ -777,12 +792,10 @@ export function createAssetRepository(db) {
    * (including a path-derived-field-only repair when size/mtime match), and
    * marks undiscovered paths missing. Rolls back entirely on any failure.
    *
-   * A discovered path owned by a generated_artifacts row (CreatorCrate's own
-   * archive outputs, e.g. a generated .cbz/.cb7) never becomes a new asset:
-   * that file already has its single owner. Matching uses the processing
-   * planner's platform path key. An asset row that already exists at such a
-   * path keeps its ordinary reconciliation, so no indexed asset is silently
-   * dropped or marked missing while its file is present.
+   * Supported comics may have both a catalogue row and generated-artifact
+   * provenance; catalogue visibility does not grant replacement authority.
+   * Other new artifact-owned paths remain excluded, matching the processing
+   * planner's platform path key. Existing asset rows reconcile normally.
    *
    * @param {number} projectId
    * @param {Array<{relativePath: string, filename: string, extension: string, mimeType: string, sizeBytes: number, modifiedAt: string|null, categoryId: number|null, nestedPath: string}>} discovered
@@ -802,7 +815,8 @@ export function createAssetRepository(db) {
 
     for (const file of discovered) {
       const existing = existingByPath.get(file.relativePath);
-      if (!existing && generatedArtifactPathKeys.has(pathKey(file.relativePath))) continue;
+      if (!existing && generatedArtifactPathKeys.has(pathKey(file.relativePath))
+        && !classifyComicAsset(file).comic) continue;
       discoveredPaths.push(file.relativePath);
       const categoryId = file.categoryId ?? null;
       const nestedPath = file.nestedPath ?? '';
@@ -1068,9 +1082,48 @@ export function createAssetRepository(db) {
     outputs = [],
     artifactReplacements = [],
     artifactOutputs = [],
+    comicSourceUpdates = [],
   } = {}) => {
-    if (![replacements, deletes, outputs, artifactReplacements, artifactOutputs].every(Array.isArray)) {
+    if (![replacements, deletes, outputs, artifactReplacements, artifactOutputs, comicSourceUpdates].every(Array.isArray)) {
       throw new TypeError('Asset watermark mutation input must contain arrays.');
+    }
+
+    const comicAssetIds = new Set();
+    const comicPaths = new Set();
+    for (const update of comicSourceUpdates) {
+      const relativePath = update?.relativePath;
+      const extension = update?.expectedExtension;
+      if (!Number.isSafeInteger(update?.assetId) || update.assetId <= 0
+        || typeof relativePath !== 'string' || /[\\:\u0000-\u001f\u007f]/.test(relativePath)
+        || relativePath.split('/').some((part) => !part || part === '.' || part === '..')
+        || typeof extension !== 'string' || !['cbz', 'cbr', 'cb7'].includes(extension.toLowerCase())
+        || !relativePath.toLowerCase().endsWith(`.${extension.toLowerCase()}`)
+        || !Number.isSafeInteger(update.expectedSourceGeneration) || update.expectedSourceGeneration < 0
+        || update.expectedSourceGeneration >= Number.MAX_SAFE_INTEGER
+        || !Number.isSafeInteger(update.expectedSizeBytes) || update.expectedSizeBytes < 0
+        || !(update.expectedModifiedAt === null || typeof update.expectedModifiedAt === 'string')
+        || ![0, 1, false, true].includes(update.expectedIsPresent)
+        || ![null, 0, 1, false, true].includes(update.expectedSourceAnimated)
+        || !Number.isSafeInteger(update.data?.sizeBytes) || update.data.sizeBytes < 0
+        || typeof update.data?.modifiedAt !== 'string' || !Number.isFinite(Date.parse(update.data.modifiedAt))) {
+        throw new TypeError('Comic source update requires a canonical comic path and captured source state.');
+      }
+      // Only a destination in this publication batch can change its indexed source.
+      // This binding adds no replacement authority; artifact CAS checks still apply.
+      const artifacts = [...artifactReplacements, ...artifactOutputs]
+        .filter((artifact) => pathKey(artifact.relativePath) === pathKey(relativePath));
+      if (artifacts.length !== 1 || artifacts[0].relativePath !== relativePath
+        || artifacts[0].sizeBytes !== update.data.sizeBytes
+        || comicAssetIds.has(update.assetId) || comicPaths.has(pathKey(relativePath))
+        || [...replacements, ...deletes].some((entry) => entry.assetId === update.assetId)
+        || [...outputs, ...replacements.map((entry) => entry.data), ...deletes]
+          .some((entry) => pathKey(entry.relativePath) === pathKey(relativePath))) {
+        const error = new Error('Comic source update conflicts with its publication destination.');
+        error.code = 'DESTINATION_CONFLICT';
+        throw error;
+      }
+      comicAssetIds.add(update.assetId);
+      comicPaths.add(pathKey(relativePath));
     }
 
     const replaced = [];
@@ -1163,6 +1216,29 @@ export function createAssetRepository(db) {
       }
     }
 
+    const comicSourceUpdated = [];
+    for (const update of comicSourceUpdates) {
+      const asset = updateComicSourceStmt.get(
+        update.data.sizeBytes,
+        update.data.modifiedAt,
+        projectId,
+        update.assetId,
+        update.relativePath,
+        update.expectedExtension,
+        update.expectedSizeBytes,
+        update.expectedModifiedAt,
+        Number(update.expectedIsPresent),
+        update.expectedSourceAnimated === null ? null : Number(update.expectedSourceAnimated),
+        update.expectedSourceGeneration,
+      );
+      if (!asset) {
+        const error = new Error('Comic source update did not match the expected database state.');
+        error.code = 'STALE_STATE';
+        throw error;
+      }
+      comicSourceUpdated.push(asset);
+    }
+
     const artifactReplaced = [];
     for (const artifact of artifactReplacements) {
       const updated = updateGeneratedArtifactStmt.get(
@@ -1217,6 +1293,7 @@ export function createAssetRepository(db) {
       outputs: inserted,
       artifactReplaced,
       artifactOutputs: artifactInserted,
+      comicSourceUpdated,
     };
   });
 
@@ -1800,6 +1877,24 @@ export function createAssetRepository(db) {
      * Apply an already-completed watermark batch atomically. Generated rows
      * carry provenance so an explicit overwrite can never claim an unrelated
      * destination merely because its path matches the naming convention.
+     *
+     * Optional comicSourceUpdates refresh existing catalogue rows only. Each entry
+     * binds assetId + projectId to the exact canonical relativePath of one artifact
+     * output/replacement in this batch, with the same published sizeBytes. Capture
+     * expected source fields before publication; data must come from the validated
+     * public output, without new filesystem reads after final validation. Artifact
+     * ownership and filesystem publication/rollback remain the caller's responsibility.
+     * Every conditional mismatch throws STALE_STATE and rolls back the entire batch.
+     *
+     * @param {number} projectId
+     * @param {object} changes
+     * @param {Array<{assetId: number, relativePath: string, expectedExtension: string,
+     *   expectedSizeBytes: number, expectedModifiedAt: string|null,
+     *   expectedIsPresent: number|boolean, expectedSourceAnimated: number|boolean|null,
+     *   expectedSourceGeneration: number, data: {sizeBytes: number, modifiedAt: string}}>}
+     *   [changes.comicSourceUpdates]
+     * @returns {{replaced: Array, deleted: Array, outputs: Array,
+     *   artifactReplaced: Array, artifactOutputs: Array, comicSourceUpdated: Array}}
      */
     applyAssetWatermarks(projectId, changes) {
       return applyAssetWatermarksTx(projectId, changes);

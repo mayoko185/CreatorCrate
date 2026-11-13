@@ -1,4 +1,11 @@
+import { THUMBNAIL_MAX, PREVIEW_MAX, THUMBNAIL_QUALITY, PREVIEW_QUALITY, IMAGE_DERIVATIVE_CONFIG, buildDerivativePipeline,
+  generateDerivative, loadDerivativeSharp as sharp } from './image-derivative.js';
+export { IMAGE_DERIVATIVE_CONFIG, buildDerivativePipeline } from './image-derivative.js';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
+import { classifyComicAsset } from './asset-metadata.js';
+import { COMIC_ADMISSION_DEFAULTS } from './comic-admission.js';
+import { MediaBadRequestError, MediaUnavailableError, MediaRevisionConflictError } from './media-service.js';
 import path from 'node:path';
 import { createAppMetaRepository } from '../data/app-meta-repository.js';
 import { createProjectImageSettingsService, validateProjectImageSetting } from './project-image-settings-service.js';
@@ -13,7 +20,8 @@ import { createSourceAnimationService } from './source-animation-service.js';
 import { createProjectDirectoryOwnershipVerifier, ProjectOwnershipError } from './project-directory-ownership.js';
 import { createProjectDirectoryOwnershipRepository } from '../data/project-directory-ownership-repository.js';
 import { inspectSourceAnimation } from './source-animation.js';
-import { openAssetFile, closeAssetFile } from '../storage/asset-file.js';
+import { openAssetFile, closeAssetFile, resolveContainedAssetPath } from '../storage/asset-file.js';
+import { resolveProjectDir } from '../storage/project-storage.js';
 import {
   extractKritaPreview,
   KritaPreviewExtractionError,
@@ -104,6 +112,13 @@ export class PreviewError extends Error {
   }
 }
 
+export class PreviewRevisionConflictError extends PreviewError {
+  constructor() {
+    super('Image source or rendition changed.');
+    this.name = 'PreviewRevisionConflictError';
+  }
+}
+
 export class PreviewAccessError extends PreviewError {
   constructor(message) {
     super(message);
@@ -161,16 +176,6 @@ export class PreviewNotFoundError extends Error {
 
 // ─── Derivative configuration ────────────────────────────────────────────
 
-const THUMBNAIL_MAX = 256;
-const PREVIEW_MAX = 1600;
-const THUMBNAIL_QUALITY = 80;
-const PREVIEW_QUALITY = 90;
-
-export const IMAGE_DERIVATIVE_CONFIG = Object.freeze({
-  thumbnail: Object.freeze({ width: THUMBNAIL_MAX, height: THUMBNAIL_MAX, quality: THUMBNAIL_QUALITY }),
-  preview: Object.freeze({ width: PREVIEW_MAX, height: PREVIEW_MAX, quality: PREVIEW_QUALITY }),
-});
-
 /**
  * Detect whether a source is animated by reading its metadata WITHOUT the
  * `animated:true` flag. Sharp still reports `pages` for animated inputs when
@@ -184,50 +189,6 @@ async function detectAnimation(pipeline) {
   const meta = await pipeline.metadata();
   const pages = meta.pages ?? 1;
   return { animated: pages > 1, frameCount: pages };
-}
-
-/**
- * Build a Sharp pipeline for a derivative.
- *
- * Pipeline (applied in order):
- *   1. autoOrient()  — apply EXIF orientation, then strip the Orientation tag.
- *   2. resize({ fit: inside, withoutEnlargement: true }) — preserve aspect,
- *      never enlarge.
- *   3. Encode as WebP or PNG and strip source metadata (Sharp strips
- *      all non-pixel metadata by default unless keepMetadata() is called).
- *
- * Animation handling:
- *   - thumbnail: first frame only (open without `animated:true`).
- *   - preview: preserve animation when the source is animated, by opening
- *     with `animated:true`. Verified reliable on the supported Sharp/libvips
- *     combination; if animated output were unreliable we would return an
- *     unsupported-preview result instead of silently flattening.
- *
- * @param {Buffer|string} input
- * @param {{ width: number, height: number, quality: number, animated: boolean }} opts
- * @returns {Promise<import('sharp').Sharp>}
- */
-export async function buildDerivativePipeline(input, { width, height, quality, animated, format = 'webp' }) {
-  const sh = await sharp();
-  const ctorOpts = animated ? { animated: true } : {};
-  const pipeline = sh(input, ctorOpts)
-      .autoOrient()
-      .resize({
-        width,
-        height,
-        fit: 'inside',
-        withoutEnlargement: true,
-      });
-  return format === 'webp' ? pipeline.webp({ quality }) : pipeline.png();
-}
-
-// Lazy sharp import keeps the service importable without the native addon
-// loaded at module-eval time (matches preview-cache.js).
-let _sharp = null;
-async function sharp() {
-  if (_sharp) return _sharp;
-  _sharp = (await import('sharp')).default;
-  return _sharp;
 }
 
 // Reads an opened descriptor to EOF off the event loop without closing it.
@@ -260,6 +221,20 @@ function lockKey(projectId, assetId) {
   return `${projectId}:${assetId}`;
 }
 
+function attachLockInterest(record, request) {
+  if (request.record === record) return;
+  if (record.interests.size >= request.limit) {
+    throw Object.assign(new MediaUnavailableError('Preview is busy.'), { code: 'PROCESSING_BUSY' });
+  }
+  request.check();
+  record.interests.add(request);
+  request.record = record;
+  request.leave = () => {
+    record.interests.delete(request);
+    if (!record.interests.size) { record.controller.abort(); record.graphAuthorities.clear(); }
+  };
+}
+
 /**
  * Serialize cache operations for one asset as an async queue. Each caller
  * runs its OWN function (so a thumbnail caller and a preview caller each
@@ -283,17 +258,31 @@ function lockKey(projectId, assetId) {
  * @param {() => Promise<T>} fn
  * @returns {Promise<T>}
  */
-function withLock(projectId, assetId, fn) {
+function withLock(projectId, assetId, fn, request) {
   const key = lockKey(projectId, assetId);
   const prev = locks.get(key) || Promise.resolve();
+  let record;
+  if (request) {
+    record = prev.comicRecord;
+    if (record && (record.owner !== request.owner || record.signature !== request.signature
+      || record.controller.signal.aborted || record.sealed)) {
+      record.controller.abort();
+      throw Object.assign(new MediaUnavailableError('Preview is busy.'), { code: 'PROCESSING_BUSY' });
+    }
+    record ||= { owner: request.owner, signature: request.signature,
+      controller: new AbortController(), interests: new Set(), graphAuthorities: new Set() };
+    attachLockInterest(record, request);
+  }
   // Chain after the previous operation settles; swallow its rejection so a
   // prior failure does not prevent this operation from running.
-  const run = prev.catch(() => {}).then(() => fn());
+  const run = prev.catch(() => {}).then(() => fn(record));
   // Store a never-rejecting tail for the next waiter.
   const tail = run.then(() => {}, () => {});
   tail.finally(() => {
     if (locks.get(key) === tail) locks.delete(key);
   });
+  if (record) tail.comicRecord = record;
+  else if (prev.comicRecord) { prev.comicRecord.sealed = true; tail.comicRecord = prev.comicRecord; }
   locks.set(key, tail);
   return run;
 }
@@ -428,6 +417,7 @@ function publicationSnapshot(meta, directoryName, revision) {
     sourceSizeBytes: meta.source.size,
     sourceMtime: meta.source.mtime,
     sourceGeneration: metaSourceGeneration(meta),
+    sourceInputFingerprint: meta.source.inputFingerprint ?? null,
     policyFingerprint: meta.policyFingerprint ?? null,
     animated: meta.animated ?? null,
     frameCount: meta.frameCount ?? null,
@@ -473,6 +463,7 @@ function publicationMeta(publication) {
     thumbnail: derivative('thumbnail'),
     preview: derivative('preview'),
   };
+  if (publication.sourceInputFingerprint != null) meta.source.inputFingerprint = publication.sourceInputFingerprint;
   if (publication.policyFingerprint !== null) meta.policyFingerprint = publication.policyFingerprint;
   if (publication.animated !== null) meta.animated = publication.animated;
   if (publication.frameCount !== null) meta.frameCount = publication.frameCount;
@@ -494,6 +485,7 @@ function metaRevision(meta) {
     relativePath: meta.source.relativePath, size: meta.source.size,
     mtime: meta.source.mtime, policyFingerprint: meta.policyFingerprint,
     sourceGeneration: metaSourceGeneration(meta),
+    inputFingerprint: meta.source.inputFingerprint,
   });
 }
 
@@ -543,7 +535,7 @@ function metaRevision(meta) {
 export function createPreviewService({ db, projectsRoot, previewRoot, projectImageSettingsService,
   processingConcurrencyService, generatedImagePublicationRepository,
   publicationIndexReady = () => true, onPublicationUnresolved = null,
-  projectDirectoryOwnershipRepository, _hooks } = {}) {
+  projectDirectoryOwnershipRepository, comicSourceProvider, comicAdmissionLimits, _hooks } = {}) {
   // Actual derivative generation is admitted through the shared processing
   // pool; direct callers without one still receive a service-owned pool.
   const processingPool = processingConcurrencyService || createProcessingConcurrencyService();
@@ -554,6 +546,11 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
   const assetRepo = createAssetRepository(db);
   const publications = generatedImagePublicationRepository || createGeneratedImagePublicationRepository(db);
   const hooks = _hooks || {};
+  const comicLockOwner = {};
+  const comicDerivativeAuthorities = new WeakMap();
+  let comicPauses = 0;
+  let comicStopped = false;
+  const comicLocks = () => [...locks.values()].filter(tail => tail.comicRecord?.owner === comicLockOwner);
   const ownershipRepository = projectDirectoryOwnershipRepository
     || createProjectDirectoryOwnershipRepository(db);
   const ownershipVerifier = createProjectDirectoryOwnershipVerifier({ ownershipRepository, projectsRoot });
@@ -1038,7 +1035,8 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
    * @param {{ kind: 'image'|'krita'|null, extension: string }} classification
    * @returns {Promise<{ buffer: Buffer, mtime: Date, quality?: 'merged'|'thumbnail' }>}
    */
-  async function readSourceForDerivative(project, asset, classification) {
+  async function readSourceForDerivative(project, asset, classification, sourceInput) {
+    if (sourceInput) return sourceInput.read();
     if (classification.kind !== 'krita') {
       return readSourceBytes(project, asset);
     }
@@ -1069,47 +1067,6 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
     } finally {
       closeAssetFile(opened);
     }
-  }
-
-  /**
-   * Generate a single derivative from source bytes into a Buffer plus
-   * decoded metadata.
-   *
-   * @param {Buffer} sourceBuffer
-   * @param {'thumbnail'|'preview'} kind
-   * @param {boolean} sourceAnimated
-   * @returns {Promise<{ buffer: Buffer, width: number, height: number, animated: boolean, frameCount: number }>}
-   */
-  async function generateDerivative(sourceBuffer, kind, sourceAnimated, policy) {
-    // Format/quality/dimension rules come from the shared policy module so the
-    // encoder and the per-kind generation identity cannot drift apart.
-    const output = projectImageGeneratedOutput(policy, sourceAnimated)[kind];
-    const format = output.format;
-    const config = { width: output.maxDimension, height: output.maxDimension, quality: output.webpQuality };
-
-    // Thumbnail: first frame only. Sharp without `animated:true` reads only
-    // the first frame of an animated input.
-    const animated = kind === 'preview' && sourceAnimated;
-
-    const pipeline = await buildDerivativePipeline(sourceBuffer, { ...config, animated, format });
-    const { data, info } = await pipeline.toBuffer({ resolveWithObject: true });
-
-    // For animated output, Sharp reports the stacked height in info.height
-    // but the per-frame height in info.pageHeight. The width/height we record
-    // is the per-frame (displayed) dimension.
-    const outAnimated = (info.pages ?? 1) > 1;
-    const outWidth = info.width;
-    const outHeight = outAnimated ? (info.pageHeight ?? info.height) : info.height;
-
-    return {
-      buffer: data,
-      width: outWidth,
-      height: outHeight,
-      animated: outAnimated,
-      frameCount: info.pages ?? 1,
-      format,
-      filename: `${kind}.${format}`,
-    };
   }
 
   /**
@@ -1236,7 +1193,7 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
    *   - the entry carries per-kind identities of the current identity version
    *     (legacy entries without them never qualify), and the kind's identity,
    *     format and filename match the target's effective generated output.
-   * Callers restrict this to ordinary raster sources inside the asset lock.
+   * Callers prove the raster source or comic input fingerprint inside the asset lock.
    */
   function findReusableDerivatives(projectId, assetId, ctx, policy, targetIdentities, sourceAnimated) {
     const reusable = { thumbnail: null, preview: null };
@@ -1304,12 +1261,13 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
    * @param {number} assetId
    * @returns {string|null}
    */
-  function currentRevisionFor(assetId) {
+  function currentRevisionFor(assetId, inputFingerprint) {
     const fresh = assetRepo.findById(assetId);
     if (!fresh || !fresh.is_present) return null;
     const policy = currentPolicy();
     const identity = resolvedIdentity(policy, fresh);
-    return buildAssetRevisionToken(identity.asset, identity.fingerprint);
+    const revision = buildAssetRevision(identity.asset, identity.fingerprint);
+    return revision ? buildRevisionToken({ ...revision.context, inputFingerprint }) : null;
   }
 
   /**
@@ -1419,13 +1377,29 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
     // asset lock, permit-free) so a post-admission fresh return can also
     // reject a same-size/same-mtime replacement made while waiting, and that
     // replacement is established as a new source generation.
-    const queuedSource = options.recheckFresh
+    const comic = classifyComicAsset(loadProjectAndAsset(projectId, assetId).asset).comic;
+    const queuedSource = options.recheckFresh && !comic
       ? statQueuedSource(projectId, assetId, options.sourceBaseline) : null;
-    return processingPool.run(() => generateAndPublishAdmitted(projectId, assetId, targetPolicy,
-      isTargetAuthoritative, { ...options, queuedSource })).catch((err) => {
+    return processingPool.run(async () => {
+      if (!comic) return generateAndPublishAdmitted(projectId, assetId, targetPolicy,
+        isTargetAuthoritative, { ...options, queuedSource });
+      return withSourceInput(projectId, assetId, options, async input => {
+        options.assertCurrent?.();
+        let candidate;
+        try {
+          candidate = await generateAndPublishAdmitted(projectId, assetId, targetPolicy,
+            isTargetAuthoritative, { ...options, queuedSource: null, comicInput: input,
+              recheckFresh: null, deferPublication: true });
+          return await input.acceptCurrent(() => {
+            options.assertCurrent?.();
+            return candidate.commit();
+          });
+        } finally { candidate?.discard(); }
+      });
+    }).catch((err) => {
       // An intent left behind (or one blocking this writer) is handed to
       // background recovery; this caller still receives its own error.
-      if (err instanceof PreviewPublicationJournalError) {
+      if (err instanceof PreviewPublicationJournalError || publications.findIntent(projectId, assetId)) {
         try { onPublicationUnresolved?.({ projectId, assetId, state: err.state }); } catch { /* best effort */ }
       }
       throw err;
@@ -1462,7 +1436,7 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
   }
 
   async function generateAndPublishAdmitted(projectId, assetId, targetPolicy, isTargetAuthoritative,
-    { allowReuse = true, recheckFresh = null, queuedSource = null } = {}) {
+    { allowReuse = true, recheckFresh = null, queuedSource = null, comicInput = null, deferPublication = false } = {}) {
     const assertTargetCurrent = () => {
       if (targetPolicy && (JSON.stringify(currentPolicy()) !== JSON.stringify(targetPolicy)
         || !isTargetAuthoritative())) {
@@ -1481,8 +1455,9 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
       if (!revisionNow) {
         throw new PreviewNotFoundError('Asset source metadata is unavailable.');
       }
-      const ctxNow = revisionNow.context;
-      const revNow = revisionNow.revision;
+      const ctxNow = { ...revisionNow.context,
+        ...(comicInput ? { inputFingerprint: comicFingerprint(comicInput) } : {}) };
+      const revNow = buildRevisionToken(ctxNow);
       if (attempt === 0 && recheckFresh) {
         // Cache-vs-DB agreement is not enough: the source may have been
         // replaced on disk while queued without a rescan. A fresh pair is
@@ -1522,7 +1497,10 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
       let intent = null;
       let candidateRetained = false;
       try {
-        const source = await readSourceForDerivative(project, asset, classification);
+        const source = await readSourceForDerivative(project, asset, classification, comicInput);
+        const encode = (kind) => comicInput
+          ? comicInput.encode(kind, policy)
+          : generateDerivative(source.buffer, kind, sourceAnimated, policy);
         const { buffer: sourceBuffer, quality: sourceQuality } = source;
         const ordinarySource = classification.kind === 'image';
         const animationSource = classification.extension === 'gif' || classification.extension === 'webp';
@@ -1537,8 +1515,8 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
           }
           throw new PreviewGenerationError('Source changed since inspection.');
         }
-        let sourceAnimated;
-        try {
+        let sourceAnimated = false;
+        if (!comicInput) try {
           const sh = await sharp();
           ({ animated: sourceAnimated } = await detectAnimation(sh(sourceBuffer)));
         } catch (err) {
@@ -1556,7 +1534,7 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
         // Decided per attempt, after this attempt's source checks, so a
         // reconciliation retry never inherits an earlier reuse decision.
         const generationIdentities = projectImageGenerationIdentities(policy, sourceAnimated);
-        const reusable = reuseAllowed && ordinarySource
+        const reusable = reuseAllowed && (ordinarySource || comicInput)
           ? findReusableDerivatives(projectId, assetId, ctxNow, policy, generationIdentities, sourceAnimated)
           : { thumbnail: null, preview: null };
 
@@ -1570,7 +1548,7 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
         } else {
           await runHook('beforeThumbTransform');
           try {
-            thumb = await generateDerivative(sourceBuffer, 'thumbnail', sourceAnimated, policy);
+            thumb = await encode('thumbnail');
           } catch (err) {
             throw new PreviewGenerationError('Thumbnail generation failed.');
           }
@@ -1595,7 +1573,7 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
         } else {
           await runHook('beforePreviewTransform');
           try {
-            preview = await generateDerivative(sourceBuffer, 'preview', sourceAnimated, policy);
+            preview = await encode('preview');
           } catch (err) {
             throw new PreviewGenerationError('Preview generation failed.');
           }
@@ -1635,6 +1613,7 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
           size: ctxNow.size,
           mtime: ctxNow.mtime,
           sourceGeneration: ctxNow.sourceGeneration,
+          inputFingerprint: ctxNow.inputFingerprint,
           generatedAt,
           thumbnail: thumbMeta,
           preview: previewMeta,
@@ -1654,7 +1633,7 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
         // Recheck both database authority and disk source before promotion.
         await runHook('beforePublishRecheck');
         assertTargetCurrent();
-        const revCheck = currentRevisionFor(assetId);
+        const revCheck = currentRevisionFor(assetId, ctxNow.inputFingerprint);
         let sourceMoved = ordinarySource && !sourceMatches(project, asset, source.stat);
         if (revCheck !== revNow || sourceMoved) {
           // Discard this generation and use the remaining attempt, if any.
@@ -1707,7 +1686,7 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
         await runHook('beforePointerWrite');
         assertTargetCurrent();
         sourceMoved = ordinarySource && !sourceMatches(project, asset, source.stat);
-        if (currentRevisionFor(assetId) !== revNow || sourceMoved) {
+        if (currentRevisionFor(assetId, ctxNow.inputFingerprint) !== revNow || sourceMoved) {
           removeDirTree(finalDir);
           releaseIntent(intent);
           if (sourceMoved) {
@@ -1718,47 +1697,57 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
           }
           continue;
         }
-        try {
-          writeCurrentPointer(parentDir, {
-            dir: finalDirName,
-            revision: revNow,
-            generatedAt,
-          });
-        } catch (err) {
-          // current.json is the filesystem publication witness. Only a
-          // readable pointer naming another directory, or none at all, proves
-          // the candidate unpublished; anything else is left for recovery.
-          const after = readCurrentPointer(previewRoot, projectId, assetId);
-          if (after.ok ? after.pointer.dir !== finalDirName : after.reason === 'missing') throw err;
+        const commit = () => {
+          assertTargetCurrent();
+          try {
+            writeCurrentPointer(parentDir, {
+              dir: finalDirName,
+              revision: revNow,
+              generatedAt,
+            });
+          } catch (err) {
+            // current.json is the filesystem publication witness. Only a
+            // readable pointer naming another directory, or none at all, proves
+            // the candidate unpublished; anything else is left for recovery.
+            const after = readCurrentPointer(previewRoot, projectId, assetId);
+            if (after.ok ? after.pointer.dir !== finalDirName : after.reason === 'missing') throw err;
+            candidateRetained = true;
+            throw new PreviewPublicationJournalError(
+              'Generated-image publication state is unresolved after the pointer write failed.',
+              { state: 'unresolved', candidateDirectoryName: finalDirName, cause: err });
+          }
+          // current.json names the candidate: it is durably published on the
+          // filesystem and must never again be treated as removable output.
           candidateRetained = true;
-          throw new PreviewPublicationJournalError(
-            'Generated-image publication state is unresolved after the pointer write failed.',
-            { state: 'unresolved', candidateDirectoryName: finalDirName, cause: err });
-        }
-        // current.json names the candidate: it is durably published on the
-        // filesystem and must never again be treated as removable output.
-        candidateRetained = true;
 
-        let finalized;
-        try {
-          finalized = publications.finalizePublication(intent.intentId, snapshot);
-        } catch (err) {
-          throw new PreviewPublicationJournalError(
-            'Generated-image publication was not finalized.',
-            { state: 'unresolved', candidateDirectoryName: finalDirName, cause: err });
-        }
-        if (!finalized) {
-          throw new PreviewPublicationJournalError(
-            'Generated-image publication intent is no longer owned by this writer.',
-            { state: 'unresolved', candidateDirectoryName: finalDirName });
-        }
+          let finalized;
+          try {
+            finalized = publications.finalizePublication(intent.intentId, snapshot);
+          } catch (err) {
+            throw new PreviewPublicationJournalError(
+              'Generated-image publication was not finalized.',
+              { state: 'unresolved', candidateDirectoryName: finalDirName, cause: err });
+          }
+          if (!finalized) {
+            throw new PreviewPublicationJournalError(
+              'Generated-image publication intent is no longer owned by this writer.',
+              { state: 'unresolved', candidateDirectoryName: finalDirName });
+          }
 
-        return {
-          thumbnailPath: path.join(finalDir, thumb.filename),
-          previewPath: path.join(finalDir, preview.filename),
-          meta,
-          revision: revNow,
+          return {
+            thumbnailPath: path.join(finalDir, thumb.filename),
+            previewPath: path.join(finalDir, preview.filename),
+            meta,
+            revision: revNow,
+          };
         };
+        if (deferPublication) return {
+          meta, revision: revNow, commit,
+          discard: () => {
+            if (!candidateRetained) { removeDirTree(renamedTo || staging.dir); releaseIntent(intent); }
+          },
+        };
+        return commit();
       } catch (err) {
         // Once current.json names (or may name) the candidate, its bytes are
         // published: keep the directory and the intent for recovery.
@@ -1782,6 +1771,145 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
     );
   }
 
+  function comicFingerprint(input) {
+    return crypto.createHash('sha256').update(JSON.stringify([
+      'comic-first-page-input-v1', input.format, input.revision,
+      input.page.position, input.page.entryIndex, input.page.path, input.page.frame,
+    ])).digest('hex');
+  }
+
+  function comicSource() {
+    const service = comicSourceProvider?.();
+    if (typeof service?.startComicCoverSource !== 'function') {
+      throw new MediaUnavailableError('Preview unavailable');
+    }
+    return service;
+  }
+
+  function comicRequestIdentity(projectId, assetId, policy) {
+    const { asset } = loadProjectAndAsset(projectId, assetId);
+    if (!classifyComicAsset(asset).comic) throw new MediaRevisionConflictError();
+    return JSON.stringify([getOriginalDescriptor(projectId, assetId), policy]);
+  }
+
+  // This stamp detects source changes after the full catalogue proof retires,
+  // without retaining or reentering its source scope.
+  function comicSourceStamp(projectId, assetId) {
+    const descriptor = getOriginalDescriptor(projectId, assetId);
+    try {
+      const projectDir = resolveProjectDir(projectsRoot, descriptor.projectDir);
+      const filename = resolveContainedAssetPath(projectDir, descriptor.relativePath);
+      const stat = fs.statSync(filename, { bigint: true });
+      if (!stat.isFile()) throw new Error('Source is not a regular file.');
+      return [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':');
+    } catch {
+      throw new PreviewNotFoundError('Asset source is unavailable.');
+    }
+  }
+
+  function comicDerivativeAuthority(projectId, assetId, { stamp, snapshot, signature, graphAuthorities, assertRequestCurrent }) {
+    return () => {
+      assertRequestCurrent();
+      if (graphAuthorities.some(token => !token.isLive())) throw new MediaUnavailableError('Preview unavailable');
+      if (comicRequestIdentity(projectId, assetId, currentPolicy()) !== signature
+        || comicSourceStamp(projectId, assetId) !== stamp
+        || JSON.stringify(findCommittedRow(projectId, assetId)) !== snapshot) {
+        throw new MediaRevisionConflictError();
+      }
+    };
+  }
+
+  function assertComicDerivativeCurrent(derivative) {
+    const authority = comicDerivativeAuthorities.get(derivative);
+    if (!authority) throw new MediaUnavailableError('Preview authority is unavailable.');
+    authority();
+  }
+
+  // The adapter owns archive proof and retirement; the existing cache and generation
+  // functions decide whether bytes are needed. No source input escapes this scope.
+  async function withSourceInput(projectId, assetId, options, work) {
+    let operation;
+    operation = comicSource().startComicCoverSource(projectId, assetId,
+      { signal: options.signal }, async input => {
+        try { return await work(input, operation.graphAuthority); }
+        catch (error) {
+          if (!(error instanceof PreviewError) && !(error instanceof PreviewCacheError)) throw error;
+          throw Object.assign(new MediaUnavailableError('Preview unavailable'), { cause: error });
+        }
+      });
+    options.onAuthority?.(operation.graphAuthority);
+    try { return await operation.result; }
+    catch (error) { options.onFailure?.(error); throw error; }
+    finally { await operation.retired; options.onRetired?.(operation.graphAuthority); }
+  }
+
+  function derivativeRequest(projectId, assetId, options = {}) {
+    const { signal, deadlineMs = 30_000, targetPolicy,
+      isTargetAuthoritative = () => true } = options;
+    if (!Number.isSafeInteger(deadlineMs) || deadlineMs < 1 || deadlineMs > 30_000) {
+      throw new MediaBadRequestError('Invalid preview deadline.');
+    }
+    if (Object.keys(options.query || {}).some(key => key !== 'v')) {
+      throw new MediaBadRequestError('Invalid comic derivative request.');
+    }
+    const deadline = Math.min(performance.now() + deadlineMs, options.deadlineAt ?? Infinity);
+    const policy = targetPolicy || currentPolicy();
+    const signature = comicRequestIdentity(projectId, assetId, policy);
+    const limits = (typeof comicAdmissionLimits === 'function' ? comicAdmissionLimits() : comicAdmissionLimits)
+      || COMIC_ADMISSION_DEFAULTS;
+    // Caller proofs expire independently of the shared generation's surviving interests.
+    const proofController = new AbortController();
+    const request = { owner: comicLockOwner, signature, policy, signal: proofController.signal, graphAuthorities: new Set(),
+      limit: limits.maxActive + limits.maxQueued,
+      check() {
+        if (signal?.aborted || proofController.signal.aborted || !Number.isFinite(deadline) || performance.now() >= deadline
+          || comicStopped || comicPauses || [...request.graphAuthorities].some(token => !token.isLive())) {
+          throw new MediaUnavailableError('Preview request is unavailable.');
+        }
+        if (!isTargetAuthoritative()) throw new PreviewGenerationError('Target image policy is obsolete.');
+        if (comicRequestIdentity(projectId, assetId, currentPolicy()) !== signature) throw new MediaRevisionConflictError();
+      },
+      run(work) {
+        request.check();
+        const record = locks.get(lockKey(projectId, assetId))?.comicRecord;
+        if (record && record.owner === request.owner && record.signature === request.signature
+          && !record.sealed && !record.controller.signal.aborted) attachLockInterest(record, request);
+        let reject;
+        const abandoned = new Promise((_, no) => { reject = no; });
+        const abort = () => request.fail(new MediaUnavailableError('Preview request cancelled.'));
+        const timer = setTimeout(() => request.fail(new MediaUnavailableError('Preview request timed out.')),
+          Math.max(0, deadline - performance.now()));
+        const clean = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); request.leave?.(); };
+        request.fail = error => { proofController.abort(); clean(); reject(error); };
+        signal?.addEventListener('abort', abort, { once: true });
+        return Promise.race([Promise.resolve().then(work), abandoned]).then(value => {
+          request.check();
+          if (value?.sourceKind === 'comic-first-page') assertComicDerivativeCurrent(value);
+          return value;
+        }).finally(clean);
+      },
+    };
+    return request;
+  }
+
+  function generationScope(projectId, assetId, record) {
+    const assertCurrent = () => {
+      if (comicStopped || comicPauses || record.controller.signal.aborted || !record.interests.size) {
+        throw new MediaUnavailableError('Preview request is unavailable.');
+      }
+      if (comicRequestIdentity(projectId, assetId, currentPolicy()) !== record.signature) throw new MediaRevisionConflictError();
+      for (const interest of [...record.interests]) {
+        try { interest.check(); } catch (error) { interest.fail(error); }
+      }
+      if (!record.interests.size || [...record.graphAuthorities].some(token => !token.isLive())) {
+        throw new MediaUnavailableError('Preview request is unavailable.');
+      }
+    };
+    return { signal: record.controller.signal, assertCurrent,
+      onAuthority: authority => { record.graphAuthorities.clear(); record.graphAuthorities.add(authority); },
+      onFailure: error => { for (const interest of [...record.interests]) interest.fail(error); } };
+  }
+
   function readyDerivative(kind, probed, revision, cacheState) {
     const meta = probed.meta;
     const d = meta[kind];
@@ -1791,6 +1919,8 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
       generatedAt: meta.generatedAt, cacheState,
       animated: kind === 'preview' && meta.animated === true,
       quality: meta.source.previewQuality ?? null,
+      ...(meta.source.inputFingerprint ? { sourceKind: 'comic-first-page',
+        inputFingerprint: meta.source.inputFingerprint, policyFingerprint: meta.policyFingerprint } : {}),
     };
   }
 
@@ -1862,18 +1992,54 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
   // otherwise proven source carry none, and neither does an 'unknown' that
   // only concerns the animation state of a file instance whose final
   // identity (after any GIF/WebP structural read) was proven.
-  async function publishedForPresentation(kind, projectId, assetId) {
+  async function publishedForPresentation(kind, projectId, assetId, options = {}) {
     const { project, asset: loadedAsset } = loadProjectAndAsset(projectId, assetId);
+    const comic = classifyComicAsset(loadedAsset).comic;
+    if (comic && !options.sourceInput) {
+      return withSourceInput(projectId, assetId, {
+        signal: options.request.signal, onFailure: options.request.fail,
+        onAuthority: token => options.request.graphAuthorities.add(token),
+        onRetired: token => options.request.graphAuthorities.delete(token),
+      }, (sourceInput, graphAuthority) => publishedForPresentation(kind, projectId, assetId,
+        { ...options, sourceInput, graphAuthority }));
+    }
     const animation = publishedAnimationAuthority(loadedAsset);
-    const policy = currentPolicy();
+    const policy = options.request?.policy || currentPolicy();
     const { asset, fingerprint } = resolvedIdentity(policy, loadedAsset);
     const classification = classifyPreviewable(asset);
-    if (!classification.supported) return {};
+    if (!classification.supported && !comic) return {};
     const target = buildAssetRevision(asset, fingerprint);
     if (!target) return {};
-    const pinned = pinSourceStat(project, asset);
-    const probed = await probeCacheEntry(projectId, assetId, target.context, kind, animation.allowPolicyFallback);
+    if (comic) {
+      options.request.check();
+      target.context = { ...target.context, inputFingerprint: comicFingerprint(options.sourceInput) };
+      target.revision = buildRevisionToken(target.context);
+    }
+    if (options.force) return {};
+    const pinned = comic ? null : pinSourceStat(project, asset);
+    const probed = await probeCacheEntry(projectId, assetId, target.context, kind, !comic && animation.allowPolicyFallback);
     if (probed.state !== 'fresh' && probed.state !== 'prior-policy') return {};
+    if (comic) {
+      await runHook('beforePresentationSourceProof', kind);
+      return options.sourceInput.acceptCurrent(() => {
+        options.request.check();
+        const publication = committedPublication(projectId, assetId);
+        if (!publication || publication.publication.revision !== target.revision
+          || publication.meta.source.inputFingerprint !== target.context.inputFingerprint
+          || path.join(publication.dir, publication.meta[kind].filename) !== probed.filePath) {
+          throw new MediaRevisionConflictError();
+        }
+        const derivative = readyDerivative(kind, probed, target.revision, 'fresh');
+        const authority = comicDerivativeAuthority(projectId, assetId, {
+          stamp: comicSourceStamp(projectId, assetId), snapshot: JSON.stringify(publication.publication),
+          signature: options.request.signature,
+          graphAuthorities: [options.graphAuthority, ...(options.record?.graphAuthorities || [])],
+          assertRequestCurrent: options.request.check,
+        });
+        comicDerivativeAuthorities.set(derivative, authority);
+        return { published: derivative };
+      });
+    }
     // Krita documents keep their existing (tuple-only) authority model.
     const ordinarySource = classification.kind === 'image';
     if (!pinned) {
@@ -1985,6 +2151,7 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
       relativePath: meta.source.relativePath, size: meta.source.size,
       mtime: meta.source.mtime, policyFingerprint: meta.policyFingerprint,
       sourceGeneration: metaSourceGeneration(meta),
+      inputFingerprint: meta.source.inputFingerprint,
     })) return { ok: false, reason: 'invalid' };
     for (const kind of ['thumbnail', 'preview']) {
       const recorded = meta[kind];
@@ -2146,99 +2313,188 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
    * @param {number} assetId
    * @param {string} [requestedRevision] - optional, from the browser. Not authoritative.
    */
-  async function getDerivative(kind, projectId, assetId, requestedRevision, ensureCurrent = false) {
-    // Set only when a pre-lock candidate's source proof did not succeed; the
-    // live source is revalidated against the current row once the lock is held.
-    let sourceHandoff = null;
-    if (!ensureCurrent) {
-      const presentation = await publishedForPresentation(kind, projectId, assetId);
-      if (presentation.published) return presentation.published;
-      sourceHandoff = presentation.sourceHandoff ?? null;
-    }
-    const sourceValidationRequired = sourceHandoff?.validationRequired === true;
-    const sourceReplaced = sourceHandoff?.replaced === true;
-    return withLock(projectId, assetId, async () => {
-      // Reload the authoritative project + asset inside the lock.
-      const { asset: loadedAsset } = loadProjectAndAsset(projectId, assetId);
-      const policy = currentPolicy();
-      const { asset, fingerprint } = resolvedIdentity(policy, loadedAsset);
-      const cls = classifyPreviewable(asset);
-      const currentRevision = buildAssetRevision(asset, fingerprint);
-      if (!cls.supported) {
-        return {
-          status: 'unsupported',
-          projectId: asset.project_id,
-          assetId: asset.id,
-          revision: currentRevision?.revision ?? null,
-          cacheState: 'unsupported-format',
-        };
+  async function getDerivative(kind, projectId, assetId, requestedRevision, ensureCurrent = false, precondition) {
+    const comic = classifyComicAsset(loadProjectAndAsset(projectId, assetId).asset).comic;
+    const request = comic ? derivativeRequest(projectId, assetId, precondition || {}) : null;
+    const resolve = async () => {
+      // Set only when a pre-lock candidate's source proof did not succeed; the
+      // live source is revalidated against the current row once the lock is held.
+      let sourceHandoff = null;
+      if (!ensureCurrent && !precondition?.force) {
+        const presentation = await publishedForPresentation(kind, projectId, assetId, { request });
+        if (presentation.published) return presentation.published;
+        sourceHandoff = presentation.sourceHandoff ?? null;
       }
-
-      if (!currentRevision) {
-        throw new PreviewNotFoundError('Asset source metadata is unavailable.');
-      }
-
-      const ctx = currentRevision.context;
-      const revision = currentRevision.revision;
-
-      // After a failed or unproven pre-lock source proof, cache-vs-DB
-      // agreement is not enough: the admitted recheck returns a fresh pair
-      // only once the live disk source is proven against the current row
-      // (and the pinned baseline), and otherwise reconciles it first.
-      if (!sourceValidationRequired) {
-        const probed = await probeCacheEntry(projectId, assetId, ctx, kind);
-        if (probed.state === 'fresh') {
-          return readyDerivative(kind, probed, revision, 'fresh');
+      const sourceValidationRequired = sourceHandoff?.validationRequired === true;
+      const sourceReplaced = sourceHandoff?.replaced === true;
+      return withLock(projectId, assetId, async record => {
+        const scope = request ? generationScope(projectId, assetId, record) : {};
+        scope.assertCurrent?.();
+        if (comic && !precondition?.force) {
+          const presentation = await publishedForPresentation(kind, projectId, assetId, { request, record });
+          if (presentation.published) return presentation.published;
         }
+        if (typeof precondition === 'function') precondition();
+        // Reload the authoritative project + asset inside the lock.
+        const { asset: loadedAsset } = loadProjectAndAsset(projectId, assetId);
+        const policy = currentPolicy();
+        const { asset, fingerprint } = resolvedIdentity(policy, loadedAsset);
+        const cls = classifyPreviewable(asset);
+        const currentRevision = buildAssetRevision(asset, fingerprint);
+        if (!cls.supported && !comic) {
+          return {
+            status: 'unsupported',
+            projectId: asset.project_id,
+            assetId: asset.id,
+            revision: currentRevision?.revision ?? null,
+            cacheState: 'unsupported-format',
+          };
+        }
+
+        if (!currentRevision) {
+          throw new PreviewNotFoundError('Asset source metadata is unavailable.');
+        }
+
+        const ctx = currentRevision.context;
+        const revision = currentRevision.revision;
+
+        // After a failed or unproven pre-lock source proof, cache-vs-DB
+        // agreement is not enough: the admitted recheck returns a fresh pair
+        // only once the live disk source is proven against the current row
+        // (and the pinned baseline), and otherwise reconciles it first.
+        if (!comic && !sourceValidationRequired) {
+          const probed = await probeCacheEntry(projectId, assetId, ctx, kind);
+          if (probed.state === 'fresh') {
+            return readyDerivative(kind, probed, revision, 'fresh');
+          }
+        }
+
+        // Before the one-time upgrade backfill completes, a missing committed
+        // publication may only mean "not imported yet": refuse (retryably)
+        // rather than trust the partial index, read legacy JSON, or generate.
+        // Once ready, a missing row is an unpublished asset and is generated.
+        if (!indexReady() && !findCommittedRow(projectId, assetId)) {
+          throw new PreviewPublicationNotReadyError();
+        }
+
+        // absent | stale | corrupt → regenerate the complete set atomically,
+        // unless the pair became fresh while this request waited for admission.
+        // A proven replacement never copies derivatives of the published pair;
+        // an unproven source only loses reuse if the locked proof fails too.
+        const result = await generateAndPublish(projectId, assetId, request?.policy || null,
+          request ? () => { scope.assertCurrent(); return true; } : undefined, {
+          ...scope,
+          allowReuse: !precondition?.force && !sourceReplaced,
+          sourceBaseline: sourceHandoff?.baseline ?? null,
+          recheckFresh: async (ctxNow, revNow) => {
+            const current = await probeCacheEntry(projectId, assetId, ctxNow, kind);
+            return current.state === 'fresh' ? readyDerivative(kind, current, revNow, 'fresh') : null;
+          },
+        });
+        if (result.current) return result.current;
+        if (comic) {
+          const presentation = await publishedForPresentation(kind, projectId, assetId, { request, record });
+          if (!presentation.published) throw new MediaRevisionConflictError();
+          presentation.published.cacheState = 'regenerated';
+          return presentation.published;
+        }
+        const meta = result.meta;
+        const d = kind === 'thumbnail' ? meta.thumbnail : meta.preview;
+        const filePath =
+          kind === 'thumbnail' ? result.thumbnailPath : result.previewPath;
+
+        return {
+          status: 'ready',
+          path: filePath,
+          mimeType: `image/${d.format}`,
+          bytes: d.bytes,
+          width: d.width,
+          height: d.height,
+          revision: result.revision,
+          generatedAt: meta.generatedAt,
+          cacheState: 'regenerated',
+          animated: kind === 'preview' && meta.animated === true,
+          quality: meta.source.previewQuality ?? null,
+        };
+      }, request);
+    };
+    const derivative = request ? await request.run(resolve) : await resolve();
+    if (comic) {
+      // The public async function has its own final plain-value handoff.
+      request.check();
+      assertComicDerivativeCurrent(derivative);
+    }
+    return derivative;
+  }
+
+  // Explicit quality requests never substitute a prior-policy publication.
+  // Pin the observable source instance across asynchronous cache/generation
+  // work; revision tokens describe indexed metadata, not immutable content.
+  async function getOptimizedPreview(projectId, assetId, requestedRevision, expectedSourceRevision) {
+    const { project, asset: loadedAsset } = loadProjectAndAsset(projectId, assetId);
+    const { asset, fingerprint } = resolvedIdentity(currentPolicy(), loadedAsset);
+    if (!classifyPreviewable(asset).supported) return { status: 'unsupported' };
+    const sourceRevision = buildAssetRevisionToken(asset);
+    const renditionRevision = buildAssetRevisionToken(asset, fingerprint);
+    if (!sourceRevision || !renditionRevision) {
+      throw new PreviewNotFoundError('Asset source metadata is unavailable.');
+    }
+    const assertCurrent = () => {
+      const current = getOriginalDescriptor(projectId, assetId);
+      if (current.revision !== sourceRevision || current.projectDir !== project.project_dir
+        || current.mimeType !== String(asset.mime_type || '').toLowerCase()
+        || current.extension !== String(asset.extension || '').toLowerCase()
+        || (expectedSourceRevision !== undefined && current.revision !== expectedSourceRevision)
+        || (requestedRevision !== undefined && requestedRevision !== renditionRevision)
+        || currentRevisionFor(assetId) !== renditionRevision) {
+        throw new PreviewRevisionConflictError();
       }
-
-      // Before the one-time upgrade backfill completes, a missing committed
-      // publication may only mean "not imported yet": refuse (retryably)
-      // rather than trust the partial index, read legacy JSON, or generate.
-      // Once ready, a missing row is an unpublished asset and is generated.
-      if (!indexReady() && !findCommittedRow(projectId, assetId)) {
-        throw new PreviewPublicationNotReadyError();
+    };
+    assertCurrent();
+    const pinned = pinSourceStat(project, asset);
+    if (!pinned) throw new PreviewNotFoundError('Asset source is unavailable.');
+    const assertSource = () => {
+      assertCurrent();
+      if (sourceProof(project, asset, pinned, { checkAnimation: false }) !== 'ok') {
+        throw new PreviewRevisionConflictError();
       }
-
-      // absent | stale | corrupt → regenerate the complete set atomically,
-      // unless the pair became fresh while this request waited for admission.
-      // A proven replacement never copies derivatives of the published pair;
-      // an unproven source only loses reuse if the locked proof fails too.
-      const result = await generateAndPublish(projectId, assetId, null, undefined, {
-        allowReuse: !sourceReplaced,
-        sourceBaseline: sourceHandoff?.baseline ?? null,
-        recheckFresh: async (ctxNow, revNow) => {
-          const current = await probeCacheEntry(projectId, assetId, ctxNow, kind);
-          return current.state === 'fresh' ? readyDerivative(kind, current, revNow, 'fresh') : null;
-        },
-      });
-      if (result.current) return result.current;
-      const meta = result.meta;
-      const d = kind === 'thumbnail' ? meta.thumbnail : meta.preview;
-      const filePath =
-        kind === 'thumbnail' ? result.thumbnailPath : result.previewPath;
-
-      return {
-        status: 'ready',
-        path: filePath,
-        mimeType: `image/${d.format}`,
-        bytes: d.bytes,
-        width: d.width,
-        height: d.height,
-        revision: result.revision,
-        generatedAt: meta.generatedAt,
-        cacheState: 'regenerated',
-        animated: kind === 'preview' && meta.animated === true,
-        quality: meta.source.previewQuality ?? null,
-      };
-    });
+    };
+    assertSource();
+    let result;
+    try {
+      result = await getDerivative('preview', projectId, assetId, requestedRevision, true, assertSource);
+    } catch (err) {
+      assertSource();
+      throw err;
+    }
+    assertSource();
+    if (result.status === 'ready' && result.revision !== renditionRevision) {
+      throw new PreviewRevisionConflictError();
+    }
+    return result;
   }
 
   return {
-    getThumbnail: (projectId, assetId, requestedRevision) =>
-      getDerivative('thumbnail', projectId, assetId, requestedRevision),
-    getPreview: (projectId, assetId, requestedRevision) =>
-      getDerivative('preview', projectId, assetId, requestedRevision),
+    getOptimizedPreview,
+    assertComicDerivativeCurrent,
+    comicGenerationIsIdle: () => comicLocks().length === 0,
+    pauseComicGeneration() {
+      comicPauses++;
+      for (const tail of comicLocks()) tail.comicRecord.controller.abort();
+      let released = false;
+      return {
+        waitForIdle: () => Promise.all(comicLocks()),
+        release() { if (!released) { released = true; comicPauses--; } },
+      };
+    },
+    stopComicGeneration() {
+      comicStopped = true;
+      for (const tail of comicLocks()) tail.comicRecord.controller.abort();
+    },
+    getThumbnail: (projectId, assetId, requestedRevision, options) =>
+      getDerivative('thumbnail', projectId, assetId, requestedRevision, false, options),
+    getPreview: (projectId, assetId, requestedRevision, options) =>
+      getDerivative('preview', projectId, assetId, requestedRevision, false, options),
     ensureCurrentPreview: (projectId, assetId) =>
       getDerivative('preview', projectId, assetId, undefined, true),
     // The authority callback is a synchronous read of the caller's target
@@ -2247,6 +2503,17 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
       const target = validatedTargetPolicy(targetPolicy);
       if (typeof isTargetAuthoritative !== 'function') {
         throw new TypeError('Target authority must be a function.');
+      }
+      if (classifyComicAsset(loadProjectAndAsset(projectId, assetId).asset).comic) {
+        return (async () => {
+          const options = { targetPolicy: target, isTargetAuthoritative };
+          const preview = await getDerivative('preview', projectId, assetId, undefined, true, { ...options, force });
+          const thumbnail = await getDerivative('thumbnail', projectId, assetId, undefined, true, options);
+          assertComicDerivativeCurrent(preview);
+          assertComicDerivativeCurrent(thumbnail);
+          if (preview.revision !== thumbnail.revision) throw new MediaRevisionConflictError();
+          return { status: 'ready', revision: preview.revision, cacheState: preview.cacheState, thumbnail, preview };
+        })();
       }
       return withLock(projectId, assetId, async () => {
         if (JSON.stringify(currentPolicy()) !== JSON.stringify(target) || !isTargetAuthoritative()) {
@@ -2305,6 +2572,24 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
       });
     },
     getOriginalDescriptor,
+    async acceptRecoveredPublication(intent, snapshot, accept) {
+      const { asset } = loadProjectAndAsset(intent.projectId, intent.assetId);
+      const comic = classifyComicAsset(asset).comic;
+      if (!comic) {
+        if (snapshot.sourceInputFingerprint != null) throw new MediaRevisionConflictError();
+        return accept();
+      }
+      if (!snapshot.sourceInputFingerprint) throw new MediaRevisionConflictError();
+      return withSourceInput(intent.projectId, intent.assetId, {}, input =>
+        input.acceptCurrent(() => {
+          const { asset: current } = loadProjectAndAsset(intent.projectId, intent.assetId);
+          const ctx = { ...sourceContext(current, projectImagePolicyFingerprint(currentPolicy(), current)),
+            inputFingerprint: comicFingerprint(input) };
+          if (ctx.inputFingerprint !== snapshot.sourceInputFingerprint
+            || buildRevisionToken(ctx) !== snapshot.revision) throw new MediaRevisionConflictError();
+          return accept();
+        }));
+    },
     // Publication maintenance (lifecycle service only; never a request path).
     // The inspect helpers must run inside `withPublicationLock` for the asset.
     withPublicationLock: (projectId, assetId, fn) => withLock(projectId, assetId, fn),

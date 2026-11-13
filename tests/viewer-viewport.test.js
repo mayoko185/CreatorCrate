@@ -256,3 +256,263 @@ describe('viewer viewport pan', () => {
     expect(surface.listeners).toHaveLength(0);
   });
 });
+
+// ─── C1d: composite content (comic spreads) ──────────────────────────────────
+
+describe('viewer viewport composite content', () => {
+  function composite(size = { width: 2040, height: 1500 }, options = {}) {
+    const surface = makeSurface(1000, 800);
+    const onChange = vi.fn();
+    const viewport = createViewerViewport({ surface, onChange, ...options });
+    const element = makeContent();
+    viewport.setContent(element, size, { composite: true });
+    return { surface, onChange, viewport, element };
+  }
+
+  it('leaves ordinary image content exactly as before', () => {
+    const { viewport, surface, element } = setup();
+    expect(viewport.getState()).toMatchObject({ composite: false, scale: 0.5, mode: 'fit' });
+    expect(surface.hasAttribute('data-viewer-composite')).toBe(false);
+    expect(element.style).toEqual({ width: '1000px', height: '500px', transform: 'translate(-500px, -250px)' });
+    viewport.zoomIn();
+    expect(viewport.getState().scale).toBe(0.75);
+  });
+
+  it('fits a single-page and a two-page composition as one content element', () => {
+    const single = composite({ width: 1000, height: 1500 });
+    expect(single.viewport.getState()).toMatchObject({ composite: true, mode: 'fit', panX: 0, panY: 0 });
+    expect(single.viewport.getState().scale).toBeCloseTo(800 / 1500);
+    expect(single.surface.hasAttribute('data-viewer-composite')).toBe(true);
+
+    const spread = composite();
+    const state = spread.viewport.getState();
+    expect(state.scale).toBeCloseTo(1000 / 2040);
+    // The whole composition, gutter included, is inside the surface.
+    expect(parseFloat(spread.element.style.width)).toBeLessThanOrEqual(1000);
+    expect(parseFloat(spread.element.style.height)).toBeLessThanOrEqual(800);
+    expect(state.canPan).toBe(false);
+  });
+
+  it('re-fits and re-centres when a companion page resolves in Fit', () => {
+    const { viewport, element, onChange } = composite({ width: 1000, height: 1500 });
+    onChange.mockClear();
+    expect(viewport.resizeContent({ width: 2020, height: 1500 })).toBe(true);
+    const state = viewport.getState();
+    expect(state).toMatchObject({ mode: 'fit', panX: 0, panY: 0, contentWidth: 2020 });
+    expect(state.scale).toBeCloseTo(1000 / 2020);
+    expect(element.style.transform).toBe(`translate(${-1000 / 2}px, ${-(1500 * state.scale) / 2}px)`);
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ contentWidth: 2020 }), 'content-size');
+  });
+
+  it('keeps zoom relative to Fit and re-clamps the pan when the composition changes size while zoomed', () => {
+    const { viewport } = composite({ width: 1000, height: 1500 });
+    viewport.zoomIn();
+    viewport.zoomIn();
+    viewport.panBy(0, -10000);
+    const before = viewport.getState();
+    expect(before.mode).toBe('zoom');
+    const relative = before.scale / before.fitScale;
+    viewport.resizeContent({ width: 2020, height: 1500 });
+    const after = viewport.getState();
+    expect(after.mode).toBe('zoom');
+    expect(after.scale / after.fitScale).toBeCloseTo(relative, 9);
+    expect(Math.abs(after.panX)).toBeLessThanOrEqual(after.maxPanX);
+    expect(Math.abs(after.panY)).toBeLessThanOrEqual(after.maxPanY);
+    // The pan stays proportionally where it was rather than jumping.
+    expect(after.panY).toBeCloseTo(Math.max(-after.maxPanY, before.panY * (after.scale / before.scale)), 6);
+
+    // A shrink that leaves no overflow re-clamps the pan to the centre.
+    viewport.panBy(-10000, 0);
+    viewport.resizeContent({ width: 100, height: 150 });
+    const shrunk = viewport.getState();
+    expect(Math.abs(shrunk.panX)).toBeLessThanOrEqual(shrunk.maxPanX);
+    expect(Math.abs(shrunk.panY)).toBeLessThanOrEqual(shrunk.maxPanY);
+    expect(Number.isFinite(shrunk.scale)).toBe(true);
+  });
+
+  it('treats an unchanged or invalid size as a no-op that keeps zoom and pan', () => {
+    const { viewport, onChange, element } = composite();
+    viewport.zoomIn();
+    viewport.zoomIn();
+    viewport.panBy(30, 20);
+    const before = viewport.getState();
+    const transform = element.style.transform;
+    onChange.mockClear();
+    expect(viewport.resizeContent({ width: 2040, height: 1500 })).toBe(false);
+    expect(viewport.resizeContent({ width: Number.NaN, height: 10 })).toBe(false);
+    expect(viewport.resizeContent(null)).toBe(false);
+    expect(viewport.getState()).toEqual(before);
+    expect(element.style.transform).toBe(transform);
+    expect(onChange).not.toHaveBeenCalled();
+    viewport.clearContent();
+    expect(viewport.resizeContent({ width: 10, height: 10 })).toBe(false);
+  });
+
+  it('resets a new composition (group change) to Fit and centred', () => {
+    const { viewport, element, surface } = composite();
+    viewport.zoomIn();
+    viewport.zoomIn();
+    viewport.panBy(-200, 100);
+    expect(viewport.isContent(element)).toBe(true);
+    viewport.setContent(element, { width: 1000, height: 1500 }, { composite: true });
+    expect(viewport.getState()).toMatchObject({ mode: 'fit', panX: 0, panY: 0, composite: true });
+    // Replacing a composite with an ordinary image drops the composite mark.
+    const image = makeContent();
+    viewport.setContent(image, { width: 400, height: 300 });
+    expect(viewport.isContent(element)).toBe(false);
+    expect(viewport.isContent(image)).toBe(true);
+    expect(surface.hasAttribute('data-viewer-composite')).toBe(false);
+    expect(viewport.getState().composite).toBe(false);
+  });
+
+  it('continues a drag from the adjusted pan when the size changes mid-drag', () => {
+    const { viewport, surface } = composite({ width: 1000, height: 1500 });
+    viewport.actualSize();
+    surface.fire('pointerdown', { clientX: 0, clientY: 0 });
+    surface.fire('pointermove', { clientX: 0, clientY: 100 });
+    expect(viewport.getState().panY).toBe(100);
+    viewport.resizeContent({ width: 2020, height: 1500 });
+    const pan = viewport.getState().panY;
+    surface.fire('pointermove', { clientX: 0, clientY: 110 });
+    expect(viewport.getState().panY).toBeCloseTo(Math.min(pan + 10, viewport.getState().maxPanY), 6);
+    surface.fire('pointerup');
+  });
+
+  it('re-fits a composition on resize (fullscreen or a narrow window)', () => {
+    const observers = [];
+    class FakeResizeObserver {
+      constructor(callback) { this.callback = callback; this.disconnect = vi.fn(); observers.push(this); }
+      observe(target) { this.target = target; }
+    }
+    const { viewport, surface, element } = composite(undefined, { view: { ResizeObserver: FakeResizeObserver } });
+    surface.clientWidth = 1920;
+    surface.clientHeight = 1080;
+    observers[0].callback();
+    expect(viewport.getState().scale).toBeCloseTo(Math.min(1920 / 2040, 1080 / 1500));
+    surface.clientWidth = 320;
+    surface.clientHeight = 480;
+    viewport.refresh();
+    const narrow = viewport.getState();
+    expect(narrow.scale).toBeCloseTo(320 / 2040);
+    expect(parseFloat(element.style.width)).toBeLessThanOrEqual(320 + 1e-9);
+    expect(narrow.canPan).toBe(false);
+    viewport.clearContent();
+    expect(observers[0].disconnect).toHaveBeenCalled();
+  });
+});
+
+describe('viewer viewport interactive descendants', () => {
+  // A minimal element tree: closest() walks parents to an interactive node.
+  function node(name, parent = null, interactive = false) {
+    return {
+      name,
+      parent,
+      interactive,
+      closest(selector) {
+        expect(typeof selector).toBe('string');
+        let current = this;
+        while (current) {
+          if (current.interactive) return current;
+          current = current.parent;
+        }
+        return null;
+      },
+    };
+  }
+
+  function zoomedComposite() {
+    const surface = makeSurface(1000, 800);
+    // An interactive ancestor outside the surface must not block panning.
+    const dialog = node('dialog', null, true);
+    surface.parent = dialog;
+    surface.interactive = false;
+    surface.closest = node('surface', dialog).closest;
+    surface.contains = (candidate) => {
+      let current = candidate;
+      while (current) {
+        if (current === surface) return true;
+        current = current.parent;
+      }
+      return false;
+    };
+    const wrapper = node('wrapper', surface);
+    const slot = node('slot', wrapper);
+    const retry = node('retry', slot, true);
+    const label = node('label', retry);
+    const viewport = createViewerViewport({ surface });
+    viewport.setContent({ style: {} }, { width: 2040, height: 1500 }, { composite: true });
+    viewport.actualSize();
+    return { surface, viewport, slot, retry, label, wrapper, dialog };
+  }
+
+  it('never starts a pan from a Retry button or anything inside it', () => {
+    const { surface, viewport, retry, label } = zoomedComposite();
+    for (const target of [retry, label]) {
+      const down = surface.fire('pointerdown', { target });
+      expect(down.defaultPrevented).toBe(false);
+      expect(viewport.getState().dragging).toBe(false);
+      expect(surface.setPointerCapture).not.toHaveBeenCalled();
+    }
+  });
+
+  it('pans from the surface, the wrapper and the noninteractive slot background', () => {
+    const { surface, viewport, slot, wrapper } = zoomedComposite();
+    for (const target of [surface, wrapper, slot, undefined]) {
+      const down = surface.fire('pointerdown', { target, clientX: 0, clientY: 0 });
+      expect(down.defaultPrevented).toBe(true);
+      expect(viewport.getState().dragging).toBe(true);
+      surface.fire('pointermove', { clientX: -20, clientY: 0 });
+      surface.fire('pointerup');
+      expect(viewport.getState().dragging).toBe(false);
+    }
+    expect(viewport.getState().panX).toBe(-80);
+  });
+
+  it('keeps keyboard panning independent of pointer targets', () => {
+    const { viewport } = zoomedComposite();
+    expect(viewport.panBy(48, 0)).toBe(true);
+    expect(viewport.getState().panX).toBe(48);
+  });
+
+  it('removes every listener, including on a composite, on destroy', () => {
+    const { surface, viewport } = zoomedComposite();
+    viewport.destroy();
+    expect(surface.listeners).toHaveLength(0);
+    expect(surface.hasAttribute('data-viewer-composite')).toBe(false);
+  });
+});
+
+
+describe('rendition replacement geometry', () => {
+  it('keeps Fit and Actual Size as separate scale intentions', () => {
+    const { viewport } = setup();
+    viewport.replaceContent(makeContent(), { width: 6000, height: 3000 });
+    expect(viewport.getState()).toMatchObject({ mode: 'fit', scale: 1 / 6 });
+    viewport.actualSize();
+    viewport.replaceContent(makeContent(), { width: 3000, height: 1500 });
+    expect(viewport.getState().scale).toBe(1);
+    viewport.destroy();
+  });
+
+  it.each([{ width: 6000, height: 3000 }, { width: 3000, height: 6000 }, { width: 20, height: 9000 }])('preserves relative zoom and normalized focal point with safe clamping for %j', (size) => {
+    const { viewport } = setup();
+    viewport.zoomIn(); viewport.zoomIn(); viewport.panBy(150, 75);
+    const before = viewport.getState();
+    viewport.replaceContent(makeContent(), size);
+    const after = viewport.getState();
+    expect(after.scale / after.fitScale).toBeCloseTo(before.scale / before.fitScale);
+    const expectedX = before.panX / (before.contentWidth * before.scale) * size.width * after.scale;
+    const expectedY = before.panY / (before.contentHeight * before.scale) * size.height * after.scale;
+    expect(after.panX).toBeCloseTo(Math.max(-after.maxPanX, Math.min(after.maxPanX, expectedX)));
+    expect(after.panY).toBeCloseTo(Math.max(-after.maxPanY, Math.min(after.maxPanY, expectedY)));
+    expect(Number.isFinite(after.scale)).toBe(true);
+    viewport.destroy();
+  });
+
+  it('rejects invalid replacement geometry without discarding the usable image', () => {
+    const { viewport } = setup(); const before = viewport.getState();
+    expect(viewport.replaceContent(makeContent(), { width: Infinity, height: 0 })).toBe(false);
+    expect(viewport.getState()).toEqual(before);
+    viewport.destroy();
+  });
+});

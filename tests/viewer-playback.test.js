@@ -267,6 +267,8 @@ function makeHarness({ reducedMotion = false, speedValue = '4000' } = {}) {
     },
     failed() { report({ session: active.session, key: active.key, status: 'failed', error: 'http' }); },
     retrying() { report({ session: active.session, key: active.key, status: 'loading', attempt: 1, view: { hasContent: false, mode: 'fit' } }); },
+    qualityLoading() { report({ quality: { loading: true } }, 'quality'); },
+    qualitySettled() { report({ quality: { loading: false } }, 'quality'); },
     originalLoading() { report({ original: { status: 'loading' } }, 'original'); },
     originalActive() { report({ original: { status: 'active' }, view: { hasContent: true, mode: 'zoom' } }, 'original'); },
     originalFailed() { report({ original: { status: 'failed' } }, 'original'); },
@@ -793,5 +795,34 @@ describe('viewer playback visibility and lifecycle', () => {
     fireDocument(h.document, 'visibilitychange');
     expect(vi.getTimerCount()).toBe(0);
     h.playback.destroy();
+  });
+});
+
+
+describe('quality switch countdown ownership', () => {
+  it.each(['success', 'controlled failure'])('suspends and resumes the same playing slideshow after %s at the selected speed', () => {
+    vi.useFakeTimers();
+    const h = makeHarness();
+    h.controller.open(slideshow([1, 2, 3])); h.controller.loaded();
+    h.playback.setSpeed(6000);
+    vi.advanceTimersByTime(5000);
+    h.controller.qualityLoading();
+    expect(h.playback.getState()).toMatchObject({ playing: true, waiting: true, scheduled: false, speed: 6000 });
+    vi.advanceTimersByTime(20000);
+    expect(h.key()).toBe(keyOf(1));
+    h.controller.qualitySettled();
+    expect(vi.getTimerCount()).toBe(1);
+    vi.advanceTimersByTime(5999); expect(h.key()).toBe(keyOf(1));
+    vi.advanceTimersByTime(1); expect(h.key()).toBe(keyOf(2));
+    h.playback.destroy(); vi.useRealTimers();
+  });
+
+  it('respects an explicit pause during switching and never adds a timer', () => {
+    vi.useFakeTimers();
+    const h = makeHarness(); h.controller.open(slideshow([1, 2])); h.controller.loaded();
+    h.controller.qualityLoading(); h.playback.pause(); h.controller.qualitySettled();
+    expect(h.playback.getState().playing).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    h.playback.destroy(); vi.useRealTimers();
   });
 });

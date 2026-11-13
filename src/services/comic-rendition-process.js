@@ -1,77 +1,24 @@
-// Milestone A F1a — Process-isolated comic page rendition (parent side)
+// One disposable child per admitted comic page or shared derivative. Children receive only bounded
+// image bytes and numeric limits, never archive paths, descriptors or authority. The runtime
+// owns this supervisor; a single preloaded IPC spare can be claimed by an admitted reader job.
 //
-// Sharp 0.35.3 cannot interrupt a native operation already handed to libvips (metadata(),
-// stats() or a conversion), its `timeout` covers only the output pipeline, and terminating a
-// worker thread waits for the running native work. So every comic page rendition runs in its
-// own disposable Node.js child process (comic-rendition-child.js), which can be terminated at
-// any moment. This module is the only owner of those children.
+// Parent deadlines cover startup, transfers, native work and final validation. Cancellation,
+// deadline, closure and protocol failures kill the child. Admission is held until its close
+// event confirms exit; a successful kill() call alone never proves native work stopped. The
+// child also watches parent disconnect and its own watchdog. A spare has no job or image data,
+// and close() retires it along with active jobs before resolving.
 //
-// Contract
-// --------
-//   - One child per rendition job. It is launched directly with the installed Node executable
-//     (no shell, no inherited execArgv or NODE_OPTIONS, not detached, hidden on Windows, no
-//     stdio besides the IPC channel) from a fixed module path. It receives only image bytes and
-//     numeric bounds: no path, no descriptor, no database, no archive and no authority. It
-//     launches nothing.
-//   - Protocol (advanced IPC serialization, protocol version 1):
-//       child  -> parent  { type: 'ready', v }                      once, after it listens
-//       parent -> child   { type: 'job', v, bytes, image, maxInputPixels, limits }   once
-//       child  -> parent  { type: 'phase', phase }                  metadata, stats, convert
-//       child  -> parent  { type: 'result', ok: true, unchanged: true, mimeType, width, height }
-//                       | { type: 'result', ok: true, unchanged: false, bytes, mimeType, width, height }
-//                       | { type: 'result', ok: false, code, detail? }   exactly one, terminal
-//     Every message is validated (shape, keys, types, bounds, order). Anything else, a second
-//     terminal message, a message after the terminal one, an exit without one, a startup or IPC
-//     failure, and an output over the job's byte bound fail the job; a partial result is never
-//     accepted. Input is bounded before it is sent and output both by the child before sending
-//     and by the parent after receiving: the parent checks a result's bytes, MIME type and
-//     dimensions (positive safe integers within limits.maxPixels and the source area) itself.
-//   - The job settles only after the child is confirmed gone: its 'close' event (process exit
-//     observed by the OS watcher, and IPC and stdio closed). child.killed or a true kill() is
-//     never taken as proof. On cancellation, deadline, shutdown or any failure the child is
-//     killed (SIGKILL; TerminateProcess on Windows) and the job still waits for that
-//     confirmation. Callers hold their comic admission until the job settles, so admission is
-//     released only after the native work has stopped. If the operating system never reports
-//     the exit, the job (and that admission) stays held rather than reporting a cleanup that did
-//     not happen; snapshot().terminating shows it.
-//   - Deadline: owned by the parent and measured on the monotonic clock from before the launch.
-//     It covers startup, input transfer, metadata, stats, conversion, result transfer and the
-//     final acceptance after exit; a result received or accepted after it is never a success,
-//     even if the timer callback runs late.
-//   - Orphans: the child kills itself when its IPC channel disconnects (parent exit or crash)
-//     and after its own watchdog (the job's deadline plus a margin).
-//
-// Preloaded spare (F1b)
-// ---------------------
-//   - preload() (called only by the application's comic runtime) keeps at most ONE idle spare
-//     child: launched ahead of need, it loads Node and Sharp, reports a valid ready message and
-//     then waits. It receives nothing (no page bytes, no job) and processes nothing while idle,
-//     and it never keeps the application alive (its handle and channel are unreferenced; it
-//     exits by itself when the parent's end of the channel goes away).
-//   - Only an admitted job claims it, synchronously inside run() (after the job's deadline has
-//     started), and only once it is ready: ownership moves to that job, which sends its one job
-//     at once. From then on it is an ordinary job child: one job, the same deadline,
-//     cancellation, validation and kill-then-confirm rules, never reused. A job that finds no
-//     ready spare launches a cold child at once and never waits for a spare.
-//   - A claim schedules the next spare (setImmediate). A new spare is launched only while no
-//     unclaimed spare exists, including one still being retired, so at most one idle spare
-//     process exists at any time and nothing grows into a pool.
-//   - A spare that sends anything but one valid ready message, errors, disconnects, exits or is
-//     not ready within its own startup timeout is killed, confirmed gone and never claimed.
-//     Failures since the last claim are retried after SPARE_RETRY_DELAYS_MS; when those are used
-//     up the spare stays disabled for this supervisor and every job uses a cold child.
-//   - close() stops replenishment at once, kills the idle spare along with the active children
-//     and resolves only after each is confirmed gone.
-//
-// Ownership: the application's comic runtime owns one supervisor for the process lifetime
-// (comic-runtime.js), shared by every app graph; close() refuses new jobs at once, kills the
-// active children and resolves after every one of them is confirmed gone. Code without a runtime
-// (direct createApp callers, tests) uses one lazily created process-wide default supervisor, so
-// no graph or request ever owns children of its own; that supervisor never preloads a spare.
+// Shared derivatives use the accepted reader IPC transport and ordinary image policy
+// and independent bounded decode validation after a clean exit. IPC allocates before message
+// validation: this trusts the bundled child and does not impose a compromised-child quota or
+// an OS memory ceiling.
 
 import { fork } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import sharp from 'sharp';
 import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
+import { projectImageGeneratedOutput } from './project-image-policy.js';
 
 const MIB = 1024 * 1024;
 
@@ -143,6 +90,53 @@ function asBuffer(value) {
   return null;
 }
 
+// The child receives the ordinary effective policy, bounded by the existing settings domain.
+export function validComicDerivativePolicy(kind, policy) {
+  if (!['thumbnail', 'preview'].includes(kind) || !isPlainObject(policy)
+    || !hasExactKeys(policy, ['thumbnail', 'preview'])) return false;
+  return ['thumbnail', 'preview'].every((key) => {
+    const value = policy[key];
+    const range = key === 'thumbnail' ? [64, 512] : [320, 2560];
+    return isPlainObject(value) && hasExactKeys(value, ['format', 'maxDimension', 'webpQuality'])
+      && (key === 'thumbnail' ? ['webp', 'png'] : ['webp', 'png', 'original']).includes(value.format)
+      && Number.isSafeInteger(value.maxDimension)
+      && value.maxDimension >= range[0] && value.maxDimension <= range[1]
+      && positiveInteger(value.webpQuality) && value.webpQuality <= 95;
+  });
+}
+
+async function validateDerivativeBytes(result, job) {
+  const invalid = () => failure('PROTOCOL_ERROR', 'Invalid shared derivative image.');
+  const bytes = result.buffer;
+  const format = projectImageGeneratedOutput(job.policy, false)[job.kind].format;
+  if (format === 'webp') {
+    if (bytes.length < 20 || bytes.toString('latin1', 0, 4) !== 'RIFF'
+      || bytes.toString('latin1', 8, 12) !== 'WEBP' || bytes.readUInt32LE(4) !== bytes.length - 8) throw invalid();
+  } else {
+    if (bytes.length < 33 || !bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) throw invalid();
+    let end = false;
+    for (let offset = 8; offset < bytes.length;) {
+      if (offset + 12 > bytes.length || end) throw invalid();
+      const length = bytes.readUInt32BE(offset);
+      const type = bytes.toString('latin1', offset + 4, offset + 8);
+      if (!['IHDR', 'PLTE', 'tRNS', 'pHYs', 'IDAT', 'IEND'].includes(type)
+        || offset + 12 + length > bytes.length) throw invalid();
+      end = type === 'IEND';
+      if (end && length !== 0) throw invalid();
+      offset += 12 + length;
+    }
+    if (!end) throw invalid();
+  }
+  try {
+    const options = { failOn: 'warning', limitInputPixels: job.limits.maxPixels, pages: 1 };
+    const metadata = await sharp(bytes, options).metadata();
+    if (metadata.format !== format || (metadata.pages ?? 1) !== 1
+      || metadata.width !== result.width || metadata.height !== result.height
+      || metadata.orientation !== undefined || metadata.exif || metadata.icc || metadata.xmp) throw invalid();
+    await sharp(bytes, options).timeout({ seconds: 1 }).stats();
+  } catch { throw invalid(); }
+}
+
 /** Validates a job before anything is launched; returns the normalized message to send. */
 function jobMessage(job) {
   if (!isPlainObject(job)) throw new TypeError('A comic rendition job is required.');
@@ -164,7 +158,20 @@ function jobMessage(job) {
   if (limits.maxOutputBytes > COMIC_RENDITION_PROTOCOL.maxOutputBytes) {
     throw new TypeError('maxOutputBytes is above the rendition protocol bound.');
   }
+  const derivative = job.purpose === 'image-derivative';
+  if (job.purpose !== undefined && !derivative) throw new TypeError('Unknown rendition purpose.');
+  if (derivative && (!withinPixels(image.width, image.height, Math.min(maxInputPixels, 100_000_000))
+    || maxInputPixels > 100_000_000 || Math.max(image.width, image.height) > 65_535 || limits.timeoutSeconds > 30)) {
+    throw failure('INPUT_LIMIT_EXCEEDED', 'Derivative input exceeds the reader bounds.');
+  }
+  if (derivative && (!hasExactKeys(job, ['purpose', 'bytes', 'image', 'maxInputPixels', 'limits', 'kind', 'policy'])
+    || !validComicDerivativePolicy(job.kind, job.policy)
+    || limits.maxPixels > 25_000_000 || limits.maxWebpDimension > 16_383)) {
+    throw new TypeError('Invalid shared derivative job.');
+  }
   return {
+    ...(derivative ? { purpose: job.purpose, jobId: randomUUID() } : {}),
+    ...(derivative ? { kind: job.kind, policy: { thumbnail: { ...job.policy.thumbnail }, preview: { ...job.policy.preview } } } : {}),
     type: 'job',
     v: COMIC_RENDITION_PROTOCOL.version,
     bytes,
@@ -186,6 +193,7 @@ function jobMessage(job) {
  */
 function acceptResult(message, job) {
   const protocolError = (why) => failure('PROTOCOL_ERROR', `Invalid rendition result: ${why}.`);
+  if (job.purpose === 'image-derivative') return acceptDerivativeResult(message, job);
   if (message.ok === false) {
     if (!hasExactKeys(message, ['type', 'ok', 'code'], ['detail'])
       || !COMIC_RENDITION_PROTOCOL.childFailureCodes.includes(message.code)
@@ -222,7 +230,7 @@ function acceptResult(message, job) {
   if (bytes.length > limits.maxOutputBytes) {
     throw failure('OUTPUT_LIMIT_EXCEEDED', 'The rendition is larger than allowed.');
   }
-  // P3-A: the parent enforces the job's pixel bound itself; a child's claim to have downscaled
+  // The parent enforces the job's pixel bound itself; a child's claim to have downscaled
   // is not trusted. The source-area bound below still applies on top of it.
   if (!withinPixels(width, height, limits.maxPixels)) {
     throw protocolError('converted page over the pixel limit');
@@ -235,12 +243,41 @@ function acceptResult(message, job) {
   return { unchanged: false, bytes, mimeType: message.mimeType, width, height };
 }
 
-// F1b: an idle spare is retired as failed if it is not ready within this long.
+function acceptDerivativeResult(message, job) {
+  const invalid = () => failure('PROTOCOL_ERROR', 'Invalid shared derivative result.');
+  const output = projectImageGeneratedOutput(job.policy, false)[job.kind];
+  const identity = ['type', 'purpose', 'jobId', 'ok'];
+  if (message.purpose !== job.purpose || message.jobId !== job.jobId) throw invalid();
+  if (message.ok === false) {
+    if (!hasExactKeys(message, [...identity, 'code'], ['detail'])
+      || !COMIC_RENDITION_PROTOCOL.childFailureCodes.includes(message.code)
+      || (message.detail !== undefined && (typeof message.detail !== 'string'
+        || message.detail.length > COMIC_RENDITION_PROTOCOL.maxDetailLength))) throw invalid();
+    throw failure(message.code, 'Shared derivative encoding failed.');
+  }
+  if (message.ok !== true || !hasExactKeys(message, [...identity, 'buffer', 'width', 'height',
+    'animated', 'frameCount', 'format', 'filename'])) throw invalid();
+  const buffer = asBuffer(message.buffer);
+  if (!buffer || buffer.length === 0) throw invalid();
+  if (buffer.length > job.limits.maxOutputBytes) throw failure('OUTPUT_LIMIT_EXCEEDED', 'Derivative output exceeds its byte limit.');
+  if (message.format !== output.format || message.filename !== `${job.kind}.${output.format}`
+    || message.animated !== false || message.frameCount !== 1
+    || (message.format === 'webp' && Math.max(message.width, message.height) > job.limits.maxWebpDimension)
+    || !withinPixels(message.width, message.height, job.limits.maxPixels)) throw invalid();
+  const fits = (width, height) => {
+    const scale = Math.min(1, output.maxDimension / Math.max(width, height));
+    return message.width === Math.max(1, Math.round(width * scale))
+      && message.height === Math.max(1, Math.round(height * scale));
+  };
+  if (!fits(job.image.width, job.image.height) && !fits(job.image.height, job.image.width)) throw invalid();
+  return { buffer, width: message.width, height: message.height, animated: false, frameCount: 1,
+    format: message.format, filename: message.filename };
+}
+
+// An idle spare must become ready before it can be claimed.
 const SPARE_READY_TIMEOUT_MS = 30_000;
-// F1b: delays before relaunching after consecutive spare failures; once they are used up the
-// spare stays disabled for this supervisor (cold children remain available).
+// Exhausted retries disable the spare; cold children remain available.
 const SPARE_RETRY_DELAYS_MS = Object.freeze([1_000, 10_000]);
-// Marks a spare child (no pre-job watchdog: it may stay idle for the application's lifetime).
 const SPARE_ENV = 'CREATORCRATE_RENDITION_SPARE';
 
 function nonNegativeIntegers(value) {
@@ -251,7 +288,7 @@ function nonNegativeIntegers(value) {
  * @param {object} [options]
  * @param {string} [options.childModule] - test-only: the module launched as the child.
  * @param {string[]} [options.childArgs] - test-only: arguments for that module.
- * @param {object} [options.hooks] - test-only observers: { spawned({ pid, spare }), exited({ pid, code, signal }) }.
+ * @param {object} [options.hooks] - test-only spawned and exited observers.
  * @param {number} [options.spareReadyTimeoutMs] - test-only: how long a spare may take to be ready.
  * @param {number[]} [options.spareRetryDelaysMs] - test-only: relaunch delays after spare failures.
  */
@@ -270,7 +307,7 @@ export function createComicRenditionSupervisor({
   let launched = 0;
   let exited = 0;
 
-  // F1b spare state. At most one unclaimed spare child exists at any time, including one that
+  // At most one unclaimed spare child exists at any time, including one that
   // is being retired: `spare` is cleared only when it is claimed or confirmed gone, and a new one
   // is launched only while `spare` is null.
   let spareEnabled = false;
@@ -286,14 +323,14 @@ export function createComicRenditionSupervisor({
     const env = { ...process.env };
     // No preloads or flags reach the child (NODE_OPTIONS may carry --require/--import).
     for (const key of Object.keys(env)) {
-      if (key.toUpperCase() === 'NODE_OPTIONS' || key.toUpperCase() === SPARE_ENV) delete env[key];
+      if (['NODE_OPTIONS', SPARE_ENV].includes(key.toUpperCase())) delete env[key];
     }
     if (isSpare) env[SPARE_ENV] = '1';
     return env;
   }
 
   function launch(isSpare) {
-    const child = fork(childModule, childArgs, {
+    const options = {
       execPath: process.execPath,
       execArgv: [],
       env: childEnvironment(isSpare),
@@ -301,7 +338,8 @@ export function createComicRenditionSupervisor({
       stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
       windowsHide: true,
       detached: false,
-    });
+    };
+    const child = fork(childModule, childArgs, options);
     launched += 1;
     if (child.pid !== undefined) {
       try {
@@ -478,7 +516,6 @@ export function createComicRenditionSupervisor({
       let timer = null;
       let exitInfo = null;
       let phasesSeen = 0;
-
       const decide = (outcome) => {
         if (verdict === null) verdict = outcome;
       };
@@ -493,19 +530,30 @@ export function createComicRenditionSupervisor({
         }
       };
       const fail = (error) => {
+        if (message.purpose && acceptedResult) verdict = { error };
         decide({ error });
         terminate();
       };
       const onAbort = () => fail(failure('CANCELLED', 'The rendition was cancelled.'));
       entry.stop = () => fail(failure('CLOSED', 'Comic renditions are shut down.'));
 
-      const finish = () => {
+      const finish = async () => {
         if (phase === 'done') return;
         phase = 'done';
+        if (message.purpose === 'image-derivative' && verdict?.value) {
+          try {
+            if (exitInfo?.code !== 0 || exitInfo?.signal) throw failure('CHILD_EXITED', 'Derivative child did not exit successfully.');
+            await validateDerivativeBytes(verdict.value, message);
+          } catch (error) { verdict = { error }; }
+        }
         clearTimeout(timer);
         signal?.removeEventListener('abort', onAbort);
         jobs.delete(entry);
         if (child) {
+          child.stdout?.removeAllListeners();
+          child.stdin?.removeAllListeners();
+          child.stdout?.on('error', () => {});
+          child.stdin?.on('error', () => {});
           child.removeAllListeners();
           child.on('error', () => {});
           observeExit(entry.pid, exitInfo);
@@ -525,9 +573,10 @@ export function createComicRenditionSupervisor({
       const sendJob = () => {
         phase = 'running';
         try {
-          child.send(message, (err) => {
+          const sent = (err) => {
             if (err) fail(failure('IPC_FAILED', 'The rendition job could not be sent.', { cause: err }));
-          });
+          };
+          child.send(message, sent);
         } catch (err) {
           fail(failure('IPC_FAILED', 'The rendition job could not be sent.', { cause: err }));
         }
@@ -537,7 +586,10 @@ export function createComicRenditionSupervisor({
         if (phase === 'done') return;
         if (phase === 'finishing') {
           // A message after the terminal result: the result is not accepted.
-          if (acceptedResult) verdict = { error: failure('PROTOCOL_ERROR', 'The rendition child sent more than one result.') };
+          if (acceptedResult) {
+            verdict = { error: failure('PROTOCOL_ERROR', 'The rendition child sent more than one result.') };
+            if (message.purpose) terminate();
+          }
           return;
         }
         if (!isPlainObject(received) || typeof received.type !== 'string') {
@@ -575,15 +627,17 @@ export function createComicRenditionSupervisor({
             decide({ value: acceptResult(received, message) });
             acceptedResult = true;
           } catch (err) {
-            decide({ error: err });
+            fail(err);
+            return;
           }
-          terminate();
+          if (!message.purpose || verdict.error !== undefined) terminate();
+          else phase = 'finishing';
           return;
         }
         fail(failure('PROTOCOL_ERROR', 'Unexpected rendition message.'));
       };
 
-      // F1b: a ready spare already reported a valid ready message; it gets the job at once.
+      // A ready spare already reported a valid ready message; it gets the job at once.
       // Otherwise a cold child is launched and the job is sent when it reports ready.
       child = claimSpare();
       entry.spare = child !== null;
@@ -616,7 +670,8 @@ export function createComicRenditionSupervisor({
       });
       child.on('exit', (code, exitSignal) => {
         exitInfo = { code, signal: exitSignal };
-        if (phase === 'starting' || phase === 'running') {
+        // A clean exit can precede queued IPC delivery; keep the protocol live until close.
+        if ((code !== 0 || exitSignal) && (phase === 'starting' || phase === 'running')) {
           decide({ error: failure(phase === 'starting' ? 'STARTUP_FAILED' : 'CHILD_EXITED',
             'The rendition child exited without a result.', { cause: exitInfo }) });
           phase = 'finishing';
@@ -625,6 +680,10 @@ export function createComicRenditionSupervisor({
       // Exit observed and IPC/stdio closed: the only confirmation the child is gone.
       child.on('close', (code, exitSignal) => {
         exitInfo ??= { code, signal: exitSignal };
+        if (phase === 'starting' || phase === 'running') {
+          decide({ error: failure(phase === 'starting' ? 'STARTUP_FAILED' : 'CHILD_EXITED',
+            'The rendition child exited without a result.', { cause: exitInfo }) });
+        }
         finish();
       });
 
@@ -657,6 +716,9 @@ export function createComicRenditionSupervisor({
     const message = jobMessage(job);
     const deadline = deadlineMs ?? message.limits.timeoutSeconds * 1000;
     if (!positiveInteger(deadline)) throw new TypeError('Invalid rendition deadline.');
+    if (message.purpose === 'image-derivative' && deadline > message.limits.timeoutSeconds * 1000) {
+      throw new TypeError('Derivative deadline exceeds the native execution bound.');
+    }
     if (state !== 'open') throw failure('CLOSED', 'Comic renditions are shut down.');
     // Already cancelled: no child is started or claimed.
     if (signal?.aborted) throw failure('CANCELLED', 'The rendition was cancelled.');

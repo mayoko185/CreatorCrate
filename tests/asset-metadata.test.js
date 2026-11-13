@@ -5,7 +5,7 @@ import {
   deriveExtensionFromFilename,
   mimeFromExtension,
 } from '../src/services/asset-metadata.js';
-import { classifyPreviewable } from '../src/services/preview-service.js';
+import { buildAssetRevisionToken, classifyPreviewable } from '../src/services/preview-service.js';
 import { inlineMimeFor } from '../src/services/media-service.js';
 import { buildAssetPreviewModel } from '../src/services/asset-presentation.js';
 import {
@@ -137,7 +137,8 @@ describe('buildAssetPreviewModel comic descriptor', () => {
   const base = { id: 7, project_id: 3, is_present: 1, size_bytes: 10, modified_at: '2026-01-01T00:00:00.000Z' };
 
   it('marks a present comic as unsupported with no preview, thumbnail, or playback URLs', () => {
-    expect(buildAssetPreviewModel({ ...base, extension: 'cb7', mime_type: 'application/x-cb7' }, null)).toEqual({
+    const comic = { ...base, relative_path: 'issue.cb7', extension: 'cb7', mime_type: 'application/x-cb7' };
+    expect(buildAssetPreviewModel(comic, null)).toEqual({
       state: 'unsupported',
       previewable: false,
       kind: null,
@@ -145,7 +146,44 @@ describe('buildAssetPreviewModel comic descriptor', () => {
       revision: null,
       urls: { thumbnail: null, preview: null },
       playbackUrl: null,
-      comic: { format: 'cb7' },
+      comic: expect.objectContaining({ format: 'cb7', sourceRevision: buildAssetRevisionToken(comic) }),
+    });
+  });
+
+  // The reader's host hint is the comic service's own indexed revision: no
+  // image policy fingerprint, and it follows only the indexed source fields.
+  it('carries the unfingerprinted indexed-source revision of a present comic as its hint', () => {
+    const comic = { ...base, relative_path: 'comics/issue.cbz', extension: 'cbz', source_generation: 2 };
+    const hint = buildAssetPreviewModel(comic, null).comic.sourceRevision;
+    expect(hint).toMatch(/^[0-9a-f]+$/);
+    expect(hint).toBe(buildAssetRevisionToken(comic));
+    expect(buildAssetPreviewModel(comic, 'policy-a').comic.sourceRevision).toBe(hint);
+    expect(buildAssetPreviewModel(comic, 'policy-b').comic.sourceRevision).toBe(hint);
+    for (const change of [
+      { size_bytes: 11 },
+      { modified_at: '2026-01-02T00:00:00.000Z' },
+      { source_generation: 3 },
+      { relative_path: 'comics/renamed.cbz' },
+    ]) {
+      expect(buildAssetPreviewModel({ ...comic, ...change }, null).comic.sourceRevision).not.toBe(hint);
+    }
+    // Another project's asset with the same id never shares the hint.
+    expect(buildAssetPreviewModel({ ...comic, project_id: 4 }, null).comic.sourceRevision).not.toBe(hint);
+  });
+
+  it('gives no hint for a missing comic or one whose scan metadata cannot anchor a revision', () => {
+    const comic = { ...base, relative_path: 'issue.cbr', extension: 'cbr' };
+    expect(buildAssetPreviewModel({ ...comic, is_present: 0 }, null).comic).toEqual({
+      format: 'cbr', sourceRevision: null,
+      cover: { revisionHint: null, urls: { thumbnail: null, preview: null } },
+    });
+    expect(buildAssetPreviewModel({ ...comic, relative_path: '' }, null).comic).toEqual({
+      format: 'cbr', sourceRevision: null,
+      cover: { revisionHint: null, urls: { thumbnail: null, preview: null } },
+    });
+    expect(buildAssetPreviewModel({ ...comic, modified_at: null }, null).comic).toEqual({
+      format: 'cbr', sourceRevision: null,
+      cover: { revisionHint: null, urls: { thumbnail: null, preview: null } },
     });
   });
 

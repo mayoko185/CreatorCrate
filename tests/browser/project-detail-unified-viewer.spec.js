@@ -120,6 +120,7 @@ async function createProject() {
   app.locals.assetScanner.scanProjectAssets(project.id);
   return {
     projectId: String(project.id),
+    projectTitle: project.title,
     url: `/projects/${project.id}`,
     id,
     releases: { mixed, shared, empty, full },
@@ -152,6 +153,7 @@ async function viewerState(page) {
     const media = viewer.media.getState();
     return {
       open: state.open,
+      context: state.context,
       session: state.session,
       key: state.key,
       sourceKey: state.source?.key ?? null,
@@ -215,6 +217,7 @@ test('a strip thumbnail opens only its image; strips, releases, URL and scroll s
   const state = await viewerState(page);
   expect(state).toMatchObject({
     open: true, mode: 'single', slideshow: false, wrap: false, count: 1, titles: ['a.png'],
+    context: { filename: 'a.png', projectName: f.projectTitle, projectId: f.projectId, assetId: String(a), detailsUrl: `/projects/${f.projectId}/assets/${a}` },
     sourceKey: `project-detail:${f.projectId}:release:${mixed.id}`,
     originalUrl: `/projects/${f.projectId}/assets/${a}/original`,
     detailsUrl: `/projects/${f.projectId}/assets/${a}`,

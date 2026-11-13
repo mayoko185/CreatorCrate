@@ -117,7 +117,15 @@ export function createProcessingConcurrencyService({
     return mapBounded([task], (fn) => fn()).then(([result]) => result);
   }
 
+  // Refuse instead of retaining a source-producing closure behind queued work.
+  function tryRun(task) {
+    if (typeof task !== 'function') throw new TypeError('tryRun requires a task function.');
+    if (running >= concurrency || pending.length > 0) return null;
+    return run(task);
+  }
+
   return Object.freeze({
+    tryRun,
     concurrency,
     mapBounded,
     run,

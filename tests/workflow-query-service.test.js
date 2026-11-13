@@ -23,11 +23,13 @@ import { buildRevisionToken } from '../src/storage/preview-cache.js';
 import { createAppMetaRepository } from '../src/data/app-meta-repository.js';
 import { createProjectImageSettingsService } from '../src/services/project-image-settings-service.js';
 import { projectImagePolicyFingerprint } from '../src/services/project-image-policy.js';
+import { buildAssetPreviewModel } from '../src/services/asset-presentation.js';
 import { buildReleaseAssetPresentation } from '../src/services/release-asset-presenter.js';
 import {
   createSingleImageSource,
   createSlideshowSource,
 } from '../src/static/client/viewer-sequence.js';
+import { buildAssetRevisionToken } from '../src/services/preview-service.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const imageFingerprint = (db) => projectImagePolicyFingerprint(
@@ -739,11 +741,12 @@ describe('workflow query service', () => {
           extension: 'png',
           thumbnailUrl: `/projects/${project.id}/assets/${secondById.id}/thumbnail?v=${secondRevision}`,
           viewerUrl: `/projects/${project.id}/assets/${secondById.id}`,
-          // B7c: the unified viewer descriptor of an image thumbnail.
+          // The server-owned descriptor retains the selected image identity.
           projectId: project.id,
           previewUrl: `/projects/${project.id}/assets/${secondById.id}/preview?v=${secondRevision}`,
           originalUrl: `/projects/${project.id}/assets/${secondById.id}/original`,
           revision: secondRevision,
+          imageSources: expect.objectContaining({ projectId: project.id, assetId: secondById.id, toggleEligible: true }),
           preview: expect.objectContaining({
             state: 'previewable',
             kind: 'image',
@@ -763,6 +766,7 @@ describe('workflow query service', () => {
           previewUrl: `/projects/${project.id}/assets/${firstById.id}/preview?v=${firstRevision}`,
           originalUrl: `/projects/${project.id}/assets/${firstById.id}/original`,
           revision: firstRevision,
+          imageSources: expect.objectContaining({ projectId: project.id, assetId: firstById.id, toggleEligible: true }),
           preview: expect.objectContaining({
             state: 'previewable',
             kind: 'image',
@@ -850,6 +854,11 @@ describe('workflow query service', () => {
       });
 
       const thumbnails = service.getProjectWorkspace(project.id).releaseSummary.recent[0].thumbnails;
+      for (const thumbnail of thumbnails) {
+        const row = db.prepare('SELECT * FROM assets WHERE id = ?').get(thumbnail.assetId);
+        const settings = createProjectImageSettingsService({ appMetaRepository: createAppMetaRepository(db) });
+        expect(thumbnail.imageSources).toEqual(buildAssetPreviewModel(row, settings.getPresentationPolicy()).imageSources);
+      }
 
       expect(thumbnails.map((thumbnail) => thumbnail.filename))
         .toEqual(['clip.webm', 'still.png', 'clip.mp4']);
@@ -860,7 +869,7 @@ describe('workflow query service', () => {
           extension,
           thumbnailUrl: null,
           viewerUrl: `/projects/${project.id}/assets/${video.id}`,
-          // B7c: a video carries no image viewer descriptor.
+          // A video carries no image viewer descriptor.
           projectId: project.id,
           previewUrl: null,
           originalUrl: null,
@@ -2279,10 +2288,15 @@ describe('workflow query service', () => {
       const legacyCbr = asset('legacy.cbr', 'cbr', 'application/octet-stream');
       const cb7 = asset('issue.cb7', 'cb7', 'application/x-cb7');
       const rar = asset('generic.rar', 'rar', 'application/octet-stream');
+      // A present comic also carries its indexed-source revision: the same
+      // token on every surface, never derived from the image policy.
+      const indexed = (row, fingerprint) => buildAssetRevisionToken(db.prepare('SELECT * FROM assets WHERE id = ?').get(row.id), fingerprint);
       const expected = new Map([
-        [image.id, null], [cbz.id, { format: 'cbz' }], [legacyCbr.id, { format: 'cbr' }],
-        [cb7.id, { format: 'cb7' }], [rar.id, null],
+        [image.id, null], [cbz.id, { format: 'cbz', sourceRevision: indexed(cbz) }],
+        [legacyCbr.id, { format: 'cbr', sourceRevision: indexed(legacyCbr) }],
+        [cb7.id, { format: 'cb7', sourceRevision: indexed(cb7) }], [rar.id, null],
       ]);
+      expect(indexed(cbz)).toMatch(/^[0-9a-f]+$/);
 
       const browser = service.getProjectAssetBrowser(project.id, { pageSize: 100 });
       const library = service.getAssetLibraryPage({ projectId: project.id }, {
@@ -2292,15 +2306,26 @@ describe('workflow query service', () => {
         const row = browser.assets.find((candidate) => candidate.id === assetId);
         const libraryRow = library.assets.find((candidate) => candidate.id === assetId);
         const viewer = service.getProjectAssetViewer(project.id, assetId).asset;
-        const release = buildReleaseAssetPresentation({ ...row, asset_id: assetId });
+        const policy = createProjectImageSettingsService({ appMetaRepository: createAppMetaRepository(db) }).getPresentationPolicy();
+        const release = buildReleaseAssetPresentation({ ...row, asset_id: assetId }, { policyFingerprint: policy });
+        const revisionHint = comic ? indexed(row, `${comic.format}:${policy.comicCoverFingerprint}`) : null;
+        if (comic) expect(revisionHint).toMatch(/^[a-f0-9]{16}$/);
         for (const presented of [row, libraryRow, viewer, release]) {
-          expect(presented.preview.comic).toEqual(comic);
+          expect(presented.preview.comic).toEqual(comic ? { ...comic, cover: {
+            revisionHint,
+            urls: {
+              thumbnail: `/projects/${project.id}/assets/${assetId}/thumbnail?v=${revisionHint}`,
+              preview: `/projects/${project.id}/assets/${assetId}/preview?v=${revisionHint}`,
+            },
+          } } : null);
+          if (comic) expect(presented.preview.imageSources).toBeUndefined();
         }
         if (comic) {
           expect(row).toMatchObject({ preview_state: 'unsupported', isPreviewable: false, originalEligible: false });
           expect(row.thumbnail_url).toBeNull();
           expect(row.preview_url).toBeNull();
           expect(release).toMatchObject({ preview_state: 'unsupported', originalEligible: false, original_url: null });
+          expect(viewer.original_url).toBeNull();
         }
       }
       expect(browser.slideshowSequence.map((entry) => entry.id)).toEqual([image.id]);
@@ -2335,6 +2360,12 @@ describe('workflow query service', () => {
         .toEqual([sharedA.id, otherA.id, sharedB.id].sort((a, b) => a - b));
       expect(entries.some((entry) => entry.id === video.id || entry.id === comic.id)).toBe(false);
       for (const entry of entries) {
+        const row = db.prepare('SELECT * FROM assets WHERE id = ?').get(entry.id);
+        expect(entry.imageSources.sourceRevision).toBe(buildAssetRevisionToken(row));
+        expect(entry.imageSources).toMatchObject({ projectId: entry.projectId, assetId: entry.id, toggleEligible: true });
+        expect(entry.imageSources.optimized.revision).toBe(entry.revision);
+        expect(entry.imageSources.optimized.url).toContain('/preview?rendition=optimized&');
+        expect(entry.imageSources.original.url).toContain(`/projects/${entry.projectId}/assets/${entry.id}/original?sourceRevision=`);
         expect(entry.revision).toEqual(expect.any(String));
         expect(entry.previewUrl).toBe(`/projects/${entry.projectId}/assets/${entry.id}/preview?${new URLSearchParams({ v: entry.revision })}`);
         expect(entry.viewerUrl).toBe(`/projects/${entry.projectId}/assets/${entry.id}`);
@@ -3162,6 +3193,12 @@ describe('workflow query service', () => {
       const originalRow = originalBrowser.assets.find((candidate) => candidate.id === asset.id);
       const originalUrl = `/projects/${project.id}/assets/${asset.id}/original`;
       expect(originalRow.preview_url).toBe(originalUrl);
+      const sources = originalRow.preview.imageSources;
+      expect(sources.sourceRevision).toBe(row.preview.imageSources.sourceRevision);
+      expect(sources.optimized.url).toContain('/preview?rendition=optimized&');
+      expect(sources.original.url).toBe(`${originalUrl}?sourceRevision=${sources.sourceRevision}`);
+      expect(originalBrowser.slideshowSequence.find((entry) => entry.id === asset.id).imageSources).toEqual(sources);
+      expect(service.getProjectAssetViewer(project.id, asset.id).asset.preview.imageSources).toEqual(sources);
       expect(originalRow.thumbnail_url).toContain('/thumbnail?v=');
       expect(originalBrowser.slideshowSequence.find((entry) => entry.id === asset.id))
         .toMatchObject({ previewUrl: originalUrl, originalUrl });

@@ -26,6 +26,8 @@ import { createWorkflowQueryService } from '../src/services/workflow-query-servi
 import { createProjectOperationCoordinator, ProjectOperationError } from '../src/services/project-operation-coordinator.js';
 import { createManualScanAcceptanceAuthority } from '../src/services/manual-scan-acceptance.js';
 import { makeSolidAnimatedWebp } from './helpers/animated-webp.js';
+import { makeZip } from './helpers/zip-fixture.js';
+import sharp from 'sharp';
 import { buildAssetRevisionToken, classifyPreviewable } from '../src/services/preview-service.js';
 import { classifyComicAsset, classifySupportedVideo } from '../src/services/asset-metadata.js';
 import { buildAssetPreviewModel } from '../src/services/asset-presentation.js';
@@ -1217,38 +1219,62 @@ describe('asset scanner', () => {
         .toMatchObject({ is_present: 1, mime_type: COMIC_MIME.cbz });
     });
 
-    it('never indexes CreatorCrate-generated archive outputs as manual comic assets', () => {
+    it('discovers generated comics including a WebP CBZ and preserves provenance across incremental scans', async () => {
       const { project, absPath } = createProjectWithDir('Generated Comics');
-      insertGeneratedArtifact(project.id, 'exports/generated_jpg_q85.cbz', 'archive-cbz');
-      insertGeneratedArtifact(project.id, 'generated.cb7', 'archive-jpg');
-      insertGeneratedArtifact(project.id, 'Final/watermarked_jpg_q85.cbz', 'watermark-cbz');
-      writeProjectFile(absPath, 'exports/generated_jpg_q85.cbz');
-      writeProjectFile(absPath, 'generated.cb7');
-      writeProjectFile(absPath, 'Final/watermarked_jpg_q85.cbz');
-      writeProjectFile(absPath, 'exports/manual.cbz');
-      const artifactsBefore = db.prepare('SELECT * FROM generated_artifacts WHERE project_id = ? ORDER BY id').all(project.id);
+      const page = await sharp({ create: { width: 8, height: 12, channels: 3, background: '#ffffff' } })
+        .webp().toBuffer();
+      const cbz = makeZip([{ name: '01.webp', data: page }, { name: '02.webp', data: page }]);
+      const generated = ['exports/generated_webp.CbZ', 'generated.cb7', 'Final/generated.cbr'];
+      for (const name of generated) insertGeneratedArtifact(project.id, name);
+      writeProjectFile(absPath, generated[0], cbz);
+      writeProjectFile(absPath, generated[1]);
+      writeProjectFile(absPath, generated[2], fs.readFileSync(new URL('./fixtures/comic-archives/comic-rar4.cbr', import.meta.url)));
+      writeProjectFile(absPath, 'exports/imported.cbz', cbz);
+      writeProjectFile(absPath, 'cover.webp', page);
+      writeProjectFile(absPath, 'clip.mp4', 'video');
+      const excluded = ['generated.png', 'generated.webp', 'generated.mp4', 'generic.zip', 'generic.7z', 'generic.rar', 'unsupported.cbt'];
+      for (const name of excluded) {
+        insertGeneratedArtifact(project.id, name);
+        writeProjectFile(absPath, name, cbz);
+      }
+      for (const name of ['.hidden.cbz', '.staging/hidden.cbz']) {
+        insertGeneratedArtifact(project.id, name);
+        writeProjectFile(absPath, name, cbz);
+      }
+      const artifacts = () => db.prepare('SELECT * FROM generated_artifacts WHERE project_id = ? ORDER BY id').all(project.id);
+      const artifactsBefore = artifacts();
+      expect(assetScanner.repository.findByProjectId(project.id)).toEqual([]);
+      expect(assetScanner.scanProjectAssets(project.id)).toEqual({ added: 6, updated: 0, removed: 0, total: 6 });
+      for (const name of generated) {
+        const extension = path.extname(name).slice(1).toLowerCase();
+        expect(assetScanner.repository.findByProjectIdAndPath(project.id, name)).toMatchObject({
+          extension, mime_type: COMIC_MIME[extension], is_present: 1, source_generation: 0, source_animated: null,
+        });
+      }
+      expect(assetScanner.repository.findByProjectIdAndPath(project.id, generated[0]).size_bytes).toBe(cbz.length);
+      for (const name of excluded) expect(assetScanner.repository.findByProjectIdAndPath(project.id, name)).toBeUndefined();
+      const before = assetScanner.repository.findByProjectId(project.id);
+      expect(assetScanner.scanProjectAssets(project.id)).toEqual({ added: 0, updated: 0, removed: 0, total: 6 });
+      expect(assetScanner.repository.findByProjectId(project.id)).toEqual(before);
+      expect(artifacts()).toEqual(artifactsBefore);
 
-      expect(assetScanner.scanProjectAssets(project.id)).toMatchObject({ added: 1, removed: 0, total: 1 });
-      expect(assetScanner.repository.findByProjectId(project.id).map((asset) => asset.relative_path))
-        .toEqual(['exports/manual.cbz']);
-      expect(assetScanner.scanProjectAssets(project.id)).toEqual({ added: 0, updated: 0, removed: 0, total: 1 });
-      // Artifact ownership rows are untouched by scanning.
-      expect(db.prepare('SELECT * FROM generated_artifacts WHERE project_id = ? ORDER BY id').all(project.id))
-        .toEqual(artifactsBefore);
-
-      // Artifact ownership is per project: another project's identical path is still a manual comic.
-      const other = createProjectWithDir('Other Generated Comics');
-      writeProjectFile(other.absPath, 'generated.cb7');
-      expect(assetScanner.scanProjectAssets(other.project.id)).toMatchObject({ added: 1, total: 1 });
+      insertGeneratedArtifact(project.id, 'later.cbz');
+      writeProjectFile(absPath, 'later.cbz', cbz);
+      const laterArtifacts = artifacts();
+      expect(assetScanner.scanProjectAssets(project.id)).toEqual({ added: 1, updated: 0, removed: 0, total: 7 });
+      expect(assetScanner.scanProjectAssets(project.id)).toEqual({ added: 0, updated: 0, removed: 0, total: 7 });
+      for (const row of before) expect(assetScanner.repository.findById(row.id)).toEqual(row);
+      expect(assetScanner.repository.findByProjectIdAndPath(project.id, 'later.cbz')).toMatchObject({ is_present: 1, source_generation: 0 });
+      expect(artifacts()).toEqual(laterArtifacts);
     });
 
-    it('matches generated-artifact ownership with the processing planner path key', () => {
+    it('matches noncomic generated-artifact ownership with the processing planner path key', () => {
       const { project, absPath } = createProjectWithDir('Generated Case');
-      insertGeneratedArtifact(project.id, 'Out/Gen.cbz');
-      writeProjectFile(absPath, 'out/gen.cbz');
+      insertGeneratedArtifact(project.id, 'Out/Gen.png');
+      writeProjectFile(absPath, 'out/gen.png');
 
       assetScanner.scanProjectAssets(project.id);
-      const indexed = assetScanner.repository.findByProjectIdAndPath(project.id, 'out/gen.cbz');
+      const indexed = assetScanner.repository.findByProjectIdAndPath(project.id, 'out/gen.png');
       if (process.platform === 'win32') expect(indexed).toBeFalsy();
       else expect(indexed).toMatchObject({ is_present: 1 });
     });

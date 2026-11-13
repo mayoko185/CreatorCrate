@@ -266,7 +266,7 @@ test('normal fullscreen entry, Escape exit, close from fullscreen and Escape-to-
   await dialog.getByRole('button', { name: 'Enter fullscreen' }).click();
   await expect.poll(() => page.evaluate(() => Boolean(document.fullscreenElement?.matches('[data-unified-viewer-card]')))).toBe(true);
   await page.mouse.move(10, 10);
-  await dialog.getByRole('button', { name: 'Close Viewer' }).click();
+  await dialog.getByRole('button', { name: 'Close Image Preview' }).click();
   await expect(dialog).toBeHidden();
   await expect.poll(() => page.evaluate(() => document.fullscreenElement)).toBe(null);
   await expect(page.locator('#test-opener')).toBeFocused();
@@ -358,7 +358,7 @@ test('F3: destroy while the exit from active fullscreen is underway still return
           if (removeOpener) document.getElementById('test-opener').remove();
         }, { once: true });
       }, variant === 'fallback');
-      await page.locator(DIALOG).getByRole('button', { name: 'Close Viewer' }).click();
+      await page.locator(DIALOG).getByRole('button', { name: 'Close Image Preview' }).click();
       await exited(page);
       // The race really happened: the card was still fullscreen at destroy.
       expect(await page.evaluate(() => window.__atDestroy), label).toEqual({ fullscreenElement: 'card', exitsLanded: 0 });

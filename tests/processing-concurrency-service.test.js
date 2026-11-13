@@ -20,6 +20,22 @@ async function settle() {
 }
 
 describe('processing concurrency service', () => {
+  it('admits immediately through shared counters and refuses busy work without queueing it', async () => {
+    const service = createProcessingConcurrencyService({ concurrency: 1 });
+    const gate = deferred();
+    const first = service.tryRun(() => gate.promise);
+    let refusedStarted = false;
+    expect(service.tryRun(() => { refusedStarted = true; })).toBeNull();
+    const order = [];
+    const queued = service.run(() => order.push('queued'));
+    gate.resolve('done');
+    await expect(first).resolves.toBe('done');
+    await queued;
+    expect(refusedStarted).toBe(false);
+    expect(order).toEqual(['queued']);
+    await expect(service.tryRun(() => 7)).resolves.toBe(7);
+    expect(() => service.tryRun(null)).toThrow(TypeError);
+  });
   it('runs serially and preserves input order when concurrency is one', async () => {
     const service = createProcessingConcurrencyService({ concurrency: 1 });
     const started = [];

@@ -1,5 +1,3 @@
-// Phase 10.1C — Media routes
-//
 // Three narrowly-scoped GET routes for generated derivatives and safe
 // original-file serving:
 //
@@ -7,8 +5,7 @@
 //   GET /projects/:projectId/assets/:assetId/preview
 //   GET /projects/:projectId/assets/:assetId/original
 //
-// A3.3c-2 adds the comic manifest and numbered-page routes (see "Comic
-// routes" below):
+// Comic manifest and numbered-page routes (see "Comic routes" below):
 //
 //   GET /projects/:projectId/assets/:assetId/comic
 //   GET /projects/:projectId/assets/:assetId/comic/pages/:position?v=<revision>
@@ -19,7 +16,7 @@
 //     Sharp calls. Every such concern lives in the media service or its
 //     storage helpers.
 //   - Both IDs are strictly parsed (positive integer, no floats/hex/signs).
-//   - Generated derivatives are served as `image/webp` with
+//   - Generated derivatives use their validated image MIME type with
 //     `X-Content-Type-Options: nosniff` and a version-aware cache policy.
 //   - Originals are served inline ONLY when extension and recorded MIME
 //     match the PNG/JPEG/WebP/GIF allowlisted pairs, with a sanitized
@@ -87,6 +84,16 @@ function normalizeRequestedRevision(raw) {
   return raw;
 }
 
+// New preconditions are strict. Legacy `v` remains a cache hint outside the
+// explicit optimized mode, including its historical malformed-value handling.
+function expectedRevision(raw) {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== 'string' || !REQUESTED_REVISION_RE.test(raw)) {
+    throw new MediaBadRequestError('Invalid revision.');
+  }
+  return raw;
+}
+
 // ─── Cache-control policy ──────────────────────────────────────────────────
 
 const CACHE_NO_STORE = 'no-store';
@@ -151,6 +158,10 @@ function sendPreparedMediaResponse(req, res, next, prepared) {
   };
 
   try {
+    if (req.aborted || res.destroyed) {
+      cleanup();
+      return;
+    }
     const { stream } = prepared;
     // `stream: null` with 416 is an explicit bodiless response; the service
     // has already released its descriptor.
@@ -175,6 +186,9 @@ function sendPreparedMediaResponse(req, res, next, prepared) {
       if (!res.writableEnded) cleanup();
     });
 
+    // The service guard survives the prepared-response Promise handoff. Commit
+    // comic headers in this same turn, before stream piping can yield again.
+    prepared.assertCurrent?.();
     res.status(prepared.status || 200);
     for (const [name, value] of Object.entries(prepared.headers || {})) {
       res.setHeader(name, value);
@@ -186,9 +200,11 @@ function sendPreparedMediaResponse(req, res, next, prepared) {
       return;
     }
 
+    if (prepared.assertCurrent) res.flushHeaders();
     stream.pipe(res);
   } catch (err) {
     cleanup();
+    if (prepared.assertCurrent && !res.headersSent && mapMediaError(res, err)) return;
     next(err);
   }
 }
@@ -208,22 +224,33 @@ function makeDerivativeHandler(kind, mediaService) {
     if (ids === null) return;
     const { projectId, assetId } = ids;
 
-    const requestedRevision = normalizeRequestedRevision(req.query.v);
-
+    const watch = watchClientDisconnect(req, res);
     let prepared;
     try {
+      const optimized = kind === 'preview' && req.query.rendition === 'optimized';
+      if (req.query.rendition !== undefined && !optimized) {
+        throw new MediaBadRequestError('Invalid rendition.');
+      }
+      const sourceRevision = expectedRevision(req.query.sourceRevision);
+      if (sourceRevision !== undefined && !optimized) {
+        throw new MediaBadRequestError('Source revision requires an explicit rendition.');
+      }
+      const requestedRevision = optimized
+        ? expectedRevision(req.query.v) : normalizeRequestedRevision(req.query.v);
       prepared = await mediaService.prepareDerivativeResponse(
         kind,
         projectId,
         assetId,
-        requestedRevision
+        requestedRevision,
+        { optimized, expectedSourceRevision: sourceRevision, signal: watch.signal, query: req.query }
       );
     } catch (err) {
+      if (watch.gone()) return;
       const mapped = mapMediaError(res, err);
       if (mapped) return;
       return next(err);
-    }
-
+    } finally { watch.release(); }
+    if (watch.gone()) { prepared?.cleanup?.(); return; }
     return sendPreparedMediaResponse(req, res, next, prepared);
   };
 }
@@ -241,6 +268,7 @@ function makeOriginalHandler(mediaService) {
       prepared = mediaService.prepareOriginalResponse(projectId, assetId, {
         range: req.headers.range,
         ifRange: req.headers['if-range'],
+        expectedSourceRevision: expectedRevision(req.query.sourceRevision),
       });
     } catch (err) {
       const mapped = mapMediaError(res, err);

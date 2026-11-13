@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   enhanceReleaseAssetsViewer,
+  openReleaseAssetsComic,
   openReleaseAssetsImage,
   refreshReleaseAssetsViewer,
 } from '../src/static/client/release-assets-viewer.js';
@@ -166,10 +167,54 @@ function makeNode(tagName = 'div', attrs = {}) {
 
 // ─── Controller double (mirrors unified-viewer.js open/update/getState) ─────
 
+// Comic sources' host hint (mirrors unified-viewer.js normalizeSourceHint).
+function comicHint(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return typeof value === 'string' && value.length > 0 && value.length <= 512 ? value : null;
+}
+
 function makeViewer() {
   let counter = 0;
   let active = null;
-  return {
+  const viewer = {
+    // C2c comic sessions (mirror unified-viewer.js openComic/reconcileComic):
+    // every manifest request the real controller would start is recorded.
+    manifestRequests: [],
+    openComic: vi.fn((descriptor, options = {}) => {
+      counter += 1;
+      active = {
+        session: counter,
+        source: null,
+        key: null,
+        options,
+        comic: {
+          projectId: descriptor.projectId,
+          assetId: descriptor.assetId,
+          title: descriptor.title,
+          sourceHint: comicHint(descriptor.sourceRevision),
+        },
+      };
+      viewer.manifestRequests.push({ session: counter, projectId: descriptor.projectId, assetId: descriptor.assetId });
+      return counter;
+    }),
+    reconcileComic: vi.fn((hint, options = {}) => {
+      if (!active?.comic || options.session !== active.session) return null;
+      if (hint === null) {
+        active = null;
+        return { outcome: 'closed' };
+      }
+      if (!hint || typeof hint !== 'object') return null;
+      if (`${hint.projectId}:${hint.assetId}` !== `${active.comic.projectId}:${active.comic.assetId}`) return null;
+      if (hint.eligible === false) {
+        active = null;
+        return { outcome: 'closed' };
+      }
+      const next = comicHint(hint.sourceRevision);
+      if (next === null || next === active.comic.sourceHint) return { outcome: 'unchanged' };
+      active.comic.sourceHint = next;
+      viewer.manifestRequests.push({ session: active.session, projectId: active.comic.projectId, assetId: active.comic.assetId });
+      return { outcome: 'reloading' };
+    }),
     open: vi.fn((source, options = {}) => {
       const normalized = createViewerSource(source);
       const initial = selectInitialViewerItem(normalized);
@@ -179,7 +224,8 @@ function makeViewer() {
       return counter;
     }),
     update: vi.fn((replacement, options = {}) => {
-      if (!active) return null;
+      // A comic's pages come only from its manifest: item lists are ignored.
+      if (!active || active.comic) return null;
       if (options.session !== undefined && options.session !== active.session) return null;
       const result = reconcileViewerSource(active.source, active.key, replacement);
       if (result.outcome === VIEWER_RECONCILE_CLOSED || result.outcome === VIEWER_RECONCILE_IDLE || !result.item) {
@@ -197,10 +243,12 @@ function makeViewer() {
         session: active ? active.session : null,
         key: active ? active.key : null,
         source: active ? active.source : null,
+        comic: active?.comic ? { ...active.comic } : null,
       };
     },
     active: () => active,
   };
+  return viewer;
 }
 
 // ─── Page fixture (releases/assets.njk shape) ────────────────────────────────
@@ -230,6 +278,34 @@ function triggerAttributes(asset) {
     ...(asset.originalUrl ? { 'data-viewer-original-url': asset.originalUrl } : {}),
     ...(asset.revision ? { 'data-viewer-revision': asset.revision } : {}),
     'data-viewer-details-url': asset.detailsUrl,
+  };
+}
+
+// C2c: an eligible comic's Read comic link (comicReaderLink's attributes).
+function comic(id, extra = {}) {
+  return {
+    id,
+    kind: 'readable-comic',
+    projectId: 7,
+    filename: `book-${id}.cbz`,
+    detailsUrl: `/projects/7/assets/${id}`,
+    sourceRevision: `s${id}`,
+    selected: false,
+    ...extra,
+  };
+}
+
+function comicAttributes(asset, view) {
+  return {
+    class: `${view === 'grid' ? 'asset-card-media-link' : 'asset-list-card-media-link'} asset-comic-link`,
+    href: asset.detailsUrl,
+    'aria-label': `Read comic ${asset.filename}`,
+    'data-release-assets-comic-trigger': '',
+    'data-comic-project': String(asset.projectId),
+    'data-comic-asset': String(asset.id),
+    'data-comic-title': asset.filename.replace(/\.\w+$/, ''),
+    ...(asset.sourceRevision ? { 'data-comic-source-revision': asset.sourceRevision } : {}),
+    ...(asset.attributes || {}),
   };
 }
 
@@ -271,6 +347,13 @@ function buildCard(asset, view) {
     media.appendChild(link);
   } else if (asset.kind === 'video') {
     link = makeNode('a', { class: 'asset-video-link', href: asset.detailsUrl, 'data-asset-video-preview-trigger': '' });
+    media.appendChild(link);
+  } else if (asset.kind === 'readable-comic') {
+    link = makeNode('a', comicAttributes(asset, view));
+    const placeholder = makeNode('span', { class: 'asset-card-placeholder asset-comic-placeholder' });
+    placeholder.appendChild(makeNode('span', { class: 'asset-comic-format' }));
+    placeholder.appendChild(makeNode('span', { class: 'asset-comic-action' }));
+    link.appendChild(placeholder);
     media.appendChild(link);
   } else {
     media.appendChild(makeNode('span', { class: 'asset-card-placeholder' }));
@@ -650,6 +733,284 @@ describe('Release Manage Assets unified viewer host', () => {
 
       page.install({ assets: [image(1, { selected: true })] });
       expect(fallbackFocus()).toBe(page.region.querySelector('nav.view-switcher a[aria-current="page"]'));
+    });
+  });
+});
+
+// ─── C2c: Read comic on Release Manage Assets ───────────────────────────────
+
+describe('Release Manage Assets Read comic (C2c)', () => {
+  const comicAssets = () => [
+    image(1, { selected: true }),
+    comic(40, { selected: true }),
+    comic(41),
+    image(2),
+    { ...image(3), kind: 'video' },
+  ];
+
+  function comicPage(options = {}) {
+    const page = makePage({ assets: comicAssets(), ...options });
+    enhanceReleaseAssetsViewer(page.document);
+    return page;
+  }
+
+  function openOn(page, id) {
+    const event = page.cards.get(id).link.dispatch('click');
+    expect(event.defaultPrevented).toBe(true);
+    return page.viewer.getState().session;
+  }
+
+  it('forwards authoritative comic metadata on opening and an accepted render', () => {
+    const page = comicPage();
+    const link = page.cards.get(41).link;
+    link.setAttribute('data-comic-filename', '巻 01 & final!.cbz');
+    link.setAttribute('data-comic-project-name', 'Project name');
+    link.setAttribute('data-comic-details-url', '/projects/7/assets/41');
+    openOn(page, 41);
+    expect(page.viewer.openComic.mock.calls[0][0]).toMatchObject({ filename: '巻 01 & final!.cbz', projectName: 'Project name', detailsUrl: '/projects/7/assets/41' });
+    page.install({ assets: comicAssets().map((asset) => asset.id === 41 ? { ...asset, attributes: { 'data-comic-filename': '巻 02 final.cbz', 'data-comic-project-name': '' } } : asset) });
+    expect(page.viewer.reconcileComic.mock.lastCall[0]).toMatchObject({ filename: '巻 02 final.cbz', projectName: '' });
+    expect(page.viewer.reconcileComic.mock.lastCall[0]).not.toHaveProperty('detailsUrl');
+    expect(page.viewer.manifestRequests).toHaveLength(1);
+  });
+
+  it.each(['grid', 'list'])('an unmodified %s click opens that comic through openComic, never as an image', (view) => {
+    const page = comicPage({ view });
+    const { link } = page.cards.get(41);
+    const event = link.dispatch('click');
+    expect(event.defaultPrevented).toBe(true);
+    expect(page.viewer.open).not.toHaveBeenCalled();
+    expect(page.viewer.openComic).toHaveBeenCalledTimes(1);
+    const [descriptor, options] = page.viewer.openComic.mock.calls[0];
+    expect(descriptor).toEqual({ projectId: 7, assetId: 41, title: 'book-41', label: '', sourceRevision: 's41' });
+    expect(options.opener).toBe(link);
+    expect(page.viewer.getState()).toMatchObject({ open: true, session: 1, comic: { projectId: 7, assetId: 41 } });
+    // Exactly one manifest request, for that comic only.
+    expect(page.viewer.manifestRequests).toEqual([{ session: 1, projectId: 7, assetId: 41 }]);
+  });
+
+  it('opens an unselected candidate comic as readily as a selected one', () => {
+    const page = comicPage();
+    openOn(page, 41);
+    openOn(page, 40);
+    expect(page.viewer.openComic.mock.calls.map(([descriptor]) => descriptor.assetId)).toEqual([41, 40]);
+    // A new comic replaces the old source in the same viewer (one session at a time).
+    expect(page.viewer.getState()).toMatchObject({ open: true, session: 2, comic: { assetId: 40 } });
+  });
+
+  it('leaves modified, middle and already-handled clicks to the Asset Details link', () => {
+    const page = comicPage();
+    const { link } = page.cards.get(41);
+    for (const props of [{ ctrlKey: true }, { metaKey: true }, { shiftKey: true }, { altKey: true }, { button: 1 }]) {
+      expect(link.dispatch('click', props).defaultPrevented).toBe(false);
+    }
+    expect(link.dispatch('click', { defaultPrevented: true }).defaultPrevented).toBe(true);
+    expect(link.getAttribute('href')).toBe('/projects/7/assets/41');
+    expect(page.viewer.openComic).not.toHaveBeenCalled();
+  });
+
+  it('never opens from the comic card, its checkbox, Role or Details link', () => {
+    const page = comicPage();
+    const selected = page.cards.get(40);
+    [selected.article, selected.label, selected.checkbox, selected.role, selected.details].forEach((target) => {
+      expect(target.dispatch('click').defaultPrevented).toBe(false);
+    });
+    selected.article.dispatch('keydown', { key: 'Enter' });
+    expect(page.viewer.openComic).not.toHaveBeenCalled();
+    expect(page.viewer.open).not.toHaveBeenCalled();
+  });
+
+  it('reading is presentation-only: membership, hidden selections, Role and Save are untouched', () => {
+    const page = comicPage();
+    const before = [...page.cards.values()].map((card) => card.checkbox.checked);
+    openOn(page, 40);
+    page.viewer.close();
+    openOn(page, 41);
+    page.viewer.close();
+    expect([...page.cards.values()].map((card) => card.checkbox.checked)).toEqual(before);
+    expect(page.cards.get(40).role.value).toBe('attachment');
+    expect(page.hiddenInput.isConnected).toBe(true);
+    expect(page.hiddenInput.getAttribute('value')).toBe('99');
+    expect(page.saveForm.submit).not.toHaveBeenCalled();
+    expect(page.saveForm.requestSubmit).not.toHaveBeenCalled();
+    expect(page.viewer.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses malformed, foreign, mismatched, detached and out-of-region comic links', () => {
+    const page = comicPage();
+    const stale = page.cards.get(41).link;
+    page.install({ assets: comicAssets() });
+    expect(stale.isConnected).toBe(false);
+    expect(stale.dispatch('click').defaultPrevented).toBe(false);
+    expect(openReleaseAssetsComic(page.document, stale)).toBe(0);
+
+    const region = page.region;
+    const tampered = [
+      comic(50, { attributes: { 'data-comic-asset': '5x' } }),
+      comic(51, { attributes: { 'data-comic-project': '8' } }),
+      comic(52, { attributes: { href: '/projects/7/assets/53' } }),
+      comic(54, { attributes: { href: 'https://evil.example/projects/7/assets/54' } }),
+    ].map((asset) => {
+      const parts = buildCard(asset, 'grid');
+      region.appendChild(parts.article);
+      return parts.link;
+    });
+    // A link whose card names another asset.
+    const misplaced = buildCard(comic(55), 'grid');
+    misplaced.article.setAttribute('data-asset-id', '56');
+    region.appendChild(misplaced.article);
+    // A link outside the workspace region.
+    const outside = buildCard(comic(57), 'grid');
+    page.document.querySelector('main').appendChild(outside.article);
+    [...tampered, misplaced.link, outside.link].forEach((link) => {
+      expect(link.dispatch('click').defaultPrevented).toBe(false);
+    });
+    expect(page.viewer.openComic).not.toHaveBeenCalled();
+    expect(page.viewer.manifestRequests).toEqual([]);
+  });
+
+  it('binds one delegated listener for images and comics however often it is enhanced', () => {
+    const page = comicPage();
+    expect(enhanceReleaseAssetsViewer(page.document)).toBe(1);
+    expect(enhanceReleaseAssetsViewer(page.region)).toBe(1);
+    expect(page.document.listeners.filter((listener) => listener.type === 'click')).toHaveLength(1);
+    openOn(page, 41);
+    expect(page.viewer.openComic).toHaveBeenCalledTimes(1);
+    expect(page.viewer.manifestRequests).toHaveLength(1);
+  });
+
+  it('requests nothing for comics until Read comic is activated, and image opening stays single-image', () => {
+    const page = comicPage();
+    // Rendering, refreshing, Grid/List and selection never start comic work.
+    page.install({ assets: comicAssets(), view: 'list' });
+    page.cards.get(41).checkbox.checked = true;
+    page.cards.get(41).checkbox.dispatch('change');
+    page.cards.get(41).article.dispatch('click');
+    expect(page.viewer.manifestRequests).toEqual([]);
+    expect(page.viewer.openComic).not.toHaveBeenCalled();
+    // An image opens alone; no comic joins its source.
+    openOn(page, 2);
+    const [source] = page.viewer.open.mock.calls[0];
+    expect(source.mode).toBe(VIEWER_SOURCE_MODE_SINGLE);
+    expect(canPlayViewerSlideshow(source)).toBe(false);
+    expect(source.items.map((item) => item.assetId)).toEqual(['2']);
+    expect(page.viewer.manifestRequests).toEqual([]);
+  });
+
+  describe('live refresh reconciliation', () => {
+    it('keeps an open comic when the result is unchanged or the hint is the same (Grid/List)', () => {
+      const page = comicPage();
+      openOn(page, 41);
+      expect(page.install({ assets: comicAssets(), view: 'list' })).toEqual({ outcome: 'unchanged' });
+      expect(page.install({ assets: comicAssets() })).toEqual({ outcome: 'unchanged' });
+      expect(page.viewer.manifestRequests).toHaveLength(1);
+      expect(page.viewer.getState()).toMatchObject({ open: true, session: 1 });
+    });
+
+    it('requests one fresh manifest for a new indexed-source hint, and none for its repeat', () => {
+      const page = comicPage();
+      openOn(page, 41);
+      const changed = comicAssets().map((asset) => (asset.id === 41 ? { ...asset, sourceRevision: 's41b' } : asset));
+      expect(page.install({ assets: changed })).toEqual({ outcome: 'reloading' });
+      expect(page.install({ assets: changed })).toEqual({ outcome: 'unchanged' });
+      expect(page.install({ assets: changed, view: 'list' })).toEqual({ outcome: 'unchanged' });
+      expect(page.viewer.manifestRequests).toEqual([
+        { session: 1, projectId: 7, assetId: 41 },
+        { session: 1, projectId: 7, assetId: 41 },
+      ]);
+      expect(page.viewer.reconcileComic.mock.calls[0][0]).toEqual({ projectId: 7, assetId: 41, sourceRevision: 's41b' });
+      expect(page.viewer.getState()).toMatchObject({ open: true, session: 1 });
+    });
+
+    it('keeps the reader when a paginated or filtered result omits the comic, even under the same query', () => {
+      const page = comicPage();
+      openOn(page, 41);
+      const href = '/releases/5/assets?selection=all&view=grid&pageSize=10';
+      // Displaced to another page by a reorder, under identical parameters.
+      expect(page.install({ assets: [image(1, { selected: true }), comic(40, { selected: true })], href })).toBeNull();
+      // Another page, a filter, selected-only mode, an empty result.
+      expect(page.install({ assets: [image(9)], href: '/releases/5/assets?selection=all&page=2' })).toBeNull();
+      expect(page.install({ assets: [comic(40, { selected: true })], href: '/releases/5/assets?selection=selected' })).toBeNull();
+      expect(page.install({ assets: [], href: '/releases/5/assets?search=zzz' })).toBeNull();
+      expect(page.viewer.reconcileComic).not.toHaveBeenCalled();
+      expect(page.viewer.getState()).toMatchObject({ open: true, session: 1, comic: { assetId: 41 } });
+      expect(page.viewer.manifestRequests).toHaveLength(1);
+      // Back on a page that shows it, its hint is reconciled again.
+      expect(page.install({ assets: comicAssets(), href })).toEqual({ outcome: 'unchanged' });
+    });
+
+    it.each(['missing', 'comic', 'video'])('retires the reader when its own card is rendered without Read comic (%s)', (kind) => {
+      const page = comicPage();
+      openOn(page, 41);
+      const next = comicAssets().map((asset) => (asset.id === 41 ? { ...image(41), kind } : asset));
+      expect(page.install({ assets: next })).toEqual({ outcome: 'closed' });
+      expect(page.viewer.reconcileComic.mock.calls[0][0]).toEqual({ projectId: 7, assetId: 41, eligible: false });
+      expect(page.viewer.getState().open).toBe(false);
+      // Nothing remains to reconcile afterwards; a later render cannot reopen.
+      expect(page.install({ assets: comicAssets() })).toBeNull();
+      expect(page.viewer.getState().open).toBe(false);
+      expect(page.viewer.openComic).toHaveBeenCalledTimes(1);
+    });
+
+    it('retires for another release workspace and ignores a location without its identity', () => {
+      const page = comicPage();
+      openOn(page, 41);
+      expect(page.install({ assets: comicAssets(), href: '/releases/5/other' })).toBeNull();
+      expect(page.viewer.getState().open).toBe(true);
+      expect(page.install({ assets: comicAssets(), href: '/releases/6/assets?selection=all' })).toEqual({ outcome: 'closed' });
+      expect(page.viewer.getState().open).toBe(false);
+    });
+
+    it('never touches a closed comic, a replacement comic or image, or another host\'s session', () => {
+      const closed = comicPage();
+      openOn(closed, 41);
+      closed.viewer.close();
+      const changed = comicAssets().map((asset) => ({ ...asset, sourceRevision: asset.sourceRevision && `${asset.sourceRevision}-new` }));
+      expect(closed.install({ assets: changed })).toBeNull();
+      expect(closed.viewer.reconcileComic).not.toHaveBeenCalled();
+
+      // Comic -> comic: the first comic's hint never reaches the second.
+      const replaced = comicPage();
+      openOn(replaced, 41);
+      openOn(replaced, 40);
+      expect(replaced.install({ assets: changed })).toEqual({ outcome: 'reloading' });
+      expect(replaced.viewer.reconcileComic.mock.calls.map(([hint]) => hint.assetId)).toEqual([40]);
+      expect(replaced.viewer.getState()).toMatchObject({ open: true, session: 2, comic: { assetId: 40 } });
+
+      // Comic -> image: the image session is reconciled as an image only.
+      const image2 = comicPage();
+      openOn(image2, 41);
+      openOn(image2, 2);
+      expect(image2.install({ assets: changed })).toBeNull();
+      expect(image2.viewer.reconcileComic).not.toHaveBeenCalled();
+      expect(image2.viewer.getState()).toMatchObject({ open: true, session: 2, key: 'p:7|a:2' });
+
+      // Image -> comic: the comic is reconciled, never the old image update.
+      const comic2 = comicPage();
+      openOn(comic2, 2);
+      openOn(comic2, 41);
+      expect(comic2.install({ assets: comicAssets().filter((asset) => asset.id !== 2) })).toEqual({ outcome: 'unchanged' });
+      expect(comic2.viewer.update).not.toHaveBeenCalled();
+
+      // Another host opened its own comic over this page's.
+      const other = comicPage();
+      openOn(other, 41);
+      other.viewer.openComic({ projectId: 7, assetId: 41, sourceRevision: 'x' });
+      expect(other.install({ assets: changed })).toBeNull();
+      expect(other.viewer.getState()).toMatchObject({ open: true, session: 2 });
+    });
+
+    it('returns focus to the re-rendered Read comic link, else the current Grid/List switch', () => {
+      const page = comicPage();
+      openOn(page, 41);
+      const { fallbackFocus } = page.viewer.openComic.mock.calls[0][1];
+      page.install({ assets: comicAssets(), view: 'list' });
+      expect(fallbackFocus()).toBe(page.cards.get(41).link);
+      expect(fallbackFocus().isConnected).toBe(true);
+      page.install({ assets: [image(1, { selected: true })], view: 'list' });
+      const current = page.region.querySelector('nav.view-switcher a[aria-current="page"]');
+      expect(fallbackFocus()).toBe(current);
+      expect(current.isConnected).toBe(true);
     });
   });
 });

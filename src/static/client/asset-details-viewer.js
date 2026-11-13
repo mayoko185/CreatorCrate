@@ -1,46 +1,7 @@
-// ─── Asset Details: unified viewer host integration (Milestone B, B6) ────────
-//
-// Connects the Asset Details page (/projects/:projectId/assets/:assetId) to
-// the shared unified viewer (unified-viewer.js). Like the Project Assets and
-// Asset Library hosts (B5a/B5b) this module only translates page activation
-// into a B1 viewer source and hands authoritative refresh data to the
-// controller; it owns no viewer state machine of its own.
-//
-// - The page's preview image is the trigger
-//   (`[data-asset-details-viewer-trigger]`, inside the media host
-//   `[data-asset-viewer-host]`). With an eligible original it is the existing
-//   "View original" link; for a preview-only image (a Krita preview, an image
-//   whose original is not inline-safe) it is a button around the image. An
-//   unmodified primary click opens ONLY this asset (createSingleImageSource):
-//   never a gallery, never Previous/Next inside the viewer, never autoplay.
-//   Modified and middle clicks keep the link's own navigation. The page's own
-//   Previous/Next asset links, the toolbar, metadata, tags and dialogs are
-//   never intercepted, and a video, comic, missing or unsupported asset has no
-//   trigger at all.
-// - The descriptor comes only from server-rendered attributes on the trigger
-//   (filename, preview URL, original URL when eligible, revision) plus the
-//   host's project and asset identity. No URL is derived on the client.
-// - It observes the Asset Details refresh (asset-viewer-refresh.js), which
-//   reports only a current read that installed the 'file' region, or that the
-//   asset was found missing or retired. reconcileAssetDetailsViewer() then
-//   updates an open session this page opened through the controller's
-//   update() (B1 reconciliation keeps, reloads or closes it); a session that
-//   has since closed or been replaced is never touched.
-// - Gone is persistent (B6-F1). When the refresh reports the asset gone (a
-//   current read answered 404, or the page was retired), the host records it
-//   for this asset identity and invalidates the page's preview trigger before
-//   closing any session it opened: the link or button is swapped for an inert
-//   element that keeps the same, already loaded image, so neither the viewer
-//   nor the original URL can be reached from it again, whether or not the
-//   viewer was open. The removed opener sends the viewer's focus return to its
-//   fallback (the Preview heading). The frame is marked too, so only a later
-//   current read that installs the 'file' region (a fresh 200 render of this
-//   asset) rebuilds the preview from the server and makes it viewable again;
-//   the refresh engine already keeps a superseded, failed or other-asset read
-//   from ever reporting, so nothing older can undo a newer gone.
-//
-// Click handling is delegated from the document and bound once, so a preview
-// rebuilt by a refresh needs no rebinding and never collects listeners.
+// Connect the Asset Detail image or comic Reader activation to the shared
+// viewer. Only current file refreshes reconcile a session opened by this host;
+// missing/retired authority withdraws activation until a current file install.
+// Click handling is delegated once, so refreshed media needs no rebinding.
 
 import {
   ASSET_DETAILS_VIEWER_ATTRIBUTES,
@@ -50,12 +11,14 @@ import {
 } from './asset-viewer-refresh.js';
 import { isEnhancementBound, liveRegionDocument, markEnhancementBound } from './dom.js';
 import { unifiedViewerFor } from './unified-viewer.js';
-import { createSingleImageSource, viewerItemFromSlideshowEntry } from './viewer-sequence.js';
+import { imageSourcesFromViewerTrigger, createSingleImageSource, viewerItemFromSlideshowEntry } from './viewer-sequence.js';
 
 const HOST_SELECTOR = '[data-asset-viewer-host]';
 const TRIGGER_SELECTOR = '[data-asset-details-viewer-trigger]';
 const PREVIEW_ROOT_SELECTOR = '[data-preview-enhancement]';
 const PREVIEW_HEADING_SELECTOR = '#asset-preview-heading';
+const COMIC_TRIGGER_SELECTOR = '[data-asset-details-comic-trigger]';
+const COMIC_ROOT_SELECTOR = '[data-asset-comic-preview]';
 const RETIRED_ATTRIBUTE = 'data-asset-viewer-retired';
 // The inert stand-in for a trigger whose asset is gone, and the frame mark
 // that makes the next current 'file' install rebuild the preview (its media
@@ -88,7 +51,9 @@ function sourceKey(identity) {
 function hostState(document) {
   if (!document[STATE_PROPERTY]) {
     // gone: the source key of an asset a current read found gone, or null.
-    document[STATE_PROPERTY] = { session: 0, key: null, entryText: null, observing: false, gone: null };
+    // session/key/entryText belong to an image session; comic to a comic
+    // session ({ session, projectId, assetId }). At most one is set.
+    document[STATE_PROPERTY] = { session: 0, key: null, entryText: null, comic: null, observing: false, gone: null };
   }
   return document[STATE_PROPERTY];
 }
@@ -113,20 +78,32 @@ function isGone(document, identity) {
 }
 
 // Replace the trigger with an inert element holding the same nodes (the image
-// is moved, not reloaded). Focus on it moves to the Preview heading.
-function invalidateTrigger(document, trigger) {
+// is moved, not reloaded). Focus on it moves to the Preview heading. Returns
+// the inert element.
+function invalidateTrigger(document, trigger, className = 'asset-preview-link') {
   const parent = trigger.parentNode;
-  if (!parent || typeof document.createElement !== 'function') return;
+  if (!parent || typeof document.createElement !== 'function') return null;
   const active = document.activeElement;
   const hadFocus = Boolean(active && (active === trigger || trigger.contains?.(active)));
   const inert = document.createElement('span');
-  inert.setAttribute('class', 'asset-preview-link');
+  inert.setAttribute('class', className);
   inert.setAttribute(GONE_ATTRIBUTE, '');
   if (trigger.hasAttribute?.('hidden')) inert.setAttribute('hidden', '');
   parent.insertBefore(inert, trigger);
   Array.from(trigger.childNodes || []).forEach((node) => inert.appendChild(node));
   trigger.remove();
   if (hadFocus) previewHeading(document)?.focus?.({ preventScroll: true });
+  return inert;
+}
+
+// Withdraw both Reader anchors and the old native source when authority is gone.
+function invalidateComicTrigger(document, trigger) {
+  const root = trigger.closest?.(COMIC_ROOT_SELECTOR);
+  addClass(root, GONE_FRAME_CLASS);
+  const image = root?.querySelector?.('[data-preview-image]');
+  image?.removeAttribute?.('src');
+  image?.setAttribute?.('hidden', '');
+  invalidateTrigger(document, trigger, trigger.getAttribute('class') || 'asset-preview-link');
 }
 
 /**
@@ -142,11 +119,16 @@ function markAssetDetailsGone(document) {
   if (!identity) return false;
   const state = hostState(document);
   state.gone = sourceKey(identity);
-  const trigger = triggerIn(hostElement(document));
+  const host = hostElement(document);
+  const trigger = triggerIn(host);
   if (trigger) {
     addClass(trigger.closest?.(PREVIEW_ROOT_SELECTOR), GONE_FRAME_CLASS);
     invalidateTrigger(document, trigger);
   }
+  // Any Read Comic link in the host, matching identity or not: none of them
+  // may open anything once the page's asset is gone.
+  Array.from(host?.querySelectorAll?.(COMIC_TRIGGER_SELECTOR) || [])
+    .forEach((comicTrigger) => invalidateComicTrigger(document, comicTrigger));
   return true;
 }
 
@@ -180,6 +162,7 @@ function forget(state) {
   state.session = 0;
   state.key = null;
   state.entryText = null;
+  state.comic = null;
 }
 
 function isUnmodifiedPrimaryClick(event) {
@@ -204,6 +187,38 @@ function focusableTrigger(document) {
   return trigger;
 }
 
+// Absent attributes are partial hints; an empty attribute explicitly clears metadata.
+function comicMetadata(trigger) {
+  return Object.fromEntries([
+    ['filename', 'data-comic-filename'],
+    ['projectName', 'data-comic-project-name'],
+    ['detailsUrl', 'data-comic-details-url'],
+  ].flatMap(([field, attribute]) => {
+    const value = trigger.getAttribute?.(attribute);
+    return value == null ? [] : [[field, value]];
+  }));
+}
+
+// The host's Read Comic link, only inside its comic frame and only for the
+// host's own project and asset: a link naming any other identity opens nothing.
+function comicTriggerIn(host) {
+  const identity = hostIdentity(host);
+  const triggers = Array.from(host?.querySelectorAll?.(COMIC_TRIGGER_SELECTOR) || []);
+  const visible = (trigger) => !trigger.hidden && !trigger.hasAttribute?.('hidden');
+  const trigger = triggers.find((node) => node.hasAttribute('data-preview-fallback') && visible(node))
+    || triggers.find(visible) || triggers[0] || null;
+  if (!identity || !trigger || !trigger.closest?.(COMIC_ROOT_SELECTOR)) return null;
+  if (trigger.getAttribute?.('data-comic-project') !== identity.projectId
+    || trigger.getAttribute?.('data-comic-asset') !== identity.assetId) return null;
+  return trigger;
+}
+
+function focusableComicTrigger(document) {
+  const trigger = comicTriggerIn(hostElement(document));
+  if (!trigger || trigger.hidden || trigger.hasAttribute?.('hidden')) return null;
+  return trigger;
+}
+
 function previewHeading(document) {
   const heading = document?.querySelector?.(PREVIEW_HEADING_SELECTOR) || null;
   if (heading && !heading.hasAttribute?.('tabindex')) heading.setAttribute?.('tabindex', '-1');
@@ -220,9 +235,11 @@ function readEntry(identity, trigger) {
     id: identity.assetId,
     projectId: identity.projectId,
     filename: trigger.getAttribute?.('data-viewer-filename') || '',
+    projectName: trigger.getAttribute?.('data-viewer-project-name') || null,
     previewUrl: trigger.getAttribute?.('data-viewer-preview-url') || '',
     ...(originalUrl ? { originalUrl } : {}),
     revision: revision || null,
+    imageSources: imageSourcesFromViewerTrigger(trigger),
   };
 }
 
@@ -260,10 +277,80 @@ export function openAssetDetailsImage(document, opener = null) {
   if (!session) return 0;
   ensureObserving(document);
   const state = hostState(document);
+  forget(state);
   state.session = session;
   state.key = key;
   state.entryText = JSON.stringify(entry);
   return session;
+}
+
+/**
+ * Open the page's own comic in the shared viewer's comic reader. Only the
+ * host's current Read Comic link can open it: a page whose asset is gone or
+ * retired, a link naming another identity, or an opener other than the
+ * current link (a detached old one) opens nothing and requests nothing.
+ *
+ * @param {Document} document
+ * @param {Element|null} [opener]  defaults to the page's Read Comic link
+ * @returns {number} the viewer session, or 0 when nothing opened
+ */
+export function openAssetDetailsComic(document, opener = null) {
+  const viewer = unifiedViewerFor(document);
+  if (!viewer || typeof viewer.openComic !== 'function') return 0;
+  const host = hostElement(document);
+  const identity = hostIdentity(host);
+  const trigger = comicTriggerIn(host);
+  if (!identity || !trigger || isRetired(host) || isGone(document, identity)) return 0;
+  if (opener && opener !== trigger) return 0;
+  const sourceRevision = trigger.getAttribute?.('data-comic-source-revision') || '';
+  if (!sourceRevision) return 0;
+  const session = viewer.openComic({
+    projectId: Number(identity.projectId),
+    assetId: Number(identity.assetId),
+    ...comicMetadata(trigger),
+    title: trigger.getAttribute?.('data-comic-title') || '',
+    sourceRevision,
+  }, {
+    opener: trigger,
+    // The link a refresh rebuilt for this comic, else the Preview heading.
+    fallbackFocus: () => focusableComicTrigger(document) || previewHeading(document),
+  });
+  if (!session) return 0;
+  ensureObserving(document);
+  const state = hostState(document);
+  forget(state);
+  state.comic = { session, projectId: identity.projectId, assetId: identity.assetId };
+  return session;
+}
+
+// The page's authoritative descriptor for the open comic, after a current
+// 'file' install (or gone): its Read Comic link's hint, or `eligible: false`
+// when the page no longer offers that comic. Another identity yields null,
+// which closes the reader.
+function comicHint(document, comic, gone) {
+  const host = hostElement(document);
+  const identity = hostIdentity(host);
+  if (!identity || identity.projectId !== comic.projectId || identity.assetId !== comic.assetId) return null;
+  const ids = { projectId: Number(comic.projectId), assetId: Number(comic.assetId) };
+  if (gone || isRetired(host) || isGone(document, identity)) return { ...ids, eligible: false };
+  const trigger = comicTriggerIn(host);
+  const sourceRevision = trigger?.getAttribute?.('data-comic-source-revision') || '';
+  return sourceRevision ? { ...ids, ...comicMetadata(trigger), sourceRevision } : { ...ids, eligible: false };
+}
+
+function reconcileComicSession(document, state, gone) {
+  const { comic } = state;
+  const viewer = unifiedViewerFor(document);
+  const viewerState = viewer?.getState?.();
+  if (!viewerState?.open || viewerState.session !== comic.session || !viewerState.comic
+    || typeof viewer.reconcileComic !== 'function') {
+    forget(state);
+    return null;
+  }
+  // The controller compares the hint itself: an unchanged one reloads nothing.
+  const result = viewer.reconcileComic(comicHint(document, comic, gone), { session: comic.session });
+  if (!viewer.getState().open) forget(state);
+  return result;
 }
 
 /**
@@ -281,6 +368,7 @@ export function reconcileAssetDetailsViewer(scope = globalThis.document, { gone 
   const document = liveRegionDocument(scope);
   if (!document) return null;
   const state = document[STATE_PROPERTY];
+  if (state?.comic) return reconcileComicSession(document, state, gone);
   if (!state?.session) return null;
   const viewer = unifiedViewerFor(document);
   const viewerState = viewer?.getState?.();
@@ -325,6 +413,13 @@ export function enhanceAssetDetailsViewer(scope = globalThis.document) {
 
   document.addEventListener('click', (event) => {
     if (!isUnmodifiedPrimaryClick(event)) return;
+    const comicTrigger = event.target?.closest?.(COMIC_TRIGGER_SELECTOR);
+    if (comicTrigger) {
+      const host = hostElement(document);
+      if (!host || !host.contains?.(comicTrigger) || comicTriggerIn(host) !== comicTrigger) return;
+      if (openAssetDetailsComic(document, comicTrigger)) event.preventDefault?.();
+      return;
+    }
     const trigger = event.target?.closest?.(TRIGGER_SELECTOR);
     if (!trigger) return;
     const host = hostElement(document);

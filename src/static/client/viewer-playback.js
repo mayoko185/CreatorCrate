@@ -14,9 +14,11 @@
 // Load-aware advancement: the display interval of a slide starts only once
 // its media is loaded and shown in Fit. While the media is loading no timer
 // runs, so a slow image keeps its full interval. A failed or unavailable item
-// pauses playback, and so do manual navigation, original-size inspection,
+// pauses playback, and so do manual navigation, Actual Size inspection,
 // zooming, a hidden tab and the end of a non-wrapping sequence. Playback
-// never resumes on its own: only Play does.
+// never resumes after these pauses on its own: only Play does. A pending
+// source-quality replacement suspends its countdown without pausing playback;
+// settlement starts a fresh interval at the selected speed.
 //
 // Every timer is bound to the session, the selected item and a generation
 // bumped on every change that touches the current item, and re-checks all of
@@ -164,7 +166,7 @@ export function createViewerPlayback(options = {}) {
   // ── Rendering ─────────────────────────────────────────────────────────────
 
   function inspecting(state = media?.getState?.()) {
-    return state?.original?.status === VIEWER_ORIGINAL_LOADING;
+    return Boolean(state?.quality?.loading) || state?.original?.status === VIEWER_ORIGINAL_LOADING;
   }
 
   function render() {
@@ -201,6 +203,7 @@ export function createViewerPlayback(options = {}) {
   function slideReady(state) {
     return Boolean(current) && state?.session === current.session && state.key === current.key
       && state.status === VIEWER_MEDIA_LOADED
+      && !state.quality?.loading
       && state.original?.status !== VIEWER_ORIGINAL_LOADING
       && state.view?.mode === VIEWER_VIEW_MODE_FIT;
   }
@@ -237,7 +240,13 @@ export function createViewerPlayback(options = {}) {
   // ready, stop on failure, unavailability or inspection.
   function reconcileMedia(state = media?.getState?.(), { allowSchedule = true } = {}) {
     if (!current || !state || state.session !== current.session || state.key !== current.key) return;
-    if (state.original?.status === VIEWER_ORIGINAL_LOADING || (state.view?.hasContent && state.view.mode !== VIEWER_VIEW_MODE_FIT)) {
+    if (state.quality?.loading) {
+      clearTimer();
+      render();
+      emit('waiting');
+      return;
+    }
+    if ((!state.quality && state.original?.status === VIEWER_ORIGINAL_LOADING) || (state.view?.hasContent && state.view.mode !== VIEWER_VIEW_MODE_FIT)) {
       if (playing) stop(VIEWER_PAUSE_INSPECTION);
       else render();
       return;

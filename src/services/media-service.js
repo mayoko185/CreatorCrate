@@ -1,7 +1,5 @@
-// Phase 10.1C — Media service
-//
-// A thin orchestration layer over the Phase 10.1A/10.1B preview service and
-// the Phase 3 `openAssetFile` safe resolver. Routes call this service and
+// A thin orchestration layer over the preview service and the
+// `openAssetFile` safe resolver. Routes call this service and
 // never touch SQL, paths, Sharp, filesystem descriptors, or repositories.
 //
 // Responsibilities:
@@ -48,6 +46,7 @@ import {
   PreviewError,
   PreviewGenerationError,
   PreviewNotFoundError,
+  PreviewRevisionConflictError,
 } from './preview-service.js';
 
 // ─── Service errors ──────────────────────────────────────────────────────
@@ -88,6 +87,19 @@ export class MediaBadRequestError extends MediaError {
   }
 }
 
+export class MediaRevisionConflictError extends MediaError {
+  constructor() {
+    super(409, 'Image source or rendition changed.');
+    this.name = 'MediaRevisionConflictError';
+  }
+}
+
+function validateExpectedRevision(value) {
+  if (value !== undefined && (typeof value !== 'string' || !/^[a-f0-9]{16}$/.test(value))) {
+    throw new MediaBadRequestError('Invalid revision.');
+  }
+}
+
 export class MediaUnavailableError extends MediaError {
   constructor(message) {
     super(503, message, { expose: true });
@@ -99,7 +111,6 @@ export class MediaUnavailableError extends MediaError {
 
 const CACHE_IMMUTABLE = 'private, max-age=31536000, immutable';
 const CACHE_REVALIDATE = 'private, max-age=0, must-revalidate';
-const CACHE_NO_STORE = 'no-store';
 const CACHE_ORIGINAL = 'private, no-store';
 
 function derivativeCacheControl(requestedRevision, currentRevision) {
@@ -115,6 +126,12 @@ function derivativeCacheControl(requestedRevision, currentRevision) {
 
 function buildDerivativeEtag(revision, bytes) {
   return `W/"${revision}-${bytes}"`;
+}
+
+function sameSourceStat(left, right) {
+  return left.dev === right.dev && left.ino === right.ino
+    && left.size === right.size && left.mtimeMs === right.mtimeMs
+    && left.ctimeMs === right.ctimeMs;
 }
 
 function cleanupStream(stream) {
@@ -465,30 +482,48 @@ export function createMediaService({ previewService, projectsRoot, previewRoot }
    * @param {number} assetId
    * @param {string} [requestedRevision]
    */
-  async function getDerivative(kind, projectId, assetId, requestedRevision, { ensureCurrent = false } = {}) {
-    const fn = ensureCurrent && kind === 'preview'
+  async function getDerivative(kind, projectId, assetId, requestedRevision, { ensureCurrent = false, optimized = false, expectedSourceRevision, signal, query, deadlineAt } = {}) {
+    if (optimized && kind !== 'preview') throw new MediaBadRequestError('Invalid rendition.');
+    if (optimized) {
+      validateExpectedRevision(requestedRevision);
+      validateExpectedRevision(expectedSourceRevision);
+    }
+    const fn = optimized && kind === 'preview'
+      ? previewService.getOptimizedPreview
+      : ensureCurrent && kind === 'preview'
       ? previewService.ensureCurrentPreview
       : kind === 'thumbnail' ? previewService.getThumbnail : previewService.getPreview;
     try {
-      return await fn(projectId, assetId, requestedRevision);
+      return await fn(projectId, assetId, requestedRevision,
+        optimized ? expectedSourceRevision : { signal, query, deadlineAt });
     } catch (err) {
-      if (
-        err instanceof PreviewNotFoundError ||
-        err instanceof PreviewAccessError
-      ) {
-        throw new MediaNotFoundError('Asset is not available.');
-      }
-      if (
-        err instanceof PreviewGenerationError ||
-        err instanceof PreviewCacheError
-      ) {
-        throw new MediaUnavailableError('Preview unavailable');
-      }
-      if (err instanceof StorageError) {
-        throw new MediaNotFoundError('Asset is not available.');
-      }
-      throw err;
+      throwDerivativeError(err);
     }
+  }
+
+  function throwDerivativeError(err) {
+    if (err instanceof PreviewRevisionConflictError) throw new MediaRevisionConflictError();
+    if (
+      err instanceof PreviewNotFoundError ||
+      err instanceof PreviewAccessError
+    ) {
+      throw new MediaNotFoundError('Asset is not available.');
+    }
+    if (
+      err instanceof PreviewGenerationError ||
+      err instanceof PreviewCacheError
+    ) {
+      throw new MediaUnavailableError('Preview unavailable');
+    }
+    if (err instanceof StorageError) {
+      throw new MediaNotFoundError('Asset is not available.');
+    }
+    throw err;
+  }
+
+  function assertDerivativeCurrent(derivative) {
+    try { previewService.assertComicDerivativeCurrent(derivative); }
+    catch (err) { throwDerivativeError(err); }
   }
 
   /**
@@ -510,7 +545,8 @@ export function createMediaService({ previewService, projectsRoot, previewRoot }
    * @throws {MediaUnsupportedError} extension not inline-serveable.
    * @throws {MediaError} storage failure, unreadable source, unsafe path.
    */
-  function getOriginalDescriptor(projectId, assetId) {
+  function getOriginalDescriptor(projectId, assetId, expectedSourceRevision) {
+    validateExpectedRevision(expectedSourceRevision);
     let descriptor;
     try {
       descriptor = previewService.getOriginalDescriptor(projectId, assetId);
@@ -524,6 +560,9 @@ export function createMediaService({ previewService, projectsRoot, previewRoot }
       throw err;
     }
 
+    if (expectedSourceRevision !== undefined && descriptor.revision !== expectedSourceRevision) {
+      throw new MediaRevisionConflictError();
+    }
     const inlineType = originalInlineTypeFor(descriptor.extension, descriptor.mimeType);
     if (inlineType === null) {
       throw new MediaUnsupportedError(
@@ -554,6 +593,31 @@ export function createMediaService({ previewService, projectsRoot, previewRoot }
           throw err;
         }
 
+        if (expectedSourceRevision !== undefined) {
+          try {
+            const current = previewService.getOriginalDescriptor(projectId, assetId);
+            const stat = fs.fstatSync(opened.handle);
+            const atPath = fs.statSync(opened.absolutePath);
+            if (current.revision !== expectedSourceRevision
+              || current.projectDir !== descriptor.projectDir
+              || current.relativePath !== descriptor.relativePath
+              || current.mimeType !== descriptor.mimeType
+              || current.extension !== descriptor.extension
+              || stat.size !== descriptor.size || stat.mtime.toISOString() !== descriptor.mtime
+              || !sameSourceStat(opened.stat, stat) || !sameSourceStat(stat, atPath)) {
+              throw new MediaRevisionConflictError();
+            }
+          } catch (err) {
+            closeAssetFile(opened);
+            if (err instanceof MediaError) throw err;
+            if (err instanceof PreviewNotFoundError || err instanceof PreviewAccessError
+              || err.code === 'ENOENT' || err.code === 'EACCES') {
+              throw new MediaNotFoundError('Asset is not available.');
+            }
+            throw err;
+          }
+        }
+
         return {
           size: opened.stat.size,
           createStream: (start, end) => {
@@ -576,7 +640,8 @@ export function createMediaService({ previewService, projectsRoot, previewRoot }
   }
 
   async function prepareDerivativeResponse(kind, projectId, assetId, requestedRevision, options) {
-    const result = await getDerivative(kind, projectId, assetId, requestedRevision, options);
+    const requestOptions = { ...options, deadlineAt: Math.min(options?.deadlineAt ?? Infinity, performance.now() + 30_000) };
+    const result = await getDerivative(kind, projectId, assetId, requestedRevision, requestOptions);
 
     if (result.status === 'unsupported') {
       throw new MediaUnsupportedError('Unsupported media type');
@@ -585,8 +650,27 @@ export function createMediaService({ previewService, projectsRoot, previewRoot }
       throw new Error(`Unexpected derivative status: ${result.status}`);
     }
 
+    const comic = result.sourceKind === 'comic-first-page';
+    let assertCurrent;
+    if (comic) assertDerivativeCurrent(result);
     const stream = openDerivativeStream(previewRoot, result.path);
-    const cacheControl = result.cacheState === 'prior-policy'
+    if (comic) {
+      try {
+        await new Promise((resolve, reject) => { stream.once('open', resolve); stream.once('error', reject); });
+        assertCurrent = () => {
+          assertDerivativeCurrent(result);
+          if (requestOptions.signal?.aborted || performance.now() >= requestOptions.deadlineAt) {
+            throw new MediaUnavailableError('Preview request is unavailable.');
+          }
+        };
+        assertCurrent();
+      } catch (error) {
+        cleanupStream(stream);
+        if (error instanceof MediaError) throw error;
+        throw Object.assign(new MediaUnavailableError('Preview unavailable'), { cause: error });
+      }
+    }
+    const cacheControl = options?.optimized ? CACHE_ORIGINAL : result.cacheState === 'prior-policy'
       ? CACHE_REVALIDATE : derivativeCacheControl(requestedRevision, result.revision);
     const headers = {
       'Content-Type': result.mimeType || 'image/webp',
@@ -603,20 +687,21 @@ export function createMediaService({ previewService, projectsRoot, previewRoot }
       headers,
       stream,
       cleanup: () => cleanupStream(stream),
+      ...(assertCurrent ? { assertCurrent } : {}),
     };
   }
 
   /**
    * @param {number} projectId
    * @param {number} assetId
-   * @param {{ range?: string, ifRange?: string }} [request] - raw `Range` and
+   * @param {{ range?: string, ifRange?: string, expectedSourceRevision?: string }} [request] - raw `Range` and
    *   `If-Range` headers. Only supported video originals consult them. Any
    *   `If-Range` disables range handling: the only validator this route
    *   emits is a weak ETag, which can never satisfy If-Range, so the safe
    *   answer is the full representation.
    */
-  function prepareOriginalResponse(projectId, assetId, { range, ifRange } = {}) {
-    const desc = getOriginalDescriptor(projectId, assetId);
+  function prepareOriginalResponse(projectId, assetId, { range, ifRange, expectedSourceRevision } = {}) {
+    const desc = getOriginalDescriptor(projectId, assetId, expectedSourceRevision);
     const disposition = buildInlineDisposition(desc.filename);
     const source = desc.openSource();
     const { size } = source;

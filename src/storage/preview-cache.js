@@ -238,10 +238,11 @@ export function ensureCacheDirectory(previewRoot, dir) {
  * @param {number} input.size
  * @param {string} input.mtime     - ISO 8601 source mtime.
  * @param {number} [input.sourceGeneration]
+ * @param {string|null} [input.inputFingerprint] - Server-proven comic input identity; omitted for ordinary images.
  * @returns {string}
  */
 export function buildRevisionToken({
-  projectId, assetId, relativePath, size, mtime, policyFingerprint, sourceGeneration,
+  projectId, assetId, relativePath, size, mtime, policyFingerprint, sourceGeneration, inputFingerprint,
 }) {
   const payload = {
     projectId,
@@ -253,6 +254,10 @@ export function buildRevisionToken({
   };
   if (policyFingerprint) payload.policyFingerprint = policyFingerprint;
   if (sourceGeneration) payload.sourceGeneration = sourceGeneration;
+  if (inputFingerprint != null) {
+    if (typeof inputFingerprint !== 'string' || !/^[0-9a-f]{64}$/.test(inputFingerprint)) throw new Error('Invalid source input fingerprint.');
+    payload.inputFingerprint = inputFingerprint;
+  }
   const json = JSON.stringify(payload, Object.keys(payload).sort());
   return crypto.createHash('sha256').update(json).digest('hex').slice(0, 16);
 }
@@ -289,6 +294,7 @@ export function serializeMeta({
   size,
   mtime,
   sourceGeneration,
+  inputFingerprint,
   generatedAt,
   thumbnail,
   preview,
@@ -329,6 +335,10 @@ export function serializeMeta({
   if (frameCount != null) meta.frameCount = frameCount;
   if (sourceQuality != null) meta.source.previewQuality = sourceQuality;
   if (sourceGeneration != null) meta.source.generation = sourceGeneration;
+  if (inputFingerprint != null) {
+    if (typeof inputFingerprint !== 'string' || !/^[0-9a-f]{64}$/.test(inputFingerprint)) throw new Error('Invalid source input fingerprint.');
+    meta.source.inputFingerprint = inputFingerprint;
+  }
   if (generationIdentities != null) {
     meta.generationIdentities = {
       version: generationIdentities.version,
@@ -383,6 +393,10 @@ export function parseMeta(content) {
     throw new Error('meta.json source generation is invalid.');
   }
 
+  if (source.inputFingerprint != null
+    && (typeof source.inputFingerprint !== 'string' || !/^[0-9a-f]{64}$/.test(source.inputFingerprint))) {
+    throw new Error('meta.json source input fingerprint is invalid.');
+  }
   requireString(parsed, 'generatedAt');
 
   for (const key of ['thumbnail', 'preview']) {
@@ -500,6 +514,9 @@ export function compareFreshness(meta, current) {
     reasons.push('source generation changed');
   }
 
+  if ((meta.source.inputFingerprint ?? null) !== (current.inputFingerprint ?? null)) {
+    reasons.push('source input changed');
+  }
   return { fresh: reasons.length === 0, reasons };
 }
 

@@ -16,6 +16,15 @@
 //   deliberately left to the browser: swipe and pinch belong to Milestone D,
 //   and no touch-action is suppressed here.
 //
+// - A press on an interactive descendant of the surface (a page Retry
+//   button, a link, a form control, `[data-viewer-interactive]`) never
+//   starts a pan, so it keeps its own click, focus and keyboard behavior.
+// - C1d: the content may be a composite (a comic spread wrapper from
+//   viewer-spread-layout.js, `setContent(…, { composite: true })`). Its size
+//   can change in place through `resizeContent()`: Fit re-fits and
+//   re-centres; a zoom keeps its level relative to Fit and re-clamps its
+//   pan. A new composition goes through `setContent()` and starts in Fit.
+//
 // It never fetches, decodes or announces anything; viewer-content.js decides
 // what is shown and reacts to `onChange`.
 
@@ -28,6 +37,21 @@ export const VIEWER_VIEW_MODE_FIT = 'fit';
 export const VIEWER_VIEW_MODE_ZOOM = 'zoom';
 
 const EPSILON = 1e-6;
+
+// Descendants of the surface whose presses belong to themselves, not to pan.
+export const VIEWER_INTERACTIVE_SELECTOR = [
+  'a[href]',
+  'button',
+  'input',
+  'select',
+  'textarea',
+  'label',
+  'summary',
+  '[contenteditable]:not([contenteditable="false"])',
+  '[role="button"]',
+  '[role="link"]',
+  '[data-viewer-interactive]',
+].join(', ');
 
 function positive(value) {
   const number = Number(value);
@@ -119,9 +143,11 @@ export function createViewerViewport({ surface, view = null, onChange = null } =
   let intrinsic = { width: 0, height: 0 };
   let viewport = { width: 0, height: 0 };
   let mode = VIEWER_VIEW_MODE_FIT;
+  let actual = false;
   let scale = 1;
   let pan = { x: 0, y: 0 };
   let drag = null;
+  let composite = false;
   let resizeObserver = null;
   let windowResizeBound = false;
   let destroyed = false;
@@ -156,6 +182,7 @@ export function createViewerViewport({ surface, view = null, onChange = null } =
       canFit: present && mode !== VIEWER_VIEW_MODE_FIT,
       canPan: present && (bounds.x > 0 || bounds.y > 0),
       dragging: Boolean(drag),
+      composite: present && composite,
       contentWidth: intrinsic.width,
       contentHeight: intrinsic.height,
       viewportWidth: viewport.width,
@@ -210,6 +237,7 @@ export function createViewerViewport({ surface, view = null, onChange = null } =
     // Button zoom keeps the point at the surface centre in place.
     pan = { x: pan.x * ratio, y: pan.y * ratio };
     scale = next;
+    actual = reason === 'actual';
     mode = Math.abs(next - fit) < EPSILON ? VIEWER_VIEW_MODE_FIT : VIEWER_VIEW_MODE_ZOOM;
     if (mode === VIEWER_VIEW_MODE_FIT) pan = { x: 0, y: 0 };
     pan = clampViewerPan(pan, limits());
@@ -261,11 +289,20 @@ export function createViewerViewport({ surface, view = null, onChange = null } =
     emit('pan');
   }
 
+  // Whether a press started on an interactive element inside the surface.
+  function startsOnInteractive(target) {
+    if (!target || target === surface || typeof target.closest !== 'function') return false;
+    const control = target.closest(VIEWER_INTERACTIVE_SELECTOR);
+    if (!control || control === surface) return false;
+    return typeof surface?.contains === 'function' ? surface.contains(control) : true;
+  }
+
   const onPointerDown = (event) => {
     if (drag || !hasContent()) return;
     // Touch gestures stay with the browser until Milestone D.
     if (event.pointerType === 'touch') return;
     if (event.button !== 0 || event.isPrimary === false) return;
+    if (startsOnInteractive(event.target)) return;
     const bounds = limits();
     if (bounds.x <= 0 && bounds.y <= 0) return;
     event.preventDefault?.();
@@ -311,10 +348,16 @@ export function createViewerViewport({ surface, view = null, onChange = null } =
 
   // ── Public commands ───────────────────────────────────────────────────────
 
+  function setComposite(value) {
+    composite = value;
+    if (value) surface?.setAttribute?.('data-viewer-composite', '');
+    else surface?.removeAttribute?.('data-viewer-composite');
+  }
+
   /**
    * Show `content` (already in the surface) at `size` intrinsic pixels.
-   * Starts in Fit unless `options.scale` asks for a specific scale (Original
-   * uses 1). Returns false and clears the viewport for an invalid size.
+   * Starts in Fit unless `options.scale` asks for a specific scale. `options.composite` marks a multi-page composition (C1d).
+   * Returns false and clears the viewport for an invalid size.
    */
   function setContent(content, size, options = {}) {
     endDrag();
@@ -325,13 +368,41 @@ export function createViewerViewport({ surface, view = null, onChange = null } =
       return false;
     }
     element = content;
+    setComposite(options.composite === true);
     intrinsic = { width, height };
     pan = { x: 0, y: 0 };
     mode = VIEWER_VIEW_MODE_FIT;
+    actual = false;
     measure();
     scale = fitScale();
     startObserving();
     if (options.scale !== undefined) return setScale(options.scale, 'content');
+    apply();
+    emit('content');
+    return true;
+  }
+
+  /** Replace a decoded rendition, keeping scale intent and the normalized centre point. */
+  function replaceContent(content, size) {
+    const width = positive(size?.width);
+    const height = positive(size?.height);
+    if (!content || !width || !height) return false;
+    if (!hasContent()) return setContent(content, size);
+    endDrag();
+    measure();
+    const relative = scale / fitScale();
+    const focal = { x: pan.x / (intrinsic.width * scale), y: pan.y / (intrinsic.height * scale) };
+    element = content;
+    intrinsic = { width, height };
+    setComposite(false);
+    const fit = fitScale();
+    scale = actual ? 1 : mode === VIEWER_VIEW_MODE_FIT ? fit : fit * relative;
+    scale = Math.min(maxScale(), Math.max(fit, positive(scale) || fit));
+    pan = mode === VIEWER_VIEW_MODE_FIT && !actual ? { x: 0, y: 0 }
+      : { x: focal.x * width * scale, y: focal.y * height * scale };
+    if (!actual && Math.abs(scale - fit) < EPSILON) mode = VIEWER_VIEW_MODE_FIT;
+    else if (actual) mode = VIEWER_VIEW_MODE_ZOOM;
+    pan = clampViewerPan(pan, limits());
     apply();
     emit('content');
     return true;
@@ -351,9 +422,59 @@ export function createViewerViewport({ surface, view = null, onChange = null } =
     mode = VIEWER_VIEW_MODE_FIT;
     scale = 1;
     pan = { x: 0, y: 0 };
+    setComposite(false);
     stopObserving();
     surface?.removeAttribute?.('data-viewer-pannable');
     if (hadContent) emit('clear');
+  }
+
+  /** Whether `candidate` is the element currently shown. */
+  function isContent(candidate) {
+    return Boolean(candidate) && hasContent() && element === candidate;
+  }
+
+  /**
+   * Change the shown content's intrinsic size in place (C1d: a companion
+   * page resolved, so the composition grew or shrank). In Fit it re-fits
+   * and re-centres; zoomed, it keeps the zoom level relative to Fit, scales
+   * the pan with it and re-clamps it. A drag in progress continues from the
+   * adjusted pan. Returns whether anything changed; an unchanged or invalid
+   * size is a no-op.
+   */
+  function resizeContent(size) {
+    if (!hasContent()) return false;
+    const width = positive(size?.width);
+    const height = positive(size?.height);
+    if (!width || !height) return false;
+    if (width === intrinsic.width && height === intrinsic.height) return false;
+    measure();
+    const oldFit = fitScale();
+    const oldScale = scale;
+    const oldPan = pan;
+    intrinsic = { width, height };
+    const newFit = fitScale();
+    if (mode === VIEWER_VIEW_MODE_FIT) {
+      scale = newFit;
+      pan = { x: 0, y: 0 };
+    } else {
+      const relative = oldFit > 0 ? oldScale / oldFit : 1;
+      scale = Math.min(maxScale(), Math.max(newFit, newFit * relative));
+      if (Math.abs(scale - newFit) < EPSILON) {
+        mode = VIEWER_VIEW_MODE_FIT;
+        pan = { x: 0, y: 0 };
+      } else {
+        const ratio = oldScale > 0 ? scale / oldScale : 1;
+        pan = { x: pan.x * ratio, y: pan.y * ratio };
+      }
+    }
+    pan = clampViewerPan(pan, limits());
+    if (drag) {
+      drag.panX += pan.x - oldPan.x;
+      drag.panY += pan.y - oldPan.y;
+    }
+    apply();
+    emit('content-size');
+    return true;
   }
 
   /** Re-measure the surface and re-settle Fit, zoom and pan. */
@@ -413,7 +534,10 @@ export function createViewerViewport({ surface, view = null, onChange = null } =
 
   return Object.freeze({
     setContent,
+    replaceContent,
     clearContent,
+    resizeContent,
+    isContent,
     refresh,
     fit,
     zoomIn,

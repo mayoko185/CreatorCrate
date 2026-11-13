@@ -226,3 +226,78 @@ describe('release asset presenter', () => {
     expect(encoded.thumbnail_url).toBeNull();
   });
 });
+
+
+describe('image quality presentation contract', () => {
+  const policy = (format) => projectImagePresentationPolicy({
+    thumbnail: { format: 'webp', webpQuality: 80, maxDimension: 256 },
+    preview: { format, webpQuality: 90, maxDimension: 1600 },
+  });
+
+  it('retains normal release selection while exposing both explicit source qualities', () => {
+    const generated = buildReleaseAssetPresentation(assetRow(), { selected: true, policyFingerprint: policy('webp') });
+    const original = buildReleaseAssetPresentation(assetRow(), { selected: true, policyFingerprint: policy('original') });
+    for (const item of [generated, original]) {
+      const sources = item.preview.imageSources;
+      expect(sources).toMatchObject({ projectId: 7, assetId: 17, toggleEligible: true,
+        optimized: { eligible: true }, original: { eligible: true } });
+      expect(sources.sourceRevision).toMatch(/^[a-f0-9]{16}$/);
+      expect(sources.optimized.revision).toBe(item.preview_revision);
+      expect(sources.sourceRevision).not.toBe(sources.optimized.revision);
+      expect(sources.optimized.url).toBe(`/projects/7/assets/17/preview?rendition=optimized&sourceRevision=${sources.sourceRevision}&v=${sources.optimized.revision}`);
+      expect(sources.original.url).toBe(`/projects/7/assets/17/original?sourceRevision=${sources.sourceRevision}`);
+      expect(item.original_url).toBe('/projects/7/assets/17/original');
+    }
+    expect(generated.preview_url).toContain('/preview?v=');
+    expect(original.preview_url).toBe('/projects/7/assets/17/original');
+    expect(generated.preview.imageSources.sourceRevision).toBe(original.preview.imageSources.sourceRevision);
+    expect(generated.preview.imageSources.optimized.revision).not.toBe(original.preview.imageSources.optimized.revision);
+  });
+
+  it.each([
+    { extension: 'kra', mime_type: 'application/x-krita', optimized: true },
+    { extension: 'krz', mime_type: 'application/x-krita', optimized: true },
+    { extension: 'png', mime_type: 'application/octet-stream', optimized: false },
+    { extension: 'cbz', mime_type: 'application/zip', optimized: false },
+    { extension: 'cbr', mime_type: 'application/vnd.rar', optimized: false },
+    { extension: 'cb7', mime_type: 'application/x-7z-compressed', optimized: false },
+    { extension: 'mp4', mime_type: 'video/mp4', optimized: false },
+    { extension: 'webm', mime_type: 'video/webm', optimized: false },
+    { is_present: 0, optimized: false },
+  ])('excludes unsupported originals and non-images: %j', ({ optimized, ...overrides }) => {
+    const view = buildReleaseAssetPresentation(assetRow(overrides), { policyFingerprint: policy('original') });
+    if (optimized) {
+      expect(view.preview.imageSources.optimized.eligible).toBe(true);
+      expect(view.preview.imageSources.original).toEqual({ url: null, eligible: false });
+      expect(view.preview.imageSources.toggleEligible).toBe(false);
+    } else {
+      expect(view.preview.imageSources).toBeUndefined();
+    }
+  });
+
+  it('does not fabricate usable rendition URLs from incomplete indexed metadata', () => {
+    for (const overrides of [{ modified_at: null }, { project_id: null }, { size_bytes: null }, { source_generation: -1 }]) {
+      const view = buildReleaseAssetPresentation(assetRow(overrides), { policyFingerprint: policy('original') });
+      expect(view.preview.imageSources).toMatchObject({ sourceRevision: null, toggleEligible: false,
+        optimized: { url: null, eligible: false }, original: { url: null, eligible: false } });
+    }
+  });
+
+  it('does not invent an authoritative rendition revision when no policy is supplied', () => {
+    const sources = buildReleaseAssetPresentation(assetRow()).preview.imageSources;
+    expect(sources.optimized).toEqual({ url: null, revision: null, eligible: false });
+    expect(sources.original.eligible).toBe(true);
+    expect(sources.toggleEligible).toBe(false);
+  });
+
+  it('selected and candidate descriptors keep canonical identity and generation', () => {
+    const page = buildReleaseAssetPagePresentation({
+      selectedAssets: [assetRow({ id: 999, asset_id: 17, source_generation: 4 })],
+      candidateAssets: [assetRow({ id: 18, asset_id: undefined, source_generation: 5 })],
+      policyFingerprint: policy('original'),
+    });
+    expect(page.selected[0].preview.imageSources).toMatchObject({ projectId: 7, assetId: 17 });
+    expect(page.candidates[0].preview.imageSources).toMatchObject({ projectId: 7, assetId: 18 });
+    expect(page.selected[0].preview.imageSources.sourceRevision).not.toBe(page.candidates[0].preview.imageSources.sourceRevision);
+  });
+});

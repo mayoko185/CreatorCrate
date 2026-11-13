@@ -268,10 +268,13 @@ export function openAssetFile(projectsRoot, projectRelPath, assetRelPath) {
  * @param {string} projectsRoot
  * @param {string} projectRelPath
  * @param {string} assetRelPath
+ * @param {function({handle: import('node:fs/promises').FileHandle, absolutePath: string}, StorageError): Promise<void>} [cleanupOnValidationFailure]
+ *   Takes sole cleanup ownership of an acquired handle when validation fails. It must
+ *   retain ownership until retirement is confirmed, even if cleanup fails.
  * @returns {Promise<OpenedAssetFile>}
  * @throws {StorageError} on any containment, symlink, or open failure
  */
-export async function openAssetFileAsync(projectsRoot, projectRelPath, assetRelPath) {
+export async function openAssetFileAsync(projectsRoot, projectRelPath, assetRelPath, cleanupOnValidationFailure) {
   const projectDir = await resolveProjectDirAsync(projectsRoot, projectRelPath);
   const resolvedAsset = await resolveContainedAssetPathAsync(projectDir, assetRelPath);
 
@@ -293,15 +296,16 @@ export async function openAssetFileAsync(projectsRoot, projectRelPath, assetRelP
 
   let stat;
   try {
-    stat = await handle.stat();
-  } catch {
-    try { await handle.close(); } catch { /* best effort */ }
-    throw new StorageError('Opened asset descriptor cannot be stat.');
-  }
-
-  if (!stat.isFile()) {
-    try { await handle.close(); } catch { /* best effort */ }
-    throw new StorageError('Asset path does not point to a regular file.');
+    try { stat = await handle.stat(); }
+    catch (cause) { throw new StorageError('Opened asset descriptor cannot be stat.', { cause }); }
+    if (!stat.isFile()) throw new StorageError('Asset path does not point to a regular file.');
+  } catch (error) {
+    const failure = error instanceof StorageError ? error
+      : new StorageError('Opened asset descriptor cannot be validated.', { cause: error });
+    // The opener owns the acquired handle until success or this explicit cleanup handoff.
+    if (cleanupOnValidationFailure) await cleanupOnValidationFailure({ handle, absolutePath: resolvedAsset }, failure);
+    else { try { await handle.close(); } catch { /* best effort */ } }
+    throw failure;
   }
 
   return { handle, absolutePath: resolvedAsset, stat };

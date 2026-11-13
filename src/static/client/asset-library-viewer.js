@@ -1,8 +1,8 @@
-// ─── Global Asset Library: unified viewer host integration (Milestone B, B5b) ─
+// ─── Global Asset Library: unified viewer host integration ───────────────────
 //
 // Connects the Global Asset Library (/asset-viewer) to the shared unified
 // viewer (unified-viewer.js). Like the Project Assets host
-// (project-assets-viewer.js, B5a) this module only translates page activation
+// (project-assets-viewer.js) this module only translates page activation
 // into B1 viewer sources and hands live-refresh data to the controller; it owns
 // no viewer state machine of its own. It uses its own hooks, so the two hosts
 // never intercept one another's triggers:
@@ -26,6 +26,21 @@
 //   already been replaced by live-regions.js; refreshAssetLibraryViewer()
 //   hands it to the viewer's update(), bound to the session this page opened,
 //   so the B1 reconciliation keeps, replaces or closes the shown item.
+// - An unmodified primary click (or keyboard activation) of a Read Comic link
+//   (`[data-asset-library-comic-trigger]`, eligible CBZ/CBR/CB7 only) opens
+//   that comic in the same viewer through the shared controller's
+//   openComic(), identified by BOTH its project and asset id; the controller
+//   owns the manifest, pages and reader. Comics are never part of the image
+//   sequence. The link's href is the asset's details page, so modified and
+//   middle clicks navigate.
+// - After a live refresh an open comic session is reconciled only against
+//   the installed region's own card for that project-qualified asset: its
+//   Read Comic link forwards the server's indexed-source hint to
+//   reconcileComic() (an unchanged hint reloads nothing), and a card for that
+//   asset without one proves the comic is no longer readable, so the reader
+//   is retired. A comic absent from the region (another page, filtered out,
+//   re-sorted) is not evidence of anything and its reader stays open. A card
+//   of another project never matches, even with an equal asset id.
 //
 // Click handling is delegated from the document and bound once, so thumbnails
 // and the toolbar button re-rendered by live filtering need no rebinding and
@@ -45,6 +60,8 @@ const SLIDESHOW_TRIGGER_SELECTOR = '[data-asset-library-slideshow-trigger]';
 const PREVIEW_SELECTOR = '[data-asset-library-preview-id]';
 const PREVIEW_ID_ATTRIBUTE = 'data-asset-library-preview-id';
 const PREVIEW_PROJECT_ATTRIBUTE = 'data-asset-library-preview-project-id';
+const COMIC_TRIGGER_SELECTOR = '[data-asset-library-comic-trigger]';
+const LIVE_REGION_SELECTOR = '[data-asset-library-live-region]';
 const SOURCE_KEY = 'asset-library';
 const BOUND_KEY = 'assetLibraryViewerBound';
 const STATE_PROPERTY = '__creatorCrateAssetLibraryViewer';
@@ -74,8 +91,11 @@ function readSequence(document) {
   };
 }
 
+// `session`/`text` belong to an image session; `comic` to a comic session
+// ({ session, projectId, assetId }). Only one of them can be the viewer's
+// open session at a time.
 function hostState(document) {
-  if (!document[STATE_PROPERTY]) document[STATE_PROPERTY] = { session: 0, text: null };
+  if (!document[STATE_PROPERTY]) document[STATE_PROPERTY] = { session: 0, text: null, comic: null };
   return document[STATE_PROPERTY];
 }
 
@@ -107,6 +127,27 @@ function previewLinkFor(document, projectId, assetId) {
   ) || null;
 }
 
+// Absent attributes are partial hints; an empty attribute explicitly clears metadata.
+function comicMetadata(trigger) {
+  return Object.fromEntries([
+    ['filename', 'data-comic-filename'],
+    ['projectName', 'data-comic-project-name'],
+    ['detailsUrl', 'data-comic-details-url'],
+  ].flatMap(([field, attribute]) => {
+    const value = trigger.getAttribute?.(attribute);
+    return value == null ? [] : [[field, value]];
+  }));
+}
+
+// The rendered Read Comic link of one project-qualified comic, if any.
+function comicTriggerFor(scope, projectId, assetId) {
+  if (!NUMERIC_ID.test(String(projectId)) || !NUMERIC_ID.test(String(assetId))) return null;
+  const selector = `${COMIC_TRIGGER_SELECTOR}[data-comic-project="${projectId}"][data-comic-asset="${assetId}"]`;
+  // A failed cover's visible fallback owns Reader activation and restored focus.
+  return scope?.querySelector?.(`${selector}[data-preview-fallback]:not([hidden])`)
+    || scope?.querySelector?.(selector) || null;
+}
+
 // Like the legacy slideshow, the Slideshow button is unavailable while the
 // filtered sequence holds no image.
 function syncSlideshowTrigger(document, sequence = readSequence(document)) {
@@ -120,6 +161,7 @@ function remember(document, session, text) {
   const state = hostState(document);
   state.session = session;
   state.text = text;
+  state.comic = null;
   return session;
 }
 
@@ -181,12 +223,90 @@ export function openAssetLibraryImage(document, projectId, assetId, opener = nul
 }
 
 /**
+ * Open the comic of one Read Comic link in the shared viewer, identified by
+ * its project and asset. It never joins the image sequence. Returns 0 (and
+ * opens nothing) for a link without both halves of its identity.
+ *
+ * @param {Document} document
+ * @param {Element} trigger  a `[data-asset-library-comic-trigger]` link
+ * @returns {number} the viewer session, or 0 when nothing opened
+ */
+export function openAssetLibraryComic(document, trigger) {
+  const viewer = unifiedViewerFor(document);
+  if (!viewer || typeof viewer.openComic !== 'function') return 0;
+  if (!trigger?.matches?.(COMIC_TRIGGER_SELECTOR)) return 0;
+  const projectId = trigger.getAttribute?.('data-comic-project');
+  const assetId = trigger.getAttribute?.('data-comic-asset');
+  if (!NUMERIC_ID.test(String(projectId)) || !NUMERIC_ID.test(String(assetId))) return 0;
+  const sourceRevision = trigger.getAttribute?.('data-comic-source-revision') || undefined;
+  const session = viewer.openComic({
+    projectId: Number(projectId),
+    assetId: Number(assetId),
+    ...comicMetadata(trigger),
+    title: trigger.getAttribute?.('data-comic-title') || '',
+    label: trigger.getAttribute?.('data-comic-label') || '',
+    sourceRevision,
+  }, {
+    opener: trigger,
+    // The link a live refresh rendered for the same comic, else the
+    // Slideshow button; the controller falls back to the main landmark.
+    fallbackFocus: () => comicTriggerFor(document, projectId, assetId) || enabledSlideshowTrigger(document),
+  });
+  if (!session) return 0;
+  const state = hostState(document);
+  forget(state);
+  state.comic = { session, projectId, assetId };
+  return session;
+}
+
+// The installed region's authoritative descriptor for the open comic:
+// - its Read Comic link: the comic is readable, with the server's hint;
+// - its card (same project and asset) without one: the comic is missing or
+//   no longer readable;
+// - no card at all: nothing is known (another page, filtered or re-sorted).
+function comicHintIn(region, projectId, assetId) {
+  const identity = { projectId: Number(projectId), assetId: Number(assetId) };
+  const trigger = comicTriggerFor(region, projectId, assetId);
+  if (trigger) {
+    const sourceRevision = trigger.getAttribute?.('data-comic-source-revision');
+    return sourceRevision ? { ...identity, ...comicMetadata(trigger), sourceRevision } : { ...identity, ...comicMetadata(trigger) };
+  }
+  const card = region?.querySelector?.(`article[data-asset-id="${assetId}"][data-asset-project-id="${projectId}"]`);
+  return card ? { ...identity, eligible: false } : null;
+}
+
+// The region a live refresh installed; a document-wide call reads the
+// page's current region.
+function liveRegionOf(scope, document) {
+  if (scope && scope !== document && scope.nodeType === 1) return scope;
+  return document.querySelector?.(LIVE_REGION_SELECTOR) || null;
+}
+
+function refreshComicSession(document, region, viewer) {
+  const state = hostState(document);
+  const comic = state.comic;
+  const viewerState = viewer?.getState?.();
+  if (!viewerState?.open || viewerState.session !== comic.session || !viewerState.comic) {
+    state.comic = null;
+    return null;
+  }
+  if (!region) return null;
+  const hint = comicHintIn(region, comic.projectId, comic.assetId);
+  if (!hint) return null;
+  const result = viewer.reconcileComic(hint, { session: comic.session });
+  if (!viewer.getState().open) state.comic = null;
+  return result;
+}
+
+/**
  * Reconcile an open Asset Library viewer session with the page's current
  * authoritative sequence (after a live refresh replaced it), and resync the
- * Slideshow button. Sessions this page did not open, or that have since
- * closed or been replaced, are never touched.
+ * Slideshow button. An open comic session is reconciled with the installed
+ * region's card for that comic instead (see the header). Sessions this page
+ * did not open, or that have since closed or been replaced, are never
+ * touched.
  *
- * @param {Document|Element} scope
+ * @param {Document|Element} scope  the installed live region (or its document)
  * @returns {object|null} the reconciliation result, or null when nothing applied
  */
 export function refreshAssetLibraryViewer(scope = globalThis.document) {
@@ -197,8 +317,9 @@ export function refreshAssetLibraryViewer(scope = globalThis.document) {
   syncSlideshowTrigger(document, sequence);
 
   const state = hostState(document);
-  if (!state.session) return null;
   const viewer = unifiedViewerFor(document);
+  if (state.comic) return refreshComicSession(document, liveRegionOf(scope, document), viewer);
+  if (!state.session) return null;
   const viewerState = viewer?.getState?.();
   if (!viewerState?.open || viewerState.session !== state.session) {
     forget(state);
@@ -217,7 +338,8 @@ export function refreshAssetLibraryViewer(scope = globalThis.document) {
 }
 
 /**
- * Bind Asset Library thumbnail and Slideshow activation once per document.
+ * Bind Asset Library thumbnail, Slideshow and Read Comic activation once
+ * per document.
  * A page without the Asset Library sequence is left untouched.
  *
  * @param {Document|Element} [scope]
@@ -238,6 +360,11 @@ export function enhanceAssetLibraryViewer(scope = globalThis.document) {
     if (trigger) {
       if (trigger.disabled) return;
       if (openAssetLibrarySlideshow(document, trigger)) event.preventDefault?.();
+      return;
+    }
+    const comicTrigger = target?.closest?.(COMIC_TRIGGER_SELECTOR);
+    if (comicTrigger) {
+      if (openAssetLibraryComic(document, comicTrigger)) event.preventDefault?.();
       return;
     }
     const link = target?.closest?.(PREVIEW_SELECTOR);

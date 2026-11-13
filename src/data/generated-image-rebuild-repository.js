@@ -15,7 +15,7 @@ export const PREVIEWABLE_ASSET_SQL = `(LOWER(a.extension) = 'png' AND LOWER(a.mi
     OR LOWER(a.extension) IN ('kra', 'krz') AND LOWER(a.mime_type) = 'application/x-krita')`;
 
 const ELIGIBLE = `a.is_present = 1 AND p.project_dir IS NOT NULL AND p.project_dir <> ''
-  AND ${PREVIEWABLE_ASSET_SQL}`;
+  AND (${PREVIEWABLE_ASSET_SQL} OR LOWER(a.extension) IN ('cbz', 'cbr', 'cb7'))`;
 
 export function createGeneratedImageRebuildRepository(db, appMetaRepository) {
   const bounds = db.prepare(`SELECT COUNT(*) AS total, COALESCE(MAX(a.id), 0) AS upperBound

@@ -1,12 +1,13 @@
 import crypto from 'node:crypto';
+import { classifyComicAsset } from './asset-metadata.js';
 
 // The ordered tuple describes effective processing, including animation rules.
 export function projectImagePolicyFingerprint(policy, asset) {
   const thumbnail = policy.thumbnail;
   const preview = policy.preview;
   const extension = String(asset?.extension || '').toLowerCase();
-  const animatedPngSelection = asset?.source_animated === 1 || asset?.source_animated === true
-    || (asset?.source_animated == null && (extension === 'gif' || extension === 'webp'));
+  const animatedPngSelection = !classifyComicAsset(asset || {}).comic && (asset?.source_animated === 1 || asset?.source_animated === true
+    || (asset?.source_animated == null && (extension === 'gif' || extension === 'webp')));
   const processing = [
     1,
     thumbnail.format,
@@ -75,14 +76,14 @@ export function projectImageGenerationIdentities(policy, sourceAnimated) {
 
 export function projectImageEffectiveOutput(policy, asset) {
   const extension = String(asset?.extension || '').toLowerCase();
-  const animated = asset?.source_animated === 1 || asset?.source_animated === true
-    || (asset?.source_animated == null && (extension === 'gif' || extension === 'webp'));
+  const animated = !classifyComicAsset(asset || {}).comic && (asset?.source_animated === 1 || asset?.source_animated === true
+    || (asset?.source_animated == null && (extension === 'gif' || extension === 'webp')));
   const krita = extension === 'kra' || extension === 'krz';
   const thumbnail = [policy.thumbnail.format, policy.thumbnail.maxDimension,
     policy.thumbnail.format === 'webp' ? policy.thumbnail.webpQuality : null];
   let preview = null;
   if (policy.preview.format === 'original') {
-    if (krita) preview = ['webp', 1600, 90, 'normal'];
+    if (krita || classifyComicAsset(asset || {}).comic) preview = ['webp', 1600, 90, 'normal'];
   } else {
     const animatedPng = policy.preview.format === 'png' && animated;
     preview = [animatedPng ? 'webp' : policy.preview.format,
@@ -123,5 +124,6 @@ export function projectImagePresentationPolicy(policy, sourceAnimationService) {
     fingerprintForResolved,
     fingerprintFor: (asset) => fingerprintForResolved(resolveAsset(asset)),
     previewFormat: policy.preview.format,
+    comicCoverFingerprint: projectImagePolicyFingerprint(policy, { extension: 'cbz' }),
   };
 }

@@ -14,6 +14,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import slugify from '@sindresorhus/slugify';
 import request from 'supertest';
+import express from 'express';
+import { createMediaRouter } from '../src/routes/media.js';
+import { AUTH_CONFIG } from './helpers/auth.js';
 import sharp from 'sharp';
 import { makeZip } from './helpers/zip-fixture.js';
 import { makeAnimatedWebp } from './helpers/animated-webp.js';
@@ -22,7 +25,7 @@ import { bindTestProjectOwnership } from './helpers/project-ownership.js';
 // Every recover() on Windows reads the cache path's ACLs through Windows PowerShell.
 if (process.platform === 'win32') vi.setConfig({ testTimeout: 30_000, hookTimeout: 60_000 });
 
-const handles = vi.hoisted(() => ({ opened: 0, closed: 0 }));
+const handles = vi.hoisted(() => ({ opened: 0, closed: 0, beforeClose: null }));
 
 vi.mock('../src/storage/asset-file.js', async (importOriginal) => {
   const actual = await importOriginal();
@@ -34,8 +37,11 @@ vi.mock('../src/storage/asset-file.js', async (importOriginal) => {
       return opened;
     },
     closeAssetFileAsync: async (opened) => {
-      handles.closed += 1;
-      return actual.closeAssetFileAsync(opened);
+      try { await handles.beforeClose?.(); }
+      finally {
+        handles.closed += 1;
+        await actual.closeAssetFileAsync(opened);
+      }
     },
   };
 });
@@ -211,6 +217,7 @@ beforeAll(async () => {
 });
 
 afterEach(async () => {
+  handles.beforeClose = null;
   // No request leaves a descriptor open or an admission slot/reservation behind (background
   // preparations scheduled by solid CBR/CB7 reads are awaited first: they own their slot).
   await h.runtime.preparationCache?.whenIdle();
@@ -968,5 +975,29 @@ describe('application integration', () => {
     } finally {
       closeDatabase(db);
     }
+  });
+});
+
+
+afterAll(() => { for (const fixture of harnesses) fixture.app?.locals.comicMediaService?.stop?.(); });
+
+describe('retired dedicated comic cover backend', () => {
+  it('composes only the retained source and Reader APIs', () => {
+    const service = h.app.locals.comicMediaService;
+    expect(service.startComicCoverSource).toBeTypeOf('function');
+    expect(service.getComicManifest).toBeTypeOf('function');
+    expect(service.getComicPage).toBeTypeOf('function');
+    expect(service.getComicThumbnail).toBeUndefined();
+    expect(service.renderComicFirstPage).toBeUndefined();
+  });
+  it.each(['get', 'head', 'post'])('has no registered dedicated endpoint for %s', async method => {
+    const comic = h.addAsset('Retired cover route ' + method, 'book.cbz', archives.cbz, CBZ_MIME);
+    const obsolete = vi.fn(() => { throw new Error('Retired backend invoked'); });
+    const app = express();
+    app.use('/projects', createMediaRouter({ comicMediaService: { getComicThumbnail: obsolete } }));
+    expect((await request(app)[method](comic.base + '/comic/thumbnail')).status).toBe(404);
+    expect(obsolete).not.toHaveBeenCalled();
+    // The composed application's CSRF middleware rejects an untrusted POST before routing.
+    expect((await request(h.app)[method](comic.base + '/comic/thumbnail')).status).toBe(method === 'post' ? 403 : 404);
   });
 });

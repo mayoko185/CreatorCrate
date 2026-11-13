@@ -67,11 +67,12 @@
 {% endmacro %}
 
 {% macro renderGridPreview(asset, detailUrl, displayName) %}
-  {% set previewUrl = asset.preview_url or asset.thumbnail_url %}
-  {% set previewAvailable = asset.is_present and previewUrl and asset.preview_state != 'unsupported' and asset.preview_state != 'missing' %}
+  {% set comicCover = assetPresentation.comicReadable(asset, 'data-asset-library-comic-trigger') | length and asset.preview.comic.cover.urls.preview %}
+  {% set previewUrl = asset.preview.comic.cover.urls.preview if comicCover else (asset.preview_url or asset.thumbnail_url) %}
+  {% set previewAvailable = comicCover or (asset.is_present and previewUrl and asset.preview_state != 'unsupported' and asset.preview_state != 'missing') %}
   <div class="asset-card-media asset-viewer-grid-card-preview{% if asset.preview and asset.preview.kind == 'krita' %} asset-media--krita{% endif %}" data-asset-viewer-preview{% if previewAvailable %} data-preview-enhancement data-preview-state="loading"{% endif %}>
     {% if previewAvailable %}
-      <a class="asset-card-media-link asset-viewer-grid-card-preview-link" href="{{ detailUrl }}" aria-label="View preview of {{ displayName }}" data-asset-library-preview-id="{{ asset.id }}" data-asset-library-preview-project-id="{{ asset.project_id }}">
+      <a class="asset-card-media-link asset-viewer-grid-card-preview-link" href="{{ detailUrl }}" aria-label="{% if comicCover %}Read comic {{ displayName }}{% if asset.project_title %} from {{ asset.project_title }}{% endif %}{% else %}View preview of {{ displayName }}{% endif %}"{% if comicCover %}{{ assetPresentation.comicReaderAttributes(asset, 'data-asset-library-comic-trigger', detailUrl, asset.project_title, asset.project_title) }}{% else %} data-asset-library-preview-id="{{ asset.id }}" data-asset-library-preview-project-id="{{ asset.project_id }}"{% endif %}>
         <img class="asset-card-thumb asset-viewer-grid-card-preview-image{% if asset.nsfwBlur %} asset-image--nsfw-blurred{% endif %}"
              src="{{ previewUrl }}"
              alt=""
@@ -79,11 +80,17 @@
              decoding="async"
              data-preview-image>
       </a>
-      <span class="asset-card-placeholder asset-card-fallback" data-preview-fallback hidden>{{ asset.extension or 'Preview unavailable' }}</span>
+      {% if comicCover %}
+        <a class="asset-card-placeholder asset-card-fallback" href="{{ detailUrl }}" aria-label="Read comic {{ displayName }}{% if asset.project_title %} from {{ asset.project_title }}{% endif %}"{{ assetPresentation.comicReaderAttributes(asset, 'data-asset-library-comic-trigger', detailUrl, asset.project_title, asset.project_title) }} data-preview-fallback hidden>{{ asset.extension or 'Preview unavailable' }}</a>
+      {% else %}
+        <span class="asset-card-placeholder asset-card-fallback" data-preview-fallback hidden>{{ asset.extension or 'Preview unavailable' }}</span>
+      {% endif %}
     {% elif not asset.is_present %}
       <span class="asset-card-placeholder asset-card-placeholder-missing">Missing at last scan</span>
     {% elif asset.preview_state == 'video' %}
       {{ assetPresentation.videoPlaceholder(asset, 'grid', detailUrl, 'Play video ' ~ displayName, { nsfwBlur: asset.nsfwBlur, title: displayName }) }}
+    {% elif assetPresentation.comicReadable(asset, 'data-asset-library-comic-trigger') | length %}
+      <a class="asset-card-placeholder" href="{{ detailUrl }}" aria-label="Read comic {{ displayName }}{% if asset.project_title %} from {{ asset.project_title }}{% endif %}"{{ assetPresentation.comicReaderAttributes(asset, 'data-asset-library-comic-trigger', detailUrl, asset.project_title, asset.project_title) }}>Read comic</a>
     {% elif asset.preview_state == 'unsupported' %}
       <span class="asset-card-placeholder">{{ asset.extension or 'Asset' }} — preview not supported</span>
     {% else %}
@@ -97,12 +104,13 @@
    the short type label with the full state in their title and sr-only text,
    since the 48px box cannot hold a sentence. #}
 {% macro renderListPreview(asset, detailUrl, displayName) %}
-  {% set previewUrl = asset.preview_url or asset.thumbnail_url %}
-  {% set previewAvailable = asset.is_present and previewUrl and asset.preview_state != 'unsupported' and asset.preview_state != 'missing' %}
+  {% set comicCover = assetPresentation.comicReadable(asset, 'data-asset-library-comic-trigger') | length and asset.preview.comic.cover.urls.preview %}
+  {% set previewUrl = asset.preview.comic.cover.urls.preview if comicCover else (asset.preview_url or asset.thumbnail_url) %}
+  {% set previewAvailable = comicCover or (asset.is_present and previewUrl and asset.preview_state != 'unsupported' and asset.preview_state != 'missing') %}
   {% set typeLabel = (asset.extension | upper) or 'File' %}
   <div class="asset-list-card-media dashboard-thumb{% if asset.preview and asset.preview.kind == 'krita' %} asset-media--krita{% endif %}"{% if previewAvailable %} data-preview-enhancement data-preview-state="loading"{% endif %}>
     {% if previewAvailable %}
-      <a class="asset-list-card-media-link" href="{{ detailUrl }}" aria-label="View preview of {{ displayName }} from {{ asset.project_title }}" data-asset-library-preview-id="{{ asset.id }}" data-asset-library-preview-project-id="{{ asset.project_id }}">
+      <a class="asset-list-card-media-link" href="{{ detailUrl }}" aria-label="{% if comicCover %}Read comic {{ displayName }}{% if asset.project_title %} from {{ asset.project_title }}{% endif %}{% else %}View preview of {{ displayName }} from {{ asset.project_title }}{% endif %}"{% if comicCover %}{{ assetPresentation.comicReaderAttributes(asset, 'data-asset-library-comic-trigger', detailUrl, asset.project_title, asset.project_title) }}{% else %} data-asset-library-preview-id="{{ asset.id }}" data-asset-library-preview-project-id="{{ asset.project_id }}"{% endif %}>
         <img class="asset-list-card-media-image{% if asset.nsfwBlur %} asset-image--nsfw-blurred{% endif %}"
              src="{{ previewUrl }}"
              alt=""
@@ -110,11 +118,17 @@
              decoding="async"
              data-preview-image>
       </a>
-      <span class="asset-list-card-media-fallback" data-preview-fallback hidden>{{ typeLabel }}</span>
+      {% if comicCover %}
+        <a class="asset-list-card-media-fallback" href="{{ detailUrl }}" aria-label="Read comic {{ displayName }}{% if asset.project_title %} from {{ asset.project_title }}{% endif %}"{{ assetPresentation.comicReaderAttributes(asset, 'data-asset-library-comic-trigger', detailUrl, asset.project_title, asset.project_title) }} data-preview-fallback hidden>{{ typeLabel }}</a>
+      {% else %}
+        <span class="asset-list-card-media-fallback" data-preview-fallback hidden>{{ typeLabel }}</span>
+      {% endif %}
     {% elif not asset.is_present %}
       <span class="asset-list-card-media-placeholder asset-list-card-media-placeholder--missing" title="Missing at last scan">{{ icons.icon('warning') }}<span class="sr-only">Missing at last scan</span></span>
     {% elif asset.preview_state == 'video' %}
       {{ assetPresentation.videoPlaceholder(asset, 'list', detailUrl, 'Play video ' ~ displayName ~ ' from ' ~ asset.project_title, { nsfwBlur: asset.nsfwBlur, title: displayName }) }}
+    {% elif assetPresentation.comicReadable(asset, 'data-asset-library-comic-trigger') | length %}
+      <a class="asset-list-card-media-placeholder" href="{{ detailUrl }}" aria-label="Read comic {{ displayName }}{% if asset.project_title %} from {{ asset.project_title }}{% endif %}"{{ assetPresentation.comicReaderAttributes(asset, 'data-asset-library-comic-trigger', detailUrl, asset.project_title, asset.project_title) }}>Read comic</a>
     {% elif asset.preview_state == 'unsupported' %}
       <span class="asset-list-card-media-placeholder" title="{{ typeLabel }} — preview not supported">{{ typeLabel }}<span class="sr-only"> — preview not supported</span></span>
     {% else %}
@@ -240,7 +254,7 @@
           {% set detailUrl = asset.detailUrl or ("/projects/" ~ asset.project_id ~ "/assets/" ~ asset.id) %}
           {% set displayName = asset.filename or asset.relative_path or 'Unnamed asset' %}
           <li class="asset-grid-item{% if not asset.is_present %} is-missing{% endif %}">
-            <article class="asset-card asset-viewer-grid-card" data-asset-id="{{ asset.id }}">
+            <article class="asset-card asset-viewer-grid-card" data-asset-id="{{ asset.id }}" data-asset-project-id="{{ asset.project_id }}">
               <div class="asset-card-top asset-viewer-grid-card-top">
                 <a class="asset-details-link asset-details-link--{{ 'present' if asset.is_present else 'missing' }} asset-tooltip asset-tooltip--right" href="{{ detailUrl }}"
                    aria-label="Asset details | File {{ 'present' if asset.is_present else 'missing!' }}"
@@ -280,7 +294,7 @@
                 {% set detailId = 'asset-library-list-info-' ~ asset.id %}
                 {% set releaseCount = asset.release_titles.length if asset.release_titles else 0 %}
                 <li class="asset-list-item{% if not asset.is_present %} is-missing{% endif %}">
-                  <article class="asset-list-card" data-asset-id="{{ asset.id }}">
+                  <article class="asset-list-card" data-asset-id="{{ asset.id }}" data-asset-project-id="{{ asset.project_id }}">
                     <div class="asset-list-cell asset-list-cell--asset">
                       {{ renderListPreview(asset, detailUrl, displayName) }}
                       <div class="asset-list-card-heading">

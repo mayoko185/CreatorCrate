@@ -374,3 +374,25 @@ describe('supported video presentation', () => {
     expect(html.match(INERT_FRAME)).toHaveLength(1);
   });
 });
+
+
+describe('shared viewer image-source descriptor serialization', () => {
+  it('escapes one JSON attribute without changing URLs, tokens or labels', () => {
+    const imageSources = { projectId: 7, assetId: 73, sourceRevision: '0123456789abcdef',
+      optimized: { url: '/projects/7/assets/73/preview?rendition=optimized&sourceRevision=0123456789abcdef&v=fedcba9876543210', revision: 'fedcba9876543210', eligible: true },
+      original: { url: '/projects/7/assets/73/original?sourceRevision=0123456789abcdef', eligible: true },
+      toggleEligible: true };
+    const html = env.renderString(`{% import "partials/asset-presentation.njk" as presentation %}{{ presentation.viewerTriggerAttributes(asset, 'data-test-viewer') }}`, {
+      asset: { id: 73, project_id: 7, filename: 'cover "quoted" & <final>.png', is_present: true,
+        preview: { state: 'previewable', imageSources }, preview_url: '/ordinary-preview', viewerUrl: '/projects/7/assets/73' },
+    });
+    const encoded = html.match(/data-viewer-image-sources="([^"]*)"/)[1];
+    expect(encoded).toContain('&quot;');
+    expect(encoded).toContain('&amp;');
+    const decoded = encoded.replaceAll('&quot;', '"').replaceAll('&amp;', '&');
+    expect(JSON.parse(decoded)).toEqual(imageSources);
+    expect(html.match(/data-viewer-image-sources=/g)).toHaveLength(1);
+    expect(html).toContain('data-viewer-preview-url="/ordinary-preview"');
+    expect(html).toContain('data-viewer-filename="cover &quot;quoted&quot; &amp; &lt;final&gt;.png"');
+  });
+});

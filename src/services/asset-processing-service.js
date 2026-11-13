@@ -1349,6 +1349,30 @@ export function createAssetProcessingService({
       }
       plan.ownership = 'creatorcrate-owned-replace';
     }
+    // Catalogue state never grants replacement authority. Capture it only after every
+    // destination has passed the existing artifact ownership and replacement checks.
+    for (const plan of plans) {
+      const extension = deriveExtensionFromFilename(plan.relativePath);
+      if (!['cbz', 'cbr', 'cb7'].includes(extension)) continue;
+      const asset = assetRepository.findByProjectIdAndPath(projectId, plan.relativePath);
+      if (!asset) continue;
+      if (asset.project_id !== projectId || asset.relative_path !== plan.relativePath
+        || asset.extension?.toLowerCase() !== extension) {
+        throw new AssetProcessingError('The indexed comic does not match the archive destination.', {
+          code: 'ARCHIVE_DESTINATION_CONFLICT',
+        });
+      }
+      plan.comicSourceUpdate = {
+        assetId: asset.id,
+        relativePath: plan.relativePath,
+        expectedExtension: asset.extension,
+        expectedSizeBytes: asset.size_bytes,
+        expectedModifiedAt: asset.modified_at,
+        expectedIsPresent: asset.is_present,
+        expectedSourceAnimated: asset.source_animated,
+        expectedSourceGeneration: asset.source_generation,
+      };
+    }
     return plans;
   }
 
@@ -1705,6 +1729,15 @@ export function createAssetProcessingService({
         noteArchiveValidationFailure(error, plan, `precommit-${failure}`, 1);
         throw error;
       }
+      // Retain the public object's verified metadata; outputStats belongs to staging.
+      // The final sweeps below (and Watermark's later sweeps) must still accept it.
+      // Match numeric fs.Stats.mtime rounding used by scanner reconciliation.
+      const modifiedMs = Number(fingerprint.mtimeNs / 1000000000n) * 1000
+        + Number(fingerprint.mtimeNs % 1000000000n) / 1000000;
+      plan.publishedSource = {
+        sizeBytes: Number(fingerprint.size),
+        modifiedAt: new Date(Math.round(modifiedMs)).toISOString(),
+      };
       if (plan.destinationRemoved) backupFingerprints.set(plan, assertArchiveBackupValid(plan, projectDir, 'precommit'));
       plan.outputProvenance = plan.outputBirthtimeNs === null || plan.outputBirthtimeNs === undefined
         ? null
@@ -5184,13 +5217,14 @@ export function createAssetProcessingService({
       replacements,
       deletes,
       outputs,
+      comicSourceUpdates: buildArchiveComicSourceUpdates(artifacts),
       artifactReplacements: artifacts.filter((artifact) => artifact.artifact).map((artifact) => ({
         id: artifact.artifact.id,
         relativePath: artifact.relativePath,
         kind: artifact.kind,
         expectedSha256: artifact.artifact.sha256,
         sha256: artifact.sha256,
-        sizeBytes: artifact.outputStats.size,
+        sizeBytes: artifact.publishedSource.sizeBytes,
         generatedBy: WATERMARK_GENERATED_BY,
         generatedMode: options.mode,
         generatedWatermarkId: watermarkId,
@@ -5202,7 +5236,7 @@ export function createAssetProcessingService({
         relativePath: artifact.relativePath,
         kind: artifact.kind,
         sha256: artifact.sha256,
-        sizeBytes: artifact.outputStats.size,
+        sizeBytes: artifact.publishedSource.sizeBytes,
         generatedBy: WATERMARK_GENERATED_BY,
         generatedMode: options.mode,
         generatedWatermarkId: watermarkId,
@@ -5211,11 +5245,19 @@ export function createAssetProcessingService({
     };
   }
 
+  function buildArchiveComicSourceUpdates(archivePlans) {
+    return archivePlans.filter((plan) => plan.comicSourceUpdate).map((plan) => ({
+      ...plan.comicSourceUpdate,
+      data: { ...plan.publishedSource },
+    }));
+  }
+
   function buildArchiveArtifactChanges(archivePlans) {
     return {
       replacements: [],
       deletes: [],
       outputs: [],
+      comicSourceUpdates: buildArchiveComicSourceUpdates(archivePlans),
       artifactReplacements: archivePlans
         .filter((plan) => plan.artifact)
         .map((plan) => ({
@@ -5224,7 +5266,7 @@ export function createAssetProcessingService({
           kind: plan.kind,
           expectedSha256: plan.artifact.sha256,
           sha256: plan.sha256,
-          sizeBytes: plan.outputStats.size,
+          sizeBytes: plan.publishedSource.sizeBytes,
           generatedBy: ARCHIVES_GENERATED_BY,
           generatedMode: 'standalone',
           generatedWatermarkId: null,
@@ -5238,7 +5280,7 @@ export function createAssetProcessingService({
           relativePath: plan.relativePath,
           kind: plan.kind,
           sha256: plan.sha256,
-          sizeBytes: plan.outputStats.size,
+          sizeBytes: plan.publishedSource.sizeBytes,
           generatedBy: ARCHIVES_GENERATED_BY,
           generatedMode: 'standalone',
           generatedWatermarkId: null,

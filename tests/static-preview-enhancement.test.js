@@ -280,6 +280,35 @@ describe('static preview enhancement helpers', () => {
     expect(fallback.hidden).toBe(false);
   });
 
+  it.each([true, false])('keeps an actionable fallback reachable without hiding ordinary span-fallback links (%s)', (actionable) => {
+    const { root, image, fallback } = makePreview();
+    const primaryLink = makeElement({ href: '/details' });
+    image.closest = selector => selector === 'a' ? primaryLink : null;
+    fallback.matches = selector => actionable && selector === 'a';
+    enhancePreview(root);
+    image.dispatch('error');
+    expect(primaryLink.hidden).toBe(actionable);
+    expect(fallback.hidden).toBe(false);
+    expect(image.src).toBe('/thumbnail.webp');
+  });
+
+  it('restores the same primary anchor when its owner resets the same media node for a successful replacement source', () => {
+    const { root, image, fallback } = makePreview();
+    const primaryLink = makeElement({ href: '/details' });
+    image.closest = selector => selector === 'a' ? primaryLink : null;
+    fallback.matches = selector => selector === 'a';
+    enhancePreview(root);
+    image.dispatch('error');
+    expect(primaryLink.hidden).toBe(true);
+    root.dataset.previewState = 'loading';
+    image.src = '/replacement.webp';
+    image.dispatch('load');
+    expect(root.dataset.previewState).toBe('loaded');
+    expect(primaryLink.hidden).toBe(false);
+    expect(image.hidden).toBe(false);
+    expect(fallback.hidden).toBe(true);
+  });
+
   it('does not retry or rewrite image sources after repeated errors', () => {
     const src = '/projects/1/assets/2/thumbnail?v=abc123';
     const { root, image, fallback } = makePreview({ src });
