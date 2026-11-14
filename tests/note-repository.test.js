@@ -1714,4 +1714,199 @@ describe('note repository', () => {
       expect(repository.listAssetsForNote(direct.id)).toEqual([assetId]);
     });
   });
+
+  describe('related notes for project', () => {
+    let nextProjectNumber = 1;
+
+    function createProject(title = `Related Project ${nextProjectNumber++}`) {
+      return Number(db.prepare(`
+        INSERT INTO projects (
+          title, slug, description, notes, status,
+          patreon_url, project_type
+        ) VALUES (?, ?, '', '', 'tbd', NULL, 'images')
+      `).run(title, title.toLowerCase().replaceAll(' ', '-')).lastInsertRowid);
+    }
+
+    function createAsset(projectId, relativePath) {
+      return Number(db.prepare(`
+        INSERT INTO assets (project_id, relative_path, filename)
+        VALUES (?, ?, ?)
+      `).run(projectId, relativePath, relativePath.split('/').pop()).lastInsertRowid);
+    }
+
+    function createBook(title, sortOrder) {
+      return Number(db.prepare('INSERT INTO books (title, sort_order) VALUES (?, ?)')
+        .run(title, sortOrder).lastInsertRowid);
+    }
+
+    function createChapter(bookId, title, sortOrder) {
+      return Number(db.prepare('INSERT INTO chapters (book_id, title, sort_order) VALUES (?, ?, ?)')
+        .run(bookId, title, sortOrder).lastInsertRowid);
+    }
+
+    function link(noteId, { projectIds = [], assetIds = [] } = {}) {
+      repository.replaceProjects(noteId, projectIds);
+      repository.replaceAssets(noteId, assetIds);
+    }
+
+    function summary(projectId) {
+      return repository.listRelatedForProject(projectId).map((note) => ({
+        id: note.id,
+        projectLinked: note.projectLinked,
+        assetIds: note.assetIds,
+      }));
+    }
+
+    it('reports direct-only, asset-only, and dual-linked Notes with their association kinds', () => {
+      const projectId = createProject();
+      const assetId = createAsset(projectId, 'source/a.png');
+      const direct = repository.create({ title: 'Direct' });
+      const viaAsset = repository.create({ title: 'Via asset' });
+      const both = repository.create({ title: 'Both' });
+      const unrelated = repository.create({ title: 'Unrelated' });
+      link(direct.id, { projectIds: [projectId] });
+      link(viaAsset.id, { assetIds: [assetId] });
+      link(both.id, { projectIds: [projectId], assetIds: [assetId] });
+
+      const related = repository.listRelatedForProject(projectId);
+      expect(related.map(({ id, projectLinked, assetIds }) => ({ id, projectLinked, assetIds }))).toEqual([
+        { id: direct.id, projectLinked: true, assetIds: [] },
+        { id: viaAsset.id, projectLinked: false, assetIds: [assetId] },
+        { id: both.id, projectLinked: true, assetIds: [assetId] },
+      ]);
+      expect(related.some((note) => note.id === unrelated.id)).toBe(false);
+
+      const { projectLinked, assetIds, ...noteFields } = related[2];
+      expect(noteFields).toEqual(repository.findById(both.id));
+      expect('project_linked' in related[2]).toBe(false);
+    });
+
+    it('lists a Note once with every linked Asset of the Project, ascending and unique', () => {
+      const projectId = createProject();
+      const a1 = createAsset(projectId, 'source/a1.png');
+      const a2 = createAsset(projectId, 'source/a2.png');
+      const a3 = createAsset(projectId, 'source/a3.png');
+      const note = repository.create({ title: 'Many assets' });
+      link(note.id, { projectIds: [projectId], assetIds: [a3, a1, a3, a2] });
+
+      expect(summary(projectId)).toEqual([
+        { id: note.id, projectLinked: true, assetIds: [a1, a2, a3] },
+      ]);
+    });
+
+    it('excludes Assets and Notes that belong only to other Projects', () => {
+      const projectId = createProject();
+      const otherProjectId = createProject();
+      const ownAsset = createAsset(projectId, 'source/own.png');
+      const otherAsset = createAsset(otherProjectId, 'source/other.png');
+      const otherOnly = repository.create({ title: 'Other only' });
+      const shared = repository.create({ title: 'Shared' });
+      const otherDirect = repository.create({ title: 'Other direct, own asset' });
+      const directWithOtherAsset = repository.create({ title: 'Own direct, other asset' });
+      link(otherOnly.id, { projectIds: [otherProjectId], assetIds: [otherAsset] });
+      link(shared.id, { projectIds: [projectId, otherProjectId], assetIds: [ownAsset, otherAsset] });
+      link(otherDirect.id, { projectIds: [otherProjectId], assetIds: [ownAsset] });
+      link(directWithOtherAsset.id, { projectIds: [projectId], assetIds: [otherAsset] });
+
+      expect(summary(projectId)).toEqual([
+        { id: shared.id, projectLinked: true, assetIds: [ownAsset] },
+        { id: otherDirect.id, projectLinked: false, assetIds: [ownAsset] },
+        { id: directWithOtherAsset.id, projectLinked: true, assetIds: [] },
+      ]);
+      expect(summary(otherProjectId)).toEqual([
+        { id: otherOnly.id, projectLinked: true, assetIds: [otherAsset] },
+        { id: shared.id, projectLinked: true, assetIds: [otherAsset] },
+        { id: otherDirect.id, projectLinked: true, assetIds: [] },
+        { id: directWithOtherAsset.id, projectLinked: false, assetIds: [otherAsset] },
+      ]);
+      expect(summary(createProject())).toEqual([]);
+    });
+
+    it('orders Book and Chapter Pages by the Notes hierarchy across Books', () => {
+      const projectId = createProject();
+      const assetId = createAsset(projectId, 'source/a.png');
+      const laterBook = createBook('Later', 5);
+      const earlierBook = createBook('Earlier', 2);
+      const laterChapter = createChapter(earlierBook, 'Second chapter', 1);
+      const earlierChapter = createChapter(earlierBook, 'First chapter', 0);
+
+      const laterBookPage = repository.create({ bookId: laterBook, chapterId: null, title: 'L direct' });
+      const directPage2 = repository.create({ bookId: earlierBook, chapterId: null, title: 'E direct 1' });
+      const directPage1 = repository.create({ bookId: earlierBook, chapterId: null, title: 'E direct 0' });
+      repository.reorderForBook(earlierBook, [directPage1.id, directPage2.id]);
+      const secondChapterPage = repository.create({ chapterId: laterChapter, title: 'C2 page' });
+      const firstChapterPage2 = repository.create({ chapterId: earlierChapter, title: 'C1 page b' });
+      const firstChapterPage1 = repository.create({ chapterId: earlierChapter, title: 'C1 page a' });
+      rawReorder(earlierChapter, [firstChapterPage1.id, firstChapterPage2.id]);
+
+      link(laterBookPage.id, { projectIds: [projectId] });
+      link(directPage2.id, { assetIds: [assetId] });
+      link(directPage1.id, { projectIds: [projectId], assetIds: [assetId] });
+      link(secondChapterPage.id, { assetIds: [assetId] });
+      link(firstChapterPage2.id, { projectIds: [projectId] });
+      link(firstChapterPage1.id, { assetIds: [assetId] });
+
+      const expected = [
+        firstChapterPage1.id,
+        firstChapterPage2.id,
+        secondChapterPage.id,
+        directPage1.id,
+        directPage2.id,
+        laterBookPage.id,
+      ];
+      const related = repository.listRelatedForProject(projectId);
+      expect(related.map((note) => note.id)).toEqual(expected);
+      expect(related.map((note) => note.chapter_id))
+        .toEqual([earlierChapter, earlierChapter, laterChapter, null, null, null]);
+      const relatedIds = new Set(expected);
+      expect(repository.list().map((note) => note.id).filter((id) => relatedIds.has(id)))
+        .toEqual(expected);
+    });
+
+    it('drops removed associations, deleted Assets, and deleted Notes', () => {
+      const projectId = createProject();
+      const keptAsset = createAsset(projectId, 'source/kept.png');
+      const deletedAsset = createAsset(projectId, 'source/deleted.png');
+      const unlinked = repository.create({ title: 'Unlinked later' });
+      const partial = repository.create({ title: 'Partial' });
+      const assetGone = repository.create({ title: 'Only deleted asset' });
+      const deletedNote = repository.create({ title: 'Deleted note' });
+      link(unlinked.id, { projectIds: [projectId], assetIds: [keptAsset] });
+      link(partial.id, { projectIds: [projectId], assetIds: [keptAsset, deletedAsset] });
+      link(assetGone.id, { assetIds: [deletedAsset] });
+      link(deletedNote.id, { projectIds: [projectId] });
+
+      link(unlinked.id, { projectIds: [], assetIds: [] });
+      repository.replaceProjects(partial.id, []);
+      db.prepare('DELETE FROM assets WHERE id = ?').run(deletedAsset);
+      repository.deleteById(deletedNote.id);
+
+      expect(summary(projectId)).toEqual([
+        { id: partial.id, projectLinked: false, assetIds: [keptAsset] },
+      ]);
+    });
+
+    it('keeps links to Asset records whose files are missing', () => {
+      const projectId = createProject();
+      const assetId = createAsset(projectId, 'source/missing.png');
+      const note = repository.create({ title: 'Missing file' });
+      link(note.id, { assetIds: [assetId] });
+      db.prepare(`
+        UPDATE assets SET is_present = 0, missing_since = datetime('now') WHERE id = ?
+      `).run(assetId);
+
+      expect(summary(projectId)).toEqual([
+        { id: note.id, projectLinked: false, assetIds: [assetId] },
+      ]);
+    });
+
+    it('rejects invalid Project IDs and surfaces query failures', () => {
+      expect(() => repository.listRelatedForProject(0)).toThrow(NoteError);
+      expect(() => repository.listRelatedForProject('1')).toThrow(/Invalid project ID/);
+
+      const projectId = createProject();
+      db.exec('DROP TABLE note_assets');
+      expect(() => repository.listRelatedForProject(projectId)).toThrow(/note_assets/);
+    });
+  });
 });

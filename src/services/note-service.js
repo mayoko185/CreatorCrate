@@ -3,8 +3,12 @@ import { NoteError } from '../data/note-repository.js';
 import { BookContentIntegrityError, BookNotFoundError } from './book-service.js';
 import { buildCurrentBookHierarchy, planBookHierarchy } from './book-hierarchy.js';
 import { ChapterNotFoundError } from './chapter-service.js';
+import { ProjectNotFoundError } from './project-service.js';
 
 export const NOTE_TITLE_MAX = 200;
+
+// Matches the repository batching convention for bounded IN (...) reads.
+const RELATED_ASSET_BATCH_SIZE = 500;
 
 const REORDER_VALIDATION_CODES = new Set([
   'INVALID_INPUT',
@@ -415,6 +419,25 @@ export function createNoteService({
       assetIds: associations.assetIds ?? noteRepository.listAssetsForNote(note.id),
     };
   }
+
+  function readRelatedNotesForProject(projectId) {
+    if (!projectRepository.findById(projectId)) {
+      throw new ProjectNotFoundError(projectId);
+    }
+    const notes = noteRepository.listRelatedForProject(projectId);
+    const assetIds = [...new Set(notes.flatMap((note) => note.assetIds))].sort((a, b) => a - b);
+    const assets = [];
+    for (let index = 0; index < assetIds.length; index += RELATED_ASSET_BATCH_SIZE) {
+      const batch = assetIds.slice(index, index + RELATED_ASSET_BATCH_SIZE);
+      for (const asset of assetRepository.findAssetsForNoteAssociation(batch)) {
+        if (asset.project_id === projectId) assets.push(asset);
+      }
+    }
+    assets.sort((left, right) => left.id - right.id);
+    return { projectId, notes, assets };
+  }
+
+  const readRelatedNotesForProjectTx = db ? db.transaction(readRelatedNotesForProject) : null;
 
   function getRevisionRetention() {
     return noteRevisionSettingsService?.getRevisionRetention?.() ?? 10;
@@ -1096,6 +1119,24 @@ export function createNoteService({
 
     listNotes() {
       return noteRepository.list();
+    },
+
+    /**
+     * Notes Pages related to one Project, for the Project Detail Related Notes
+     * read model. Each Note appears once, in Notes hierarchy order, whether it
+     * is linked to the Project directly, through Assets owned by the Project,
+     * or both. `assets` holds the note-association metadata (ascending id) for
+     * every Asset referenced by any Note's `assetIds`; records whose file is
+     * missing are kept and report `is_present: 0`.
+     *
+     * @param {number} projectId
+     * @returns {{ projectId: number, notes: Array<object & { projectLinked: boolean, assetIds: number[] }>, assets: Array<{ id: number, project_id: number, relative_path: string, filename: string, is_present: number, project_title: string, project_is_archived: number }> }}
+     */
+    listRelatedNotesForProject(projectId) {
+      assertPositiveIntegerId(projectId, 'projectId');
+      return readRelatedNotesForProjectTx
+        ? readRelatedNotesForProjectTx(projectId)
+        : readRelatedNotesForProject(projectId);
     },
 
     listNotesForChapter(chapterId) {

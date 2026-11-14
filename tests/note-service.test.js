@@ -24,6 +24,7 @@ import {
 } from '../src/services/note-service.js';
 import { BookNotFoundError } from '../src/services/book-service.js';
 import { ChapterNotFoundError } from '../src/services/chapter-service.js';
+import { ProjectNotFoundError } from '../src/services/project-service.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const MISSING_ID = 999999;
@@ -2228,6 +2229,87 @@ describe('note service', () => {
         .toThrow(/forced restore association failure/);
       expect(service.getNote(fixture.note.id)).toEqual(before);
       expect(service.listNoteRevisions(fixture.note.id)).toEqual(history);
+    });
+  });
+
+  describe('listRelatedNotesForProject', () => {
+    it('returns related Notes with association kinds and this Project\'s Asset metadata', () => {
+      const projectId = createProject('Related');
+      const otherProjectId = createProject('Other');
+      const present = createAsset(projectId, 'source/b-present.png');
+      const missing = createAsset(projectId, 'source/a-missing.png');
+      const otherAsset = createAsset(otherProjectId, 'source/other.png');
+      db.prepare(`
+        UPDATE assets SET is_present = 0, missing_since = datetime('now') WHERE id = ?
+      `).run(missing);
+
+      const chapterPage = createNote({
+        title: 'Chapter Page', projectIds: [projectId], assetIds: [present, otherAsset],
+      });
+      const directPage = createDirectNote({ title: 'Direct Page', assetIds: [missing, present] });
+      createNote({ title: 'Other only', projectIds: [otherProjectId], assetIds: [otherAsset] });
+
+      const result = service.listRelatedNotesForProject(projectId);
+
+      expect(result.projectId).toBe(projectId);
+      expect(result.notes.map(({ id, chapter_id, projectLinked, assetIds }) => ({
+        id, chapter_id, projectLinked, assetIds,
+      }))).toEqual([
+        { id: chapterPage.id, chapter_id: chapterId, projectLinked: true, assetIds: [present] },
+        { id: directPage.id, chapter_id: null, projectLinked: false, assetIds: [present, missing] },
+      ]);
+      expect(result.notes[0]).toMatchObject({ title: 'Chapter Page', book_id: bookId });
+      expect(result.assets.map((asset) => asset.id)).toEqual([present, missing]);
+      expect(result.assets).toEqual([
+        expect.objectContaining({
+          id: present, project_id: projectId, filename: 'b-present.png', is_present: 1,
+          project_title: 'Related',
+        }),
+        expect.objectContaining({
+          id: missing, project_id: projectId, filename: 'a-missing.png', is_present: 0,
+        }),
+      ]);
+    });
+
+    it('reads associations and Asset metadata in set-based batches, not per Note or Asset', () => {
+      const projectId = createProject();
+      const assetIds = db.transaction(() => Array.from({ length: 501 }, (_, index) => (
+        createAsset(projectId, `source/bulk-${index}.png`)
+      )))();
+      createNote({ title: 'First half', assetIds: assetIds.slice(0, 300) });
+      createDirectNote({ title: 'Overlap', projectIds: [projectId], assetIds: assetIds.slice(200) });
+      const related = vi.spyOn(noteRepository, 'listRelatedForProject');
+      const assetBatches = vi.spyOn(assetRepository, 'findAssetsForNoteAssociation');
+      const perAsset = vi.spyOn(noteRepository, 'listForAsset');
+      const perNoteAssets = vi.spyOn(noteRepository, 'listAssetsForNote');
+      const assetById = vi.spyOn(assetRepository, 'findById');
+
+      const result = service.listRelatedNotesForProject(projectId);
+
+      expect(related).toHaveBeenCalledTimes(1);
+      expect(assetBatches).toHaveBeenCalledTimes(2);
+      expect(assetBatches.mock.calls.map(([ids]) => ids.length)).toEqual([500, 1]);
+      expect(perAsset).not.toHaveBeenCalled();
+      expect(perNoteAssets).not.toHaveBeenCalled();
+      expect(assetById).not.toHaveBeenCalled();
+      expect(result.notes.map((note) => note.assetIds.length)).toEqual([300, 301]);
+      expect(result.assets.map((asset) => asset.id)).toEqual(assetIds);
+    });
+
+    it('validates the Project and propagates read failures', () => {
+      expect(() => service.listRelatedNotesForProject(0)).toThrow(NoteValidationError);
+      expect(() => service.listRelatedNotesForProject(MISSING_ID)).toThrow(ProjectNotFoundError);
+
+      const projectId = createProject();
+      expect(service.listRelatedNotesForProject(projectId)).toEqual({
+        projectId, notes: [], assets: [],
+      });
+
+      const failure = new Error('association read failed');
+      vi.spyOn(noteRepository, 'listRelatedForProject').mockImplementation(() => {
+        throw failure;
+      });
+      expect(() => service.listRelatedNotesForProject(projectId)).toThrow(failure);
     });
   });
 });

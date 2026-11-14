@@ -417,6 +417,55 @@ export function createNoteRepository(db) {
     ${HIERARCHY_ORDER}
   `);
 
+  // Project-scoped related Notes: the union of direct Project links and links
+  // to Assets owned by the Project. The UNION deduplicates Notes reached by
+  // both paths; the LEFT JOIN on the (note_id, project_id) primary key reports
+  // the direct link without multiplying rows.
+  const listRelatedForProjectStmt = db.prepare(`
+    SELECT ${NOTE_COLUMNS_QUALIFIED},
+      CASE WHEN direct.note_id IS NULL THEN 0 ELSE 1 END AS project_linked
+    FROM (
+      SELECT note_id FROM note_projects WHERE project_id = ?
+      UNION
+      SELECT na.note_id
+      FROM assets a
+      JOIN note_assets na ON na.asset_id = a.id
+      WHERE a.project_id = ?
+    ) related
+    JOIN notes ON notes.id = related.note_id
+    LEFT JOIN note_projects direct
+      ON direct.note_id = notes.id AND direct.project_id = ?
+    LEFT JOIN chapters ON chapters.id = notes.chapter_id
+    JOIN books ON books.id = notes.book_id
+    ${HIERARCHY_ORDER}
+  `);
+  // Every (Note, Asset) link whose Asset belongs to the Project. Assets owned
+  // by other Projects never appear, even for Notes also linked to this one.
+  const listProjectAssetLinksStmt = db.prepare(`
+    SELECT na.note_id, na.asset_id
+    FROM assets a
+    JOIN note_assets na ON na.asset_id = a.id
+    WHERE a.project_id = ?
+    ORDER BY na.note_id ASC, na.asset_id ASC
+  `);
+  const listRelatedForProjectTx = db.transaction((projectId) => {
+    const rows = listRelatedForProjectStmt.all(projectId, projectId, projectId);
+    const assetIdsByNoteId = new Map();
+    for (const { note_id: noteId, asset_id: assetId } of listProjectAssetLinksStmt.all(projectId)) {
+      const assetIds = assetIdsByNoteId.get(noteId);
+      if (assetIds) {
+        if (assetIds[assetIds.length - 1] !== assetId) assetIds.push(assetId);
+      } else {
+        assetIdsByNoteId.set(noteId, [assetId]);
+      }
+    }
+    return rows.map(({ project_linked: projectLinked, ...note }) => ({
+      ...note,
+      projectLinked: projectLinked === 1,
+      assetIds: assetIdsByNoteId.get(note.id) ?? [],
+    }));
+  });
+
   function replaceProjectsInTransaction(noteId, projectIds) {
     if (!Array.isArray(projectIds)) {
       throw new NoteError('Project IDs must be an array.', { code: 'INVALID_INPUT' });
@@ -851,6 +900,25 @@ export function createNoteRepository(db) {
      */
     listForProject(projectId) {
       return listForProjectStmt.all(projectId);
+    },
+
+    /**
+     * List each Note related to a Project exactly once, in hierarchy order: a
+     * Note qualifies through a direct Project link, a link to an Asset owned by
+     * the Project, or both. Two set-based reads in one transaction; no per-Asset
+     * or per-Note queries. Asset presence (`is_present`) is not consulted, so a
+     * missing file never hides a link.
+     *
+     * `projectLinked` reports the direct Project link. `assetIds` lists only
+     * this Project's linked Assets, ascending and unique; links to Assets of
+     * other Projects are never included.
+     *
+     * @param {number} projectId
+     * @returns {Array<{ id: number, book_id: number, chapter_id: number|null, title: string, content: string, sort_order: number, created_at: string, updated_at: string, projectLinked: boolean, assetIds: number[] }>}
+     */
+    listRelatedForProject(projectId) {
+      assertId(projectId, 'Project');
+      return listRelatedForProjectTx(projectId);
     },
 
     // ─── Asset associations ────────────────────────────────────────────────
