@@ -1602,8 +1602,7 @@ describe('slideshow scaffold — static UI', () => {
     expect(css).toMatch(/\.asset-viewer-display-controls\s+\.project-filter-actions\s*\{[^}]*gap:\s*var\(--space-sm\)/);
   });
 
-  // B5b: the Asset Library opens the unified viewer instead of the legacy
-  // slideshow scaffold; the legacy hooks are gone so slideshow.js cannot bind.
+  // Only the unified viewer owns image activation.
   it('asset-viewer page: the unified viewer replaces the legacy slideshow scaffold', () => {
     const entries = [
       { id: 101, projectId: 1, filename: 'shared.png', previewUrl: '/projects/1/assets/101/preview?v=a', viewerUrl: '/projects/1/assets/101', revision: 'a' },
@@ -1677,8 +1676,7 @@ describe('slideshow scaffold — static UI', () => {
     expect(trigger).not.toContain('title=');
   });
 
-  // B5a: Project Assets opens the unified viewer instead of the legacy
-  // slideshow scaffold, which stays only on the Asset Library until B5b.
+  // Project Assets shares the same viewer dialog as the other image hosts.
   it('project assets page: the unified viewer replaces the legacy slideshow scaffold', () => {
     const entries = [{ id: 5, projectId: 1, filename: 'a.png', previewUrl: '/p/5' }];
     const html = renderProjectAssetsPage({ slideshowSequenceJson: JSON.stringify(entries) });
@@ -1763,15 +1761,15 @@ describe('slideshow scaffold — static UI', () => {
 describe('slideshow sequence — data contract', () => {
   it('asset-viewer page: renders the authoritative viewer sequence script element', () => {
     const html = renderPage({ slideshowSequenceJson: '[]' });
-    expect(html).toContain('data-slideshow-sequence');
-    const scriptMatch = html.match(/<script[^>]*data-slideshow-sequence[^>]*>([\s\S]*?)<\/script>/);
+    expect(html).toContain('data-asset-library-viewer-sequence');
+    const scriptMatch = html.match(/<script[^>]*data-asset-library-viewer-sequence[^>]*>([\s\S]*?)<\/script>/);
     expect(scriptMatch).not.toBeNull();
     expect(() => JSON.parse(scriptMatch[1])).not.toThrow();
   });
 
   it('asset-viewer page: sequence defaults to empty array when slideshowSequenceJson is not provided', () => {
     const html = renderPage();
-    const scriptMatch = html.match(/<script[^>]*data-slideshow-sequence[^>]*>([\s\S]*?)<\/script>/);
+    const scriptMatch = html.match(/<script[^>]*data-asset-library-viewer-sequence[^>]*>([\s\S]*?)<\/script>/);
     expect(scriptMatch).not.toBeNull();
     expect(JSON.parse(scriptMatch[1])).toEqual([]);
   });
@@ -1781,7 +1779,7 @@ describe('slideshow sequence — data contract', () => {
       { id: 101, filename: 'hero.png', previewUrl: '/projects/1/assets/101/preview?v=abc', viewerUrl: '/projects/1/assets/101', originalUrl: '/projects/1/assets/101/original' },
     ];
     const html = renderPage({ slideshowSequenceJson: JSON.stringify(sequence) });
-    const scriptMatch = html.match(/<script[^>]*data-slideshow-sequence[^>]*>([\s\S]*?)<\/script>/);
+    const scriptMatch = html.match(/<script[^>]*data-asset-library-viewer-sequence[^>]*>([\s\S]*?)<\/script>/);
     const parsed = JSON.parse(scriptMatch[1]);
     expect(parsed).toHaveLength(1);
     expect(parsed[0]).toMatchObject({ id: 101, filename: 'hero.png' });
@@ -1804,30 +1802,30 @@ describe('slideshow sequence — data contract', () => {
     expect(script?.[0]).toContain('data-viewer-label="Asset Viewer"');
     expect(JSON.parse(script[1])).toEqual(sequence);
     expect(html.match(/data-asset-library-viewer-sequence/g)).toHaveLength(1);
-    expect(html.match(/data-slideshow-sequence/g)).toHaveLength(1);
+    expect(html).not.toContain('data-slideshow-sequence');
   });
 
   it('asset-viewer page: sequence JSON is escaped so </script> in filenames cannot break the element', () => {
     const sequence = [{ id: 1, filename: '</script><script>alert(1)', previewUrl: '/projects/1/assets/1/preview?v=x', viewerUrl: '/projects/1/assets/1' }];
     const escapedJson = JSON.stringify(sequence).replace(/<\//g, '<\\/');
     const html = renderPage({ slideshowSequenceJson: escapedJson });
-    const scriptMatch = html.match(/<script[^>]*data-slideshow-sequence[^>]*>([\s\S]*?)<\/script>/);
+    const scriptMatch = html.match(/<script[^>]*data-asset-library-viewer-sequence[^>]*>([\s\S]*?)<\/script>/);
     expect(scriptMatch).not.toBeNull();
     const parsed = JSON.parse(scriptMatch[1]);
     expect(parsed[0].filename).toBe('</script><script>alert(1)');
   });
 
-  it('project assets page: renders slideshow sequence script element inside the scaffold', () => {
+  it('project assets page: renders the authoritative Project Assets viewer sequence script', () => {
     const html = renderProjectAssetsPage({ slideshowSequenceJson: '[]' });
-    expect(html).toContain('data-slideshow-sequence');
-    const scriptMatch = html.match(/<script[^>]*data-slideshow-sequence[^>]*>([\s\S]*?)<\/script>/);
+    expect(html).toContain('data-project-assets-viewer-sequence');
+    const scriptMatch = html.match(/<script[^>]*data-project-assets-viewer-sequence[^>]*>([\s\S]*?)<\/script>/);
     expect(scriptMatch).not.toBeNull();
     expect(() => JSON.parse(scriptMatch[1])).not.toThrow();
   });
 
   it('project assets page: sequence defaults to empty array when slideshowSequenceJson is not provided', () => {
     const html = renderProjectAssetsPage();
-    const scriptMatch = html.match(/<script[^>]*data-slideshow-sequence[^>]*>([\s\S]*?)<\/script>/);
+    const scriptMatch = html.match(/<script[^>]*data-project-assets-viewer-sequence[^>]*>([\s\S]*?)<\/script>/);
     expect(scriptMatch).not.toBeNull();
     expect(JSON.parse(scriptMatch[1])).toEqual([]);
   });
@@ -1837,7 +1835,7 @@ describe('slideshow sequence — data contract', () => {
       { id: 42, filename: 'cover.png', previewUrl: '/projects/5/assets/42/preview?v=xyz', viewerUrl: '/projects/5/assets/42', originalUrl: '/projects/5/assets/42/original' },
     ];
     const html = renderProjectAssetsPage({ slideshowSequenceJson: JSON.stringify(sequence) });
-    const scriptMatch = html.match(/<script[^>]*data-slideshow-sequence[^>]*>([\s\S]*?)<\/script>/);
+    const scriptMatch = html.match(/<script[^>]*data-project-assets-viewer-sequence[^>]*>([\s\S]*?)<\/script>/);
     const parsed = JSON.parse(scriptMatch[1]);
     expect(parsed).toHaveLength(1);
     expect(parsed[0]).toMatchObject({ id: 42, filename: 'cover.png' });

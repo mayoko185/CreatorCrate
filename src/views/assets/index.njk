@@ -669,5 +669,5 @@
      own project-qualified entry. It stays outside the live region; an Asset
      Library refresh copies the new sequence in (live-regions.js) and the open
      viewer reconciles with it (client/asset-library-viewer.js). #}
-  <script type="application/json" data-slideshow-sequence data-asset-library-viewer-sequence data-viewer-label="Asset Viewer">{{ slideshowSequenceJson | default('[]') | safe }}</script>
+  <script type="application/json" data-asset-library-viewer-sequence data-viewer-label="Asset Viewer">{{ slideshowSequenceJson | default('[]') | safe }}</script>
 {% endblock %}

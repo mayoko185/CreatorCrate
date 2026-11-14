@@ -135,8 +135,8 @@
         </section>
 
         <section id="defaults-preview-generation" class="settings-section settings-defaults-section settings-defaults-section--compact" aria-labelledby="defaults-preview-generation-heading" data-project-image-settings-group>
-          <h3 id="defaults-preview-generation-heading">Change preview &amp; slideshow generation</h3>
-          <p class="help-text">Controls project previews and the fitted slideshow image. Original uses the source image when available; animated sources may keep a generated WebP and Krita assets use a generated fallback.</p>
+          <h3 id="defaults-preview-generation-heading">Change preview generation</h3>
+          <p class="help-text">Controls image Preview format, quality and size, including comic covers. Original uses eligible source images; animated sources may keep a generated WebP, while Krita assets and comic covers use a generated fallback. Image and slideshow viewing use a separate Original/Optimized choice in the unified viewer; playback does not change Preview policy.</p>
           <div class="field page-defaults-grid" data-project-image-layout="{{ imageSettings.previewFormat.value }}">
             <div class="field project-image-format-field{% if imageSettings.previewFormat.error %} field-error{% endif %}">
               {{ dropdown.singleSelect({

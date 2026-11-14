@@ -439,6 +439,85 @@ test('fullscreen and window resizes recalculate the shared geometry', async ({ p
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(420);
 });
 
+// D1-A: real Chromium touch input through CDP (technical qualification, not
+// real-device acceptance). start()/move() list every contact down; lift()
+// releases just the contacts it lists.
+async function touchscreen(page) {
+  const cdp = await page.context().newCDPSession(page);
+  const points = (list) => list.map(([id, x, y]) => ({ id, x: Math.round(x), y: Math.round(y) }));
+  const send = (type, list = []) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: points(list) });
+  return {
+    start: (list) => send('touchStart', list),
+    move: (list) => send('touchMove', list),
+    lift: (list) => send('touchEnd', list),
+    end: () => send('touchEnd'),
+    detach: () => cdp.detach(),
+  };
+}
+
+test('touch pinch and pan move the whole spread through the shared viewport; a resolving companion rebases the pinch', async ({ page }) => {
+  await openHarness(page);
+  await spread(page, [{ name: 'tall', position: 1 }, { name: 'wide', position: 2, state: 'pending' }]);
+  const touch = await touchscreen(page);
+  let geometry = await boxes(page);
+  const cx = geometry.surface.x + geometry.surface.width / 2;
+  const cy = geometry.surface.y + geometry.surface.height / 2;
+  const fit = await view(page);
+  expect(fit).toMatchObject({ composite: true, mode: 'fit' });
+  // Fingers over the pages reach the media surface (images take no pointer events).
+  expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.matches('[data-unified-viewer-media]'), { x: cx - 40, y: cy })).toBe(true);
+
+  await touch.start([[0, cx - 40, cy], [1, cx + 40, cy]]);
+  await touch.move([[0, cx - 80, cy], [1, cx + 80, cy]]);
+  const pinched = await view(page);
+  expect(pinched).toMatchObject({ touchGesture: 'pinch', touchContacts: 2, composite: true, mode: 'zoom' });
+  expect(pinched.scale / fit.scale).toBeCloseTo(2, 6);
+  geometry = await boxes(page);
+  expectTouching(geometry);
+  expect(geometry.wrapper.width).toBeCloseTo(pinched.contentWidth * pinched.scale, 0);
+
+  // The companion resolves while both fingers are down: the composition
+  // grows in place and the pinch continues from the new geometry.
+  expect(await spread(page, [{ name: 'tall', position: 1 }, { name: 'wide', position: 2 }])).toEqual({ action: 'resize', change: 'size' });
+  const resized = await view(page);
+  expect(resized).toMatchObject({ touchGesture: 'pinch', touchContacts: 2, composite: true });
+  expect(resized.contentWidth).toBeGreaterThan(pinched.contentWidth);
+  expect(resized.scale / resized.fitScale).toBeCloseTo(pinched.scale / pinched.fitScale, 6);
+  await touch.move([[0, cx - 80, cy], [1, cx + 80, cy]]);
+  expect(await view(page)).toEqual(resized);
+  await touch.move([[0, cx - 120, cy], [1, cx + 120, cy]]);
+  const grown = await view(page);
+  expect(grown.scale / resized.scale).toBeCloseTo(1.5, 6);
+  expectTouching(await boxes(page));
+
+  // One finger left: both pages pan together by the same delta.
+  await touch.lift([[1, cx + 120, cy]]);
+  expect(await view(page)).toMatchObject({ touchGesture: 'pan', touchContacts: 1 });
+  const before = (await boxes(page)).slots.map((slot) => slot.image.x);
+  await touch.move([[0, cx - 60, cy + 20]]);
+  const after = (await boxes(page)).slots.map((slot) => slot.image.x);
+  const state = await view(page);
+  expect(after[0] - before[0]).toBeCloseTo(state.panX - grown.panX, 0);
+  expect(after[1] - before[1]).toBeCloseTo(state.panX - grown.panX, 0);
+  expect(Math.abs(state.panX)).toBeLessThanOrEqual(state.maxPanX);
+  expect(Math.abs(state.panY)).toBeLessThanOrEqual(state.maxPanY);
+  await touch.end();
+  expect(await view(page)).toMatchObject({ touchGesture: 'none', touchContacts: 0, dragging: false });
+  expectTouching(await boxes(page));
+
+  // A group change mid-pinch drops the gesture and starts the new group in Fit.
+  await touch.start([[0, cx - 40, cy], [1, cx + 40, cy]]);
+  await touch.move([[0, cx - 100, cy], [1, cx + 100, cy]]);
+  expect(await spread(page, [{ name: 'portrait', position: 3 }, { name: 'landscape', position: 4 }])).toEqual({ action: 'content', change: 'group' });
+  const group = await view(page);
+  expect(group).toMatchObject({ mode: 'fit', panX: 0, panY: 0, touchContacts: 0, touchGesture: 'none' });
+  await touch.move([[0, cx - 300, cy], [1, cx + 300, cy]]);
+  await touch.end();
+  expect(await view(page)).toEqual(group);
+  await expect(page.locator(DIALOG)).toBeVisible();
+  await touch.detach();
+});
+
 test('the existing single-image viewer is unchanged', async ({ page }) => {
   await serveMedia(page);
   await page.goto(`${fixture.baseURL}/assets`, { waitUntil: 'domcontentloaded' });

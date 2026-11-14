@@ -7,10 +7,6 @@ import {
   refreshProjectAssetsViewer,
 } from '../src/static/client/project-assets-viewer.js';
 import {
-  enhanceProjectAssetsPreviewSlideshow,
-  enhanceSlideshow,
-} from '../src/static/client/slideshow.js';
-import {
   canPlayViewerSlideshow,
   createViewerSource,
   reconcileViewerSource,
@@ -258,7 +254,6 @@ function makePage({ sequence = [entry(1), entry(2), entry(3)], rendered = [2, 3]
   }
   const script = makeNode('script', {
     type: 'application/json',
-    'data-slideshow-sequence': '',
     'data-project-assets-viewer-sequence': '',
     'data-project-id': '7',
     'data-viewer-label': 'Seven',
@@ -408,12 +403,35 @@ describe('Project Assets unified viewer — opening', () => {
     expect(other.listeners).toHaveLength(0);
   });
 
-  it('the legacy slideshow cannot bind to Project Assets', () => {
+  it('opens once per action after repeated enhancement and live replacement, leaving detached controls inert', () => {
     const page = makePage();
-    expect(enhanceSlideshow(page.document)).toBe(0);
-    expect(enhanceProjectAssetsPreviewSlideshow(page.document)).toBe(0);
-    expect(page.cards.get(2).link.listeners).toHaveLength(0);
-    expect(page.trigger.listeners).toHaveLength(0);
+    const enhance = enhanceProjectAssetsViewer;
+    enhance(page.document);
+    enhance(page.document);
+    enhance(page.region);
+    for (let count = 1; count <= 3; count += 1) {
+      page.cards.get(2).link.dispatch('click');
+      expect(page.viewer.open).toHaveBeenCalledTimes(count);
+    }
+    expect(page.viewer.getState().source.mode).toBe('single');
+    const oldLink = page.cards.get(2).link;
+    const oldTrigger = page.trigger;
+    const next = page.replaceRegion();
+    refreshProjectAssetsViewer(next.region);
+    enhance(next.region);
+    enhance(page.document);
+    oldLink.dispatch('click');
+    oldTrigger.dispatch('click');
+    expect(page.viewer.open).toHaveBeenCalledTimes(3);
+    expect(oldLink.listeners).toHaveLength(0);
+    expect(oldTrigger.listeners).toHaveLength(0);
+    next.cards.get(2).link.dispatch('click');
+    expect(page.viewer.open).toHaveBeenCalledTimes(4);
+    expect(page.viewer.getState().source.mode).toBe('single');
+    next.trigger.dispatch('click');
+    expect(page.viewer.open).toHaveBeenCalledTimes(5);
+    expect(page.viewer.getState().source.mode).toBe('sequence');
+    expect(page.document.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
   });
 
   it('viewing images sends no request and leaves selection untouched', () => {

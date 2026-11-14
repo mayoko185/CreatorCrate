@@ -8571,345 +8571,6 @@
          height: 1.125em;
       }
 
-      /* ── Slideshow scaffold (hidden until JS activates) ── */
-      .slideshow-scaffold {
-         position: fixed;
-         inset: 0;
-         z-index: var(--shell-z-overlay);
-         display: block;
-         overflow: hidden;
-         background: var(--bg);
-         color: var(--text);
-         padding: 0;
-         box-sizing: border-box;
-      }
-      .slideshow-scaffold:fullscreen {
-         width: 100%;
-         height: 100%;
-         background: var(--bg);
-      }
-      .slideshow-scaffold::backdrop { background: var(--bg); }
-      .slideshow-scaffold-inner {
-         position: absolute;
-         inset: 0;
-         width: 100%;
-         height: 100%;
-         min-width: 0;
-         min-height: 0;
-      }
-      .slideshow-header {
-         position: absolute;
-         top: var(--space-md);
-         right: var(--space-md);
-         left: var(--space-md);
-         z-index: 4;
-         display: flex;
-         align-items: center;
-         justify-content: space-between;
-         gap: var(--space-sm);
-         pointer-events: none;
-         transition: opacity var(--transition-fast);
-      }
-      .slideshow-header-actions {
-         display: inline-flex;
-         align-items: center;
-         gap: var(--space-sm);
-         margin-left: auto;
-         pointer-events: auto;
-      }
-      .slideshow-status {
-         display: inline-flex;
-         align-items: center;
-         min-height: 2rem;
-         max-width: min(14rem, 45vw);
-         padding: var(--space-xs) var(--space-sm);
-         border: 1px solid rgba(232 236 241 / 0.22);
-         border-radius: 999px;
-         background: rgba(13 15 19 / 0.72);
-         color: var(--text);
-         font-size: 0.875rem;
-         font-variant-numeric: tabular-nums;
-         overflow: hidden;
-         text-overflow: ellipsis;
-         white-space: nowrap;
-      }
-      .slideshow-media-status {
-         display: inline-flex;
-         align-items: center;
-         min-height: 2rem;
-         max-width: min(18rem, 45vw);
-         padding: var(--space-xs) var(--space-sm);
-         border: 1px solid rgba(232 236 241 / 0.22);
-         border-radius: 999px;
-         background: rgba(13 15 19 / 0.72);
-         color: var(--text);
-         font-size: 0.8125rem;
-         overflow: hidden;
-         text-overflow: ellipsis;
-         white-space: nowrap;
-      }
-      .slideshow-preview {
-         position: absolute;
-         inset: 0;
-         width: 100%;
-         height: 100%;
-         overflow: hidden;
-         z-index: 0;
-         background: var(--bg);
-      }
-      .slideshow-img {
-         position: absolute;
-         inset: 0;
-         width: 100%;
-         height: 100%;
-         object-fit: contain;
-         display: block;
-         z-index: 1;
-      }
-      .slideshow-preview[data-slideshow-image-zoomable] .slideshow-preview-img {
-         cursor: zoom-in;
-      }
-      .slideshow-preview[data-slideshow-mode="original"] {
-         cursor: default;
-         touch-action: none;
-      }
-      .slideshow-original-img {
-         display: none;
-      }
-      .slideshow-preview[data-slideshow-mode="original"] .slideshow-original-img {
-         display: none;
-         inset: auto;
-         top: 50%;
-         left: 50%;
-         right: auto;
-         bottom: auto;
-         width: auto;
-         height: auto;
-         max-width: none;
-         max-height: none;
-         object-fit: none;
-         transform: translate(-50%, -50%);
-         user-select: none;
-         -webkit-user-drag: none;
-      }
-      .slideshow-preview[data-slideshow-mode="original"][data-slideshow-original-loaded] .slideshow-preview-img {
-         visibility: hidden;
-      }
-      .slideshow-preview[data-slideshow-mode="original"][data-slideshow-original-loaded] .slideshow-original-img {
-         display: block;
-      }
-      .slideshow-preview[data-slideshow-mode="original"][data-slideshow-pan-enabled] .slideshow-original-img {
-         cursor: grab;
-      }
-      .slideshow-preview[data-slideshow-mode="original"][data-slideshow-dragging] .slideshow-original-img {
-         cursor: grabbing;
-      }
-      .slideshow-caption {
-         position: absolute;
-         bottom: calc(var(--space-lg) + 2.5rem);
-         left: 50%;
-         right: auto;
-         z-index: 2;
-         width: max-content;
-         max-width: calc(100% - var(--space-2xl));
-         margin: 0;
-         padding: var(--space-xs) var(--space-sm);
-         border: 1px solid rgba(232 236 241 / 0.18);
-         border-radius: var(--radius-md);
-         background: rgba(13 15 19 / 0.72);
-         font-size: 0.8125rem;
-         text-align: center;
-         color: var(--text);
-         transform: translateX(-50%);
-         overflow: hidden;
-         text-overflow: ellipsis;
-         white-space: nowrap;
-         transition: opacity var(--transition-fast);
-      }
-      .slideshow-controls {
-         position: absolute;
-         inset: 0;
-         z-index: 3;
-         display: flex;
-         align-items: flex-end;
-         justify-content: center;
-         gap: var(--space-sm);
-         padding: 0 var(--space-lg) var(--space-lg);
-         pointer-events: none;
-         transition: opacity var(--transition-fast);
-      }
-      .slideshow-controls > * { pointer-events: auto; }
-      .slideshow-controls > .slideshow-nav-btn {
-         position: absolute;
-         top: 50%;
-         transform: translateY(-50%);
-      }
-      .slideshow-controls > [data-slideshow-prev] { left: var(--space-lg); }
-      .slideshow-controls > [data-slideshow-next] { right: var(--space-lg); }
-        [data-slideshow-ui-hidden] .slideshow-header > .slideshow-status,
-        [data-slideshow-ui-hidden] .slideshow-header > .slideshow-media-status,
-        [data-slideshow-ui-hidden] .slideshow-header-actions > *,
-        [data-slideshow-ui-hidden] .slideshow-controls > :not(.asset-filter-multiselect-field),
-        [data-slideshow-ui-hidden] .slideshow-controls > .asset-filter-multiselect-field > .cc-dropdown-native-select,
-        [data-slideshow-ui-hidden] .slideshow-controls > .asset-filter-multiselect-field > .cc-dropdown,
-        [data-slideshow-ui-hidden] .slideshow-caption {
-           opacity: 0;
-           pointer-events: none;
-        }
-        [data-slideshow-ui-hidden] .slideshow-header-actions > [data-slideshow-ui-focused],
-        [data-slideshow-ui-hidden] .slideshow-controls > [data-slideshow-ui-focused],
-        [data-slideshow-ui-hidden] .slideshow-controls > .asset-filter-multiselect-field > [data-slideshow-ui-focused] {
-           opacity: 1;
-           pointer-events: auto;
-        }
-      .slideshow-nav-btn,
-      .slideshow-play-pause,
-      .slideshow-fullscreen,
-      .slideshow-original-size,
-      .slideshow-close {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-         min-height: 2rem;
-         min-width: 2rem;
-         padding: 0.3rem 0.5rem;
-         border: 1px solid rgba(232 236 241 / 0.28);
-         border-radius: var(--radius-md);
-         background: rgba(13 15 19 / 0.72);
-         color: var(--text);
-         cursor: pointer;
-         font-size: 0.875rem;
-         line-height: 1;
-         transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), opacity var(--transition-fast);
-      }
-      .slideshow-nav-btn:hover:not(:disabled),
-      .slideshow-play-pause:hover:not(:disabled),
-      .slideshow-fullscreen:hover:not(:disabled),
-      .slideshow-original-size:hover:not(:disabled),
-      .slideshow-close:hover:not(:disabled),
-      .slideshow-controls .cc-dropdown summary:hover {
-         background: rgba(35 42 56 / 0.9);
-         border-color: var(--border-strong);
-      }
-      .slideshow-nav-btn:active:not(:disabled),
-      .slideshow-play-pause:active:not(:disabled),
-      .slideshow-fullscreen:active:not(:disabled),
-      .slideshow-original-size:active:not(:disabled),
-      .slideshow-close:active:not(:disabled) {
-         transform: translateY(1px);
-      }
-      /* Nav buttons are centred with a transform, so pressing keeps it. */
-      .slideshow-controls > .slideshow-nav-btn:active:not(:disabled) {
-         transform: translateY(calc(-50% + 1px));
-      }
-      /* Fullscreen and Original size are toggles; the on state takes the
-         dialogs' selected-option tint. */
-      .slideshow-fullscreen[aria-pressed="true"],
-      .slideshow-original-size[aria-pressed="true"] {
-         border-color: var(--accent);
-         background: rgba(13 15 19 / 0.72) linear-gradient(rgba(34 211 238 / 0.16), rgba(34 211 238 / 0.16));
-         color: var(--accent);
-      }
-      .slideshow-nav-btn:disabled,
-      .slideshow-play-pause:disabled,
-      .slideshow-fullscreen:disabled,
-      .slideshow-original-size:disabled,
-      .slideshow-close:disabled {
-         color: var(--muted);
-         cursor: not-allowed;
-         opacity: 0.6;
-      }
-      .slideshow-nav-btn:focus-visible,
-      .slideshow-play-pause:focus-visible,
-      .slideshow-fullscreen:focus-visible,
-      .slideshow-original-size:focus-visible,
-      .slideshow-close:focus-visible,
-      .slideshow-speed:focus-visible,
-      .slideshow-controls .cc-dropdown summary:focus-visible {
-         outline: 2px solid var(--focus-ring);
-         outline-offset: 2px;
-      }
-      /* The speed picker is the shared compact dropdown; its trigger and
-         panel take the slideshow's translucent chrome so the bottom bar
-         reads as one set of controls over the image. */
-      .slideshow-controls .cc-dropdown summary {
-         min-height: 2rem;
-         padding: 0.3rem 0.5rem;
-         border: 1px solid rgba(232 236 241 / 0.28);
-         border-radius: var(--radius-md);
-         background: rgba(13 15 19 / 0.72);
-         color: var(--text);
-         font-size: 0.875rem;
-         transition: background var(--transition-fast), border-color var(--transition-fast);
-      }
-      .slideshow-controls .cc-dropdown[open] summary {
-         border-color: var(--accent);
-      }
-      .slideshow-controls .cc-dropdown .asset-filter-multiselect-panel {
-         padding: var(--space-xs);
-         border-color: var(--border-strong);
-         border-radius: var(--radius-md);
-         background: var(--surface-card);
-         box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
-      }
-      .slideshow-nav-btn svg,
-      .slideshow-play-pause svg,
-      .slideshow-fullscreen svg,
-      .slideshow-original-size svg,
-      .slideshow-close svg {
-        width: 1.25em;
-        height: 1.25em;
-      }
-      .slideshow-speed {
-         color-scheme: dark;
-         background: rgba(13 15 19 / 0.72);
-         border: 1px solid rgba(232 236 241 / 0.28);
-         border-radius: var(--radius-md);
-         color: var(--text);
-         padding: 0.3rem 0.5rem;
-         font-size: 0.875rem;
-        cursor: pointer;
-      }
-      .slideshow-speed option {
-        color: var(--text);
-        background-color: var(--surface-card);
-      }
-      .slideshow-speed:disabled {
-         color: var(--muted);
-         background: rgba(255 255 255 / 0.06);
-         cursor: not-allowed;
-         opacity: 1;
-      }
-      .slideshow-speed:disabled option {
-        color: var(--muted);
-        background-color: var(--surface-card);
-      }
-      @media (max-width: 540px) {
-        .slideshow-header {
-          top: var(--space-sm);
-          right: var(--space-sm);
-          left: var(--space-sm);
-        }
-        .slideshow-header-actions { gap: var(--space-xs); }
-        .slideshow-controls {
-          padding-right: var(--space-sm);
-          padding-bottom: var(--space-sm);
-          padding-left: var(--space-sm);
-        }
-        .slideshow-controls > [data-slideshow-prev] { left: var(--space-sm); }
-        .slideshow-controls > [data-slideshow-next] { right: var(--space-sm); }
-        .slideshow-caption {
-          bottom: calc(var(--space-sm) + 2.5rem);
-          max-width: calc(100% - var(--space-xl));
-        }
-      }
-      .slideshow-play-pause .slideshow-pause-icon { display: none; }
-      [data-slideshow-playing].slideshow-play-pause .slideshow-play-icon { display: none; }
-      [data-slideshow-playing].slideshow-play-pause .slideshow-pause-icon { display: inline-flex; }
-      .slideshow-fullscreen .slideshow-fullscreen-exit-icon { display: none; }
-      [data-slideshow-fullscreen-active].slideshow-fullscreen .slideshow-fullscreen-enter-icon { display: none; }
-      [data-slideshow-fullscreen-active].slideshow-fullscreen .slideshow-fullscreen-exit-icon { display: inline-flex; }
-
       /* ── Notes: book workspace ── */
       .notes-page-workspace-layout {
         --notes-page-workspace-columns: minmax(12rem, 16rem) minmax(0, 1fr);
@@ -14224,13 +13885,11 @@
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
 }
 .app-dialog .asset-filter-multiselect-option,
-.slideshow-controls .asset-filter-multiselect-option,
 :where(.settings-page main, .refined-page main) .asset-filter-multiselect-option {
   border-radius: var(--radius-sm);
   transition: background var(--transition-fast);
 }
 .app-dialog .asset-filter-multiselect--sized .asset-filter-multiselect-option > label,
-.slideshow-controls .asset-filter-multiselect--sized .asset-filter-multiselect-option > label,
 :where(.settings-page main, .refined-page main) .asset-filter-multiselect--sized .asset-filter-multiselect-option > label {
   align-items: center;
   gap: var(--space-sm);
@@ -14239,28 +13898,23 @@
   line-height: 1.4;
 }
 .app-dialog .asset-filter-multiselect-option > label > span,
-.slideshow-controls .asset-filter-multiselect-option > label > span,
 :where(.settings-page main, .refined-page main) .asset-filter-multiselect-option > label > span {
   flex: 1 1 auto;
 }
 .app-dialog .asset-filter-multiselect-option:has(input:checked),
-.slideshow-controls .asset-filter-multiselect-option:has(input:checked),
 :where(.settings-page main, .refined-page main) .asset-filter-multiselect-option:has(input:checked) {
   background: rgba(34, 211, 238, 0.08);
 }
 .app-dialog .asset-filter-multiselect-option:has(input:checked):hover,
-.slideshow-controls .asset-filter-multiselect-option:has(input:checked):hover,
 :where(.settings-page main, .refined-page main) .asset-filter-multiselect-option:has(input:checked):hover {
   background: rgba(34, 211, 238, 0.14);
 }
 .app-dialog .asset-filter-multiselect-option:has(input:focus-visible),
-.slideshow-controls .asset-filter-multiselect-option:has(input:focus-visible),
 :where(.settings-page main, .refined-page main) .asset-filter-multiselect-option:has(input:focus-visible) {
   outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
 }
 .app-dialog .asset-filter-multiselect-option input,
-.slideshow-controls .asset-filter-multiselect-option input,
 :where(.settings-page main, .refined-page main) .asset-filter-multiselect-option input {
   flex: none;
   width: 1rem;
@@ -14272,7 +13926,6 @@
   cursor: pointer;
 }
 .app-dialog .asset-filter-multiselect-option input:focus-visible,
-.slideshow-controls .asset-filter-multiselect-option input:focus-visible,
 :where(.settings-page main, .refined-page main) .asset-filter-multiselect-option input:focus-visible {
   outline: none;
 }
@@ -14280,12 +13933,10 @@
    square; each chosen row gets a trailing check. Option text keeps the same
    typography and color whether or not it is selected. */
 .app-dialog .asset-filter-multiselect-option input,
-.slideshow-controls .asset-filter-multiselect-option input,
 :where(.settings-page main, .refined-page main) .asset-filter-multiselect-option input {
   order: 1;
 }
 .app-dialog .asset-filter-multiselect-option input:checked,
-.slideshow-controls .asset-filter-multiselect-option input:checked,
 :where(.settings-page main, .refined-page main) .asset-filter-multiselect-option input:checked {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2322d3ee' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E");
   background-size: 0.875rem;
@@ -16890,10 +16541,13 @@ button[aria-disabled="true"] > .project-create-submit-icon {
 }
 /* B3: media, loading/failure states, view tools and pan. The image is
    sized and placed only by viewer-viewport.js (width/height/transform);
-   nothing here scales it. Touch behavior is left to the browser. */
+   nothing here scales it. D1-A: the media surface alone takes touch
+   gestures (pinch/pan through viewer-viewport.js), so the browser neither
+   scrolls nor page-zooms from it. Nothing outside the viewer changes. */
 .unified-viewer-media {
   user-select: none;
   -webkit-user-select: none;
+  touch-action: none;
 }
 .unified-viewer-media[data-viewer-pannable] {
   cursor: grab;
@@ -16915,10 +16569,22 @@ button[aria-disabled="true"] > .project-create-submit-icon {
 .unified-viewer[data-viewer-media-state="failed"] .unified-viewer-stage {
   flex-direction: column;
 }
-.unified-viewer[data-viewer-media-state="loading"] .unified-viewer-media,
 .unified-viewer[data-viewer-media-state="failed"] .unified-viewer-media {
   position: static;
   order: 1;
+}
+/* D1-F1: while an item loads, the media surface keeps covering the whole
+   stage like loaded media: it is the stage's one touch classifier, so the
+   first touch after opening is never lost on a bare stage. The loading
+   message stays centred in it; a retry note sits just above that message
+   and lets touches through to the surface. (A shown comic composition
+   keeps its own status placement below.) */
+.unified-viewer[data-viewer-media-state="loading"] .unified-viewer-media:not([data-viewer-composite]) + .unified-viewer-status:not(:empty) {
+  position: absolute;
+  right: 0;
+  bottom: calc(50% + 1rem);
+  left: 0;
+  pointer-events: none;
 }
 /* Failure actions share the space above the pill; ordinary single-image
    errors retain their centered layout. No displayed media is repositioned. */
@@ -17363,6 +17029,16 @@ html:has(.unified-viewer-dialog > .app-dialog-card:fullscreen) {
   padding-right: max(var(--space-md), env(safe-area-inset-right));
   padding-bottom: max(0.375rem, env(safe-area-inset-bottom));
   padding-left: max(var(--space-md), env(safe-area-inset-left));
+}
+/* D1-C: a failed item's message and Retry overlay the stage above the
+   navigation, so in fullscreen they clear the side safe areas like the other
+   overlay controls (unchanged when the insets are 0). */
+.unified-viewer-dialog > .app-dialog-card:fullscreen .unified-viewer[data-viewer-media-state="failed"]:has(.unified-viewer-controls:not([hidden])) .unified-viewer-media > [data-unified-viewer-failure] {
+  right: max(var(--space-xs), env(safe-area-inset-right));
+}
+.unified-viewer-dialog > .app-dialog-card:fullscreen .unified-viewer[data-viewer-media-state="failed"]:not([data-viewer-comic-state]):has(.unified-viewer-controls:not([hidden])) .unified-viewer-status {
+  right: calc(var(--viewer-retry-width, 0px) + max(var(--space-xs), env(safe-area-inset-right)) + var(--space-sm) - var(--space-xs));
+  left: max(var(--space-xs), env(safe-area-inset-left));
 }
 /* Keep overlay boxes intact; input reveals them before keyboard navigation. */
 .unified-viewer-dialog > .app-dialog-card:fullscreen[data-viewer-chrome-hidden] :is(.app-dialog-header, .unified-viewer-context, .unified-viewer-controls) {

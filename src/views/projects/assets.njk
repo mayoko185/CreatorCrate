@@ -1347,5 +1347,5 @@
      outside the live region; a Project Assets refresh copies the new
      sequence in (live-regions.js) and the open viewer reconciles with it
      (client/project-assets-viewer.js). #}
-  <script type="application/json" data-slideshow-sequence data-project-assets-viewer-sequence data-project-id="{{ project.id }}" data-viewer-label="{{ project.title }}">{{ slideshowSequenceJson | default('[]') | safe }}</script>
+  <script type="application/json" data-project-assets-viewer-sequence data-project-id="{{ project.id }}" data-viewer-label="{{ project.title }}">{{ slideshowSequenceJson | default('[]') | safe }}</script>
 {% endblock %}

@@ -1899,6 +1899,326 @@ describe('unified viewer playback and fullscreen (B4)', () => {
     expect(page.card.listeners).toHaveLength(0);
     expect(page.dialog.listeners.filter((listener) => listener.type === 'keydown')).toHaveLength(page.binderKeydowns);
   });
+
+  // ─── D1-B: touch swipe/tap navigation and gesture ownership ───────────────
+
+  describe('touch navigation and gesture ownership (D1-B)', () => {
+    // The media surface is 1000 × 800 at (0, 0): edge regions x < 200 and
+    // x > 800; a swipe needs 96 px. Events travel the real path (card capture
+    // listeners — fullscreen — first, then the surface).
+    const Y = 400;
+    function touchPage(options) {
+      const page = playbackPage(options);
+      page.parts.media.clientWidth = 1000;
+      page.parts.media.clientHeight = 800;
+      let ids = 100;
+      const event = (extra) => ({
+        pointerType: 'touch', button: 0, isPrimary: true,
+        stopImmediatePropagation() { this.propagationStopped = true; },
+        ...extra,
+      });
+      page.touch = {
+        down: (pointerId, clientX, clientY = Y, extra = {}) => fire(page.parts.media, 'pointerdown', event({ pointerId, clientX, clientY, ...extra })),
+        move: (pointerId, clientX, clientY = Y) => fire(page.parts.media, 'pointermove', event({ pointerId, clientX, clientY })),
+        up: (pointerId, clientX, clientY = Y, target = page.parts.media) => fire(target, 'pointerup', event({ pointerId, clientX, clientY })),
+        // The browser's follow-up click, wherever it lands.
+        click: (target, clientX, clientY = Y, extra = {}) => fire(target, 'click', event({ clientX, clientY, detail: 1, ...extra })),
+        swipe: (fromX, toX, { fromY = Y, toY = Y } = {}) => {
+          const id = ids += 1;
+          page.touch.down(id, fromX, fromY);
+          page.touch.move(id, (fromX + toX) / 2, (fromY + toY) / 2);
+          page.touch.move(id, toX, toY);
+          return page.touch.up(id, toX, toY);
+        },
+        tap: (x, y = Y) => {
+          const id = ids += 1;
+          page.touch.down(id, x, y);
+          return page.touch.up(id, x, y);
+        },
+      };
+      page.changes = [];
+      page.viewer.observe((change) => page.changes.push(change));
+      page.navigations = () => page.changes.filter((change) => change.type === 'navigate');
+      return page;
+    }
+    const keyNow = (page) => page.viewer.getState().key;
+    // The click guard's document capture listeners (none unless armed).
+    const guardListeners = (page) => page.document.listeners.filter((listener) => listener.capture
+      && ['click', 'pointerdown', 'pointerup', 'pointercancel'].includes(listener.type)).length;
+    const respondAll = async (page) => {
+      for (const request of [...page.requests]) await page.respond(request);
+    };
+
+    it('Fit-state swipes and outer-edge taps step an image sequence like Previous/Next, once each', async () => {
+      const page = touchPage();
+      page.viewer.open(sequence([1, 2, 3]), { opener: page.opener });
+      await page.respond(page.requests[0]);
+      page.touch.swipe(700, 550);
+      expect(keyNow(page)).toBe(keyOf(2));
+      expect(page.navigations()).toHaveLength(1);
+      expect(page.navigations()[0]).toMatchObject({ cause: 'user', key: keyOf(2), wrapped: false });
+      page.touch.tap(950);
+      expect(keyNow(page)).toBe(keyOf(3));
+      // The end of a non-wrapping sequence: nothing moves, nothing is announced.
+      page.touch.swipe(700, 500);
+      page.touch.tap(950);
+      expect(keyNow(page)).toBe(keyOf(3));
+      page.touch.tap(50);
+      expect(keyNow(page)).toBe(keyOf(2));
+      page.touch.swipe(300, 450);
+      expect(keyNow(page)).toBe(keyOf(1));
+      page.touch.tap(50);
+      expect(keyNow(page)).toBe(keyOf(1));
+      expect(page.navigations().map((change) => change.key)).toEqual([keyOf(2), keyOf(3), keyOf(2), keyOf(1)]);
+      // Centre taps, short, vertical and diagonal strokes do nothing.
+      page.touch.tap(500);
+      page.touch.swipe(700, 620);
+      page.touch.swipe(500, 520, { toY: 700 });
+      page.touch.swipe(700, 560, { toY: Y + 140 });
+      expect(page.navigations()).toHaveLength(4);
+      // Keyboard and buttons are unchanged.
+      fire(page.dialog, 'keydown', { key: 'ArrowRight' });
+      fire(page.parts.next, 'click');
+      expect(keyNow(page)).toBe(keyOf(3));
+    });
+
+    it('a wrapping slideshow wraps, pauses like any manual step, and a chrome-only tap keeps the timer', async () => {
+      const page = touchPage();
+      page.viewer.open(slideshow([1, 2, 3]), { opener: page.opener });
+      await page.respond(page.requests.at(-1));
+      expect(page.viewer.playback.getState().playing).toBe(true);
+      // A centre tap is not navigation: the slide still advances on time.
+      vi.advanceTimersByTime(2000);
+      page.touch.tap(500);
+      vi.advanceTimersByTime(2000);
+      expect(keyNow(page)).toBe(keyOf(2));
+      expect(page.navigations().at(-1)).toMatchObject({ cause: 'playback' });
+      expect(page.viewer.playback.getState().playing).toBe(true);
+      // A swipe backwards from the second slide, then wrapping from the first.
+      page.touch.swipe(300, 450);
+      expect(keyNow(page)).toBe(keyOf(1));
+      expect(page.viewer.playback.getState()).toMatchObject({ playing: false, pauseReason: 'navigation' });
+      page.touch.tap(50);
+      expect(keyNow(page)).toBe(keyOf(3));
+      expect(page.navigations().at(-1)).toMatchObject({ cause: 'user', wrapped: true });
+      vi.advanceTimersByTime(20_000);
+      expect(keyNow(page)).toBe(keyOf(3));
+    });
+
+    it('autoplay advancing during a touch invalidates it: the lift neither navigates nor pauses', async () => {
+      const page = touchPage();
+      page.viewer.open(slideshow([1, 2, 3, 4]), { opener: page.opener });
+      await page.respond(page.requests.at(-1));
+      page.touch.down(1, 700);
+      page.touch.move(1, 600);
+      vi.advanceTimersByTime(4000);
+      expect(keyNow(page)).toBe(keyOf(2));
+      page.touch.move(1, 400);
+      page.touch.up(1, 400);
+      expect(keyNow(page)).toBe(keyOf(2));
+      expect(page.navigations()).toHaveLength(1);
+      expect(page.viewer.playback.getState().playing).toBe(true);
+      // An edge tap held across the advance as well.
+      await respondAll(page);
+      page.touch.down(2, 950);
+      vi.advanceTimersByTime(4000);
+      expect(keyNow(page)).toBe(keyOf(3));
+      page.touch.up(2, 950);
+      expect(keyNow(page)).toBe(keyOf(3));
+      expect(page.viewer.playback.getState().playing).toBe(true);
+      // Its follow-up click cannot reach a control under the finger either.
+      expect(page.touch.click(page.parts.next, 950).defaultPrevented).toBe(true);
+      expect(keyNow(page)).toBe(keyOf(3));
+    });
+
+    it('a single image, a still-loading single item and a standalone source never navigate or arm anything', async () => {
+      const page = touchPage();
+      page.viewer.open(createSingleImageSource({
+        key: 'one', entries: [{ id: 1, projectId: 7, previewUrl: '/projects/7/assets/1/preview' }], projectId: 7, assetId: 1,
+      }), { opener: page.opener });
+      const documentListeners = guardListeners(page);
+      for (const run of [() => page.touch.swipe(700, 400), () => page.touch.tap(50), () => page.touch.tap(950)]) run();
+      await page.respond(page.requests.at(-1));
+      for (const run of [() => page.touch.swipe(700, 400), () => page.touch.tap(50), () => page.touch.tap(950)]) run();
+      expect(page.navigations()).toHaveLength(0);
+      expect(guardListeners(page)).toBe(documentListeners);
+    });
+
+    it('enlarged: one finger pans, two pinch, a still finger is only a tap — none of them navigates', async () => {
+      const page = touchPage();
+      page.viewer.open(sequence([1, 2, 3]), { opener: page.opener });
+      await page.respond(page.requests[0]);
+      page.viewer.media.zoomIn();
+      const zoomed = page.viewer.media.getState().view;
+      expect(zoomed.mode).toBe('zoom');
+      page.touch.swipe(700, 400);
+      expect(page.viewer.media.getState().view.panX).toBeLessThan(0);
+      page.touch.tap(50);
+      page.touch.tap(950);
+      page.touch.down(1, 400);
+      page.touch.down(2, 600, Y, { isPrimary: false });
+      page.touch.move(2, 900);
+      page.touch.up(2, 900);
+      page.touch.move(1, 100);
+      page.touch.up(1, 100);
+      expect(page.navigations()).toHaveLength(0);
+      // A pinch from Fit back to Fit, finished by its last finger at an edge.
+      page.viewer.media.fit();
+      page.touch.down(3, 400);
+      page.touch.down(4, 600, Y, { isPrimary: false });
+      page.touch.move(4, 800);
+      page.touch.move(4, 600);
+      expect(page.viewer.media.getState().view.mode).toBe('fit');
+      page.touch.up(4, 600);
+      page.touch.up(3, 50);
+      expect(page.navigations()).toHaveLength(0);
+      expect(keyNow(page)).toBe(keyOf(1));
+    });
+
+    it('swallows only the follow-up click of a navigating touch; controls and later clicks still work', async () => {
+      const page = touchPage();
+      page.viewer.open(sequence([1, 2, 3, 4]), { opener: page.opener });
+      await page.respond(page.requests[0]);
+      page.touch.tap(950);
+      expect(keyNow(page)).toBe(keyOf(2));
+      // The click lands on whatever is under the finger now (Next, say).
+      const followUp = page.touch.click(page.parts.next, 952);
+      expect(followUp).toMatchObject({ defaultPrevented: true, propagationStopped: true });
+      expect(keyNow(page)).toBe(keyOf(2));
+      // A real tap on Next afterwards, and a mouse click.
+      page.touch.click(page.parts.next, 952);
+      expect(keyNow(page)).toBe(keyOf(3));
+      page.touch.tap(950);
+      expect(keyNow(page)).toBe(keyOf(4));
+      fire(page.parts.previous, 'pointerdown', { pointerId: 9, pointerType: 'mouse' });
+      fire(page.parts.previous, 'click', { pointerType: 'mouse', clientX: 950, clientY: Y });
+      expect(keyNow(page)).toBe(keyOf(3));
+      // A touch that begins on a control inside the surface is the control's.
+      const control = page.document.createElement('button');
+      control.setAttribute('type', 'button');
+      page.parts.media.appendChild(control);
+      fire(control, 'pointerdown', { pointerId: 30, pointerType: 'touch', isPrimary: true, clientX: 950, clientY: Y });
+      fire(control, 'pointermove', { pointerId: 30, pointerType: 'touch', clientX: 600, clientY: Y });
+      fire(control, 'pointerup', { pointerId: 30, pointerType: 'touch', clientX: 600, clientY: Y });
+      const own = page.touch.click(control, 600);
+      expect(own.defaultPrevented).toBe(false);
+      expect(keyNow(page)).toBe(keyOf(3));
+    });
+
+    it('closing or destroying mid-touch navigates nothing, guards the page below, and leaves no listeners', async () => {
+      const page = touchPage();
+      const documentListeners = guardListeners(page);
+      page.viewer.open(sequence([1, 2, 3]), { opener: page.opener });
+      await page.respond(page.requests[0]);
+      page.touch.down(1, 950);
+      page.viewer.close();
+      expect(guardListeners(page)).toBe(documentListeners + 4);
+      // The lift and its click land on the page below.
+      page.touch.up(1, 950, Y, page.opener);
+      const click = page.touch.click(page.opener, 950);
+      expect(click.defaultPrevented).toBe(true);
+      expect(guardListeners(page)).toBe(documentListeners);
+      page.viewer.open(sequence([1, 2, 3]), { opener: page.opener });
+      await page.respond(page.requests.at(-1));
+      // A reopened viewer is not navigated by the old sequence; a fresh touch works.
+      page.touch.tap(950);
+      expect(keyNow(page)).toBe(keyOf(2));
+      page.touch.down(2, 950);
+      page.viewer.destroy();
+      page.touch.up(2, 950, Y, page.opener);
+      expect(page.touch.click(page.opener, 950).defaultPrevented).toBe(false);
+      expect(guardListeners(page)).toBe(documentListeners);
+      expect(page.navigations()).toHaveLength(1);
+    });
+
+    it('in fullscreen a centre tap still hides chrome, while navigation, pan and pinch leave it alone', async () => {
+      const page = touchPage();
+      const hidden = () => page.card.hasAttribute('data-viewer-chrome-hidden');
+      page.viewer.open(sequence([1, 2, 3, 4, 5]), { opener: page.opener });
+      await page.respond(page.requests[0]);
+      page.viewer.fullscreen.enter();
+      await Promise.resolve();
+      expect(page.viewer.getState().fullscreen).toBe(true);
+      // Edge tap and swipe with chrome shown: navigation only.
+      page.touch.tap(950);
+      expect(keyNow(page)).toBe(keyOf(2));
+      expect(hidden()).toBe(false);
+      page.touch.swipe(700, 550);
+      expect(keyNow(page)).toBe(keyOf(3));
+      expect(hidden()).toBe(false);
+      // The accepted centre tap hides it. D1-C (user direction): a touch tap
+      // on hidden chrome reveals it again, and the next one hides it.
+      page.touch.tap(500);
+      expect(hidden()).toBe(true);
+      page.touch.tap(500);
+      expect(hidden()).toBe(false);
+      expect(keyNow(page)).toBe(keyOf(3));
+      page.touch.tap(500);
+      expect(hidden()).toBe(true);
+      // Navigation with chrome hidden keeps it hidden (no reveal, no toggle).
+      page.touch.tap(50);
+      expect(keyNow(page)).toBe(keyOf(2));
+      expect(hidden()).toBe(true);
+      page.touch.swipe(300, 450);
+      expect(keyNow(page)).toBe(keyOf(1));
+      expect(hidden()).toBe(true);
+      // Ineffective movement is ordinary activity: it reveals.
+      page.touch.swipe(500, 510, { toY: 700 });
+      expect(hidden()).toBe(false);
+      // At the first item an edge tap has nowhere to go: it is a chrome tap.
+      page.touch.tap(50);
+      expect(keyNow(page)).toBe(keyOf(1));
+      expect(hidden()).toBe(true);
+      fire(page.dialog, 'keydown', { key: 'Shift' });
+      expect(hidden()).toBe(false);
+      // Pinch and pan never touch chrome or navigate.
+      await respondAll(page);
+      page.touch.down(1, 400);
+      page.touch.down(2, 600, Y, { isPrimary: false });
+      page.touch.move(2, 900);
+      page.touch.move(1, 300);
+      page.touch.up(2, 900);
+      page.touch.up(1, 300);
+      expect(page.viewer.media.getState().view.mode).toBe('zoom');
+      expect(hidden()).toBe(false);
+      page.touch.swipe(700, 400);
+      expect(hidden()).toBe(false);
+      // An enlarged still tap is the chrome tap, never an edge navigation;
+      // with the chrome hidden it is how a touch user gets it back (D1-C).
+      page.touch.tap(950);
+      expect(hidden()).toBe(true);
+      expect(keyNow(page)).toBe(keyOf(1));
+      page.touch.swipe(700, 400);
+      expect(hidden()).toBe(true);
+      page.touch.tap(950);
+      expect(hidden()).toBe(false);
+      expect(keyNow(page)).toBe(keyOf(1));
+      page.touch.tap(950);
+      expect(hidden()).toBe(true);
+      expect(page.navigations().map((change) => change.key)).toEqual([keyOf(2), keyOf(3), keyOf(2), keyOf(1)]);
+      // Mouse clicks keep their accepted behavior: a still click hides, nothing navigates.
+      fire(page.dialog, 'keydown', { key: 'Shift' });
+      page.viewer.media.fit();
+      fire(page.parts.media, 'pointerdown', { pointerId: 50, pointerType: 'mouse', clientX: 950, clientY: Y });
+      fire(page.parts.media, 'pointerup', { pointerId: 50, pointerType: 'mouse', clientX: 950, clientY: Y });
+      expect(hidden()).toBe(true);
+      expect(keyNow(page)).toBe(keyOf(1));
+    });
+
+    it('a touch spanning a fullscreen transition does not navigate', async () => {
+      const page = touchPage();
+      page.viewer.open(sequence([1, 2, 3]), { opener: page.opener });
+      await page.respond(page.requests[0]);
+      page.touch.down(1, 950);
+      page.parts.media.clientWidth = 1400;
+      page.viewer.fullscreen.enter();
+      await Promise.resolve();
+      page.touch.up(1, 950);
+      expect(keyNow(page)).toBe(keyOf(1));
+      page.touch.tap(1350);
+      expect(keyNow(page)).toBe(keyOf(2));
+    });
+  });
 });
 
 // ─── C1b: comic sessions ─────────────────────────────────────────────────────
@@ -4352,6 +4672,136 @@ describe('unified viewer comic sessions (C1b)', () => {
       expect(calls.every(([url, init]) => url.includes('/comic/pages/') && (init.method || 'GET') === 'GET' && init.body === undefined))
         .toBe(true);
       expect(page.manifests()).toHaveLength(1);
+    });
+  });
+
+  // ─── D1-B: touch navigation through the reader's own page groups ─────────
+
+  describe('touch navigation (D1-B)', () => {
+    // Media 1000 × 800 at (0, 0): edge regions x < 200 and x > 800.
+    const Y = 400;
+    async function touchComic(pageCount = 7, reader = {}) {
+      const { page, session } = await readyComic({}, manifest({ pages: Array(pageCount).fill(true) }));
+      if (Object.keys(reader).length) page.viewer.setComicReaderOptions(reader, { session });
+      page.parts.media.clientWidth = 1000;
+      page.parts.media.clientHeight = 800;
+      let ids = 500;
+      const event = (extra) => ({ pointerType: 'touch', button: 0, isPrimary: true, ...extra });
+      const down = (id, x, y = Y) => fire(page.parts.media, 'pointerdown', event({ pointerId: id, clientX: x, clientY: y }));
+      const move = (id, x, y = Y) => fire(page.parts.media, 'pointermove', event({ pointerId: id, clientX: x, clientY: y }));
+      const up = (id, x, y = Y) => fire(page.parts.media, 'pointerup', event({ pointerId: id, clientX: x, clientY: y }));
+      page.touch = {
+        down, move, up,
+        swipe: (fromX, toX) => {
+          const id = ids += 1;
+          down(id, fromX);
+          move(id, (fromX + toX) / 2);
+          move(id, toX);
+          up(id, toX);
+        },
+        tap: (x) => {
+          const id = ids += 1;
+          down(id, x);
+          up(id, x);
+        },
+      };
+      page.anchor = () => page.viewer.getState().reader.anchorPosition;
+      page.group = () => page.viewer.getState().reader.groupPositions;
+      return { page, session };
+    }
+
+    it('Left-to-Right single pages: leftward swipe / right edge read on, and stop at both ends', async () => {
+      const { page } = await touchComic(3);
+      page.touch.swipe(300, 450);
+      page.touch.tap(50);
+      expect(page.anchor()).toBe(1);
+      page.touch.swipe(700, 550);
+      expect(page.anchor()).toBe(2);
+      page.touch.tap(950);
+      expect(page.anchor()).toBe(3);
+      page.touch.tap(950);
+      page.touch.swipe(700, 500);
+      expect(page.anchor()).toBe(3);
+      page.touch.tap(50);
+      expect(page.anchor()).toBe(2);
+      page.touch.swipe(300, 450);
+      expect(page.anchor()).toBe(1);
+      // Keyboard keeps its own mapping.
+      fire(page.dialog, 'keydown', { key: 'ArrowRight' });
+      expect(page.anchor()).toBe(2);
+    });
+
+    it('Right-to-Left reverses the physical mapping exactly like the arrow keys', async () => {
+      const { page } = await touchComic(4, { direction: 'rtl' });
+      page.touch.tap(950);
+      expect(page.anchor()).toBe(1);
+      page.touch.tap(50);
+      expect(page.anchor()).toBe(2);
+      page.touch.swipe(300, 450);
+      expect(page.anchor()).toBe(3);
+      page.touch.swipe(700, 550);
+      expect(page.anchor()).toBe(2);
+      page.touch.tap(950);
+      expect(page.anchor()).toBe(1);
+      fire(page.dialog, 'keydown', { key: 'ArrowLeft' });
+      expect(page.anchor()).toBe(2);
+      fire(page.dialog, 'keydown', { key: 'ArrowRight' });
+      expect(page.anchor()).toBe(1);
+    });
+
+    it('two-page spreads step whole groups for either cover alignment and direction', async () => {
+      const cover = await touchComic(7, { layout: 'spread', alignment: 'cover-alone' });
+      const groups = [];
+      for (let index = 0; index < 5; index += 1) {
+        groups.push(cover.page.group());
+        cover.page.touch.tap(950);
+      }
+      expect(groups).toEqual([[1], [2, 3], [4, 5], [6, 7], [6, 7]]);
+      cover.page.touch.swipe(300, 450);
+      expect(cover.page.group()).toEqual([4, 5]);
+
+      const paired = await touchComic(7, { layout: 'spread', alignment: 'pair-from-first' });
+      const pairs = [];
+      for (let index = 0; index < 5; index += 1) {
+        pairs.push(paired.page.group());
+        paired.page.touch.swipe(700, 550);
+      }
+      expect(pairs).toEqual([[1, 2], [3, 4], [5, 6], [7], [7]]);
+      paired.page.touch.tap(50);
+      expect(paired.page.group()).toEqual([5, 6]);
+
+      const rtl = await touchComic(7, { layout: 'spread', alignment: 'cover-alone', direction: 'rtl' });
+      rtl.page.touch.tap(50);
+      rtl.page.touch.swipe(300, 450);
+      expect(rtl.page.group()).toEqual([4, 5]);
+      // Visual order is right-to-left; the reading step is unchanged.
+      expect(rtl.page.viewer.getState().reader.visibleItems.map((item) => item.position)).toEqual([5, 4]);
+      rtl.page.touch.tap(950);
+      expect(rtl.page.group()).toEqual([2, 3]);
+    });
+
+    it('a reader choice, a page conflict or a retired comic mid-touch cancels the touch', async () => {
+      const { page, session } = await touchComic(5);
+      page.touch.down(1, 700);
+      page.touch.move(1, 600);
+      page.viewer.setComicReaderOptions({ direction: 'rtl' }, { session });
+      page.touch.move(1, 500);
+      page.touch.up(1, 500);
+      expect(page.anchor()).toBe(1);
+      page.touch.down(2, 50);
+      page.viewer.setComicReaderOptions({ layout: 'spread' }, { session });
+      page.touch.up(2, 50);
+      expect(page.anchor()).toBe(1);
+      page.touch.tap(50);
+      expect(page.group()).toEqual([2, 3]);
+      // A 409 on the shown page retires the revision: a held touch dies with it.
+      page.touch.down(3, 50);
+      await page.status(page.pages().find((request) => request.url.includes('/pages/2?')), 409);
+      expect(page.viewer.getState().comic.state).toBe('changed');
+      page.touch.up(3, 50);
+      expect(page.viewer.getState().key).toBe(null);
+      page.touch.tap(950);
+      expect(page.viewer.getState().key).toBe(null);
     });
   });
 });

@@ -3778,7 +3778,7 @@ trigger, card shell and enhancer on asset titles, re-applied after each
 live-region replacement; asset navigation stays on the thumbnail, Details and
 the card's Open asset action.
 
-**Unified image viewer (Milestone B).** Every image preview entry point opens
+**Unified image viewer and Comic Reader.** Every image preview entry point opens
 one shared viewer; there is no second production image viewer.
 
 *One shell per document.* A page opts in with `{% set unifiedViewer = true %}`
@@ -3804,7 +3804,7 @@ creates observe its frozen change records (`open`, `navigate`, `update`,
 | [`viewer-sequence.js`](src/static/client/viewer-sequence.js) | Pure data model: normalizes server entries into frozen sources of items keyed by project + asset (+ optional page position), never by index or filename; `single` vs `sequence` mode; explicit `wrap` and `slideshow` flags; initial selection, stepping, skipping unavailable items, and live-refresh reconciliation (`reconcileViewerSource`). Revisions are opaque strings and URLs are server-provided root-relative paths, compared by equality only. |
 | [`unified-viewer.js`](src/static/client/unified-viewer.js) | Dialog sessions: `open`, `close`, `next`/`previous`/`select`, session-bound `update`, header context (title, source label, View details link), Previous/position/Next, Arrow-key navigation, and replaced-opener focus fallback. It never fetches, renders media, schedules timers or reads page thumbnails, selection or filters. |
 | [`viewer-content.js`](src/static/client/viewer-content.js) | Media for the current item only: `fetch` with a fresh token and `AbortController` per load, HTTP status and `image/{jpeg,png,webp,gif}` content-type validation, decode, then an object URL in the media region; loading/failed/unavailable status with Retry; session-local Original/Optimized quality selection (decoded before atomic replacement, retaining current media on failure); at most one neighbour preload. A result arriving under a stale token is released, not installed; every object URL, request and image it created is released on navigation, replacement or close. |
-| [`viewer-viewport.js`](src/static/client/viewer-viewport.js) | Geometry of the shown image or gapless comic spread: contained, centred Fit (never upscaled past 1:1), button zoom, mouse/pen pan and Shift+Arrow pan bounded so no empty gap opens, re-measured on resize. Touch is left to the browser. |
+| [`viewer-viewport.js`](src/static/client/viewer-viewport.js) | Geometry of the shown image or gapless comic spread: contained, centred Fit (never upscaled past 1:1), button zoom, mouse/pen and touch pan, two-contact touch pinch, and Shift+Arrow pan bounded so no empty gap opens, re-measured on resize. Its single touch classifier also resolves Fit-state swipe and edge-tap navigation. |
 | [`viewer-playback.js`](src/static/client/viewer-playback.js) | Explicit slideshows only (`slideshow` source with at least two available items): Play/Pause and a 2/4/6 s speed dropdown (4 s default), autoplay on open unless reduced motion is preferred, at most one session-, item- and generation-bound advancement timer that starts only once the slide is loaded. Manual navigation, a failed or unavailable item, zoom, Actual Size, a hidden tab and close pause it; nothing resumes these pauses except Play. A pending source-quality replacement suspends the countdown while keeping playing/paused state and speed; settlement starts one fresh interval. It advances through the controller's own `next`. |
 | [`viewer-fullscreen.js`](src/static/client/viewer-fullscreen.js) | Native fullscreen on the dialog's inner card (`[data-unified-viewer-card]`, since a `<dialog>` cannot itself be fullscreen) with no re-creation or reload; Escape exits fullscreen before the dialog closes (an open dropdown still takes Escape first); close, destroy and late grants exit or release fullscreen; deferred focus return once fullscreen has gone; fullscreen-only idle hiding of overlay close, context and navigation controls without changing media Fit geometry. |
 
@@ -3818,8 +3818,8 @@ video tiles are never image triggers. Missing and unsupported files get no
 image trigger: the server emits image viewer attributes only for a present,
 previewable image with a server-built preview URL (`viewerTriggerAttributes`
 in [`asset-presentation.njk`](src/views/partials/asset-presentation.njk)).
-Comics use separate host-specific reader attributes on their existing named
-Details links; their first-page thumbnails do not grant image eligibility.
+Comic covers and Read Comic links use host-specific Reader attributes; their
+first-page previews never grant ordinary-image eligibility.
 
 | Host (page) | Module | Entry points | Refresh path |
 |---|---|---|---|
@@ -3925,12 +3925,56 @@ per controller and per host document, so repeated viewing adds none.
 Project Detail's `project-deleted` retirement withdraws every strip trigger
 before closing its session.
 
-*Legacy status.* [`slideshow.js`](src/static/client/slideshow.js) is still
-imported and re-exported by `creatorcrate.js`, but no enhancer calls it and no page renders its scaffold; the production bundle
-tree-shakes it out (no `data-slideshow-*` selector ships). The JSON sequence
-elements keep a legacy `data-slideshow-sequence` attribute beside their host
-attribute. Removing the module and the `.slideshow-*` rules still in
-`creatorcrate.css` belongs to Milestone D.
+*Touch, fullscreen and responsive controls.* The viewport owns one touch
+sequence from first contact until every contact lifts. Two contacts pinch
+around their midpoint, one contact pans enlarged content, and a single contact
+that started in Fit may swipe horizontally or tap an outer edge to navigate.
+The controller maps physical sides through image sequence order or the Reader's
+LTR/RTL direction and spread groups. Pinch/pan, multi-contact, cancelled and
+invalidated sequences cannot also navigate or toggle chrome. Controls and
+per-page Retry keep their own clicks and focus. The viewport uses implicit
+touch capture and `touch-action: none`; non-passive surface touchmove handling
+prevents a browser fling from consuming the next control tap.
+
+A short pointer-scoped capture guard suppresses a consumed touch's follow-up
+click, without blocking the next deliberate control interaction. Source,
+session, item or content replacement cancels an in-progress gesture; geometry
+changes rebase or invalidate it as appropriate. The shown item's first decode
+into an empty viewport preserves a gesture that began while that same item
+was loading. The loading surface covers the full stage so the first touch can
+reach the classifier before pixels arrive.
+
+The fullscreen participant asks that classifier to resolve the touch before
+interpreting a viewing-area tap. A stationary tap reveals hidden fullscreen
+controls even while enlarged, and suppresses its own follow-up click. Mouse
+and pen retain their existing drag and chrome-click behavior. Dropdown Escape
+has precedence, then fullscreen exit, then dialog close. Keyboard navigation,
+zoom, bounded pan and focus return continue through the same controller and
+participants. Compact wrapping tools, safe-area padding and failure/Retry
+positioning keep controls usable without changing Fit geometry when fullscreen
+chrome hides.
+
+*Slideshow retirement.* The old `slideshow.js` controller, entrypoint imports
+and exports, legacy state/listeners, `data-slideshow-*` scaffold attributes and
+scaffold CSS are removed. Current `.slideshow-trigger` styling, host-qualified
+trigger and sequence attributes, and server sequence ordering remain active.
+Playback belongs only to `viewer-playback.js` in the unified viewer. Source
+retirement tests check physical removal as well as compiled-bundle assertions;
+tree shaking alone does not establish removal.
+
+*Compatibility and persistence.* Viewer initialization is idempotent and
+participant destruction releases owned requests, listeners, timers and object
+URLs. Host enhancers keep their existing delegated handlers across accepted
+live-region replacements. No viewer-transition migration, setting key, database
+schema or browser record format is introduced. Existing image Preview and
+Thumbnail policy, project/browser presentation choices, release membership and
+order, publication authority and media source identities retain their existing
+owners. Settings' Preview generation policy is separate from the image viewer's
+session-local Original/Optimized choice and from slideshow playback. Image
+quality starts Optimized for a new session; playback uses its existing session
+speed/reset behavior, without a new persistent preference. Per-comic Reader
+records keep their existing versioned keys and load/save semantics, including
+the known non-atomic simultaneous cross-tab write limitation.
 
 *Comic cover delivery.* Comic cards use the normal generated `/preview`
 derivative, matching ordinary cards' Preview-first presentation. The shared
@@ -4004,9 +4048,10 @@ and Fit/Actual Size remain separate ordinary-image concerns.
 (the button is hidden where it is unavailable) and is qualified in Chromium
 only. Resource use is bounded by ownership and release rules, not by a hard
 browser memory cap. Project Detail strips are never replaced in place, so an
-edit elsewhere appears only after reload. Touch swipe, pinch zoom and broader
-responsive work belong to Milestone D; at about 375 px the dialog fits
-without horizontal scrolling. Cross-host behaviour against the compiled bundle
+edit elsewhere appears only after reload. Touch pinch/pan, swipe/edge navigation,
+loading-stage gestures, fullscreen reveal and compact controls are covered by
+automated Chromium pointer/touch input and emulated phone viewports. This does
+not establish physical-device, WebKit or Firefox acceptance. Cross-host behaviour against the compiled bundle
 is covered by [`unified-viewer.spec.js`](tests/browser/unified-viewer.spec.js);
 each module and host keeps its own client and browser suites.
 
@@ -4084,8 +4129,10 @@ primary suite and covers several distinct kinds of test:
   containment).
 - **Client-module tests** (`*-client.test.js`) import the enhancement
   modules and drive them against a synthetic DOM.
-- [`vite-build.test.js`](tests/vite-build.test.js) runs a real build and
-  validates the emitted manifest through the production resolver.
+- [`vite-build.test.js`](tests/vite-build.test.js) runs the production Vite
+  configuration with test-owned temporary output, validates emitted runtime
+  dependencies and the manifest through the production resolver, and checks
+  current viewer contributions and legacy absence without overwriting `dist`.
 
 **Tests authenticate through the real routes.**
 [`tests/helpers/auth.js`](tests/helpers/auth.js) logs in via `POST /login`,

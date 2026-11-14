@@ -322,6 +322,26 @@ afterEach(() => { vi.useRealTimers(); });
 // ─── Availability and autoplay ───────────────────────────────────────────────
 
 describe('viewer playback availability and autoplay', () => {
+  it('keeps the playback tooltip synchronized with its accessible action across pause and reopen', () => {
+    const h = makeHarness();
+    const action = (label) => {
+      expect(h.parts.play.getAttribute('aria-label')).toBe(label);
+      expect(h.parts.play.getAttribute('data-tooltip')).toBe(label);
+    };
+    h.controller.open(slideshow([1, 2]));
+    action('Pause slideshow');
+    fire(h.parts.play, 'click');
+    action('Play slideshow');
+    fire(h.parts.play, 'click');
+    action('Pause slideshow');
+    h.controller.close();
+    h.controller.open(createSingleImageSource({ entries: [{ id: 1, projectId: 7, previewUrl: '/one' }], projectId: 7, assetId: 1 }));
+    expect(h.parts.playback.hidden).toBe(true);
+    h.controller.open(slideshow([1, 2]));
+    action('Pause slideshow');
+    h.playback.destroy();
+  });
+
   it('normalizes only the existing 2/4/6 second choices, 4 s by default', () => {
     expect(VIEWER_PLAYBACK_SPEEDS).toEqual([2000, 4000, 6000]);
     expect(VIEWER_PLAYBACK_DEFAULT_SPEED).toBe(4000);

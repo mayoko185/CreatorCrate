@@ -6,18 +6,22 @@ import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import { build } from 'vite';
 import yazl from 'yazl';
-import { createApp } from '../../src/app.js';
+import { createApplicationContext } from '../../src/app-context.js';
+import { createBackupService } from '../../src/services/backup-service.js';
 import { createAssetManifest } from '../../src/asset-manifest.js';
 import { ensureAuthEnablement } from '../../src/auth/auth-state.js';
 import { closeDatabase, openDatabase, runMigrations } from '../../src/db.js';
 import { createReleaseService } from '../../src/services/release-service.js';
+import { createComicRuntime } from '../../src/services/comic-runtime.js';
+import { defaultComicPreparationCacheRoot } from '../../src/services/comic-preparation-cache.js';
+import { makeZip } from '../helpers/zip-fixture.js';
 
-// B8: cross-host integration qualification of the Milestone B unified viewer
+// Cross-host integration qualification of the unified viewer
 // against the COMPILED production client (a scratch Vite build in a temporary
 // root). Every page here loads only the built bundle, so the controller is
 // reached through the dialog it is bound to, never by importing raw modules.
 //
-// It proves the contracts the per-host suites (B5a-B7c) cannot prove alone:
+// It qualifies contracts across host pages:
 // one shared viewer behind all six image hosts; single-image thumbnails
 // everywhere and explicit slideshows only on Project Assets and the Asset
 // Library, with complete filtered server membership; no legacy slideshow;
@@ -29,11 +33,11 @@ import { createReleaseService } from '../../src/services/release-service.js';
 // Everything (database, projects, previews, compiled client) lives in a
 // temporary root removed afterwards.
 
+const PROJECT_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const DIALOG = '#unified-viewer-dialog';
 const VIDEO_DIALOG = '#asset-video-preview-dialog';
 const LIBRARY = '/asset-viewer';
 const MEDIA_FETCH = /\/projects\/\d+\/assets\/\d+\/(preview|original)(\?|$)/;
-const EMPTY_ZIP = Buffer.from([0x50, 0x4b, 0x05, 0x06, ...new Array(18).fill(0)]);
 
 let server;
 let db;
@@ -42,9 +46,14 @@ let root;
 let projectsRoot;
 let baseURL;
 let releaseService;
+let runtime;
+let comicCacheRoot;
+let compiledManifest;
+let appContext;
+let backupService;
 
 test.beforeAll(async () => {
-  root = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-unified-viewer-b8-'));
+  root = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-unified-viewer-compiled-'));
   projectsRoot = path.join(root, 'projects');
   const appDataRoot = path.join(root, 'app');
   const viteDistRoot = path.join(root, 'client');
@@ -52,28 +61,56 @@ test.beforeAll(async () => {
   fs.mkdirSync(projectsRoot);
   fs.mkdirSync(appDataRoot);
   fs.mkdirSync(previewRoot);
-  await build({ build: { outDir: viteDistRoot }, logLevel: 'silent' });
+  await build({ root: PROJECT_ROOT, configFile: path.join(PROJECT_ROOT, 'vite.config.js'),
+    build: { outDir: viteDistRoot }, logLevel: 'silent' });
+  compiledManifest = JSON.parse(fs.readFileSync(path.join(viteDistRoot, '.vite', 'manifest.json'), 'utf8'));
   db = openDatabase(path.join(root, 'test.db'));
   runMigrations(db, fileURLToPath(new URL('../../migrations', import.meta.url)));
   const { csrfPepper } = ensureAuthEnablement(appDataRoot);
-  app = createApp({ appName: 'CreatorCrate', db, projectsRoot, previewRoot }, {
-    appDataRoot, authState: { csrfPepper }, useViteAssets: true, viteDistRoot,
+  comicCacheRoot = defaultComicPreparationCacheRoot(appDataRoot);
+  runtime = createComicRuntime({ appDataRoot, projectsRoot, cacheOptions: { settleMs: 0 } });
+  await runtime.start();
+  backupService = createBackupService({ appDataRoot, databasePath: path.join(root, 'test.db'),
+    migrationsDir: fileURLToPath(new URL('../../migrations', import.meta.url)) });
+  appContext = createApplicationContext({ appName: 'CreatorCrate', projectsRoot, previewRoot, appOpts: {
+    appDataRoot, databasePath: path.join(root, 'test.db'), migrationsDir: fileURLToPath(new URL('../../migrations', import.meta.url)),
+    backupService, maintenanceState: { active: false }, authState: { csrfPepper }, comicRuntime: runtime, useViteAssets: true, viteDistRoot,
     assetManifest: createAssetManifest({ distRoot: viteDistRoot,
       manifestPath: path.join(viteDistRoot, '.vite', 'manifest.json') }),
-  });
-  server = app.listen(0, '127.0.0.1');
+  } }, db);
+  app = appContext.app;
+  server = (await import('node:http')).createServer(appContext.handleRequest).listen(0, '127.0.0.1');
   await new Promise((resolve) => server.once('listening', resolve));
   baseURL = `http://127.0.0.1:${server.address().port}`;
   releaseService = createReleaseService({ db });
 });
 
 test.afterAll(async () => {
-  if (server) {
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
+  try {
+    if (server) {
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    }
+    appContext?.releaseNotificationRuntime.stop();
+    await appContext?.releaseNotificationRuntime.waitForIdle();
+    await appContext?.processingJobService.waitForIdle();
+    if (app) {
+      const comicPause = app.locals.comicMediaService?.pauseForMaintenance();
+      const services = ['generatedImageRebuildService', 'generatedImagePublicationLifecycle', 'projectOwnershipAdoption', 'legacyManifestCleanup'];
+      for (const name of services) app.locals[name]?.stop();
+      app.locals.comicMediaService?.stop();
+      await Promise.all([...services.map((name) => app.locals[name]?.waitForIdle()), comicPause?.waitForIdle()]);
+    }
+  } finally {
+    try { if (runtime) await runtime.close(); }
+    finally {
+      try {
+        if (comicCacheRoot) fs.rmSync(comicCacheRoot, { recursive: true, force: true });
+        if (db?.open) closeDatabase(db);
+      }
+      finally { if (root) fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 }); }
+    }
   }
-  if (db) closeDatabase(db);
-  if (root) fs.rmSync(root, { recursive: true, force: true });
 });
 
 function image(width, height, shade, format) {
@@ -119,7 +156,11 @@ async function createFixture() {
   await writeA('05-paint.kra', kritaArchive(await image(80, 60, 180, 'png')));
   await writeA(dup, image(64, 64, 210, 'png'));
   fs.writeFileSync(path.join(dirA, 'clip.mp4'), Buffer.from('not really a video'));
-  fs.writeFileSync(path.join(dirA, 'book.cbz'), EMPTY_ZIP);
+  fs.writeFileSync(path.join(dirA, 'book.cbz'), makeZip([
+    { name: '01.png', data: await image(120, 180, 40, 'png') },
+    { name: '02.png', data: await image(120, 180, 80, 'png') },
+    { name: '03.png', data: await image(120, 180, 120, 'png') },
+  ]));
   fs.writeFileSync(path.join(dirA, 'notes.txt'), 'notes');
   fs.writeFileSync(path.join(dirB, dup), await image(64, 64, 240, 'png'));
   app.locals.assetScanner.scanProjectAssets(a.id);
@@ -224,7 +265,13 @@ function installProbe() {
 }
 
 async function open(page, url, { viewport = { width: 1280, height: 900 } } = {}) {
-  const control = { mutations: [], errors: [], comic: [], dialogs: [] };
+  const control = { mutations: [], errors: [], comic: [], dialogs: [], assetErrors: [] };
+  page.on('requestfailed', (request) => {
+    if (new URL(request.url()).pathname.startsWith('/vite/')) control.assetErrors.push(request.url());
+  });
+  page.on('response', (response) => {
+    if (new URL(response.url()).pathname.startsWith('/vite/') && response.status() >= 400) control.assetErrors.push(response.url());
+  });
   page.on('pageerror', (error) => control.errors.push(error.message));
   page.on('request', (request) => {
     if (request.method() !== 'GET') control.mutations.push(`${request.method()} ${request.url()}`);
@@ -261,6 +308,7 @@ async function viewerState(page) {
       revision: state.item?.revision ?? null,
       media: { status: media.status, width: media.width, height: media.height, error: media.error },
       original: media.original?.status ?? null,
+      quality: media.quality,
       playback: { available: playback.available, playing: playback.playing, speed: playback.speed, scheduled: playback.scheduled, pauseReason: playback.pauseReason },
       fullscreenElement: document.fullscreenElement
         ? (document.fullscreenElement.matches('[data-unified-viewer-card]') ? 'card' : 'other')
@@ -534,14 +582,14 @@ test('scenario C: repeated viewing, original inspection, pending loads and repla
     await slideshow.click();
     await loaded(page);
     await page.locator(`${DIALOG} [data-unified-viewer-zoom-in]`).click();
-    await page.locator(`${DIALOG} [data-unified-viewer-original]`).click();
-    await expect.poll(async () => (await viewerState(page)).original).toBe('active');
+    await page.locator(`${DIALOG} [data-unified-viewer-quality]`).click();
+    await expect.poll(async () => (await viewerState(page)).quality.displayed).toBe('original');
     // Preview + original for the current item, plus at most one neighbour.
     expect((await resources(page)).imageObjectUrls).toBeLessThanOrEqual(3);
     expect((await viewerState(page)).playback).toMatchObject({ playing: false, pauseReason: 'inspection' });
     await page.locator(`${DIALOG} [data-unified-viewer-next]`).click();
     await loaded(page);
-    // Navigation releases the original: current preview + one neighbour.
+    // Navigation retires the prior item: current rendition plus one neighbour.
     await expect.poll(async () => (await resources(page)).imageObjectUrls).toBeLessThanOrEqual(2);
     await closeViewer(page);
     const after = await resources(page);
@@ -640,7 +688,9 @@ test('scenario D: authoritative refreshes reconcile only the open session; filte
   expect(after.mediaUrl).not.toBe(before.mediaUrl);
   await loaded(page);
   expect((await viewerState(page)).media).toMatchObject({ width: 500, height: 1000 });
-  expect((await resources(page)).mediaUrls).toContain(after.mediaUrl);
+  const displayedUrl = (await viewerState(page)).quality.url;
+  expect(displayedUrl).toContain('rendition=optimized');
+  expect((await resources(page)).mediaUrls).toContain(displayedUrl);
   expect((await resources(page)).imageObjectUrls).toBe(1);
 
   // A closed session is never reopened by a later refresh.
@@ -901,13 +951,14 @@ test('scenario G: video keeps its own player; comics never reach the image loade
   expect(control.mutations).toEqual([]);
   expect(control.errors).toEqual([]);
 
-  // Asset Details: Krita is preview-only (no Original Size); the comic and
+  // Asset Details: Krita has no Original rendition; the comic and
   // video detail pages offer no viewer trigger at all.
   control = await open(page, `/projects/${f.a}/assets/${kra}`);
   await page.locator('[data-asset-details-viewer-trigger]').click();
   await loaded(page);
   expect((await viewerState(page)).originalUrl).toBe(null);
-  await expect(page.locator(`${DIALOG} [data-unified-viewer-original]`)).toBeHidden();
+  await expect(page.locator(`${DIALOG} [data-unified-viewer-quality]`)).toBeHidden();
+  await expect(page.locator(`${DIALOG} [data-unified-viewer-original]`)).toBeDisabled();
   await closeViewer(page);
   for (const id of [comic, clip]) {
     await page.goto(`${baseURL}/projects/${f.a}/assets/${id}`);
@@ -970,4 +1021,167 @@ test('narrow 375px: single-image and slideshow hosts fit without horizontal scro
     expect(control.mutations, url).toEqual([]);
     expect(control.errors, url).toEqual([]);
   }
+});
+
+
+test('compiled asset graph serves every emitted runtime asset without raw module fallbacks', async ({ request, page }) => {
+  const files = new Set(Object.values(compiledManifest).flatMap((record) => [record.file, ...(record.css || []), ...(record.assets || [])]).filter(Boolean));
+  for (const file of files) {
+    const response = await request.get(`${baseURL}/vite/${file}`);
+    expect(response.status(), file).toBe(200);
+    expect((await response.body()).length, file).toBeGreaterThan(0);
+    if (file.endsWith('.js')) expect(response.headers()['content-type'], file).toMatch(/javascript/);
+    if (file.endsWith('.css')) expect(response.headers()['content-type'], file).toMatch(/text\/css/);
+  }
+  const f = await createFixture();
+  const control = await open(page, `/projects/${f.a}/assets`);
+  await page.locator('[data-project-assets-slideshow-trigger]').click();
+  await loaded(page);
+  await closeViewer(page);
+  expect(control.assetErrors).toEqual([]);
+  expect(control.errors).toEqual([]);
+});
+
+test('existing installation retains policy, publications, identities and browser preferences through reload and history', async ({ page }) => {
+  test.setTimeout(180_000);
+  const f = await createFixture();
+  const policy = {
+    thumbnailFormat: 'png', thumbnailWebpQuality: 63, thumbnailMaxDimension: 128,
+    previewFormat: 'png', previewWebpQuality: 79, previewMaxDimension: 640,
+  };
+  const priorMeta = db.prepare('SELECT * FROM app_meta ORDER BY key').all();
+  try {
+    app.locals.projectImageSettingsService.saveValidated(policy);
+    for (const [key, value] of Object.entries({
+      'page_defaults.project_assets.view': 'grid', 'page_defaults.project_assets.grid_style': 'cropped',
+      'page_defaults.asset_viewer.view': 'list', 'page_defaults.asset_viewer.grid_style': 'uncropped',
+    })) db.prepare('INSERT INTO app_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, value);
+    const landscape = f.id('02-landscape.jpg');
+    const comic = f.id('book.cbz');
+    // Populate valid ordinary derivatives before taking the existing-install snapshot.
+    await app.locals.previewService.getPreview(Number(f.a), Number(landscape));
+    await app.locals.previewService.getThumbnail(Number(f.a), Number(landscape));
+    const snapshot = () => ({
+      projects: db.prepare('SELECT * FROM projects WHERE id IN (?,?) ORDER BY id').all(Number(f.a), Number(f.b)),
+      assets: db.prepare('SELECT * FROM assets WHERE project_id IN (?,?) ORDER BY id').all(Number(f.a), Number(f.b)),
+      releases: db.prepare('SELECT * FROM releases WHERE project_id=? ORDER BY id').all(Number(f.a)),
+      membership: db.prepare('SELECT * FROM release_assets WHERE release_id IN (?,?) ORDER BY release_id, sort_order').all(Number(f.mixed), Number(f.second)),
+      policy: db.prepare("SELECT * FROM app_meta WHERE key LIKE 'images.%' OR key LIKE 'page_defaults.%' ORDER BY key").all(),
+      publications: db.prepare('SELECT * FROM generated_image_publications WHERE asset_id=?').all(Number(landscape)),
+      derivatives: db.prepare('SELECT * FROM generated_image_derivatives WHERE asset_id=? ORDER BY kind').all(Number(landscape)),
+      artifacts: db.prepare('SELECT * FROM generated_artifacts WHERE project_id=? ORDER BY id').all(Number(f.a)),
+      schema: db.prepare("SELECT * FROM sqlite_master WHERE type='table' ORDER BY name").all(),
+    });
+    const before = snapshot();
+    expect(before.publications).toHaveLength(1);
+    expect(before.derivatives).toHaveLength(2);
+    await open(page, `/projects/${f.a}/assets`);
+    const readerKey = `creatorcrate-comic-reader-preferences:v1:comic:${f.a}:${comic}`;
+    const preferences = { version: 1, direction: 'rtl', layout: 'spread', alignment: 'pair-from-first' };
+    await page.evaluate(({ readerKey, preferences }) => {
+      localStorage.setItem(readerKey, JSON.stringify(preferences));
+      localStorage.setItem('creatorcrate-release-detail-grid-style', 'cropped');
+      localStorage.setItem('creatorcrate-release-assets-grid-style', 'uncropped');
+      localStorage.setItem('creatorcrate-asset-grid-size', 'large');
+    }, { readerKey, preferences });
+    const storage = () => page.evaluate(() => Object.fromEntries(Object.keys(localStorage).sort().map((key) => [key, localStorage.getItem(key)])));
+    const stored = await storage();
+    await page.reload();
+    await expect(page.locator('.asset-grid').first()).toHaveAttribute('data-grid-style', 'cropped');
+    const trigger = page.locator(`a[data-project-assets-preview-id="${landscape}"]`);
+    for (let round = 0; round < 2; round += 1) {
+      await trigger.click();
+      await loaded(page);
+      const state = await viewerState(page);
+      expect(state.key).toBe(`p:${f.a}|a:${landscape}`);
+      expect(state.mediaUrl).toContain(`/projects/${f.a}/assets/${landscape}/preview`);
+      expect(await page.evaluate(() => document.getElementById('unified-viewer-dialog').__creatorCrateUnifiedViewer.media.getState().quality))
+        .toMatchObject({ desired: 'optimized', displayed: 'optimized' });
+      await closeViewer(page);
+    }
+    // Drive the existing controller's Reader entry with real revision-bound archive pages.
+    const read = async () => {
+      await page.evaluate(({ projectId, assetId }) => document.getElementById('unified-viewer-dialog').__creatorCrateUnifiedViewer.openComic({ projectId, assetId }),
+        { projectId: f.a, assetId: comic });
+      await expect.poll(() => page.evaluate(() => document.getElementById('unified-viewer-dialog').__creatorCrateUnifiedViewer.getState().comic?.state)).toBe('ready');
+      await expect.poll(() => page.evaluate(() => document.getElementById('unified-viewer-dialog').__creatorCrateUnifiedViewer.getState().reader))
+        .toMatchObject({ direction: 'rtl', layout: 'spread', alignment: 'pair-from-first' });
+      await expect(page.locator(`${DIALOG} .unified-viewer-page-image`)).toHaveCount(2);
+      await closeViewer(page);
+    };
+    await read();
+    await page.reload();
+    await read();
+    // The Library's stored List presentation and history retain source identity.
+    const library = `${LIBRARY}?project=${f.a}&sort=filename&order=asc`;
+    await page.goto(`${baseURL}${library}`);
+    await expect(page.locator('.asset-list').first()).toBeVisible();
+    await page.goto(`${baseURL}${library}&view=grid&search=landscape`);
+    await page.locator('[data-asset-library-slideshow-trigger]').click();
+    await loaded(page);
+    expect((await viewerState(page)).keys).toEqual([`p:${f.a}|a:${landscape}`]);
+    await closeViewer(page);
+    await page.goBack();
+    await expect(page.locator('.asset-list').first()).toBeVisible();
+    await page.goForward();
+    await page.locator('[data-asset-library-slideshow-trigger]').click();
+    expect((await viewerState(page)).keys).toEqual([`p:${f.a}|a:${landscape}`]);
+    await closeViewer(page);
+    for (const [url, style] of [[`/releases/${f.mixed}`, 'cropped'], [`/releases/${f.mixed}/assets?view=grid`, 'uncropped']]) {
+      await page.goto(`${baseURL}${url}`);
+      await expect(page.locator('.asset-grid').first()).toHaveAttribute('data-grid-style', style);
+    }
+    expect(await storage()).toEqual(stored);
+    expect(app.locals.projectImageSettingsService.getPolicy()).toEqual({
+      thumbnail: { format: 'png', webpQuality: 63, maxDimension: 128 },
+      preview: { format: 'png', webpQuality: 79, maxDimension: 640 },
+    });
+    expect(snapshot(), 'existing project/asset/release and derivative authority is unchanged').toEqual(before);
+  } finally {
+    db.transaction(() => {
+      db.prepare('DELETE FROM app_meta').run();
+      for (const row of priorMeta) db.prepare('INSERT INTO app_meta(key,value) VALUES(?,?)').run(row.key, row.value);
+    })();
+  }
+});
+
+
+test('a restored application serves the compiled viewer with retained image and Reader identities', async ({ page }) => {
+  const f = await createFixture();
+  const landscape = f.id('02-landscape.jpg');
+  const comic = f.id('book.cbz');
+  const membership = () => db.prepare('SELECT * FROM release_assets WHERE release_id=? ORDER BY sort_order').all(Number(f.mixed));
+  const before = membership();
+  await page.goto(`${baseURL}/settings/backups`);
+  const token = await page.locator('input[name="_csrf"]').first().inputValue();
+  const backed = await page.request.post(`${baseURL}/settings/backups`, { form: { _csrf: token }, maxRedirects: 0 });
+  expect(backed.status()).toBe(302);
+  expect(backed.headers().location).toBe('/settings/backups?notice=backup_created');
+  const backup = backupService.listBackups()[0].filename;
+  db.prepare('UPDATE projects SET title=? WHERE id=?').run('After backup', Number(f.a));
+  const retired = db;
+  const restored = await page.request.post(`${baseURL}/settings/backups/${backup}/restore`, { form: { _csrf: token }, maxRedirects: 0 });
+  // Resolve the current graph even if a later assertion fails, so teardown owns the live DB.
+  db = appContext.db;
+  app = appContext.app;
+  releaseService = createReleaseService({ db });
+  expect(restored.status()).toBe(302);
+  expect(restored.headers().location).toBe('/settings/backups?notice=restore_success');
+  expect(db).not.toBe(retired);
+  expect(retired.open).toBe(false);
+  expect(db.prepare('SELECT title FROM projects WHERE id=?').get(Number(f.a)).title).not.toBe('After backup');
+  expect(membership()).toEqual(before);
+  const control = await open(page, `/projects/${f.a}/assets?view=grid`);
+  await page.locator(`a[data-project-assets-preview-id="${landscape}"]`).click();
+  await loaded(page);
+  expect((await viewerState(page)).key).toBe(`p:${f.a}|a:${landscape}`);
+  await closeViewer(page);
+  await page.evaluate(({ projectId, assetId }) => document.getElementById('unified-viewer-dialog').__creatorCrateUnifiedViewer.openComic({ projectId, assetId }),
+    { projectId: f.a, assetId: comic });
+  await expect.poll(() => page.evaluate(() => document.getElementById('unified-viewer-dialog').__creatorCrateUnifiedViewer.getState().comic?.state)).toBe('ready');
+  await expect(page.locator(`${DIALOG} .unified-viewer-page-image`)).toHaveCount(1);
+  await closeViewer(page);
+  expect((await pageShell(page)).legacyScaffold).toBe(0);
+  expect(control.assetErrors).toEqual([]);
+  expect(control.errors).toEqual([]);
 });

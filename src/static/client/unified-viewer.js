@@ -24,7 +24,11 @@
 //   `controller.playback`;
 // - fullscreen (B4, viewer-fullscreen.js): the dialog card as the fullscreen
 //   target and fullscreen-only idle chrome, exposed as `controller.fullscreen`.
-// Navigation changes carry `cause`: 'user' for Previous/Next/select and keys,
+// D1-B: Fit-state touch swipes and outer-edge taps reach the same step
+// through touchNavigate(); the content participant's viewport is the one
+// stage touch classifier, and the fullscreen participant asks it
+// (`stageGestures`) before treating a touch as its chrome tap.
+// Navigation changes carry `cause`: 'user' for Previous/Next/select, keys and touch,
 // 'playback' for the slideshow's own advance.
 //
 // Comics (C1b) use the same session. openComic() allocates the session and
@@ -1409,6 +1413,23 @@ function createUnifiedViewerController(document, dialog, dialogState, root) {
     event?.preventDefault?.();
     navigate('previous');
   };
+  // D1-B: a Fit-state touch swipe or outer-edge tap, classified by the
+  // content participant's viewport. `side` is physical ('right' is the
+  // ArrowRight sense: a right-edge tap, or a swipe whose finger moves left)
+  // and maps exactly like the arrow keys, so a Right-to-Left comic advances
+  // leftwards. Only the session and item the touch began on can navigate,
+  // only through the same step as Previous/Next (user navigation, which
+  // pauses playback); returns whether the current item moved.
+  function touchNavigate(intent) {
+    if (destroyed || !active || !intent || (intent.side !== 'left' && intent.side !== 'right')) return false;
+    if (intent.session !== active.session || intent.key !== active.key || active.key === null) return false;
+    if (active.source.mode !== VIEWER_SOURCE_MODE_SEQUENCE || active.source.items.length < 2) return false;
+    const rtl = Boolean(active.comic) && active.reader?.direction === VIEWER_READING_RTL;
+    const forward = (intent.side === 'right') !== rtl;
+    const before = active.key;
+    const result = navigate(forward ? 'next' : 'previous');
+    return Boolean(result?.moved) && Boolean(active) && active.key !== before;
+  }
   const onNext = (event) => {
     event?.preventDefault?.();
     navigate('next');
@@ -1429,6 +1450,7 @@ function createUnifiedViewerController(document, dialog, dialogState, root) {
     keyOwned: keyOwnedByControl,
     focusFallback: () => dialog.querySelector?.(CLOSE_SELECTOR) || null,
     onPageConflict,
+    touchNavigate,
   });
   const media = Object.freeze({
     getState: content.getState,
@@ -1467,6 +1489,7 @@ function createUnifiedViewerController(document, dialog, dialogState, root) {
     ],
     observe,
     media,
+    stageGestures: content.touchGestures,
     dismissMenus: () => closeToolMenus('[data-cc-dropdown][open], [data-cc-viewport-disclosure][open]'),
   });
   const stopMediaLayout = media.observe(queueFooterLayout);

@@ -1,13 +1,15 @@
-import { describe, expect, beforeAll, it } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { describe, expect, beforeAll, afterAll, it } from 'vitest';
+import os from 'node:os';
+import { build } from 'vite';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAssetManifest } from '../src/asset-manifest.js';
 
 const PROJECT_ROOT = fileURLToPath(new URL('../', import.meta.url));
-const DIST_ROOT = path.join(PROJECT_ROOT, 'dist', 'client');
-const MANIFEST_PATH = path.join(DIST_ROOT, '.vite', 'manifest.json');
+let testRoot;
+let DIST_ROOT;
+let MANIFEST_PATH;
 const ENTRY_KEY = 'client/main.js';
 
 function list(value) {
@@ -35,17 +37,36 @@ function manifestDependencyKeys(record) {
 describe('Vite 8 CreatorCrate browser build', () => {
   let manifest;
 
+  let compiled;
+
   beforeAll(() => {
-    const buildCommand = process.platform === 'win32' ? (process.env.ComSpec || 'cmd.exe') : 'pnpm';
-    const buildArguments = process.platform === 'win32' ? ['/d', '/s', '/c', 'pnpm build'] : ['build'];
-    execFileSync(buildCommand, buildArguments, {
-      cwd: PROJECT_ROOT,
-      stdio: 'inherit',
-    });
-    manifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
+    testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-vite-test-'));
+    DIST_ROOT = path.join(testRoot, 'client');
+    MANIFEST_PATH = path.join(DIST_ROOT, '.vite', 'manifest.json');
   });
 
-  it('bundles the real CreatorCrate browser module and stylesheet through one hashed entry', () => {
+  afterAll(() => {
+    if (testRoot) fs.rmSync(testRoot, { recursive: true, force: true });
+  });
+
+  async function compile() {
+    // Check before Vite can empty an output directory, including on a failed build.
+    expect(path.relative(testRoot, DIST_ROOT), 'build output is test-owned').toBe('client');
+    expect(path.relative(PROJECT_ROOT, DIST_ROOT).startsWith('..') || path.isAbsolute(path.relative(PROJECT_ROOT, DIST_ROOT)),
+      'build output is outside the repository').toBe(true);
+    if (!compiled) {
+      compiled = await build({
+        root: PROJECT_ROOT,
+        configFile: path.join(PROJECT_ROOT, 'vite.config.js'),
+        build: { outDir: DIST_ROOT },
+        logLevel: 'silent',
+      });
+      manifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
+    }
+  }
+
+  it('bundles the real CreatorCrate browser module and stylesheet through one hashed entry', async () => {
+    await compile();
     expect(fs.existsSync(MANIFEST_PATH)).toBe(true);
 
     const entry = manifest[ENTRY_KEY];
@@ -64,12 +85,26 @@ describe('Vite 8 CreatorCrate browser build', () => {
     const javascript = fs.readFileSync(assetPath(entry.file), 'utf8');
     const stylesheet = fs.readFileSync(assetPath(cssFiles[0]), 'utf8');
     expect(javascript).toContain('data-preview-enhancement');
-    expect(javascript).toContain('data-slideshow-scaffold');
+    for (const hook of [
+      'data-unified-viewer', 'data-project-assets-preview-id', 'data-asset-library-preview-id',
+      'data-asset-details-viewer-trigger', 'data-release-assets-viewer-trigger',
+      'data-release-detail-viewer-trigger', 'data-project-detail-viewer-trigger',
+      'data-unified-viewer-play', 'data-unified-viewer-speed', 'data-unified-viewer-direction',
+      'data-unified-viewer-layout', 'requestFullscreen', 'pointercancel', 'touchmove',
+      'lostpointercapture', 'prefers-reduced-motion',
+    ]) expect(javascript, hook).toContain(hook);
+    expect(javascript).not.toMatch(/data-slideshow-scaffold|__creatorCrateSlideshowState|slideshowBound|temporarySequenceActive/);
     expect(javascript).toMatch(/import\(/);
     expect(javascript).not.toContain('globalThis.toastui');
     expect(javascript).not.toContain('creatorcrateViteFoundation');
     expect(stylesheet).toMatch(/--bg\s*:/);
     expect(stylesheet).toContain('.asset-browser-layout');
+    for (const selector of ['.unified-viewer-dialog', '.unified-viewer-stage', '.unified-viewer-controls', '.slideshow-trigger']) {
+      expect(stylesheet, selector).toContain(selector);
+    }
+    expect(stylesheet).toMatch(/touch-action:\s*none/);
+    expect(stylesheet).toContain('safe-area-inset-bottom');
+    expect(stylesheet).not.toMatch(/\.slideshow-(?!trigger\b)[\w-]+|\[data-slideshow-/);
     expect(stylesheet).not.toContain('--creatorcrate-vite-foundation');
 
     const javascriptEntries = Object.values(manifest).filter(
@@ -97,7 +132,8 @@ describe('Vite 8 CreatorCrate browser build', () => {
     editorStyles.forEach((record) => expectNonEmptyAsset(record.file));
   });
 
-  it('keeps manifest references valid and bundles entry dependencies', () => {
+  it('keeps manifest references valid and bundles entry dependencies', async () => {
+    await compile();
     const javascriptFiles = new Set();
 
     for (const record of Object.values(manifest)) {
@@ -113,15 +149,31 @@ describe('Vite 8 CreatorCrate browser build', () => {
       }
     }
 
+    const chunks = (Array.isArray(compiled) ? compiled : [compiled]).flatMap((result) => result.output)
+      .filter((output) => output.type === 'chunk');
+    const modules = chunks.flatMap((chunk) => Object.entries(chunk.modules))
+      .filter(([, details]) => details.renderedLength > 0).map(([id]) => id.replaceAll('\\', '/'));
+    for (const name of ['unified-viewer', 'viewer-content', 'viewer-viewport', 'viewer-fullscreen',
+      'viewer-playback', 'viewer-sequence', 'comic-source', 'comic-reader-preferences', 'viewer-spread-layout',
+      'project-assets-viewer', 'asset-library-viewer', 'asset-details-viewer', 'release-assets-viewer',
+      'release-detail-viewer', 'project-detail-viewer']) {
+      expect(modules.some((id) => id.endsWith(`/client/${name}.js`)), `${name} contributes compiled code`).toBe(true);
+    }
+    expect(modules.some((id) => id.endsWith('/client/slideshow.js'))).toBe(false);
+
     for (const file of javascriptFiles) {
       const source = fs.readFileSync(assetPath(file), 'utf8');
+      for (const match of source.matchAll(/(?:\bfrom\s*|\bimport\s*(?:\(\s*)?)(['"`])(\.[^'"`]+)\1/g)) {
+        expectNonEmptyAsset(path.posix.join(path.posix.dirname(file), match[2]));
+      }
       expect(source).not.toMatch(/\bfrom\s*["'](?![./#])[^"']+["']/);
       expect(source).not.toMatch(/\bimport\s*\(\s*["'](?![./#])[^"']+["']\s*\)/);
       expect(source).not.toMatch(/\brequire\s*\(\s*["'](?![./#])[^"']+["']\s*\)/);
     }
   });
 
-  it('resolves the actual Vite manifest through the backend asset helper', () => {
+  it('resolves the actual Vite manifest through the backend asset helper', async () => {
+    await compile();
     const assets = createAssetManifest({
       manifestPath: MANIFEST_PATH,
       distRoot: DIST_ROOT,

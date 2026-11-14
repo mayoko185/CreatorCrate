@@ -81,7 +81,7 @@ function makeElement(tagName, document) {
   return element;
 }
 
-function makeHarness({ supported = true, requestMode = 'resolve', exitMode = 'resolve' } = {}) {
+function makeHarness({ supported = true, requestMode = 'resolve', exitMode = 'resolve', stageGestures } = {}) {
   const document = { activeElement: null, fullscreenElement: null, fullscreenEnabled: true, listeners: [] };
   document.body = makeElement('body', document);
   document.addEventListener = (type, handler) => document.listeners.push({ type, handler });
@@ -175,6 +175,7 @@ function makeHarness({ supported = true, requestMode = 'resolve', exitMode = 're
     media,
     dismissMenus,
     view,
+    stageGestures,
   });
 
   const harness = {
@@ -2037,5 +2038,223 @@ describe('viewer fullscreen authoritative exit settlement (F6)', () => {
       h.fullscreen.destroy();
       expect(h.document.listeners).toHaveLength(0);
     }
+  });
+});
+
+// ─── D1-B: the stage touch classifier decides first ─────────────────────────
+
+describe('viewer fullscreen and the stage touch classifier (D1-B)', () => {
+  const touchAt = { pointerId: 31, pointerType: 'touch', button: 0, isPrimary: true, clientX: 120, clientY: 160 };
+  // A stand-in classifier: owns touch pointer 31 and answers `outcome` once per event.
+  function classifier(outcome) {
+    const owned = new Set();
+    const calls = [];
+    return {
+      calls,
+      own: (id) => owned.add(id),
+      owns: vi.fn((id) => owned.has(id)),
+      release: vi.fn((event) => {
+        calls.push(event);
+        owned.delete(event.pointerId);
+        return outcome.value;
+      }),
+    };
+  }
+  async function entered(outcome) {
+    const stageGestures = classifier(outcome);
+    const h = makeHarness({ stageGestures });
+    h.open();
+    h.fullscreen.enter();
+    await flush();
+    h.gestures = stageGestures;
+    h.touch = (type, extra = {}) => h.pointer(h.parts.stage, type, { ...touchAt, ...extra });
+    return h;
+  }
+
+  it('only a "tap" outcome continues as the chrome tap', async () => {
+    const outcome = { value: 'tap' };
+    const h = await entered(outcome);
+    h.gestures.own(31);
+    h.touch('pointerdown');
+    h.touch('pointerup');
+    expect(h.gestures.release).toHaveBeenCalledTimes(1);
+    expect(h.fullscreen.getState().chromeHidden).toBe(true);
+    for (const value of ['navigate', 'consumed']) {
+      h.keydown(h.parts.stage, 'Shift');
+      outcome.value = value;
+      h.gestures.own(31);
+      h.touch('pointerdown');
+      h.touch('pointerup');
+      expect(h.fullscreen.getState().chromeHidden).toBe(false);
+      expect(h.dismissMenus).toHaveBeenCalledTimes(1);
+      // The idle timer still runs.
+      expect(vi.getTimerCount()).toBe(1);
+    }
+  });
+
+  it('navigation and consumed touches keep hidden chrome hidden; an ineffective drag reveals it', async () => {
+    const outcome = { value: 'navigate' };
+    const h = await entered(outcome);
+    vi.advanceTimersByTime(4000);
+    expect(h.fullscreen.getState().chromeHidden).toBe(true);
+    for (const value of ['navigate', 'consumed']) {
+      outcome.value = value;
+      h.gestures.own(31);
+      h.touch('pointerdown');
+      h.touch('pointermove', { clientX: 400 });
+      h.touch('pointerup', { clientX: 400 });
+      expect(h.fullscreen.getState().chromeHidden).toBe(true);
+    }
+    outcome.value = 'drag';
+    h.gestures.own(31);
+    h.touch('pointerdown');
+    h.touch('pointermove', { clientX: 400 });
+    expect(h.fullscreen.getState().chromeHidden).toBe(true);
+    h.touch('pointerup', { clientX: 400 });
+    expect(h.fullscreen.getState().chromeHidden).toBe(false);
+  });
+
+  it('a second owned finger never reveals chrome while it moves', async () => {
+    const h = await entered({ value: 'consumed' });
+    vi.advanceTimersByTime(4000);
+    h.gestures.own(31);
+    h.gestures.own(32);
+    h.touch('pointerdown');
+    h.touch('pointerdown', { pointerId: 32, isPrimary: false, clientX: 300 });
+    h.touch('pointermove', { pointerId: 32, clientX: 500 });
+    h.touch('pointermove', { clientX: 20 });
+    h.touch('pointerup', { pointerId: 32, clientX: 500 });
+    h.touch('pointerup', { clientX: 20 });
+    expect(h.fullscreen.getState().chromeHidden).toBe(true);
+  });
+
+  it('touches it does not own, and mouse or pen, keep the accepted behavior without asking', async () => {
+    const h = await entered({ value: null });
+    h.touch('pointerdown');
+    h.touch('pointerup');
+    expect(h.fullscreen.getState().chromeHidden).toBe(true);
+    h.keydown(h.parts.stage, 'Shift');
+    for (const pointerType of ['mouse', 'pen']) {
+      h.touch('pointerdown', { pointerType });
+      h.touch('pointerup', { pointerType });
+      expect(h.fullscreen.getState().chromeHidden).toBe(true);
+      h.keydown(h.parts.stage, 'Shift');
+    }
+    expect(h.gestures.calls.every((event) => event.pointerType === 'touch')).toBe(true);
+    // Unowned touch movement still reveals, as before.
+    vi.advanceTimersByTime(4000);
+    h.touch('pointerdown');
+    h.touch('pointermove', { clientX: 400 });
+    expect(h.fullscreen.getState().chromeHidden).toBe(false);
+  });
+
+  it('a non-fullscreen viewer still lets the classifier resolve and changes no chrome', async () => {
+    const stageGestures = classifier({ value: 'navigate' });
+    const h = makeHarness({ stageGestures });
+    h.open();
+    stageGestures.own(31);
+    h.pointer(h.parts.stage, 'pointerdown', touchAt);
+    h.pointer(h.parts.stage, 'pointerup', touchAt);
+    expect(stageGestures.release).toHaveBeenCalledTimes(1);
+    expect(h.fullscreen.getState()).toMatchObject({ active: false, chromeHidden: false });
+  });
+});
+
+// ─── D1-C: a touch tap brings hidden chrome back (user direction) ───────────
+
+describe('viewer fullscreen hidden chrome and touch taps (D1-C)', () => {
+  const at = { pointerId: 41, button: 0, isPrimary: true, clientX: 120, clientY: 160 };
+  async function hiddenChrome(options) {
+    const h = makeHarness(options);
+    h.open();
+    h.fullscreen.enter();
+    await flush();
+    vi.advanceTimersByTime(4000);
+    expect(h.fullscreen.getState()).toMatchObject({ active: true, chromeHidden: true });
+    return h;
+  }
+  const tapWith = (h, pointerType, extra = {}) => {
+    h.pointer(h.parts.stage, 'pointerdown', { ...at, pointerType, ...extra });
+    h.pointer(h.parts.stage, 'pointerup', { ...at, pointerType, ...extra });
+  };
+
+  it('a touch tap on the viewing area reveals hidden chrome and restarts the idle timer', async () => {
+    const h = await hiddenChrome();
+    const reasons = [];
+    h.fullscreen.observe((state, reason) => reasons.push(reason));
+    tapWith(h, 'touch');
+    expect(h.fullscreen.getState().chromeHidden).toBe(false);
+    expect(reasons).toEqual(['chrome-shown']);
+    expect(vi.getTimerCount()).toBe(1);
+    // Shown again, the accepted centre tap hides it; another touch tap reveals it.
+    tapWith(h, 'touch', { pointerId: 42 });
+    expect(h.fullscreen.getState().chromeHidden).toBe(true);
+    tapWith(h, 'touch', { pointerId: 43 });
+    expect(h.fullscreen.getState().chromeHidden).toBe(false);
+    vi.advanceTimersByTime(4000);
+    expect(h.fullscreen.getState().chromeHidden).toBe(true);
+    expect(h.document.exitFullscreen).not.toHaveBeenCalled();
+  });
+
+  it.each(['mouse', 'pen', undefined])('a %s click keeps hidden chrome hidden (B4)', async (pointerType) => {
+    const h = await hiddenChrome();
+    tapWith(h, pointerType);
+    expect(h.fullscreen.getState().chromeHidden).toBe(true);
+  });
+
+  it('a classified touch reveals only on a "tap"; navigation and consumed outcomes keep it hidden', async () => {
+    const outcome = { value: 'tap' };
+    const owned = new Set();
+    const stageGestures = {
+      owns: (id) => owned.has(id),
+      release: (event) => { owned.delete(event.pointerId); return outcome.value; },
+    };
+    const h = await hiddenChrome({ stageGestures });
+    for (const value of ['navigate', 'consumed']) {
+      outcome.value = value;
+      owned.add(41);
+      tapWith(h, 'touch');
+      expect(h.fullscreen.getState().chromeHidden).toBe(true);
+    }
+    outcome.value = 'tap';
+    owned.add(41);
+    tapWith(h, 'touch');
+    expect(h.fullscreen.getState().chromeHidden).toBe(false);
+  });
+
+  it('a touch tap that moved, was cancelled, or began on chrome never reveals as a tap', async () => {
+    const h = await hiddenChrome();
+    h.pointer(h.parts.stage, 'pointerdown', { ...at, pointerType: 'touch' });
+    h.pointer(h.parts.stage, 'pointercancel', { ...at, pointerType: 'touch' });
+    h.pointer(h.parts.stage, 'pointerup', { ...at, pointerType: 'touch' });
+    expect(h.fullscreen.getState().chromeHidden).toBe(true);
+    // Outside fullscreen nothing changes.
+    h.leave();
+    tapWith(h, 'touch');
+    expect(h.fullscreen.getState()).toMatchObject({ active: false, chromeHidden: false });
+  });
+});
+
+describe('viewer fullscreen touch reveal swallows its own click (D1-C)', () => {
+  const at = { pointerId: 44, button: 0, isPrimary: true, clientX: 120, clientY: 160 };
+  it('asks the stage to guard the follow-up click only when a touch tap reveals', async () => {
+    const stageGestures = { owns: () => false, release: () => null, guardClick: vi.fn() };
+    const h = makeHarness({ stageGestures });
+    h.open();
+    h.fullscreen.enter();
+    await flush();
+    const tapWith = (pointerType) => {
+      h.pointer(h.parts.stage, 'pointerdown', { ...at, pointerType });
+      h.pointer(h.parts.stage, 'pointerup', { ...at, pointerType });
+    };
+    tapWith('touch'); // shown -> hidden: nothing new appears under the finger
+    expect(h.fullscreen.getState().chromeHidden).toBe(true);
+    expect(stageGestures.guardClick).not.toHaveBeenCalled();
+    tapWith('mouse');
+    expect(stageGestures.guardClick).not.toHaveBeenCalled();
+    tapWith('touch'); // hidden -> shown
+    expect(h.fullscreen.getState().chromeHidden).toBe(false);
+    expect(stageGestures.guardClick).toHaveBeenCalledTimes(1);
+    expect(stageGestures.guardClick.mock.calls[0][0]).toMatchObject({ pointerType: 'touch', pointerId: 44 });
   });
 });

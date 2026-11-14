@@ -263,6 +263,7 @@ function makeViewer(options = {}) {
     keyOwned: (target) => target?.tagName === 'INPUT',
     focusFallback: () => close,
     onPageConflict: options.onPageConflict,
+    touchNavigate: options.touchNavigate,
     fetch: harness.fetch,
     urlApi: harness.urlApi,
     view: null,
@@ -1795,5 +1796,324 @@ describe('viewer content comic spreads (C1e)', () => {
     expect(v.content.getState()).toMatchObject({ status: 'idle', key: null });
     expect(v.parts.media.children).toHaveLength(0);
     expect(v.live.size).toBe(0);
+  });
+});
+
+// ─── D1-A: touch gestures through the content controller ─────────────────────
+
+describe('viewer content touch gestures (D1-A)', () => {
+  // The test media surface has no client rect, so its centre is (500, 400).
+  const touchOn = (v) => ({
+    down: (pointerId, clientX, clientY, extra = {}) => fire(v.parts.media, 'pointerdown', {
+      pointerId, pointerType: 'touch', button: 0, isPrimary: false, target: v.parts.media, clientX, clientY, ...extra,
+    }),
+    move: (pointerId, clientX, clientY) => fire(v.parts.media, 'pointermove', { pointerId, pointerType: 'touch', clientX, clientY }),
+    up: (pointerId) => fire(v.parts.media, 'pointerup', { pointerId, pointerType: 'touch', clientX: 0, clientY: 0 }),
+  });
+
+  it('pinches and pans an image through the shared viewport without navigating', async () => {
+    const v = makeViewer();
+    v.viewer.open([1, 2, 3]);
+    await v.respond(v.requests[0], { width: 2000, height: 1000 });
+    const key = v.content.getState().key;
+    const requests = v.requests.length;
+    const reasons = [];
+    v.content.observe((state, reason) => reasons.push(reason));
+    const touch = touchOn(v);
+    expect(v.parts.fit.getAttribute('aria-pressed')).toBe('true');
+    touch.down(11, 400, 400, { isPrimary: true });
+    touch.down(12, 600, 400);
+    touch.move(11, 300, 400);
+    touch.move(12, 700, 400);
+    expect(v.content.getState().view).toMatchObject({ scale: 1, mode: 'zoom', touchGesture: 'pinch' });
+    touch.up(12);
+    // The zoom tools follow the pinch once it settles.
+    expect(v.parts.fit.getAttribute('aria-pressed')).toBe('false');
+    expect(reasons).toContain('view');
+    touch.move(11, 250, 380);
+    expect(v.content.getState().view).toMatchObject({ panX: -50, panY: -20, touchGesture: 'pan' });
+    touch.up(11);
+    expect(v.content.getState()).toMatchObject({ key, status: 'loaded' });
+    expect(v.content.getState().view).toMatchObject({ touchContacts: 0, touchGesture: 'none' });
+    expect(v.requests).toHaveLength(requests);
+  });
+
+  it('a fitted one-finger drag neither pans nor navigates', async () => {
+    const v = makeViewer();
+    v.viewer.open([1, 2, 3]);
+    await v.respond(v.requests[0], { width: 2000, height: 1000 });
+    const before = v.content.getState();
+    const requests = v.requests.length;
+    const touch = touchOn(v);
+    touch.down(3, 800, 400, { isPrimary: true });
+    touch.move(3, 100, 400);
+    touch.up(3);
+    const after = v.content.getState();
+    expect(after.key).toBe(before.key);
+    expect(after.view).toMatchObject({ mode: 'fit', panX: 0, panY: 0 });
+    expect(v.requests).toHaveLength(requests);
+  });
+
+  it('drops a pinch when navigation replaces the image mid-gesture', async () => {
+    const v = makeViewer();
+    v.viewer.open([1, 2]);
+    await v.respond(v.requests[0], { width: 2000, height: 1000 });
+    const touch = touchOn(v);
+    touch.down(1, 400, 400);
+    touch.down(2, 600, 400);
+    touch.move(2, 800, 400);
+    v.viewer.go(2);
+    await v.respond(v.last(), { width: 900, height: 1600 });
+    const fresh = v.content.getState().view;
+    expect(fresh).toMatchObject({ mode: 'fit', panX: 0, panY: 0, touchContacts: 0, touchGesture: 'none', contentWidth: 900 });
+    touch.move(2, 1500, 400);
+    touch.move(1, -500, 400);
+    expect(v.content.getState().view).toEqual(fresh);
+    touch.up(1);
+    touch.up(2);
+  });
+
+  it('rebases a spread pinch when the companion page resolves mid-gesture', async () => {
+    const v = makeViewer();
+    const d = comicDriver(v);
+    d.open(undefined, { layout: 'spread' }, 2);
+    await v.respond(v.requests[0], { width: 800, height: 1200 });
+    const touch = touchOn(v);
+    touch.down(1, 400, 400);
+    touch.down(2, 600, 400);
+    touch.move(1, 300, 400);
+    touch.move(2, 700, 400);
+    const before = v.content.getState().view;
+    expect(before).toMatchObject({ composite: true, mode: 'zoom', touchGesture: 'pinch' });
+    await v.respond(v.requests[1], { width: 1200, height: 800 });
+    const resized = v.content.getState().view;
+    expect(resized).toMatchObject({ composite: true, contentWidth: 2400, touchGesture: 'pinch', touchContacts: 2 });
+    expect(resized.scale / resized.fitScale).toBeCloseTo(before.scale / before.fitScale, 9);
+    touch.move(2, 700, 400);
+    expect(v.content.getState().view).toEqual(resized);
+    touch.up(1);
+    touch.up(2);
+    expect(v.content.getState().view.touchContacts).toBe(0);
+  });
+
+  it('a first touch on a page Retry is left to the control', async () => {
+    const v = makeViewer();
+    const d = comicDriver(v);
+    d.open(undefined, { layout: 'spread' }, 2);
+    await v.respond(v.requests[0], { width: 800, height: 1200 });
+    await v.respond(v.requests[1], { status: 503, type: 'text/plain' });
+    v.content.zoomIn();
+    const retry = pageNode(v, 3, 'retry');
+    const touch = touchOn(v);
+    expect(touch.down(1, 5, 5, { target: retry }).defaultPrevented).toBe(false);
+    expect(v.content.getState().view.touchContacts).toBe(0);
+    expect(v.parts.media.hasAttribute('data-viewer-dragging')).toBe(false);
+    const image = pageNode(v, 2, 'image');
+    expect(touch.down(2, 5, 5, { target: image }).defaultPrevented).toBe(true);
+    expect(v.parts.media.hasAttribute('data-viewer-dragging')).toBe(true);
+    touch.up(2);
+  });
+
+  it('forgets touch contacts when the viewer closes or is destroyed mid-gesture', async () => {
+    const v = makeViewer();
+    v.viewer.open([1]);
+    await v.respond(v.requests[0], { width: 2000, height: 1000 });
+    const touch = touchOn(v);
+    touch.down(1, 400, 400);
+    touch.down(2, 600, 400);
+    v.viewer.close();
+    expect(v.content.getState().view).toMatchObject({ hasContent: false, touchContacts: 0, touchGesture: 'none' });
+    expect(v.parts.media.hasAttribute('data-viewer-dragging')).toBe(false);
+    v.viewer.open([1]);
+    await v.respond(v.last(), { width: 2000, height: 1000 });
+    touch.down(3, 400, 400);
+    touch.down(4, 600, 400);
+    v.content.destroy();
+    expect(v.parts.media.listeners.filter((entry) => entry.type.startsWith('pointer'))).toHaveLength(0);
+  });
+});
+
+// ─── D1-B: touch navigation ownership through the content controller ─────────
+
+describe('viewer content touch navigation (D1-B)', () => {
+  // The media surface is 1000 × 800 at (0, 0): edges x < 200 and x > 800, swipes need 96 px.
+  const touchOn = (v) => ({
+    down: (pointerId, clientX, clientY = 400, extra = {}) => fire(v.parts.media, 'pointerdown', {
+      pointerId, pointerType: 'touch', button: 0, isPrimary: true, target: v.parts.media, clientX, clientY, ...extra,
+    }),
+    move: (pointerId, clientX, clientY = 400) => fire(v.parts.media, 'pointermove', { pointerId, pointerType: 'touch', clientX, clientY }),
+    up: (pointerId, clientX, clientY = 400) => fire(v.parts.media, 'pointerup', { pointerId, pointerType: 'touch', clientX, clientY }),
+  });
+
+  function navViewer() {
+    const intents = [];
+    let v = null;
+    const touchNavigate = vi.fn((intent) => {
+      intents.push(intent);
+      // The controller's own rule: Next for the physical right.
+      const ids = v.content.getState().key ? Number(v.content.getState().key.split(':').at(-1)) : 0;
+      v.viewer.go(intent.side === 'right' ? ids + 1 : ids - 1);
+      return true;
+    });
+    v = makeViewer({ touchNavigate });
+    return { v, intents, touchNavigate };
+  }
+
+  it('hands a Fit-state swipe and an edge tap to the controller with the item they began on', async () => {
+    const { v, intents } = navViewer();
+    const opened = v.viewer.open([1, 2, 3]);
+    await v.respond(v.requests[0], { width: 2000, height: 1000 });
+    const touch = touchOn(v);
+    touch.down(1, 600);
+    touch.move(1, 450);
+    touch.up(1, 450);
+    expect(intents).toEqual([{ kind: 'swipe', side: 'right', session: opened.session, key: 'p:7|a:1' }]);
+    expect(v.content.getState().key).toBe('p:7|a:2');
+    // The new item is still loading: an edge tap is its own.
+    touch.down(2, 50);
+    touch.up(2, 50);
+    expect(intents.at(-1)).toEqual({ kind: 'tap', side: 'left', session: opened.session, key: 'p:7|a:2' });
+    expect(v.content.getState().key).toBe('p:7|a:1');
+    expect(intents).toHaveLength(2);
+  });
+
+  it('cancels a touch in progress on any controller change, including playback, refresh, close and reopen', async () => {
+    const { v, intents } = navViewer();
+    v.viewer.open([1, 2, 3]);
+    await v.respond(v.requests[0], { width: 2000, height: 1000 });
+    const touch = touchOn(v);
+    const changes = [
+      () => v.viewer.go(3, { cause: 'playback' }),
+      () => v.viewer.update([rawItem(1), rawItem(2), rawItem(3, { title: 'renamed' })]),
+      () => { v.viewer.close(); v.viewer.open([1, 2, 3]); },
+    ];
+    for (const [index, change] of changes.entries()) {
+      const before = v.content.getState().key;
+      touch.down(10 + index, 600);
+      touch.move(10 + index, 450);
+      change();
+      const changed = v.content.getState().key;
+      touch.up(10 + index, 450);
+      expect(v.content.getState().key).toBe(changed);
+      expect(before).toBeTruthy();
+    }
+    touch.down(20, 900);
+    v.viewer.close();
+    touch.up(20, 900);
+    expect(intents).toHaveLength(0);
+  });
+
+  it('a pinch on an image never reaches the controller; destroy ends everything', async () => {
+    const { v, intents } = navViewer();
+    v.viewer.open([1, 2]);
+    await v.respond(v.requests[0], { width: 2000, height: 1000 });
+    const touch = touchOn(v);
+    touch.down(1, 400);
+    touch.down(2, 600, 400, { isPrimary: false });
+    touch.move(2, 800);
+    touch.up(2, 800);
+    touch.move(1, 100);
+    touch.up(1, 100);
+    expect(intents).toHaveLength(0);
+    expect(v.content.touchGestures.owns(1)).toBe(false);
+    touch.down(3, 50);
+    expect(v.content.touchGestures.owns(3)).toBe(true);
+    v.content.destroy();
+    expect(v.content.touchGestures.release({ pointerId: 3, pointerType: 'touch', clientX: 50, clientY: 400 })).toBe(null);
+    expect(intents).toHaveLength(0);
+  });
+
+  // D1-F1: the first touch may land while the item's image is still loading.
+  const requestFor = (v, id) => v.requests.filter((request) => request.url.includes(`/assets/${id}/preview`) && !request.aborted).at(-1);
+
+  it('a touch begun while the item loads still navigates once after that same item decodes', async () => {
+    const { v, intents } = navViewer();
+    const opened = v.viewer.open([1, 2, 3]);
+    expect(v.content.getState().status).toBe('loading');
+    const touch = touchOn(v);
+    touch.down(1, 600);
+    touch.move(1, 560);
+    await v.respond(requestFor(v, 1), { width: 2000, height: 1000 });
+    expect(v.content.getState()).toMatchObject({ key: 'p:7|a:1', status: 'loaded' });
+    expect(v.content.touchGestures.owns(1)).toBe(true);
+    touch.move(1, 450);
+    touch.up(1, 450);
+    expect(intents).toEqual([{ kind: 'swipe', side: 'right', session: opened.session, key: 'p:7|a:1' }]);
+    expect(v.content.getState().key).toBe('p:7|a:2');
+    // An edge tap down while item 2 loads, lifted after it decoded.
+    expect(v.content.getState().status).toBe('loading');
+    touch.down(2, 900);
+    await v.respond(requestFor(v, 2), { width: 900, height: 1600 });
+    expect(v.content.getState()).toMatchObject({ key: 'p:7|a:2', status: 'loaded' });
+    touch.up(2, 900);
+    expect(intents.at(-1)).toEqual({ kind: 'tap', side: 'right', session: opened.session, key: 'p:7|a:2' });
+    expect(intents).toHaveLength(2);
+    expect(v.content.getState().key).toBe('p:7|a:3');
+  });
+
+  it('navigation, playback, close/reopen or Retry while loading cancels the touch; the next item decoding never revives it', async () => {
+    const { v, intents } = navViewer();
+    v.viewer.open([1, 2, 3]);
+    const touch = touchOn(v);
+    // User navigation while item 1 loads; item 2 then decodes.
+    touch.down(1, 600);
+    touch.move(1, 560);
+    v.viewer.go(2);
+    await v.respond(requestFor(v, 2), { width: 900, height: 1600 });
+    expect(v.content.getState()).toMatchObject({ key: 'p:7|a:2', status: 'loaded' });
+    touch.move(1, 450);
+    touch.up(1, 450);
+    expect(v.content.getState().key).toBe('p:7|a:2');
+    // Slideshow autoplay replaces a loading item.
+    v.viewer.go(3, { cause: 'playback' });
+    expect(v.content.getState().status).toBe('loading');
+    touch.down(2, 900);
+    v.viewer.go(1, { cause: 'playback' });
+    await v.respond(requestFor(v, 1), { width: 2000, height: 1000 });
+    expect(v.content.getState()).toMatchObject({ key: 'p:7|a:1', status: 'loaded' });
+    touch.up(2, 900);
+    expect(v.content.getState().key).toBe('p:7|a:1');
+    // Close and reopen as a new session on the same item key.
+    v.viewer.close();
+    v.viewer.open([1, 2, 3]);
+    const loading = requestFor(v, 1);
+    touch.down(3, 900);
+    v.viewer.close();
+    v.viewer.open([1, 2, 3]);
+    expect(requestFor(v, 1)).not.toBe(loading);
+    await v.respond(requestFor(v, 1), { width: 2000, height: 1000 });
+    expect(v.content.getState()).toMatchObject({ key: 'p:7|a:1', status: 'loaded' });
+    touch.up(3, 900);
+    expect(v.content.getState().key).toBe('p:7|a:1');
+    // A failed item's Retry is a new attempt: a touch down before it never acts after it.
+    v.viewer.go(2);
+    // (An adopted neighbour preload that fails is retried once in the foreground.)
+    for (let attempt = 0; attempt < 2 && v.content.getState().status === 'loading'; attempt += 1) {
+      await v.respond(requestFor(v, 2), { status: 503, type: 'text/plain' });
+    }
+    expect(v.content.getState().status).toBe('failed');
+    touch.down(4, 900);
+    expect(v.content.retry()).toBe(true);
+    await v.respond(requestFor(v, 2), { width: 900, height: 1600 });
+    expect(v.content.getState()).toMatchObject({ key: 'p:7|a:2', status: 'loaded' });
+    touch.up(4, 900);
+    expect(v.content.getState().key).toBe('p:7|a:2');
+    expect(intents).toHaveLength(0);
+  });
+
+  it('a superseded or stale response for the touched item never revives a cancelled touch', async () => {
+    const { v, intents } = navViewer();
+    v.viewer.open([1, 2, 3]);
+    const stale = requestFor(v, 1);
+    const touch = touchOn(v);
+    touch.down(1, 900);
+    // A source refresh supersedes the request in flight.
+    v.viewer.update([rawItem(1, { revision: 'r2', mediaUrl: '/projects/7/assets/1/preview?v=r2' }), rawItem(2), rawItem(3)]);
+    await v.respond(stale, { width: 2000, height: 1000 });
+    const fresh = requestFor(v, 1);
+    if (fresh && fresh !== stale) await v.respond(fresh, { width: 2000, height: 1000 });
+    touch.up(1, 900);
+    expect(intents).toHaveLength(0);
+    expect(v.content.getState().key).toBe('p:7|a:1');
   });
 });

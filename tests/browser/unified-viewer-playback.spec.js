@@ -555,3 +555,72 @@ test('the playback controls fit a narrow viewport', async ({ page }) => {
   await page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
 });
+
+// D1-B: touch navigation and slideshow autoplay through Chromium's real touch
+// pipeline (CDP Input.dispatchTouchEvent; technical qualification only).
+async function touchscreen(page) {
+  const cdp = await page.context().newCDPSession(page);
+  const points = (list) => list.map(([id, x, y]) => ({ id, x: Math.round(x), y: Math.round(y) }));
+  const send = (type, list = []) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: points(list) });
+  return {
+    start: (list) => send('touchStart', list),
+    move: (list) => send('touchMove', list),
+    end: () => send('touchEnd'),
+    detach: () => cdp.detach(),
+  };
+}
+
+test('D1-B: a touch held across an autoplay advance never acts; a centre tap keeps the deadline; a swipe pauses', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await serveMedia(page);
+  await openLibrary(page);
+  await openViewer(page, THREE);
+  await page.evaluate(async () => {
+    const { unifiedViewerFor } = await import('/client/unified-viewer.js');
+    unifiedViewerFor(document).playback.setSpeed(2000);
+  });
+  const key = async () => (await viewerState(page)).key;
+  await expect.poll(async () => (await viewerState(page)).media.status).toBe('loaded');
+  const touch = await touchscreen(page);
+  const surface = await page.locator(MEDIA).boundingBox();
+  const cx = surface.x + surface.width / 2;
+  const cy = surface.y + surface.height / 2;
+  const navigations = async () => (await viewerLog(page)).filter((entry) => entry.kind === 'change' && entry.type === 'navigate');
+
+  // A swipe begun on slide 1 is still down when autoplay moves to slide 2.
+  await touch.start([[0, cx + 150, cy]]);
+  await touch.move([[0, cx + 120, cy]]);
+  await expect.poll(key, { timeout: 6000 }).toBe('p:7|a:2');
+  await touch.move([[0, cx - 150, cy]]);
+  await touch.end();
+  await page.waitForTimeout(100);
+  expect(await key()).toBe('p:7|a:2');
+  expect((await viewerState(page)).playbackDetail.playing).toBe(true);
+  expect((await navigations()).map((entry) => entry.cause)).toEqual(['playback']);
+
+  // A centre tap during slide 2's interval is not navigation and keeps its deadline.
+  await expect.poll(async () => (await viewerState(page)).media.status).toBe('loaded');
+  await page.waitForTimeout(700);
+  await touch.start([[1, cx, cy]]);
+  await touch.end();
+  await expect.poll(key, { timeout: 6000 }).toBe('p:7|a:3');
+  const log = await viewerLog(page);
+  const loaded = log.find((entry) => entry.kind === 'media' && entry.key === 'p:7|a:2' && entry.status === 'loaded');
+  const advanced = log.find((entry) => entry.kind === 'change' && entry.type === 'navigate' && entry.key === 'p:7|a:3');
+  expect(advanced.cause).toBe('playback');
+  expect(advanced.t - loaded.t).toBeGreaterThanOrEqual(1900);
+  expect(advanced.t - loaded.t).toBeLessThan(2900);
+
+  // A deliberate swipe is manual navigation: one step (wrapping) that pauses playback.
+  await touch.start([[2, cx + 150, cy]]);
+  for (const x of [cx + 50, cx - 50, cx - 150]) await touch.move([[2, x, cy]]);
+  await touch.end();
+  await expect.poll(key).toBe('p:7|a:1');
+  const state = await viewerState(page);
+  expect(state.playbackDetail).toMatchObject({ playing: false, pauseReason: 'navigation' });
+  expect((await navigations()).map((entry) => `${entry.cause}:${entry.key}`))
+    .toEqual(['playback:p:7|a:2', 'playback:p:7|a:3', 'user:p:7|a:1']);
+  await page.waitForTimeout(2500);
+  expect(await key()).toBe('p:7|a:1');
+  await touch.detach();
+});

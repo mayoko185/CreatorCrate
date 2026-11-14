@@ -347,6 +347,10 @@ function setDisabledFlag(control, disabled) {
  *   failed with HTTP 409 (the accepted page set is no longer current), at
  *   most once per shown revision; the controller decides whether it still
  *   belongs to its session and revision.
+ * @param {(intent: { kind: 'swipe'|'tap', side: 'left'|'right', session: number|null, key: string|null }) => boolean} [options.touchNavigate]
+ *   D1-B: a Fit-state touch swipe or outer-edge tap (classified by the
+ *   viewport) for the item that was current when the touch began; the
+ *   controller maps the physical side and returns whether it navigated.
  * @param {typeof fetch} [options.fetch]
  * @param {{ createObjectURL: Function, revokeObjectURL: Function }} [options.urlApi]
  * @param {Window|null} [options.view]
@@ -362,6 +366,7 @@ export function createViewerContent(options = {}) {
   const keyOwned = typeof options.keyOwned === 'function' ? options.keyOwned : () => false;
   const focusFallback = typeof options.focusFallback === 'function' ? options.focusFallback : () => null;
   const onPageConflict = typeof options.onPageConflict === 'function' ? options.onPageConflict : null;
+  const touchNavigate = typeof options.touchNavigate === 'function' ? options.touchNavigate : null;
   const keyTarget = options.keyTarget || regions?.root || null;
   const media = regions?.media || null;
   const status = regions?.status || null;
@@ -428,6 +433,18 @@ export function createViewerContent(options = {}) {
   const viewport = createViewerViewport({
     surface: media,
     view,
+    // D1-B: a touch sequence is bound to the item current when it began
+    // (its token, session and key); any later change cancels it (see
+    // onSessionChange), and the controller re-checks session and key.
+    touchNavigation: {
+      identity: () => (current ? { token: current.token, session: current.session, key: current.item?.key ?? null } : null),
+      navigate: (intent) => {
+        const identity = intent?.identity;
+        if (destroyed || !touchNavigate || !current || !identity || identity.token !== current.token
+          || identity.session !== current.session || identity.key !== (current.item?.key ?? null)) return false;
+        return touchNavigate({ kind: intent.kind, side: intent.side, session: identity.session, key: identity.key }) === true;
+      },
+    },
     onChange: (state, reason) => {
       if (reason === 'zoom' || reason === 'fit' || reason === 'actual') {
         if (current) current.notice = '';
@@ -1276,6 +1293,10 @@ export function createViewerContent(options = {}) {
 
   function onSessionChange(change) {
     if (destroyed || !change) return;
+    // D1-B: whatever changed (navigation by any means, playback, a reader
+    // choice, a refresh, open or close), a touch still down belongs to what
+    // was shown before and can no longer act.
+    viewport.cancelTouch();
     // A comic with a current page shows its group, whatever the change.
     if (change.type !== 'close' && change.item && isComicSource(change.source)) {
       direction = 'next';
@@ -1522,6 +1543,10 @@ export function createViewerContent(options = {}) {
     switchQuality,
     toggleQuality,
     refreshGeometry: () => viewport.refresh(),
+    // D1-B: the stage's touch classifier, for the fullscreen participant.
+    // D1-C: `guardClick` swallows the follow-up click of a touch the
+    // fullscreen participant used to reveal hidden chrome.
+    touchGestures: Object.freeze({ owns: viewport.ownsTouch, release: viewport.releaseTouch, guardClick: viewport.guardTouchClick }),
     destroy,
   });
 }

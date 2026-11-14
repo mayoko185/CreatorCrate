@@ -23,6 +23,22 @@
 //   while a dropdown is open, while the pointer is over it, and while
 //   keyboard focus is inside it. Chrome overlays the full media area;
 //   keyboard or pointer input reveals it.
+// - D1-B: a touch on the media surface belongs to the stage's one touch
+//   classifier (the content participant's viewport, `stageGestures`). This
+//   participant's capture listeners see each touch before the surface does,
+//   so for such a touch it never reveals chrome while the finger moves and,
+//   on its pointerup, asks the classifier first (`release(event)`, which
+//   resolves the touch exactly once, performing a swipe/edge-tap navigation
+//   if that is what it was). Only a 'tap' outcome continues as this
+//   participant's own viewing-area click; 'drag' (movement that neither
+//   panned nor navigated) counts as activity and reveals chrome; 'navigate'
+//   and 'consumed' (pan, pinch, multi-touch, cancelled or invalidated)
+//   change nothing but the idle timer. Mouse and pen are unaffected.
+// - D1-C: a touch viewing-area tap that starts with the chrome hidden
+//   reveals it (a touch user's only reveal while the media is enlarged) and
+//   its follow-up click is swallowed (`stageGestures.guardClick`), so it never
+//   also activates the control it revealed; a mouse or pen click keeps the
+//   chrome hidden as before.
 // - Geometry is re-measured through the content participant's
 //   refreshGeometry() on fullscreen entry/exit; the viewport's ResizeObserver
 //   follows actual stage resizing. Chrome visibility never changes geometry.
@@ -176,10 +192,15 @@ export function viewerFullscreenSupported(document, target) {
  * @param {(listener: Function) => Function} options.observe  controller observe()
  * @param {{ refreshGeometry: Function }} [options.media]
  * @param {() => void} [options.dismissMenus]  closes viewer-owned disclosures
+ * @param {{ owns: (pointerId: number) => boolean, release: (event: PointerEvent) => string|null,
+ *   guardClick?: (event: PointerEvent) => void }} [options.stageGestures]
+ *   D1-B: the stage's touch classifier (viewer-viewport.js releaseTouch outcomes);
+ *   D1-C: `guardClick` swallows the follow-up click of a touch that revealed chrome
  * @param {Window|null} [options.view]
  */
 export function createViewerFullscreen(options = {}) {
   const { document, dialog, target, observe, media } = options;
+  const stageGestures = options.stageGestures || null;
   const view = options.view !== undefined ? options.view : (document?.defaultView || null);
   const root = options.root || null;
   const button = options.button || null;
@@ -729,9 +750,20 @@ export function createViewerFullscreen(options = {}) {
     return Math.hypot(event.clientX - start.x, event.clientY - start.y) > CLICK_MOVEMENT;
   }
 
+  // A touch the stage classifier owns (D1-B).
+  const stageTouch = (event) => event?.pointerType === 'touch'
+    && typeof stageGestures?.owns === 'function' && stageGestures.owns(event.pointerId) === true;
+
   const onPointerMove = (event) => {
     if (event?.pointerType && event.pointerType !== 'touch') modality = 'pointer';
     pointerInChrome = inChrome(event?.target);
+    if (stageTouch(event)) {
+      // Its outcome, known at release, decides; movement alone reveals nothing.
+      if (gesture && event.pointerId === gesture.pointerId && (moved(event, gesture) || !overViewingContent(event))) {
+        gesture.cancelled = true;
+      }
+      return;
+    }
     if (gesture && event.pointerId === gesture.pointerId) {
       if (moved(event, gesture) || !overViewingContent(event)) gesture.cancelled = true;
       // A tap that starts with hidden chrome never flashes it during jitter.
@@ -760,6 +792,16 @@ export function createViewerFullscreen(options = {}) {
     if (active) revealChrome();
   };
   const onPointerUp = (event) => {
+    // D1-B: the stage classifier resolves its touch first (at most one action).
+    const outcome = event?.pointerType === 'touch' && typeof stageGestures?.release === 'function'
+      ? stageGestures.release(event) : null;
+    if (outcome !== null && outcome !== undefined && outcome !== 'tap') {
+      if (gesture && event.pointerId === gesture.pointerId) gesture = null;
+      if (destroyed || !active || exiting) return;
+      if (outcome === 'drag') revealChrome();
+      else scheduleIdle();
+      return;
+    }
     if (!gesture || event.pointerId !== gesture.pointerId) return;
     const completed = gesture;
     gesture = null;
@@ -783,7 +825,19 @@ export function createViewerFullscreen(options = {}) {
     clearIdle();
     pointerInChrome = false;
     dismissedPointer = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
-    if (completed.hidden && chromeHidden) return;
+    if (completed.hidden && chromeHidden) {
+      // D1-C (user direction): touch has no hover, and while the media is
+      // enlarged every touch movement pans, so a touch tap on the viewing
+      // area is how hidden chrome comes back. Mouse and pen keep the B4 rule
+      // (their next movement reveals it). Navigation never gets here. The
+      // browser's click for this touch comes after the reveal and would land
+      // on whatever control is now under the finger, so it is swallowed.
+      if (event.pointerType === 'touch') {
+        stageGestures?.guardClick?.(event);
+        revealChrome();
+      }
+      return;
+    }
     setChromeHidden(true);
   };
   const onPointerCancel = (event) => {

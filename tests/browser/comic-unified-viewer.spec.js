@@ -2517,6 +2517,10 @@ test.describe('fullscreen click-to-hide touch', () => {
     const point = await clickHidePoint(page);
     await page.touchscreen.tap(point.x, point.y);
     await expectClickHidden(page, before);
+    // D1-C (user direction): a touch tap on hidden chrome reveals it; the
+    // next one hides it again.
+    await page.touchscreen.tap(point.x, point.y);
+    expect((await clickHideGeometry(page)).header.opacity).toBe('1');
     await page.touchscreen.tap(point.x, point.y);
     expect((await clickHideGeometry(page)).header.opacity).toBe('0');
     await page.keyboard.press('Tab');
@@ -3435,4 +3439,321 @@ test('compact reader keyboard choices and Escape preserve focus and fullscreen',
   await page.keyboard.press('Escape');
   await expect(page.locator(DIALOG)).toBeHidden();
   await expect(page.locator('#test-opener')).toBeFocused();
+});
+
+// ─── D1-B: Comic Reader touch navigation (real CBZ, real Chromium touch) ─────
+// CDP Input.dispatchTouchEvent drives Chromium's touch/pointer pipeline;
+// technical qualification only, not real-device acceptance.
+
+async function comicTouchscreen(page) {
+  const cdp = await page.context().newCDPSession(page);
+  const points = (list) => list.map(([id, x, y]) => ({ id, x: Math.round(x), y: Math.round(y) }));
+  const send = (type, list = []) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: points(list) });
+  const surface = await page.locator(MEDIA).boundingBox();
+  const cx = surface.x + surface.width / 2;
+  const cy = surface.y + surface.height / 2;
+  const settleInput = () => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 50))));
+  const touch = {
+    cx,
+    cy,
+    left: surface.x + 30,
+    right: surface.x + surface.width - 30,
+    start: (list) => send('touchStart', list),
+    move: (list) => send('touchMove', list),
+    lift: (list) => send('touchEnd', list),
+    end: () => send('touchEnd'),
+    async tap(x) {
+      await send('touchStart', [[1, x, cy]]);
+      await send('touchEnd');
+      await settleInput();
+    },
+    async swipe(fromX, toX) {
+      await send('touchStart', [[2, fromX, cy]]);
+      for (let step = 1; step <= 4; step += 1) await send('touchMove', [[2, fromX + ((toX - fromX) * step) / 4, cy]]);
+      await send('touchEnd');
+      await settleInput();
+    },
+    detach: () => cdp.detach(),
+  };
+  return touch;
+}
+
+test('D1-B: touch swipes and edge taps follow reading direction, spreads and boundaries', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const routes = await openPage(page);
+  const id = fixture.comics.seven;
+  const session = await openComic(page, id, 'Seven pages');
+  await shownKey(page, pageKey(id, 1));
+  const touch = await comicTouchscreen(page);
+  const group = async () => (await readerState(page)).groupItems;
+
+  // Left-to-Right single pages: a leftward swipe or the right edge reads on.
+  await touch.swipe(touch.cx + 150, touch.cx - 150);
+  await expect(page.locator(POSITION)).toHaveText('Page 2 of 7');
+  await touch.tap(touch.right);
+  await expect(page.locator(POSITION)).toHaveText('Page 3 of 7');
+  await touch.tap(touch.left);
+  await expect(page.locator(POSITION)).toHaveText('Page 2 of 7');
+  await touch.swipe(touch.cx - 150, touch.cx + 150);
+  await expect(page.locator(POSITION)).toHaveText('Page 1 of 7');
+  // The first page does not wrap; a centre tap does nothing.
+  await touch.tap(touch.left);
+  await touch.swipe(touch.cx - 150, touch.cx + 150);
+  await touch.tap(touch.cx);
+  await expect(page.locator(POSITION)).toHaveText('Page 1 of 7');
+
+  // Right-to-Left: the left edge and a rightward swipe read on.
+  expect(await setReader(page, { direction: 'rtl' })).toEqual({ changed: true });
+  await touch.tap(touch.left);
+  await expect(page.locator(POSITION)).toHaveText('Page 2 of 7');
+  await touch.swipe(touch.cx - 150, touch.cx + 150);
+  await expect(page.locator(POSITION)).toHaveText('Page 3 of 7');
+  await touch.tap(touch.right);
+  await expect(page.locator(POSITION)).toHaveText('Page 2 of 7');
+  await touch.tap(touch.right);
+  await touch.tap(touch.right);
+  await expect(page.locator(POSITION)).toHaveText('Page 1 of 7');
+
+  // Two-Page Spread, cover alone, still Right-to-Left: whole groups, visual order swapped.
+  expect(await setReader(page, { layout: 'spread', alignment: 'cover-alone' })).toEqual({ changed: true });
+  await touch.tap(touch.left);
+  expect(await group()).toEqual([2, 3]);
+  expect((await readerState(page)).visibleItems).toEqual([3, 2]);
+  await touch.swipe(touch.cx - 150, touch.cx + 150);
+  expect(await group()).toEqual([4, 5]);
+  // Left-to-Right pairs from the first page, to the last group and no further.
+  expect(await setReader(page, { direction: 'ltr', alignment: 'pair-from-first' })).toEqual({ changed: true });
+  expect(await group()).toEqual([3, 4]);
+  await touch.tap(touch.right);
+  await touch.swipe(touch.cx + 150, touch.cx - 150);
+  expect(await group()).toEqual([7]);
+  await touch.tap(touch.right);
+  expect(await group()).toEqual([7]);
+  await touch.tap(touch.left);
+  expect(await group()).toEqual([5, 6]);
+  await expect(page.locator(POSITION)).toHaveText('Pages 5–6 of 7');
+
+  // A pinch on the composed spread, finished by one finger at an edge, never turns a page.
+  await expect.poll(async () => (await state(page)).media).toBe('loaded');
+  await touch.start([[0, touch.cx - 60, touch.cy], [1, touch.cx + 60, touch.cy]]);
+  await touch.move([[0, touch.cx - 140, touch.cy], [1, touch.cx + 140, touch.cy]]);
+  await touch.lift([[1, touch.cx + 140, touch.cy]]);
+  await touch.move([[0, touch.left, touch.cy]]);
+  await touch.end();
+  expect(await group()).toEqual([5, 6]);
+  expect(await mediaView(page)).toMatchObject({ composite: true, mode: 'zoom', touchContacts: 0 });
+  // Enlarged, an edge tap is not navigation either.
+  await touch.tap(touch.right);
+  expect(await group()).toEqual([5, 6]);
+
+  expect(await state(page)).toMatchObject({ session, open: true, comic: { state: 'ready', pageCount: 7 } });
+  expect(await page.evaluate(() => window.__viewer().getState().source.items.map((item) => item.position)))
+    .toEqual([1, 2, 3, 4, 5, 6, 7]);
+  expect(pageRequests(routes)).toBeGreaterThan(0);
+  await touch.detach();
+});
+
+// ─── D1-C: Comic Reader by touch at phone sizes and in fullscreen ──────────
+// Compiled bundle, real CBZ, CDP touch and emulated safe areas: technical
+// qualification only, not real-device acceptance.
+
+async function comicTapControl(page, selector, id) {
+  const box = await page.locator(selector).boundingBox();
+  const cdp = await page.context().newCDPSession(page);
+  const point = [{ id, x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2) }];
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: point });
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await cdp.detach();
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 50))));
+}
+
+// The control is shown, at least 24 px square, hit at its centre and inside `bounds`.
+async function expectComicControlReachable(page, selector, bounds) {
+  await expect(page.locator(selector)).toBeVisible();
+  const hit = await page.locator(selector).evaluate((element) => {
+    const r = element.getBoundingClientRect();
+    const at = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+    return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height,
+      hits: Boolean(at && (at === element || element.contains(at))) };
+  });
+  expect(hit.hits, selector).toBe(true);
+  expect(Math.min(hit.width, hit.height), selector).toBeGreaterThanOrEqual(24);
+  expect(hit.left, selector).toBeGreaterThanOrEqual(bounds.left - 0.5);
+  expect(hit.top, selector).toBeGreaterThanOrEqual(bounds.top - 0.5);
+  expect(hit.right, selector).toBeLessThanOrEqual(bounds.right + 0.5);
+  expect(hit.bottom, selector).toBeLessThanOrEqual(bounds.bottom + 0.5);
+}
+
+test('D1-C: a Right-to-Left spread by touch at phone sizes and in fullscreen keeps choices, groups and controls', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openPage(page);
+  const id = fixture.comics.seven;
+  const session = await openComic(page, id, 'Seven pages');
+  await shownKey(page, pageKey(id, 1));
+  expect(await setReader(page, { direction: 'rtl', layout: 'spread', alignment: 'cover-alone' })).toEqual({ changed: true });
+  const choices = { direction: 'rtl', layout: 'spread', alignment: 'cover-alone' };
+  const group = async () => (await readerState(page)).groupItems;
+  const loaded = () => expect.poll(async () => (await state(page)).media).toBe('loaded');
+  const card = page.locator(`${DIALOG} [data-unified-viewer-card]`);
+  const hidden = () => card.evaluate((element) => element.hasAttribute('data-viewer-chrome-hidden'));
+  const fullscreen = () => page.evaluate(() => Boolean(document.fullscreenElement?.matches('[data-unified-viewer-card]')));
+
+  // Portrait phone: a quick rightward swipe reads on (Right-to-Left), and
+  // Next tapped straight after it keeps its click.
+  let touch = await comicTouchscreen(page);
+  await touch.swipe(touch.cx - 140, touch.cx + 140);
+  expect(await group()).toEqual([2, 3]);
+  await comicTapControl(page, NEXT, 11);
+  expect(await group()).toEqual([4, 5]);
+  await touch.detach();
+  await loaded();
+
+  // Rotating to landscape keeps the group, the choices and the session.
+  await page.setViewportSize({ width: 844, height: 390 });
+  await loaded();
+  expect(await readerState(page)).toMatchObject({ ...choices, groupItems: [4, 5], visibleItems: [5, 4] });
+  expect(await mediaView(page)).toMatchObject({ composite: true, mode: 'fit' });
+  const view = await mediaView(page);
+  for (const key of ['scale', 'panX', 'panY']) expect(Number.isFinite(view[key]), key).toBe(true);
+
+  // Fullscreen with landscape insets: choices survive, navigation clears them.
+  const insets = { top: 20, right: 44, bottom: 21, left: 44 };
+  const emulation = await page.context().newCDPSession(page);
+  await emulation.send('Emulation.setSafeAreaInsetsOverride', { insets });
+  try {
+    await page.getByRole('button', { name: 'Enter fullscreen', exact: true }).click();
+    await expect.poll(fullscreen).toBe(true);
+    await loaded();
+    expect(await readerState(page)).toMatchObject({ ...choices, groupItems: [4, 5] });
+    const safe = { left: insets.left, top: insets.top, right: 844 - insets.right, bottom: 390 - insets.bottom };
+    for (const selector of [NEXT, PREVIOUS, `${DIALOG} [data-dialog-close]`, `${DIALOG} [data-unified-viewer-fullscreen]`]) {
+      await expectComicControlReachable(page, selector, safe);
+    }
+    touch = await comicTouchscreen(page);
+    // A centre tap hides the chrome; a left-edge tap (inside the safe area) reads on and keeps it hidden.
+    await touch.tap(touch.cx);
+    expect(await hidden()).toBe(true);
+    await touch.tap(safe.left + 12);
+    expect(await group()).toEqual([6, 7]);
+    expect(await hidden()).toBe(true);
+    // At the last group an edge tap has nowhere to go: as a tap it reveals the chrome.
+    await touch.tap(safe.left + 12);
+    expect(await group()).toEqual([6, 7]);
+    expect(await hidden()).toBe(false);
+    await touch.tap(touch.cx);
+    expect(await hidden()).toBe(true);
+    // Enlarged with hidden chrome: a pinch keeps it hidden, a tap brings it
+    // back, and Previous tapped by touch steps one group back to Fit.
+    await loaded();
+    await touch.start([[0, touch.cx - 60, touch.cy], [1, touch.cx + 60, touch.cy]]);
+    await touch.move([[0, touch.cx - 160, touch.cy], [1, touch.cx + 160, touch.cy]]);
+    await touch.end();
+    expect(await mediaView(page)).toMatchObject({ composite: true, mode: 'zoom', touchContacts: 0 });
+    expect(await hidden()).toBe(true);
+    await touch.tap(touch.cx);
+    expect(await hidden()).toBe(false);
+    expect(await group()).toEqual([6, 7]);
+    await comicTapControl(page, PREVIOUS, 12);
+    expect(await group()).toEqual([4, 5]);
+    await loaded();
+    expect(await mediaView(page)).toMatchObject({ mode: 'fit' });
+    await touch.detach();
+    // Escape leaves fullscreen first; the choices and session are unchanged.
+    await page.keyboard.press('Escape');
+    await expect.poll(fullscreen).toBe(false);
+    await expect(page.locator(DIALOG)).toBeVisible();
+    expect(await readerState(page)).toMatchObject({ ...choices, groupItems: [4, 5] });
+    expect(await state(page)).toMatchObject({ session, open: true });
+    await page.keyboard.press('Escape');
+    await expect(page.locator(DIALOG)).toBeHidden();
+    await expect(page.locator('#test-opener')).toBeFocused();
+  } finally {
+    await emulation.send('Emulation.setSafeAreaInsetsOverride', { insets: {} });
+    await emulation.detach();
+  }
+});
+
+// ─── D1-F1: the Reader's first touch while its page is still loading ────────
+// Held real page responses: the media surface keeps covering the stage, so
+// the first edge tap or swipe reaches the one classifier; a swipe down
+// across that same page's first decode still turns the page once.
+
+test('D1-F1: while a page or spread is still loading the whole stage takes the first edge tap or swipe', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const routes = await openPage(page);
+  const id = fixture.comics.seven;
+  const stage = async () => page.locator(`${DIALOG} [data-unified-viewer-stage]`).boundingBox();
+  const surface = async () => page.locator(MEDIA).boundingBox();
+  const hitsMedia = (x, y) => page.evaluate(({ media, x, y }) => {
+    const hit = document.elementFromPoint(x, y);
+    return hit ? document.querySelector(media).contains(hit) : false;
+  }, { media: MEDIA, x, y });
+  const settleInput = () => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 50))));
+  const cdp = await page.context().newCDPSession(page);
+  const send = (type, list = []) => cdp.send('Input.dispatchTouchEvent', {
+    type, touchPoints: list.map(([pointId, x, y]) => ({ id: pointId, x: Math.round(x), y: Math.round(y) })),
+  });
+
+  // Single page 1 held: loading, yet the surface spans the stage; the first
+  // touch is a right-edge tap and reads on once.
+  const releaseOne = routes.hold(pagePath(id, 1));
+  const releaseTwo = routes.hold(pagePath(id, 2));
+  await openComic(page, id, 'Seven pages');
+  await expect.poll(async () => (await state(page)).comic?.state).toBe('ready');
+  await expect(page.locator(`${DIALOG} [data-unified-viewer]`)).toHaveAttribute('data-viewer-media-state', 'loading');
+  const box = await stage();
+  expect(await surface()).toEqual(box);
+  const g = { cx: box.x + box.width / 2, cy: box.y + box.height / 2, left: box.x + 30, right: box.x + box.width - 30 };
+  for (const [x, y] of [[g.left, g.cy], [g.right, g.cy], [g.cx, g.cy], [g.right, box.y + 12]]) {
+    expect(await hitsMedia(x, y), `${x},${y}`).toBe(true);
+  }
+  await send('touchStart', [[1, g.right, g.cy]]);
+  await send('touchEnd');
+  await settleInput();
+  await expect(page.locator(POSITION)).toHaveText('Page 2 of 7');
+  // Page 2 is held too: a swipe begun while it loads and finished after it
+  // decoded reads on once more.
+  await expect(page.locator(`${DIALOG} [data-unified-viewer]`)).toHaveAttribute('data-viewer-media-state', 'loading');
+  await send('touchStart', [[2, g.cx + 150, g.cy]]);
+  await send('touchMove', [[2, g.cx + 75, g.cy]]);
+  releaseTwo();
+  await shownKey(page, pageKey(id, 2));
+  await expect.poll(async () => (await state(page)).media).toBe('loaded');
+  expect(await surface()).toEqual(box);
+  await send('touchMove', [[2, g.cx - 75, g.cy]]);
+  await send('touchMove', [[2, g.cx - 150, g.cy]]);
+  await send('touchEnd');
+  await settleInput();
+  await expect(page.locator(POSITION)).toHaveText('Page 3 of 7');
+  releaseOne();
+
+  // Two-Page Spread, Right-to-Left, with the next group's pages held: a
+  // rightward swipe on the loading spread reads on by whole groups.
+  expect(await setReader(page, { direction: 'rtl', layout: 'spread', alignment: 'cover-alone' })).toEqual({ changed: true });
+  await expect.poll(async () => (await state(page)).media).toBe('loaded');
+  const releaseFour = routes.hold(pagePath(id, 4));
+  const releaseFive = routes.hold(pagePath(id, 5));
+  await send('touchStart', [[3, g.left, g.cy]]);
+  await send('touchEnd');
+  await settleInput();
+  expect((await readerState(page)).groupItems).toEqual([4, 5]);
+  await expect(page.locator(`${DIALOG} [data-unified-viewer]`)).toHaveAttribute('data-viewer-media-state', 'loading');
+  expect(await surface()).toEqual(box);
+  expect(await hitsMedia(g.left, g.cy)).toBe(true);
+  await send('touchStart', [[4, g.cx - 150, g.cy]]);
+  for (let step = 1; step <= 4; step += 1) await send('touchMove', [[4, g.cx - 150 + 75 * step, g.cy]]);
+  await send('touchEnd');
+  await settleInput();
+  expect((await readerState(page)).groupItems).toEqual([6, 7]);
+  releaseFour();
+  releaseFive();
+  await expect.poll(async () => (await state(page)).media).toBe('loaded');
+  expect(await surface()).toEqual(box);
+  expect(await mediaView(page)).toMatchObject({ composite: true, mode: 'fit' });
+  // The last group does not wrap.
+  await send('touchStart', [[5, g.left, g.cy]]);
+  await send('touchEnd');
+  await settleInput();
+  expect((await readerState(page)).groupItems).toEqual([6, 7]);
+  await cdp.detach();
 });

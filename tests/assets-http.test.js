@@ -397,8 +397,8 @@ describe('asset browser HTTP workflow', () => {
   }
 
   function extractSlideshowSequence(html) {
-    const match = html.match(/<script[^>]*data-slideshow-sequence[^>]*>([\s\S]*?)<\/script>/);
-    if (!match) throw new Error('Rendered page did not include a data-slideshow-sequence element.');
+    const match = html.match(/<script[^>]*data-(?:project-assets|asset-library)-viewer-sequence[^>]*>([\s\S]*?)<\/script>/);
+    if (!match) throw new Error('Rendered page did not include an authoritative host viewer sequence element.');
     return JSON.parse(match[1]);
   }
 
@@ -2299,7 +2299,8 @@ describe('asset browser HTTP workflow', () => {
     const page1 = await agent.get(`/projects/${id}/assets?page=1&pageSize=2`).expect(200);
     const visibleCount = [...page1.text.matchAll(/data-asset-id="\d+"/g)].length;
     expect(visibleCount).toBe(2);
-    expect(page1.text).toContain('data-slideshow-sequence');
+    expect(page1.text).toContain('data-project-assets-viewer-sequence');
+    expect(page1.text).not.toContain('data-slideshow-sequence');
   });
 
   // ─── Empty states ────────────────────────────────────────────────

@@ -237,7 +237,7 @@ describe('settings — page defaults HTTP', () => {
     const preview = settingsSection(res.text, 'defaults-preview-generation');
     expect(settingsSection(res.text, 'defaults-images')).toBe('');
     expect(thumbnail).toContain('<h3 id="defaults-thumbnail-generation-heading">Change thumbnail generation</h3>');
-    expect(preview).toContain('<h3 id="defaults-preview-generation-heading">Change preview &amp; slideshow generation</h3>');
+    expect(preview).toContain('<h3 id="defaults-preview-generation-heading">Change preview generation</h3>');
     for (const [section, name, values] of [
       [thumbnail, 'imagesThumbnailFormat', ['webp', 'png']],
       [preview, 'imagesPreviewFormat', ['webp', 'png', 'original']],
@@ -268,7 +268,7 @@ describe('settings — page defaults HTTP', () => {
     const previewHelp = preview.slice(0, preview.indexOf('class="field page-defaults-grid"'))
       .match(/<p class="help-text">[\s\S]*?<\/p>/g);
     expect(previewHelp).toEqual([
-      '<p class="help-text">Controls project previews and the fitted slideshow image. Original uses the source image when available; animated sources may keep a generated WebP and Krita assets use a generated fallback.</p>',
+      '<p class="help-text">Controls image Preview format, quality and size, including comic covers. Original uses eligible source images; animated sources may keep a generated WebP, while Krita assets and comic covers use a generated fallback. Image and slideshow viewing use a separate Original/Optimized choice in the unified viewer; playback does not change Preview policy.</p>',
     ]);
     expect(preview).not.toContain('substantially more bandwidth');
     for (const definition of Object.values(PROJECT_IMAGE_SETTINGS)) {

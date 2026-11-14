@@ -132,10 +132,6 @@ import {
 import { enhanceProjectOwnershipRecovery } from './client/project-ownership-recovery.js';
 import { enhanceProcessingRecoveryDetails } from './client/processing-recovery-details.js';
 import {
-  enhanceProjectAssetsPreviewSlideshow,
-  enhanceSlideshow,
-} from './client/slideshow.js';
-import {
   enhanceUnifiedViewer,
   unifiedViewerFor,
 } from './client/unified-viewer.js';
@@ -237,8 +233,6 @@ export {
   openAppDialogById,
   setAppDialogBaseline,
   requestAppConfirmation,
-  enhanceSlideshow,
-  enhanceProjectAssetsPreviewSlideshow,
   enhanceUnifiedViewer,
   unifiedViewerFor,
   enhanceProjectAssetsViewer,
@@ -394,9 +388,7 @@ if (typeof document !== 'undefined') {
     enhanceDatePickers(document);
     enhanceTimePickers(document);
     // Image thumbnails and Slideshow open the unified viewer: each host binds
-    // only where its own sequence is rendered. No page hosts the legacy
-    // slideshow scaffold any longer; slideshow.js stays exported until its
-    // global retirement in Milestone D.
+    // only where its own sequence is rendered.
     enhanceProjectAssetsViewer(document);
     enhanceAssetLibraryViewer(document);
     enhanceAssetDetailsViewer(document);
