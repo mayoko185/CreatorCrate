@@ -5,6 +5,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createAppMetaRepository } from '../src/data/app-meta-repository.js';
+import { createProjectRepository } from '../src/data/project-repository.js';
+import { createProjectPageDefaultRepository } from '../src/data/project-page-default-repository.js';
 import {
   createPageDefaultsService,
   PageDefaultValidationError,
@@ -230,6 +232,7 @@ describe('page defaults service', () => {
         key: 'page_defaults.asset_viewer.category',
         values: ['all'],
         fallback: 'all',
+        multi: true,
       },
       presence: {
         key: 'page_defaults.asset_viewer.presence',
@@ -290,16 +293,19 @@ describe('page defaults service', () => {
         key: 'page_defaults.projects.status',
         values: ['all'],
         fallback: 'all',
+        multi: true,
       },
       projectType: {
         key: 'page_defaults.projects.project_type',
         values: ['all'],
         fallback: 'all',
+        multi: true,
       },
       tag: {
         key: 'page_defaults.projects.tag',
         values: ['all'],
         fallback: 'all',
+        multi: true,
       },
     });
   });
@@ -531,11 +537,13 @@ describe('page defaults service', () => {
 
     expect(service.saveDefault('new_project', 'status', 'client-review')).toBe('client-review');
     expect(service.saveDefault('new_project', 'projectType', 'interactive')).toBe('interactive');
-    expect(service.saveDefault('projects', 'status', 'client-review')).toBe('client-review');
-    expect(service.saveDefault('projects', 'projectType', 'interactive')).toBe('interactive');
+    // WP2: Projects filter defaults are multivalue; one value saves as a
+    // one-value selection in the established JSON-array representation.
+    expect(service.saveDefault('projects', 'status', 'client-review')).toEqual(['client-review']);
+    expect(service.saveDefault('projects', 'projectType', 'interactive')).toEqual(['interactive']);
     expect(service.saveProjectDefault(
       'projects', 'projectType', 'interactive', undefined, { projectId: 1 },
-    )).toBe('interactive');
+    )).toEqual(['interactive']);
 
     statusCatalogue = statusCatalogue.filter(({ value }) => value !== 'client-review');
     projectTypeCatalogue = projectTypeCatalogue.filter(({ value }) => value !== 'interactive');
@@ -548,8 +556,8 @@ describe('page defaults service', () => {
       .toBe('all');
     expect(repository.getValue(PAGE_DEFAULT_DEFINITIONS.new_project.status.key)).toBe('client-review');
     expect(repository.getValue(PAGE_DEFAULT_DEFINITIONS.new_project.projectType.key)).toBe('interactive');
-    expect(repository.getValue(PAGE_DEFAULT_DEFINITIONS.projects.status.key)).toBe('client-review');
-    expect(projectPageDefaultRepository.getOption(1, 'projects', 'projectType')).toBe('interactive');
+    expect(repository.getValue(PAGE_DEFAULT_DEFINITIONS.projects.status.key)).toBe('["client-review"]');
+    expect(projectPageDefaultRepository.getOption(1, 'projects', 'projectType')).toBe('["interactive"]');
   });
 
   it('treats Archived as a Projects-filter system value without exposing it to New Project defaults', () => {
@@ -560,9 +568,9 @@ describe('page defaults service', () => {
       { value: 'archived', label: 'Archived' },
     ]);
 
-    expect(service.saveDefault('projects', 'status', 'archived')).toBe('archived');
-    expect(service.getSavedDefault('projects', 'status')).toBe('archived');
-    expect(service.resolvePageDefaults('projects').status).toBe('archived');
+    expect(service.saveDefault('projects', 'status', 'archived')).toEqual(['archived']);
+    expect(service.getSavedDefault('projects', 'status')).toEqual(['archived']);
+    expect(service.resolvePageDefaults('projects').status).toEqual(['archived']);
     expect(() => service.saveDefault('new_project', 'status', 'archived'))
       .toThrow(PageDefaultValidationError);
   });
@@ -1275,5 +1283,552 @@ describe('page defaults service', () => {
     expect(() => globalOnlyService.saveProjectDefault(
       'projects', 'view', 'list', undefined, { projectId: 1 }
     )).toThrow('projectPageDefaultRepository');
+  });
+});
+
+describe('page defaults saved-state metadata and scoped reset (WP1)', () => {
+  let tmpDir;
+  let db;
+  let appMeta;
+  let projectDefaults;
+  let service;
+  let firstId;
+  let secondId;
+  const assetKeys = PAGE_DEFAULT_DEFINITIONS.projectAssets;
+  const countRows = (table) => db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count;
+  const writeRaw = (key, value) => db.prepare(`
+    INSERT INTO app_meta (key, value) VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(key, value);
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-page-default-reset-'));
+    db = openDatabase(path.join(tmpDir, 'test.db'));
+    runMigrations(db, MIGRATIONS_DIR);
+    appMeta = createAppMetaRepository(db);
+    projectDefaults = createProjectPageDefaultRepository(db);
+    const projects = createProjectRepository(db);
+    const create = (title) => projects.create({
+      title,
+      slug: title.toLowerCase().replaceAll(' ', '-'),
+      description: '',
+      notes: '',
+      status: 'tbd',
+      projectType: 'images',
+      priority: 'normal',
+      plannedDate: null,
+      publishedDate: null,
+      patreonUrl: null,
+    }).id;
+    firstId = create('Reset First');
+    secondId = create('Reset Second');
+    service = createPageDefaultsService({
+      appMetaRepository: appMeta,
+      projectPageDefaultRepository: projectDefaults,
+    });
+  });
+
+  afterEach(() => {
+    closeDatabase(db);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('reports no saved defaults without writing on read', () => {
+    const tables = ['app_meta', 'project_page_defaults', 'project_page_default_scopes'];
+    const before = tables.map(countRows);
+    const state = service.describeSavedDefaults('projectAssets', {}, { projectId: firstId });
+
+    expect(state).toMatchObject({
+      page: 'projectAssets',
+      activeScope: 'global',
+      hasSavedDefaults: false,
+      global: { saved: false, invalid: false, active: true },
+      project: {
+        projectId: firstId,
+        storedScope: null,
+        active: false,
+        saved: false,
+        invalid: false,
+        inheritance: 'full',
+      },
+    });
+    expect(state.options.sort).toEqual({
+      global: { stored: false, valid: false },
+      project: { stored: false, valid: false },
+      source: 'fallback',
+    });
+    expect(service.describeSavedDefaults('projects')).not.toHaveProperty('project');
+    expect(tables.map(countRows)).toEqual(before);
+  });
+
+  it('counts fallback-equal and empty saved values as saved and retained invalid values as stored', () => {
+    service.saveDefault('projectAssets', 'sort', assetKeys.sort.fallback);
+    writeRaw(assetKeys.gridStyle.key, 'square');
+    service.saveDefault('logs', 'level', '');
+
+    const state = service.describeSavedDefaults('projectAssets');
+    expect(state.hasSavedDefaults).toBe(true);
+    expect(state.global).toEqual({ saved: true, invalid: true, active: true });
+    expect(state.options.sort).toEqual({ global: { stored: true, valid: true }, source: 'global' });
+    expect(state.options.gridStyle).toEqual({ global: { stored: true, valid: false }, source: 'fallback' });
+    expect(state.options.view.global.stored).toBe(false);
+    expect(appMeta.getValue(assetKeys.gridStyle.key)).toBe('square');
+
+    expect(service.describeSavedDefaults('logs').options.level.global).toEqual({ stored: true, valid: true });
+  });
+
+  it('distinguishes active, inactive, empty, partial, and complete project overrides', () => {
+    service.saveDefault('projectAssets', 'sort', 'modified');
+    service.saveProjectDefault('projectAssets', 'view', 'list', undefined, { projectId: firstId });
+    projectDefaults.setOption(firstId, 'projectAssets', 'order', 'sideways');
+
+    // Stored but inactive: Global stays the source for every option.
+    let state = service.describeSavedDefaults('projectAssets', {}, { projectId: firstId });
+    expect(state.activeScope).toBe('global');
+    expect(state.project).toMatchObject({ active: false, saved: true, invalid: true, inheritance: 'full' });
+    expect(state.options.view.source).toBe('fallback');
+
+    // Active with partial overrides; the invalid order row is inherited, not absent.
+    service.setPageDefaultScope('projectAssets', 'project', { projectId: firstId });
+    state = service.describeSavedDefaults('projectAssets', {}, { projectId: firstId });
+    expect(state.activeScope).toBe('project');
+    expect(state.global.active).toBe(false);
+    expect(state.project).toMatchObject({ storedScope: 'project', active: true, inheritance: 'partial' });
+    expect(state.options.view).toEqual({
+      global: { stored: false, valid: false },
+      project: { stored: true, valid: true },
+      source: 'project',
+    });
+    expect(state.options.sort.source).toBe('global');
+    expect(state.options.order).toMatchObject({ project: { stored: true, valid: false }, source: 'fallback' });
+
+    // Active with no overrides inherits everything.
+    service.setPageDefaultScope('projectAssets', 'project', { projectId: secondId });
+    expect(service.describeSavedDefaults('projectAssets', {}, { projectId: secondId }).project)
+      .toMatchObject({ active: true, saved: false, inheritance: 'full' });
+
+    // Active with every option overridden inherits nothing.
+    for (const option of Object.keys(assetKeys)) {
+      service.saveProjectDefault(
+        'projectAssets', option, assetKeys[option].fallback, undefined, { projectId: secondId },
+      );
+    }
+    expect(service.describeSavedDefaults('projectAssets', {}, { projectId: secondId }).project.inheritance)
+      .toBe('none');
+  });
+
+  it('resets only the page recognized Global keys and is an accurate no-op when repeated', () => {
+    service.saveDefault('projectAssets', 'sort', 'modified');
+    service.saveDefault('projectAssets', 'view', assetKeys.view.fallback);
+    service.saveDefault('projects', 'view', 'list');
+    writeRaw('page_defaults.project_assets.legacy_option', 'kept');
+    writeRaw('settings.unrelated', 'kept');
+    service.saveProjectDefault('projectAssets', 'sort', 'size', undefined, { projectId: firstId });
+    service.setPageDefaultScope('projectAssets', 'project', { projectId: firstId });
+
+    expect(service.resetGlobalPageDefaults('projectAssets')).toEqual({
+      page: 'projectAssets', scope: 'global', changed: true, deletedOptions: ['view', 'sort'],
+    });
+    expect(appMeta.getValue(assetKeys.sort.key)).toBeUndefined();
+    expect(appMeta.getValue(assetKeys.view.key)).toBeUndefined();
+    expect(appMeta.getValue(PAGE_DEFAULT_DEFINITIONS.projects.view.key)).toBe('list');
+    expect(appMeta.getValue('page_defaults.project_assets.legacy_option')).toBe('kept');
+    expect(appMeta.getValue('settings.unrelated')).toBe('kept');
+    expect(projectDefaults.getPageOptions(firstId, 'projectAssets')).toEqual({ sort: 'size' });
+    expect(service.getPageDefaultScope('projectAssets', { projectId: firstId })).toBe('project');
+    expect(service.resolveGlobalPageDefaults('projectAssets').sort).toBe(assetKeys.sort.fallback);
+    expect(service.resolvePageDefaults('projectAssets', {}, {}, { projectId: firstId }).sort).toBe('size');
+
+    expect(service.resetGlobalPageDefaults('projectAssets')).toEqual({
+      page: 'projectAssets', scope: 'global', changed: false, deletedOptions: [],
+    });
+    expect(() => service.resetGlobalPageDefaults('settings')).toThrow(PageDefaultValidationError);
+    expect(() => service.resetGlobalPageDefaults('__proto__')).toThrow(PageDefaultValidationError);
+  });
+
+  it('leaves every Global key in place when one deletion fails', () => {
+    service.saveDefault('projectAssets', 'view', 'list');
+    service.saveDefault('projectAssets', 'sort', 'modified');
+    db.exec(`
+      CREATE TRIGGER fail_sort_delete BEFORE DELETE ON app_meta
+      WHEN OLD.key = '${assetKeys.sort.key}'
+      BEGIN SELECT RAISE(ABORT, 'forced'); END;
+    `);
+
+    expect(() => service.resetGlobalPageDefaults('projectAssets')).toThrow('forced');
+    expect(appMeta.getValue(assetKeys.view.key)).toBe('list');
+    expect(appMeta.getValue(assetKeys.sort.key)).toBe('modified');
+  });
+
+  it('resets one project overrides to Global without touching Global or other projects', () => {
+    service.saveDefault('projectAssets', 'sort', 'modified');
+    for (const projectId of [firstId, secondId]) {
+      service.saveProjectDefault('projectAssets', 'view', 'list', undefined, { projectId });
+      service.setPageDefaultScope('projectAssets', 'project', { projectId });
+    }
+    projectDefaults.setOption(firstId, 'projects', 'view', 'list');
+
+    expect(service.resetProjectPageDefaults('projectAssets', { projectId: firstId })).toEqual({
+      page: 'projectAssets',
+      scope: 'project',
+      projectId: firstId,
+      changed: true,
+      deletedOptions: ['view'],
+      previousScope: 'project',
+      activeScope: 'global',
+      scopeChanged: true,
+    });
+    expect(projectDefaults.getPageOptions(firstId, 'projectAssets')).toEqual({});
+    expect(projectDefaults.getPageScope(firstId, 'projectAssets')).toBe('global');
+    expect(projectDefaults.getPageOptions(firstId, 'projects')).toEqual({ view: 'list' });
+    expect(projectDefaults.getPageOptions(secondId, 'projectAssets')).toEqual({ view: 'list' });
+    expect(projectDefaults.getPageScope(secondId, 'projectAssets')).toBe('project');
+    expect(appMeta.getValue(assetKeys.sort.key)).toBe('modified');
+    expect(service.resolvePageDefaults('projectAssets', {}, {}, { projectId: firstId }))
+      .toMatchObject({ view: assetKeys.view.fallback, sort: 'modified' });
+
+    // Nothing left to reset: no rows deleted and no scope row written.
+    db.prepare('DELETE FROM project_page_default_scopes WHERE project_id = ?').run(firstId);
+    expect(service.resetProjectPageDefaults('projectAssets', { projectId: firstId })).toMatchObject({
+      changed: false, deletedOptions: [], previousScope: 'global', scopeChanged: false,
+    });
+    expect(projectDefaults.getPageScope(firstId, 'projectAssets')).toBeUndefined();
+  });
+
+  it('keeps the project overrides and Project-only scope when restoring Global fails', () => {
+    service.saveProjectDefault('projectAssets', 'view', 'list', undefined, { projectId: firstId });
+    service.setPageDefaultScope('projectAssets', 'project', { projectId: firstId });
+    db.exec(`
+      CREATE TRIGGER fail_scope_update BEFORE UPDATE ON project_page_default_scopes
+      BEGIN SELECT RAISE(ABORT, 'forced'); END;
+    `);
+
+    expect(() => service.resetProjectPageDefaults('projectAssets', { projectId: firstId }))
+      .toThrow('forced');
+    expect(projectDefaults.getPageOptions(firstId, 'projectAssets')).toEqual({ view: 'list' });
+    expect(projectDefaults.getPageScope(firstId, 'projectAssets')).toBe('project');
+  });
+
+  describe('scope activation (WP3)', () => {
+    const optionRows = () => db.prepare(`
+      SELECT project_id, page_key, option_key, value, updated_at FROM project_page_defaults
+      ORDER BY project_id, page_key, option_key
+    `).all();
+    const scopeRows = () => db.prepare(`
+      SELECT project_id, page_key, active_scope, updated_at FROM project_page_default_scopes
+      ORDER BY project_id, page_key
+    `).all();
+    const metaRows = () => db.prepare('SELECT key, value FROM app_meta ORDER BY key').all();
+    const first = () => ({ projectId: firstId });
+
+    it('activates Project only without creating override rows; missing values inherit Global', () => {
+      service.saveDefault('projectAssets', 'sort', 'modified');
+      service.saveDefault('projects', 'view', 'list');
+      const optionsBefore = optionRows();
+      const metaBefore = metaRows();
+
+      const activation = service.activatePageDefaultScope('projectAssets', 'project', first());
+
+      expect(activation).toEqual({
+        page: 'projectAssets', projectId: firstId, previousScope: 'global', activeScope: 'project', changed: true,
+      });
+      expect(optionRows()).toEqual(optionsBefore);
+      expect(metaRows()).toEqual(metaBefore);
+      expect(projectDefaults.getPageOptions(firstId, 'projectAssets')).toEqual({});
+      expect(service.resolvePageDefaults('projectAssets', {}, {}, first()).sort).toBe('modified');
+      expect(service.describeSavedDefaults('projectAssets', {}, first())).toMatchObject({
+        activeScope: 'project',
+        global: { saved: true, active: false },
+        project: { storedScope: 'project', active: true, saved: false, inheritance: 'full' },
+      });
+    });
+
+    it('activates Global keeping dormant overrides stored but inactive, and reactivates them', () => {
+      service.saveDefault('projectAssets', 'sort', 'modified');
+      service.saveProjectDefault('projectAssets', 'view', 'list', undefined, first());
+      service.saveProjectDefault('projectAssets', 'sort', 'size', undefined, first());
+      service.setPageDefaultScope('projectAssets', 'project', first());
+      const optionsBefore = optionRows();
+      const metaBefore = metaRows();
+
+      const toGlobal = service.activatePageDefaultScope('projectAssets', 'global', first());
+      expect(toGlobal).toMatchObject({ previousScope: 'project', activeScope: 'global', changed: true });
+      expect(optionRows()).toEqual(optionsBefore);
+      expect(metaRows()).toEqual(metaBefore);
+      expect(service.resolvePageDefaults('projectAssets', {}, {}, first())).toMatchObject({
+        view: 'grid', sort: 'modified',
+      });
+      const dormant = service.describeSavedDefaults('projectAssets', {}, first());
+      expect(dormant).toMatchObject({
+        activeScope: 'global',
+        global: { active: true },
+        project: { active: false, saved: true, inheritance: 'full' },
+      });
+      expect(dormant.options.view).toMatchObject({ project: { stored: true, valid: true }, source: 'fallback' });
+
+      const toProject = service.activatePageDefaultScope('projectAssets', 'project', first());
+      expect(toProject).toMatchObject({ previousScope: 'global', activeScope: 'project', changed: true });
+      expect(optionRows()).toEqual(optionsBefore);
+      expect(service.resolvePageDefaults('projectAssets', {}, {}, first())).toMatchObject({
+        view: 'list', sort: 'size', order: 'asc',
+      });
+      expect(service.describeSavedDefaults('projectAssets', {}, first()).project)
+        .toMatchObject({ active: true, saved: true, inheritance: 'partial' });
+    });
+
+    it('treats a repeated activation as a no-op that writes nothing', () => {
+      const global = service.activatePageDefaultScope('projectAssets', 'global', first());
+      expect(global).toMatchObject({ previousScope: 'global', activeScope: 'global', changed: false });
+      expect(scopeRows()).toEqual([]);
+
+      service.activatePageDefaultScope('projectAssets', 'project', first());
+      const before = scopeRows();
+      const repeated = service.activatePageDefaultScope('projectAssets', 'project', first());
+      expect(repeated).toMatchObject({ previousScope: 'project', activeScope: 'project', changed: false });
+      expect(scopeRows()).toEqual(before);
+    });
+
+    it('leaves other projects and startup preferences untouched', () => {
+      service.saveProjectDefault('projectAssets', 'view', 'list', undefined, { projectId: secondId });
+      service.setPageDefaultScope('projectAssets', 'project', { projectId: secondId });
+      const secondBefore = { options: optionRows(), scope: projectDefaults.getPageScope(secondId, 'projectAssets') };
+
+      service.activatePageDefaultScope('projectAssets', 'project', first());
+      service.activatePageDefaultScope('projectAssets', 'global', first());
+
+      expect(optionRows()).toEqual(secondBefore.options);
+      expect(projectDefaults.getPageScope(secondId, 'projectAssets')).toBe(secondBefore.scope);
+    });
+
+    it('rejects an unsupported scope or project before any write', () => {
+      const before = [optionRows(), scopeRows(), metaRows()];
+      for (const call of [
+        () => service.activatePageDefaultScope('projectAssets', 'everything', first()),
+        () => service.activatePageDefaultScope('projectAssets', undefined, first()),
+        () => service.activatePageDefaultScope('projectAssets', 'project', { projectId: 0 }),
+        () => service.activatePageDefaultScope('projectAssets', 'project', undefined),
+      ]) expect(call).toThrow(PageDefaultValidationError);
+      expect(() => service.activatePageDefaultScope('nope', 'project', first())).toThrow();
+      expect([optionRows(), scopeRows(), metaRows()]).toEqual(before);
+    });
+
+    it('surfaces a storage failure and keeps the previous scope', () => {
+      service.setPageDefaultScope('projectAssets', 'project', first());
+      db.exec(`
+        CREATE TRIGGER fail_scope_activation BEFORE UPDATE ON project_page_default_scopes
+        BEGIN SELECT RAISE(ABORT, 'forced'); END;
+      `);
+
+      expect(() => service.activatePageDefaultScope('projectAssets', 'global', first())).toThrow('forced');
+      expect(projectDefaults.getPageScope(firstId, 'projectAssets')).toBe('project');
+    });
+  });
+});
+
+describe('page defaults multivalue compatibility (WP2)', () => {
+  let tmpDir;
+  let db;
+  let appMeta;
+  let projectDefaults;
+  let service;
+  let projectId;
+  const statusCatalogue = [
+    { value: 'tbd', label: 'TBD', color: '#AAAAAA' },
+    { value: 'planned', label: 'Planned', color: '#22D3EE' },
+    { value: 'ready', label: 'Ready', color: '#34D399' },
+  ];
+  const projectTypeCatalogue = [
+    { value: 'images', label: 'Images', color: '#AAAAAA' },
+    { value: 'comic', label: 'Comic', color: '#22D3EE' },
+  ];
+  const tagCatalogue = [
+    { value: 'all', label: 'All tags' },
+    { value: '3', label: 'Three' },
+    { value: '7', label: 'Seven' },
+  ];
+  const categoryCatalogue = [
+    { value: 'all', label: 'All categories' },
+    { value: 'uncategorized', label: 'Uncategorized' },
+    { value: 'images', label: 'Images' },
+    { value: 'videos', label: 'Videos' },
+  ];
+  const keys = {
+    status: PAGE_DEFAULT_DEFINITIONS.projects.status.key,
+    projectType: PAGE_DEFAULT_DEFINITIONS.projects.projectType.key,
+    tag: PAGE_DEFAULT_DEFINITIONS.projects.tag.key,
+    category: PAGE_DEFAULT_DEFINITIONS.assetViewer.category.key,
+  };
+  const writeRaw = (key, value) => db.prepare(`
+    INSERT INTO app_meta (key, value) VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(key, value);
+  const readRaw = (key) => db.prepare('SELECT value FROM app_meta WHERE key = ?').get(key)?.value;
+  const projectCatalogues = { tag: tagCatalogue };
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-page-default-multi-'));
+    db = openDatabase(path.join(tmpDir, 'test.db'));
+    runMigrations(db, MIGRATIONS_DIR);
+    appMeta = createAppMetaRepository(db);
+    projectDefaults = createProjectPageDefaultRepository(db);
+    projectId = createProjectRepository(db).create({
+      title: 'Multi Project',
+      slug: 'multi-project',
+      description: '',
+      notes: '',
+      status: 'tbd',
+      projectType: 'images',
+      priority: 'normal',
+      plannedDate: null,
+      publishedDate: null,
+      patreonUrl: null,
+    }).id;
+    service = createPageDefaultsService({
+      appMetaRepository: appMeta,
+      projectPageDefaultRepository: projectDefaults,
+      projectOptionCatalogueService: {
+        getStatusCatalogue: () => statusCatalogue.map((entry) => ({ ...entry })),
+        getProjectTypeCatalogue: () => projectTypeCatalogue.map((entry) => ({ ...entry })),
+      },
+    });
+  });
+
+  afterEach(() => {
+    closeDatabase(db);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('marks exactly the four WP2 fields as multivalue without changing their keys or fallbacks', () => {
+    expect(PAGE_DEFAULT_DEFINITIONS.projects.status).toEqual({
+      key: 'page_defaults.projects.status', values: ['all'], fallback: 'all', multi: true,
+    });
+    expect(PAGE_DEFAULT_DEFINITIONS.projects.projectType).toEqual({
+      key: 'page_defaults.projects.project_type', values: ['all'], fallback: 'all', multi: true,
+    });
+    expect(PAGE_DEFAULT_DEFINITIONS.projects.tag).toEqual({
+      key: 'page_defaults.projects.tag', values: ['all'], fallback: 'all', multi: true,
+    });
+    expect(PAGE_DEFAULT_DEFINITIONS.assetViewer.category).toEqual({
+      key: 'page_defaults.asset_viewer.category', values: ['all'], fallback: 'all', multi: true,
+    });
+    expect(PAGE_DEFAULT_DEFINITIONS.assetViewer.presence.multi).toBeUndefined();
+    expect(PAGE_DEFAULT_DEFINITIONS.new_project.status.multi).toBeUndefined();
+    expect(PAGE_DEFAULT_DEFINITIONS.new_project.projectType.multi).toBeUndefined();
+  });
+
+  it('resolves legacy scalar Projects and Category defaults as one-value selections without rewriting them', () => {
+    writeRaw(keys.status, 'planned');
+    writeRaw(keys.projectType, 'comic');
+    writeRaw(keys.tag, '7');
+    writeRaw(keys.category, 'videos');
+
+    const resolved = service.resolvePageDefaults('projects', {}, projectCatalogues);
+    expect(resolved.status).toEqual(['planned']);
+    expect(resolved.projectType).toEqual(['comic']);
+    expect(resolved.tag).toEqual(['7']);
+    expect(service.resolve('assetViewer', 'category', undefined, categoryCatalogue)).toEqual(['videos']);
+
+    expect(readRaw(keys.status)).toBe('planned');
+    expect(readRaw(keys.projectType)).toBe('comic');
+    expect(readRaw(keys.tag)).toBe('7');
+    expect(readRaw(keys.category)).toBe('videos');
+  });
+
+  it('saves and restores complete multivalue selections through the JSON-array representation', () => {
+    expect(service.saveDefault('projects', 'status', ['planned', 'archived'])).toEqual(['planned', 'archived']);
+    expect(service.saveDefault('projects', 'projectType', ['comic', 'images'])).toEqual(['comic', 'images']);
+    expect(service.saveDefault('projects', 'tag', ['3', '7'], tagCatalogue)).toEqual(['3', '7']);
+    expect(service.saveDefault('assetViewer', 'category', ['uncategorized', 'videos'], categoryCatalogue))
+      .toEqual(['uncategorized', 'videos']);
+
+    expect(readRaw(keys.status)).toBe('["planned","archived"]');
+    expect(readRaw(keys.projectType)).toBe('["comic","images"]');
+    expect(readRaw(keys.tag)).toBe('["3","7"]');
+    expect(readRaw(keys.category)).toBe('["uncategorized","videos"]');
+
+    expect(service.resolvePageDefaults('projects', {}, projectCatalogues)).toMatchObject({
+      status: ['planned', 'archived'],
+      projectType: ['comic', 'images'],
+      tag: ['3', '7'],
+    });
+    expect(service.resolve('assetViewer', 'category', undefined, categoryCatalogue))
+      .toEqual(['uncategorized', 'videos']);
+  });
+
+  it('keeps the unrestricted meaning for legacy, explicit and missing all values', () => {
+    for (const stored of [undefined, 'all', '["all"]']) {
+      if (stored === undefined) db.prepare('DELETE FROM app_meta WHERE key = ?').run(keys.status);
+      else writeRaw(keys.status, stored);
+      expect(service.resolve('projects', 'status')).toBe('all');
+    }
+    expect(service.saveDefault('projects', 'status', 'all')).toBe('all');
+    expect(service.saveDefault('projects', 'status', ['all'])).toBe('all');
+    expect(readRaw(keys.status)).toBe('all');
+    expect(service.saveDefault('assetViewer', 'category', 'all', categoryCatalogue)).toBe('all');
+    expect(service.resolve('assetViewer', 'category', undefined, categoryCatalogue)).toBe('all');
+  });
+
+  it('falls back safely for invalid, unavailable or malformed stored selections', () => {
+    for (const stored of ['retired', '["planned","retired"]', '["all","planned"]', '[]', '[not json', '{"a":1}', '[1]']) {
+      writeRaw(keys.status, stored);
+      expect(service.resolve('projects', 'status')).toBe('all');
+      expect(readRaw(keys.status)).toBe(stored);
+    }
+    writeRaw(keys.category, '["videos","deleted-category"]');
+    expect(service.resolve('assetViewer', 'category', undefined, categoryCatalogue)).toBe('all');
+    expect(() => service.saveDefault('projects', 'status', ['planned', 'retired']))
+      .toThrow(PageDefaultValidationError);
+    expect(() => service.saveDefault('projects', 'status', ['all', 'planned']))
+      .toThrow(PageDefaultValidationError);
+  });
+
+  it('keeps explicit selections ahead of saved selections and invalid explicit values at the fallback', () => {
+    service.saveDefault('projects', 'status', ['planned', 'ready']);
+    expect(service.resolve('projects', 'status', 'tbd')).toEqual(['tbd']);
+    expect(service.resolve('projects', 'status', ['tbd', 'archived'])).toEqual(['tbd', 'archived']);
+    expect(service.resolve('projects', 'status', 'all')).toBe('all');
+    expect(service.resolve('projects', 'status', 'retired')).toBe('all');
+    expect(service.resolve('projects', 'status')).toEqual(['planned', 'ready']);
+  });
+
+  it('resolves project-scoped multivalue overrides and inherits Global otherwise', () => {
+    service.saveDefault('projects', 'status', ['planned']);
+    service.saveProjectDefault('projects', 'status', ['ready', 'tbd'], undefined, { projectId });
+    expect(projectDefaults.getOption(projectId, 'projects', 'status')).toBe('["ready","tbd"]');
+
+    expect(service.resolve('projects', 'status', undefined, undefined, { projectId })).toEqual(['planned']);
+    service.setPageDefaultScope('projects', 'project', { projectId });
+    expect(service.resolve('projects', 'status', undefined, undefined, { projectId })).toEqual(['ready', 'tbd']);
+    expect(service.resolveProjectPageDefaults('projects', projectCatalogues, { projectId }).projectType).toBe('all');
+  });
+
+  it('reports multivalue, legacy scalar and invalid stored values through WP1 metadata without writing', () => {
+    writeRaw(keys.status, '["planned","archived"]');
+    writeRaw(keys.projectType, 'comic');
+    writeRaw(keys.tag, '["3","99"]');
+    writeRaw(keys.category, 'all');
+    projectDefaults.setOption(projectId, 'projects', 'status', '["ready"]');
+    projectDefaults.setPageScope(projectId, 'projects', 'project');
+    const before = db.prepare('SELECT key, value FROM app_meta ORDER BY key').all();
+
+    const state = service.describeSavedDefaults('projects', projectCatalogues, { projectId });
+    expect(state.options.status).toEqual({
+      global: { stored: true, valid: true },
+      project: { stored: true, valid: true },
+      source: 'project',
+    });
+    expect(state.options.projectType.global).toEqual({ stored: true, valid: true });
+    expect(state.options.projectType.source).toBe('global');
+    expect(state.options.tag.global).toEqual({ stored: true, valid: false });
+    expect(state.options.tag.source).toBe('fallback');
+    expect(state.global).toMatchObject({ saved: true, invalid: true });
+    expect(state.project).toMatchObject({ saved: true, invalid: false, inheritance: 'partial' });
+
+    // A stored fallback-equal 'all' is still a saved default.
+    const assetState = service.describeSavedDefaults('assetViewer', { category: categoryCatalogue });
+    expect(assetState.options.category.global).toEqual({ stored: true, valid: true });
+
+    expect(db.prepare('SELECT key, value FROM app_meta ORDER BY key').all()).toEqual(before);
+    expect(projectDefaults.getOption(projectId, 'projects', 'status')).toBe('["ready"]');
   });
 });

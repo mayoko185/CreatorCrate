@@ -49,6 +49,7 @@ import {
   readProjectAssetsReturnQuery,
   renderProjectAssetsPage,
   resolveAssetBrowserPresentation,
+  resolveProjectAssetsScopedDefaults,
 } from './project-assets-shared.js';
 
 
@@ -63,6 +64,13 @@ import {
 // each call site even though the values are identical today.
 
 const ASSET_RENAME_ORIGINS = new Set(['assets', 'viewer']);
+
+// WP3: the operations POST /projects/:id/assets/defaults accepts. A request
+// without an intent keeps the pre-WP3 full-save meaning.
+const PROJECT_ASSETS_DEFAULTS_INTENTS = Object.freeze({
+  save: 'save',
+  activateScope: 'activate-scope',
+});
 
 function validateProjectAssetsDefaultsScope({ rawBody }) {
   const scope = rawBody.scope;
@@ -413,9 +421,104 @@ export function createAssetsRouter({
     }
   });
 
+  function sendProjectAssetsDefaultsRequestError(req, res, next, id, errors) {
+    if (isEnhancedAssetRequest(req)) {
+      res.status(422).json({ status: 'error', errors });
+      return;
+    }
+    renderProjectAssetsPage(req, res, {
+      appName,
+      projectService,
+      workflowQueryService,
+      assetBrowserPreferenceService,
+      projectAssetCategoryService,
+      status: 422,
+      projectAssetsDefaultsDialogOpen: true,
+      projectAssetsDefaultsErrors: errors,
+      rawQuery: readProjectAssetsReturnQuery(req, id),
+      allowSavedDefaultsRedirect: false,
+    }).catch(next);
+  }
+
+  // WP3 scope activation: persists only which saved scope is active. Every
+  // submitted default field is ignored, so an activation never saves the
+  // current controls, never creates project override rows, and never resets.
+  // A non-enhanced request returns to its unchanged filtering context.
+  function activateProjectAssetsDefaultsScope(req, res, next, id) {
+    const enhanced = isEnhancedAssetRequest(req);
+    const scope = req.body?.scope;
+    if (scope !== 'global' && scope !== 'project') {
+      sendProjectAssetsDefaultsRequestError(req, res, next, id, {
+        scope: 'Choose either Global or Project-only defaults to activate.',
+      });
+      return;
+    }
+
+    const pageDefaultsService = getPageDefaultsService(req);
+    const context = { projectId: id };
+    let activation;
+    try {
+      const activate = () => pageDefaultsService.activatePageDefaultScope(
+        ASSET_PAGE_DEFAULTS_PAGE, scope, context,
+      );
+      activation = typeof db?.transaction === 'function' ? db.transaction(activate)() : activate();
+    } catch (err) {
+      if (enhanced) {
+        res.status(500).json({
+          status: 'error',
+          message: 'Project Assets defaults scope could not be changed. No changes were made.',
+        });
+        return;
+      }
+      next(err);
+      return;
+    }
+
+    if (!enhanced) {
+      res.redirect(readProjectAssetsReturnUrl(req, id));
+      return;
+    }
+
+    try {
+      const optionCatalogues = buildProjectAssetsDefaultOptionCatalogues(workflowQueryService);
+      res.json({
+        status: 'success',
+        message: PROJECT_ASSETS_NOTICES.defaultsScopeActivated,
+        activation,
+        savedDefaults: pageDefaultsService.describeSavedDefaults(
+          ASSET_PAGE_DEFAULTS_PAGE, optionCatalogues, context,
+        ),
+        defaults: resolveProjectAssetsScopedDefaults(pageDefaultsService, optionCatalogues, context),
+      });
+    } catch {
+      // The scope change committed; only the follow-up read failed. Report
+      // the acknowledged scope rather than claiming nothing changed.
+      res.status(500).json({
+        status: 'error',
+        message: 'Project Assets defaults scope was changed, but the updated defaults could not be read. Reload the page.',
+        activation,
+      });
+    }
+  }
+
   router.post('/:id/assets/defaults', (req, res, next) => {
     const id = parseId(req.params.id);
     if (id === null || !projectService.findById(id)) return next(createNotFound());
+
+    // WP3: the request names its operation. No intent (the existing autosave
+    // form) or 'save' is the full defaults save; 'activate-scope' only
+    // switches the active scope; anything else is refused before any write.
+    const intent = req.body?.intent;
+    if (intent === PROJECT_ASSETS_DEFAULTS_INTENTS.activateScope) {
+      activateProjectAssetsDefaultsScope(req, res, next, id);
+      return;
+    }
+    if (intent !== undefined && intent !== PROJECT_ASSETS_DEFAULTS_INTENTS.save) {
+      sendProjectAssetsDefaultsRequestError(req, res, next, id, {
+        intent: 'Choose a supported Project Assets defaults operation.',
+      });
+      return;
+    }
 
     const pageDefaultsService = getPageDefaultsService(req);
     const optionCatalogues = buildProjectAssetsDefaultOptionCatalogues(workflowQueryService);
@@ -458,6 +561,83 @@ export function createAssetsRouter({
         res.redirect(buildProjectAssetsDefaultsSuccessUrl(req, id, effectiveValues));
       },
     });
+  });
+
+  // WP1 Reset defaults: removes saved defaults for one scope. It never touches
+  // the current filter controls or the return URL's query; the client decides
+  // what to show from the authoritative saved state in the answer.
+  router.post('/:id/assets/defaults/reset', (req, res, next) => {
+    const id = parseId(req.params.id);
+    if (id === null || !projectService.findById(id)) return next(createNotFound());
+
+    const enhanced = isEnhancedAssetRequest(req);
+    const pageDefaultsService = getPageDefaultsService(req);
+    const scope = req.body?.scope;
+    const context = { projectId: id };
+
+    if (scope !== 'global' && scope !== 'project') {
+      const errors = { scope: 'Choose either Global or Project-only defaults to reset.' };
+      if (enhanced) {
+        res.status(422).json({ status: 'error', errors });
+        return;
+      }
+      renderProjectAssetsPage(req, res, {
+        appName,
+        projectService,
+        workflowQueryService,
+        assetBrowserPreferenceService,
+        projectAssetCategoryService,
+        status: 422,
+        projectAssetsDefaultsDialogOpen: true,
+        projectAssetsDefaultsErrors: errors,
+        rawQuery: readProjectAssetsReturnQuery(req, id),
+        allowSavedDefaultsRedirect: false,
+      }).catch(next);
+      return;
+    }
+
+    let reset;
+    try {
+      reset = scope === 'project'
+        ? pageDefaultsService.resetProjectPageDefaults(ASSET_PAGE_DEFAULTS_PAGE, context)
+        : pageDefaultsService.resetGlobalPageDefaults(ASSET_PAGE_DEFAULTS_PAGE);
+    } catch (err) {
+      if (enhanced) {
+        res.status(500).json({
+          status: 'error',
+          message: 'Project Assets defaults could not be reset. No changes were made.',
+        });
+        return;
+      }
+      next(err);
+      return;
+    }
+
+    if (!enhanced) {
+      res.redirect(readProjectAssetsReturnUrl(req, id));
+      return;
+    }
+
+    try {
+      const optionCatalogues = buildProjectAssetsDefaultOptionCatalogues(workflowQueryService);
+      res.json({
+        status: 'success',
+        message: PROJECT_ASSETS_NOTICES.defaultsReset,
+        reset,
+        savedDefaults: pageDefaultsService.describeSavedDefaults(
+          ASSET_PAGE_DEFAULTS_PAGE, optionCatalogues, context,
+        ),
+        defaults: resolveProjectAssetsScopedDefaults(pageDefaultsService, optionCatalogues, context),
+      });
+    } catch {
+      // The reset committed; only the follow-up read failed. Say so rather
+      // than claiming nothing changed.
+      res.status(500).json({
+        status: 'error',
+        message: 'Project Assets defaults were reset, but the updated defaults could not be read. Reload the page.',
+        reset,
+      });
+    }
   });
 
   router.post('/:id/assets/nsfw-filter', (req, res, next) => {

@@ -14,6 +14,15 @@ function getPageDefaultDefinition(page) {
   return definition;
 }
 
+// A multivalue field's checked options. A non-JSON form post carries one
+// checked option as a plain string (several as an array), so a non-'all'
+// scalar is a one-value selection; 'all' and anything absent stay empty,
+// which the dropdown renders as the unrestricted state.
+function toSelectedValues(value) {
+  if (Array.isArray(value)) return value;
+  return typeof value === 'string' && value !== '' && value !== 'all' ? [value] : [];
+}
+
 function hasOptionCatalogues(optionCatalogues) {
   return Boolean(optionCatalogues && typeof optionCatalogues === 'object'
     && Object.keys(optionCatalogues).length > 0);
@@ -40,6 +49,12 @@ export function buildPageDefaultsDialogModel({
     const renderedOptionCatalogue = multi
       ? optionCatalogue.filter((candidate) => candidate.value !== 'all')
       : optionCatalogue;
+    // A multivalue field's empty selection means the unrestricted 'all'
+    // value, so its summary reuses that option's own label ("All active").
+    const allCandidate = optionCatalogue.find((candidate) => candidate.value === 'all');
+    const emptySummary = multi
+      ? (allCandidate?.label ?? labels.options[option]?.all ?? null)
+      : null;
     const showSubmittedValue = Boolean(
       !multi && error && typeof value === 'string'
         && !optionCatalogue.some((candidate) => candidate.value === value)
@@ -50,7 +65,9 @@ export function buildPageDefaultsDialogModel({
       name: option,
       label: labels.fields[option],
       selectedValue: value,
-      ...(multi ? { multi: true, selectedValues: Array.isArray(value) ? value : [] } : {}),
+      ...(multi
+        ? { multi: true, selectedValues: toSelectedValues(value), emptySummary }
+        : {}),
       options: renderedOptionCatalogue.map((candidate) => ({
         value: candidate.value,
         label: candidate.label ?? labels.options[option]?.[candidate.value] ?? candidate.value,

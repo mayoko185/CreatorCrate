@@ -1740,6 +1740,296 @@ describe('asset browser HTTP workflow', () => {
   });
 
 
+  describe('Project Assets Reset defaults (WP1)', () => {
+    const resetDefaults = (id, body, { json = true } = {}) => {
+      const req = agent.post(`/projects/${id}/assets/defaults/reset`).type('form');
+      if (json) req.set('Accept', 'application/json');
+      return req.send({ ...body, _csrf: csrfToken });
+    };
+    const projectIdFrom = (res) => Number(res.headers.location.replace('/projects/', ''));
+
+    it('resets Global defaults only and answers with the authoritative saved state', async () => {
+      const id = projectIdFrom(await createProject('Reset Global Defaults'));
+      const otherId = projectIdFrom(await createProject('Reset Global Defaults Other'));
+      saveAssetDefault('sort', 'modified');
+      saveAssetDefault('view', 'grid');
+      app.locals.pageDefaultsService.saveDefault('projects', 'view', 'list');
+      saveProjectAssetDefault(otherId, 'order', 'desc');
+
+      const res = await resetDefaults(id, { scope: 'global' }).expect(200);
+
+      expect(res.body).toMatchObject({
+        status: 'success',
+        reset: { page: 'projectAssets', scope: 'global', changed: true, deletedOptions: ['view', 'sort'] },
+        savedDefaults: { activeScope: 'global', hasSavedDefaults: false, global: { saved: false } },
+        defaults: { scope: 'global', effective: { sort: 'filename', view: 'grid' } },
+      });
+      expect(app.locals.pageDefaultsService.getSavedDefault('projects', 'view')).toBe('list');
+      expect(app.locals.projectPageDefaultRepository.getPageOptions(otherId, 'projectAssets'))
+        .toEqual({ order: 'desc' });
+      expect(app.locals.pageDefaultsService.getPageDefaultScope('projectAssets', { projectId: otherId }))
+        .toBe('project');
+
+      const repeated = await resetDefaults(id, { scope: 'global' }).expect(200);
+      expect(repeated.body.reset).toMatchObject({ changed: false, deletedOptions: [] });
+    });
+
+    it('resets one project to Global, keeping Global defaults and other projects', async () => {
+      const id = projectIdFrom(await createProject('Reset Project Defaults'));
+      const otherId = projectIdFrom(await createProject('Reset Project Defaults Other'));
+      saveAssetDefault('sort', 'modified');
+      saveProjectAssetDefault(id, 'view', 'list');
+      saveProjectAssetDefault(otherId, 'view', 'list');
+
+      const res = await resetDefaults(id, { scope: 'project' }).expect(200);
+
+      expect(res.body).toMatchObject({
+        status: 'success',
+        reset: {
+          scope: 'project', projectId: id, changed: true, deletedOptions: ['view'],
+          previousScope: 'project', activeScope: 'global',
+        },
+        savedDefaults: {
+          activeScope: 'global',
+          global: { saved: true, active: true },
+          project: { active: false, saved: false, inheritance: 'full' },
+        },
+        defaults: { scope: 'global', effective: { sort: 'modified', view: 'grid' } },
+      });
+      expect(app.locals.projectPageDefaultRepository.getPageOptions(id, 'projectAssets')).toEqual({});
+      expect(app.locals.projectPageDefaultRepository.getPageOptions(otherId, 'projectAssets'))
+        .toEqual({ view: 'list' });
+      expect(app.locals.pageDefaultsService.getSavedDefault('projectAssets', 'sort')).toBe('modified');
+    });
+
+    it('rejects an unknown scope without changing saved defaults', async () => {
+      const id = projectIdFrom(await createProject('Reset Defaults Bad Scope'));
+      saveAssetDefault('sort', 'modified');
+      saveProjectAssetDefault(id, 'view', 'list');
+
+      const res = await resetDefaults(id, { scope: 'everything' }).expect(422);
+      expect(res.body.errors).toHaveProperty('scope');
+      expect(app.locals.pageDefaultsService.getSavedDefault('projectAssets', 'sort')).toBe('modified');
+      expect(app.locals.projectPageDefaultRepository.getPageOptions(id, 'projectAssets')).toEqual({ view: 'list' });
+      await resetDefaults(999999, { scope: 'global' }).expect(404);
+    });
+
+    it('returns a non-enhanced reset to the unchanged filtering context', async () => {
+      const id = projectIdFrom(await createProject('Reset Defaults Return'));
+      saveAssetDefault('sort', 'modified');
+      const returnTo = `/projects/${id}/assets?sort=size&order=desc&extension=png&page=2`;
+
+      const res = await resetDefaults(id, { scope: 'global', returnTo }, { json: false }).expect(302);
+      expect(res.headers.location).toBe(returnTo);
+      expect(app.locals.pageDefaultsService.getSavedDefault('projectAssets', 'sort')).toBeUndefined();
+    });
+  });
+
+  describe('Project Assets defaults scope activation (WP3)', () => {
+    const postDefaults = (id, body, { json = true } = {}) => {
+      const req = agent.post(`/projects/${id}/assets/defaults`).type('form');
+      if (json) req.set('Accept', 'application/json');
+      return req.send({ ...body, _csrf: csrfToken });
+    };
+    const activate = (id, scope, extra = {}, options) => postDefaults(
+      id, { intent: 'activate-scope', ...(scope === undefined ? {} : { scope }), ...extra }, options,
+    );
+    const projectIdFrom = (res) => Number(res.headers.location.replace('/projects/', ''));
+    // A full set of control values that differ from every stored value, so a
+    // misrouted save would be visible.
+    const CONTROL_VALUES = Object.freeze({
+      view: 'list', gridStyle: 'cropped', gridSize: 'large', listSize: 'compact',
+      sort: 'size', order: 'desc', pageSize: '100', extension: 'all', tag: 'all',
+    });
+    const snapshot = () => ({
+      options: db.prepare(`
+        SELECT project_id, page_key, option_key, value, updated_at FROM project_page_defaults
+        ORDER BY project_id, page_key, option_key
+      `).all(),
+      meta: db.prepare("SELECT key, value FROM app_meta WHERE key NOT LIKE 'auth%' ORDER BY key").all(),
+      categoryPreferences: db.prepare('SELECT * FROM project_asset_browser_preferences ORDER BY rowid').all(),
+    });
+
+    it('activates Global from Project only, keeping dormant overrides and ignoring submitted values', async () => {
+      const id = projectIdFrom(await createProject('Activate Global Scope'));
+      const otherId = projectIdFrom(await createProject('Activate Global Scope Other'));
+      saveAssetDefault('sort', 'modified');
+      app.locals.pageDefaultsService.saveDefault('projects', 'view', 'list');
+      saveProjectAssetDefault(id, 'view', 'list');
+      saveProjectAssetDefault(otherId, 'order', 'desc');
+      const [category] = assetCategoryRepo.listProjectCategories(id);
+      assetBrowserPreferenceRepo.upsertProjectPreference(id, 'category', category.id);
+      const before = snapshot();
+
+      const res = await activate(id, 'global', { ...CONTROL_VALUES, loadedScope: 'project' }).expect(200);
+
+      expect(res.body).toMatchObject({
+        status: 'success',
+        activation: {
+          page: 'projectAssets', projectId: id, previousScope: 'project', activeScope: 'global', changed: true,
+        },
+        savedDefaults: {
+          activeScope: 'global',
+          global: { saved: true, active: true },
+          project: { projectId: id, storedScope: 'global', active: false, saved: true, inheritance: 'full' },
+          options: { view: { project: { stored: true, valid: true }, source: 'fallback' } },
+        },
+        defaults: {
+          scope: 'global',
+          global: { view: 'grid', sort: 'modified' },
+          project: { view: 'list', sort: 'modified' },
+          effective: { view: 'grid', sort: 'modified', order: 'asc', extension: 'all' },
+        },
+      });
+      expect(snapshot()).toEqual(before);
+      expect(app.locals.pageDefaultsService.getPageDefaultScope('projectAssets', { projectId: otherId }))
+        .toBe('project');
+    });
+
+    it('activates Project only, inheriting Global without creating override rows', async () => {
+      const id = projectIdFrom(await createProject('Activate Project Scope Empty'));
+      saveAssetDefault('sort', 'modified');
+      saveAssetDefault('pageSize', '50');
+      const before = snapshot();
+
+      const res = await activate(id, 'project', CONTROL_VALUES).expect(200);
+
+      expect(res.body).toMatchObject({
+        activation: { previousScope: 'global', activeScope: 'project', changed: true },
+        savedDefaults: {
+          activeScope: 'project',
+          global: { active: false },
+          project: { active: true, saved: false, inheritance: 'full' },
+          options: { sort: { source: 'global' }, view: { source: 'fallback' } },
+        },
+        defaults: { scope: 'project', effective: { sort: 'modified', pageSize: '50', view: 'grid' } },
+      });
+      expect(snapshot()).toEqual(before);
+      expect(app.locals.projectPageDefaultRepository.getPageOptions(id, 'projectAssets')).toEqual({});
+    });
+
+    it('reactivates saved Project-only overrides with partial inheritance', async () => {
+      const id = projectIdFrom(await createProject('Activate Project Scope Overrides'));
+      saveAssetDefault('sort', 'modified');
+      saveProjectAssetDefault(id, 'view', 'list');
+      app.locals.pageDefaultsService.setPageDefaultScope('projectAssets', 'global', { projectId: id });
+
+      const res = await activate(id, 'project').expect(200);
+
+      expect(res.body).toMatchObject({
+        activation: { previousScope: 'global', activeScope: 'project', changed: true },
+        savedDefaults: { project: { active: true, saved: true, inheritance: 'partial' } },
+        defaults: { scope: 'project', effective: { view: 'list', sort: 'modified' } },
+      });
+      expect(app.locals.pageDefaultsService.getSavedDefault('projectAssets', 'sort')).toBe('modified');
+    });
+
+    it('treats a repeated activation as an acknowledged no-op', async () => {
+      const id = projectIdFrom(await createProject('Activate Scope Repeat'));
+      await activate(id, 'project').expect(200);
+      const scopeRow = () => db.prepare(
+        'SELECT active_scope, updated_at FROM project_page_default_scopes WHERE project_id = ?',
+      ).get(id);
+      const before = scopeRow();
+
+      const res = await activate(id, 'project').expect(200);
+      expect(res.body.activation).toMatchObject({ previousScope: 'project', activeScope: 'project', changed: false });
+      expect(res.body.savedDefaults.activeScope).toBe('project');
+      expect(scopeRow()).toEqual(before);
+    });
+
+    it('rejects an invalid scope, unknown intent or unknown project without writing', async () => {
+      const id = projectIdFrom(await createProject('Activate Scope Invalid'));
+      saveAssetDefault('sort', 'modified');
+      saveProjectAssetDefault(id, 'view', 'list');
+      const before = snapshot();
+
+      for (const scope of [undefined, 'everything', '']) {
+        const res = await activate(id, scope, CONTROL_VALUES).expect(422);
+        expect(res.body.errors).toHaveProperty('scope');
+      }
+      for (const intent of ['reset', 'activate', 'SAVE']) {
+        const res = await postDefaults(id, { ...CONTROL_VALUES, intent, scope: 'project', loadedScope: 'project' })
+          .expect(422);
+        expect(res.body.errors).toHaveProperty('intent');
+      }
+      const page = await activate(id, 'everything', {}, { json: false }).expect(422);
+      expect(page.text).toContain('Choose either Global or Project-only defaults to activate.');
+      await activate(999999, 'global').expect(404);
+
+      expect(snapshot()).toEqual(before);
+      expect(app.locals.pageDefaultsService.getPageDefaultScope('projectAssets', { projectId: id })).toBe('project');
+    });
+
+    it('reports a storage failure without success and keeps the previous scope', async () => {
+      const id = projectIdFrom(await createProject('Activate Scope Storage Failure'));
+      saveProjectAssetDefault(id, 'view', 'list');
+      const spy = vi.spyOn(app.locals.projectPageDefaultRepository, 'setPageScope')
+        .mockImplementation(() => { throw new Error('disk full'); });
+      try {
+        const res = await activate(id, 'global').expect(500);
+        expect(res.body).toEqual({
+          status: 'error',
+          message: 'Project Assets defaults scope could not be changed. No changes were made.',
+        });
+      } finally {
+        spy.mockRestore();
+      }
+      expect(app.locals.pageDefaultsService.getPageDefaultScope('projectAssets', { projectId: id })).toBe('project');
+    });
+
+    it('distinguishes a committed activation whose follow-up read failed', async () => {
+      const id = projectIdFrom(await createProject('Activate Scope Read Failure'));
+      const spy = vi.spyOn(app.locals.pageDefaultsService, 'describeSavedDefaults')
+        .mockImplementation(() => { throw new Error('read failed'); });
+      try {
+        const res = await activate(id, 'project').expect(500);
+        expect(res.body).toMatchObject({
+          status: 'error',
+          activation: { activeScope: 'project', changed: true },
+        });
+        expect(res.body.message).toContain('was changed');
+        expect(res.body.message).not.toContain('No changes were made');
+      } finally {
+        spy.mockRestore();
+      }
+      expect(app.locals.pageDefaultsService.getPageDefaultScope('projectAssets', { projectId: id })).toBe('project');
+    });
+
+    it('returns a non-enhanced activation to the unchanged filtering context', async () => {
+      const id = projectIdFrom(await createProject('Activate Scope Return'));
+      const returnTo = `/projects/${id}/assets?category=all&search=cat&presence=missing&page=2&extension=png`;
+
+      const res = await activate(id, 'project', { ...CONTROL_VALUES, returnTo }, { json: false }).expect(302);
+      expect(res.headers.location).toBe(returnTo);
+      expect(app.locals.projectPageDefaultRepository.getPageOptions(id, 'projectAssets')).toEqual({});
+    });
+
+    it('keeps the full save working with no intent or an explicit save intent', async () => {
+      const id = projectIdFrom(await createProject('Activate Scope Save Compatibility'));
+      const save = (intent) => postDefaults(id, {
+        ...CONTROL_VALUES,
+        ...(intent ? { intent } : {}),
+        scope: 'project',
+        loadedScope: 'project',
+      }).expect(200);
+
+      const implicit = await save();
+      expect(implicit.body).toMatchObject({ status: 'success', values: { view: 'list', sort: 'size' } });
+      expect(app.locals.projectPageDefaultRepository.getPageOptions(id, 'projectAssets'))
+        .toMatchObject({ view: 'list', sort: 'size', pageSize: '100' });
+
+      await activate(id, 'global').expect(200);
+      expect(app.locals.projectPageDefaultRepository.getPageOptions(id, 'projectAssets'))
+        .toMatchObject({ view: 'list', sort: 'size' });
+
+      await postDefaults(id, { ...CONTROL_VALUES, intent: 'save', scope: 'global', loadedScope: 'global' })
+        .expect(200);
+      expect(app.locals.pageDefaultsService.getSavedDefault('projectAssets', 'sort')).toBe('size');
+      expect(app.locals.pageDefaultsService.getPageDefaultScope('projectAssets', { projectId: id })).toBe('global');
+    });
+  });
+
   describe('non-bare requests and effective category surfaces', () => {
     it.each(['category=all', 'category=uncategorized', 'category=invalid'])
       ('keeps explicit unsupported category context ordinary and does not resolve the stored default: %s', async (query) => {

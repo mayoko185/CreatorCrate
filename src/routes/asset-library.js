@@ -202,7 +202,7 @@ function resolveAssetViewerFilterDefaults(pageDefaultsService, optionCatalogues)
   );
 
   return {
-    categories: category === 'all' ? [] : [category],
+    categories: normalizeAssetViewerDefaultSelection(category),
     tags: normalizeAssetViewerDefaultSelection(tag, Number),
     extensions: normalizeAssetViewerDefaultSelection(extension),
     presence: pageDefaultsService.resolve(
@@ -481,7 +481,7 @@ export function createAssetLibraryRouter({ appName, db, workflowQueryService } =
       onSuccess: ({ validatedValues }) => {
         const defaultsUrl = buildAssetLibraryUrl({
           ...validatedValues,
-          categories: validatedValues.category === 'all' ? [] : [validatedValues.category],
+          categories: normalizeAssetViewerDefaultSelection(validatedValues.category),
           tags: normalizeAssetViewerDefaultSelection(validatedValues.tag),
           extensions: normalizeAssetViewerDefaultSelection(validatedValues.extension),
         });

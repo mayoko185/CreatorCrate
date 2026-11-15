@@ -597,7 +597,10 @@ describe('project HTTP workflow', () => {
 
     expect(defaultsGrid).toContain('<div class="page-defaults-grid">');
     expect((defaultsGrid.match(/class="field app-dialog-field/g) || [])).toHaveLength(7);
-    expect((defaultsGrid.match(/data-cc-dropdown data-cc-dropdown-mode="single"/g) || [])).toHaveLength(7);
+    // WP2: Status, Project Type and Tag are multivalue defaults (an empty
+    // selection is the unrestricted 'all'); the presentation fields stay single.
+    expect((defaultsGrid.match(/data-cc-dropdown data-cc-dropdown-mode="single"/g) || [])).toHaveLength(4);
+    expect((defaultsGrid.match(/data-cc-dropdown data-cc-dropdown-mode="multiple"/g) || [])).toHaveLength(3);
     expect(defaultsGrid).not.toContain('app-dialog-error');
     expect(defaultsGrid).not.toContain('app-dialog-status');
     expect(defaultsGrid).not.toContain('app-dialog-footer');
@@ -626,30 +629,6 @@ describe('project HTTP workflow', () => {
         summary: 'Recently created',
       },
       { name: 'order', label: 'Order', id: 'projects-default-order', values: ['asc', 'desc'], selected: 'desc', summary: 'Descending' },
-      {
-        name: 'status',
-        label: 'Status',
-        id: 'projects-default-status',
-        values: ['all', 'tbd', 'planned', 'in-progress', 'ready', 'completed', 'archived'],
-        selected: 'all',
-        summary: 'All active',
-      },
-      {
-        name: 'projectType',
-        label: 'Project Type',
-        id: 'projects-default-projectType',
-        values: ['all', 'images', 'comic', 'animation', 'wallpaper'],
-        selected: 'all',
-        summary: 'All types',
-      },
-      {
-        name: 'tag',
-        label: 'Tag',
-        id: 'projects-default-tag',
-        values: ['all', String(projectTag.id)],
-        selected: 'all',
-        summary: 'All tags',
-      },
     ]) {
       expect(defaultsGrid).toContain(`data-dialog-field="${field.name}"`);
       expect(defaultsGrid).toContain(`<legend>${field.label}</legend>`);
@@ -671,6 +650,48 @@ describe('project HTTP workflow', () => {
         `<input[^>]*type="radio" value="${field.selected}"[^>]*checked`,
       ));
       expect(defaultsDialog).not.toMatch(new RegExp(`<input[^>]*name="${field.name}"`));
+      expect((defaultsDialog.match(new RegExp(`name="${field.name}"`, 'g')) || [])).toHaveLength(1);
+    }
+    for (const field of [
+      {
+        name: 'status',
+        label: 'Status',
+        id: 'projects-default-status',
+        values: ['tbd', 'planned', 'in-progress', 'ready', 'completed', 'archived'],
+        summary: 'All active',
+      },
+      {
+        name: 'projectType',
+        label: 'Project Type',
+        id: 'projects-default-projectType',
+        values: ['images', 'comic', 'animation', 'wallpaper'],
+        summary: 'All types',
+      },
+      {
+        name: 'tag',
+        label: 'Tag',
+        id: 'projects-default-tag',
+        values: [String(projectTag.id)],
+        summary: 'All tags',
+      },
+    ]) {
+      expect(defaultsGrid).toContain(`data-dialog-field="${field.name}"`);
+      expect(defaultsGrid).toContain(`<legend>${field.label}</legend>`);
+      const nativeSelect = defaultsGrid.match(new RegExp(`<select id="${field.id}"[\\s\\S]*?<\\/select>`))?.[0] || '';
+      expect(nativeSelect).not.toBe('');
+      for (const value of field.values) expect(nativeSelect).toContain(`value="${value}"`);
+      // The unrestricted sentinel is the empty selection, never an option.
+      expect(nativeSelect).not.toContain('value="all"');
+      expect(nativeSelect).not.toContain(' selected');
+      expect(defaultsDialog).toMatch(new RegExp(
+        `<select id="${field.id}" name="${field.name}"[^>]*data-cc-dropdown-native-select[^>]* multiple`,
+      ));
+      expect(defaultsDialog).toMatch(new RegExp(`<select[^>]*id="${field.id}"[^>]*data-autosubmit="fetch"`));
+      expect(defaultsDialog).not.toMatch(new RegExp(`<select[^>]*id="${field.id}"[^>]*required`));
+      expect(defaultsDialog).toMatch(new RegExp(
+        `id="${field.id}-dropdown"[^>]*data-cc-dropdown data-cc-dropdown-mode="multiple"[^>]*data-cc-dropdown-empty-summary="${field.summary}"[^>]*data-cc-dropdown-dispatch-native-change`,
+      ));
+      expect(defaultsDialog).toContain(`class="asset-filter-multiselect-summary-current">${field.summary}</span>`);
       expect((defaultsDialog.match(new RegExp(`name="${field.name}"`, 'g')) || [])).toHaveLength(1);
     }
     const tagDefaultsSelect = defaultsGrid.match(/<select id="projects-default-tag"[\s\S]*?<\/select>/)?.[0] || '';
@@ -769,9 +790,11 @@ describe('project HTTP workflow', () => {
     expect(dialog).toMatch(/name="view"[^>]*>[\s\S]*?value="list" selected/);
     expect(dialog).toMatch(/name="sort"[^>]*>[\s\S]*?value="title" selected/);
     expect(dialog).toMatch(/name="order"[^>]*>[\s\S]*?value="asc" selected/);
-    expect(dialog).toMatch(/name="status"[^>]*>[\s\S]*?value="all" selected/);
-    expect(dialog).toMatch(/name="projectType"[^>]*>[\s\S]*?value="all" selected/);
-    expect(dialog).toMatch(/name="tag"[^>]*>[\s\S]*?value="all" selected/);
+    for (const name of ['status', 'projectType', 'tag']) {
+      const select = dialog.match(new RegExp(`<select[^>]*name="${name}"[\\s\\S]*?<\\/select>`))?.[0] || '';
+      expect(select).toContain(' multiple');
+      expect(select).not.toContain(' selected');
+    }
   });
 
   it('persists valid Projects defaults through the enhanced JSON contract', async () => {
@@ -797,10 +820,149 @@ describe('project HTTP workflow', () => {
       gridStyle: 'cropped',
       sort: 'updated',
       order: 'asc',
-      status: 'archived',
-      projectType: 'comic',
+      // WP2: one submitted value is a one-value multivalue selection.
+      status: ['archived'],
+      projectType: ['comic'],
       tag: 'all',
     });
+  });
+
+  it('WP2 saves complete multivalue Projects filter defaults and restores them on default navigation', async () => {
+    const firstTag = app.locals.tagService.createTag({ name: 'WP2 First' });
+    const secondTag = app.locals.tagService.createTag({ name: 'WP2 Second' });
+    const tagIds = [firstTag.id, secondTag.id].sort((a, b) => a - b).map(String);
+
+    const saved = await agent
+      .post('/projects/defaults')
+      .type('form')
+      .send(`view=grid&gridStyle=uncropped&sort=created&order=desc&status=planned&status=archived&projectType=comic&projectType=images&tag=${tagIds[0]}&tag=${tagIds[1]}&_csrf=${encodeURIComponent(csrfToken)}`)
+      .expect(302);
+
+    // Every selection survives the redirect as repeated canonical parameters.
+    const redirect = new URL(saved.headers.location, 'http://localhost');
+    expect(redirect.pathname).toBe('/projects');
+    expect(redirect.searchParams.getAll('status')).toEqual(['planned', 'archived']);
+    expect(redirect.searchParams.getAll('type')).toEqual(['comic', 'images']);
+    expect(redirect.searchParams.getAll('tag')).toEqual(tagIds);
+
+    // Stored through the established JSON-array multivalue representation.
+    const read = (option) => db.prepare('SELECT value FROM app_meta WHERE key = ?')
+      .get(PAGE_DEFAULT_DEFINITIONS.projects[option].key).value;
+    expect(JSON.parse(read('status'))).toEqual(['planned', 'archived']);
+    expect(JSON.parse(read('projectType'))).toEqual(['comic', 'images']);
+    expect(JSON.parse(read('tag'))).toEqual(tagIds);
+
+    // Default navigation restores the complete selection, canonicalized in
+    // catalogue order by the existing filter parser.
+    const restored = await agent.get('/projects').expect(302);
+    const restoredUrl = new URL(restored.headers.location, 'http://localhost');
+    expect(restoredUrl.searchParams.getAll('status')).toEqual(['planned', 'archived']);
+    expect(restoredUrl.searchParams.getAll('type')).toEqual(['images', 'comic']);
+    expect(restoredUrl.searchParams.getAll('tag')).toEqual(tagIds);
+
+    // An explicit query still wins over the saved defaults.
+    const explicit = await agent.get('/projects?status=ready').expect(200);
+    const filterForm = explicit.text.match(/<form id="project-filters"[\s\S]*?<\/form>/)?.[0] || '';
+    const checkedStatuses = [...filterForm.matchAll(/<input[^>]*name="status" type="checkbox" value="([^"]+)"[^>]*checked/g)]
+      .map((match) => match[1]);
+    expect(checkedStatuses).toEqual(['ready']);
+
+    // The defaults dialog shows the stored multivalue selection.
+    const dialogPage = await agent.get('/projects?defaults=1').expect(200);
+    const dialog = dialogPage.text.match(/<dialog id="projects-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+    const statusSelect = dialog.match(/<select id="projects-default-status"[\s\S]*?<\/select>/)?.[0] || '';
+    expect(statusSelect).toContain('value="planned" selected');
+    expect(statusSelect).toContain('value="archived" selected');
+    expect(statusSelect).not.toContain('value="ready" selected');
+  });
+
+  it('F2 keeps singleton multivalue selections when a non-JSON Projects defaults post fails validation', async () => {
+    const tag = app.locals.tagService.createTag({ name: 'F2 Singleton Tag' });
+    const tagId = String(tag.id);
+    const read = (option) => db.prepare('SELECT value FROM app_meta WHERE key = ?')
+      .get(PAGE_DEFAULT_DEFINITIONS.projects[option].key)?.value;
+    writeStoredProjectDefault('status', JSON.stringify(['archived']));
+    const before = Object.fromEntries(['view', 'gridStyle', 'status', 'projectType', 'tag']
+      .map((option) => [option, read(option)]));
+
+    const failed = await agent
+      .post('/projects/defaults')
+      .type('form')
+      .send(`view=grid&gridStyle=stretched&sort=created&order=desc&status=planned&projectType=comic&tag=${tagId}&_csrf=${encodeURIComponent(csrfToken)}`)
+      .expect(422);
+
+    const dialog = failed.text.match(/<dialog id="projects-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+    const selected = (name) => {
+      const select = dialog.match(new RegExp(`<select id="projects-default-${name}"[\\s\\S]*?<\\/select>`))?.[0] || '';
+      return [...select.matchAll(/value="([^"]+)" selected/g)].map((match) => match[1]);
+    };
+    expect(selected('status')).toEqual(['planned']);
+    expect(selected('projectType')).toEqual(['comic']);
+    expect(selected('tag')).toEqual([tagId]);
+    expect(dialog).toContain('stretched');
+    // The failed submission saves nothing.
+    for (const [option, value] of Object.entries(before)) expect(read(option)).toBe(value);
+
+    // Resubmitting the rerendered form with the corrected field keeps the
+    // singleton selections instead of clearing them to unrestricted.
+    await agent
+      .post('/projects/defaults')
+      .type('form')
+      .send(`view=grid&gridStyle=cropped&sort=created&order=desc&${['status', 'projectType', 'tag']
+        .flatMap((name) => selected(name).map((value) => `${name}=${encodeURIComponent(value)}`)).join('&')}&_csrf=${encodeURIComponent(csrfToken)}`)
+      .expect(302);
+    expect(JSON.parse(read('status'))).toEqual(['planned']);
+    expect(JSON.parse(read('projectType'))).toEqual(['comic']);
+    expect(JSON.parse(read('tag'))).toEqual([tagId]);
+    expect(read('gridStyle')).toBe('cropped');
+  });
+
+  it('WP2 resolves legacy scalar Projects filter defaults as one-value selections without rewriting them', async () => {
+    const tag = app.locals.tagService.createTag({ name: 'WP2 Legacy Tag' });
+    writeStoredProjectDefault('status', 'planned');
+    writeStoredProjectDefault('projectType', 'comic');
+    writeStoredProjectDefault('tag', String(tag.id));
+
+    const restored = await agent.get('/projects').expect(302);
+    const url = new URL(restored.headers.location, 'http://localhost');
+    expect(url.searchParams.getAll('status')).toEqual(['planned']);
+    expect(url.searchParams.getAll('type')).toEqual(['comic']);
+    expect(url.searchParams.getAll('tag')).toEqual([String(tag.id)]);
+
+    const read = (option) => db.prepare('SELECT value FROM app_meta WHERE key = ?')
+      .get(PAGE_DEFAULT_DEFINITIONS.projects[option].key).value;
+    expect(read('status')).toBe('planned');
+    expect(read('projectType')).toBe('comic');
+    expect(read('tag')).toBe(String(tag.id));
+  });
+
+  it('WP2 keeps "All active" Status defaults excluding Archived projects', async () => {
+    await createProject({ title: 'WP2 Active Project', status: 'planned' });
+    const archivedId = await createProject({ title: 'WP2 Archived Project', status: 'planned' });
+    db.prepare("UPDATE projects SET status = 'archived' WHERE id = ?").run(archivedId);
+
+    // Missing, legacy 'all', explicit ['all'], an invalid array and malformed
+    // JSON all resolve to the unrestricted "All active" default: no redirect,
+    // Archived hidden, and the stored value is not rewritten on read.
+    for (const stored of [undefined, 'all', JSON.stringify(['all']), '["planned","bogus"]', '[not json']) {
+      if (stored === undefined) {
+        db.prepare('DELETE FROM app_meta WHERE key = ?').run(PAGE_DEFAULT_DEFINITIONS.projects.status.key);
+      } else {
+        writeStoredProjectDefault('status', stored);
+      }
+      const response = await agent.get('/projects');
+      expect(response.status).toBe(200);
+      expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
+        .get(PAGE_DEFAULT_DEFINITIONS.projects.status.key)?.value).toBe(stored);
+      expect(response.text).toContain('WP2 Active Project');
+      expect(response.text).not.toContain('WP2 Archived Project');
+    }
+
+    writeStoredProjectDefault('status', JSON.stringify(['planned', 'archived']));
+    const restored = await agent.get('/projects').expect(302);
+    const both = await agent.get(restored.headers.location).expect(200);
+    expect(both.text).toContain('WP2 Active Project');
+    expect(both.text).toContain('WP2 Archived Project');
   });
 
   it('renders Grid style immediately after View in the Projects defaults dialog', async () => {

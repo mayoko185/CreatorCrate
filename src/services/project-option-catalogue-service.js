@@ -184,6 +184,22 @@ function parseStoredDocument(serialized, key) {
   }
 }
 
+// A saved default references an option when it stores that exact scalar (a
+// legacy single selection) or, for a multivalue default, a JSON array of
+// selections containing it. Malformed JSON keeps the exact-match rule only.
+// The array is recognized the same way the defaults resolver reads it (plain
+// JSON.parse), so JSON whitespace before the '[' is still an array.
+function storedDefaultReferences(storedValue, value, multi) {
+  if (storedValue === value) return true;
+  if (!multi || typeof storedValue !== 'string') return false;
+  try {
+    const parsed = JSON.parse(storedValue);
+    return Array.isArray(parsed) && parsed.includes(value);
+  } catch {
+    return false;
+  }
+}
+
 export function createProjectOptionCatalogueService({
   db,
   appMetaRepository,
@@ -296,7 +312,9 @@ export function createProjectOptionCatalogueService({
 
   function getSavedDefaultBlockers(definition, value) {
     const blockers = definition.globalDefaults
-      .filter(({ key }) => appMetaRepository.getValue(key) === value)
+      .filter(({ key, page, option }) => storedDefaultReferences(
+        appMetaRepository.getValue(key), value, PAGE_DEFAULT_DEFINITIONS[page]?.[option]?.multi === true,
+      ))
       .map(({ key: _key, ...descriptor }) => ({ ...descriptor, referenceCount: 1 }));
     const projectReferences = projectPageDefaultRepository.listOptionValueReferences(
       'projects', definition.projectDefaultOption, value,

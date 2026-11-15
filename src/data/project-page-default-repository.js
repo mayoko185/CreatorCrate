@@ -74,12 +74,33 @@ export function createProjectPageDefaultRepository(db) {
         AND value = ?
     )
   `);
+  // A reference is a stored scalar equal to the value, or (WP2 multivalue
+  // defaults) a stored JSON array of selections containing it. Malformed or
+  // non-array JSON is never parsed as a selection, so it only matches exactly.
+  // JSON whitespace before the '[' is valid, so the array is recognized by
+  // json_type, not by its first character. Nested CASE guarantees json_type
+  // and json_each only ever see text json_valid accepted (SQLite does not
+  // promise AND short-circuit order, and both raise on malformed JSON).
   const listOptionValueReferencesStmt = db.prepare(`
     SELECT project_id
     FROM project_page_defaults
-    WHERE page_key = ?
-      AND option_key = ?
-      AND value = ?
+    WHERE page_key = @pageKey
+      AND option_key = @optionKey
+      AND (
+        value = @value
+        OR CASE
+          WHEN json_valid(value) THEN CASE
+            WHEN json_type(value) = 'array' THEN EXISTS (
+              SELECT 1
+              FROM json_each(project_page_defaults.value) AS selection
+              WHERE selection.type = 'text'
+                AND selection.value = @value
+            )
+            ELSE 0
+          END
+          ELSE 0
+        END
+      )
     ORDER BY project_id
   `);
   const getPageScopeStmt = db.prepare(`
@@ -95,6 +116,22 @@ export function createProjectPageDefaultRepository(db) {
       updated_at = datetime('now')
     RETURNING ${PAGE_SCOPE_COLUMNS.join(', ')}
   `);
+
+  // Project-only reset: remove this project's page overrides and make Global
+  // the active scope in one transaction (a savepoint when nested).
+  const resetPageToGlobalTx = db.transaction((projectId, pageKey) => {
+    const deletedOptions = getPageOptionsStmt
+      .all(projectId, pageKey)
+      .map(({ option_key }) => option_key);
+    const previousScope = getPageScopeStmt.get(projectId, pageKey)?.active_scope;
+    deletePageOptionsStmt.run(projectId, pageKey);
+    // A missing scope row already resolves as Global; only rewrite a row that
+    // names another scope so a reset with nothing to undo writes nothing.
+    if (previousScope !== undefined && previousScope !== 'global') {
+      upsertPageScopeStmt.get(projectId, pageKey, 'global');
+    }
+    return { deletedOptions, previousScope };
+  });
 
   return {
     getOption(projectId, pageKey, optionKey) {
@@ -130,7 +167,7 @@ export function createProjectPageDefaultRepository(db) {
     },
 
     listOptionValueReferences(pageKey, optionKey, value) {
-      return listOptionValueReferencesStmt.all(pageKey, optionKey, value);
+      return listOptionValueReferencesStmt.all({ pageKey, optionKey, value });
     },
 
     getPageScope(projectId, pageKey) {
@@ -139,6 +176,10 @@ export function createProjectPageDefaultRepository(db) {
 
     setPageScope(projectId, pageKey, activeScope) {
       return upsertPageScopeStmt.get(projectId, pageKey, activeScope).active_scope;
+    },
+
+    resetPageToGlobal(projectId, pageKey) {
+      return resetPageToGlobalTx(projectId, pageKey);
     },
   };
 }

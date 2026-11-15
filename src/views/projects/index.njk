@@ -291,7 +291,7 @@
         <div class="page-defaults-grid">
           {% for field in projectsDefaults.fields %}
           {% set submittedOption = none %}
-          {% set nativeAttributes = [["required", true], ["data-autosubmit", "fetch"]] %}
+          {% set nativeAttributes = [["data-autosubmit", "fetch"]] if field.multi else [["required", true], ["data-autosubmit", "fetch"]] %}
           {% set summaryAttributes = [] %}
           {% if field.showSubmittedValue %}
             {% set submittedOption = {
@@ -303,10 +303,28 @@
             } %}
           {% endif %}
           {% if field.error %}
-            {% set nativeAttributes = [["required", true], ["data-autosubmit", "fetch"], ["aria-describedby", field.id ~ '-error'], ["aria-invalid", true]] %}
+            {% set nativeAttributes = [["data-autosubmit", "fetch"], ["aria-describedby", field.id ~ '-error'], ["aria-invalid", true]] if field.multi else [["required", true], ["data-autosubmit", "fetch"], ["aria-describedby", field.id ~ '-error'], ["aria-invalid", true]] %}
             {% set summaryAttributes = [["aria-describedby", field.id ~ '-error'], ["aria-invalid", true]] %}
           {% endif %}
           <div class="field app-dialog-field{% if field.error %} field-error{% endif %}" data-dialog-field="{{ field.name }}">
+            {% if field.multi %}
+              {{ dropdown.multiSelect({
+                id: field.id ~ '-dropdown',
+                name: field.name,
+                label: field.label,
+                options: field.options,
+                selectedValues: field.selectedValues,
+                emptySummary: field.emptySummary,
+                countLabel: 'values',
+                optionIdPrefix: field.id,
+                dispatchNativeChange: true,
+                summaryAttributes: summaryAttributes,
+                nativeSelect: {
+                  id: field.id,
+                  attributes: nativeAttributes
+                }
+              }) }}
+            {% else %}
             {{ dropdown.singleSelect({
               id: field.id ~ '-dropdown',
               name: field.name,
@@ -322,6 +340,7 @@
                 attributes: nativeAttributes
               }
             }) }}
+            {% endif %}
             {% if field.error %}<span class="field-error-message" id="{{ field.id }}-error">{{ field.error }}</span>{% endif %}
           </div>
           {% endfor %}

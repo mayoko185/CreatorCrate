@@ -627,7 +627,7 @@
                 label: field.label,
                 options: field.options,
                 selectedValues: field.selectedValues,
-                emptySummary: 'All extensions' if field.name == 'extension' else 'All tags',
+                emptySummary: field.emptySummary or ('All extensions' if field.name == 'extension' else 'All tags'),
                 countLabel: 'values',
                 optionIdPrefix: field.id,
                 dispatchNativeChange: true,

@@ -319,6 +319,84 @@ describe('Project option catalogue service', () => {
     expect(service.getProjectTypeCatalogue().some((entry) => entry.value === value)).toBe(true);
   });
 
+  it('WP2 blocks deletion of an option inside saved Global and project-scoped multivalue selections', () => {
+    const status = service.addOption('status', { name: 'Multi Status', color: '#123456' }).value;
+    const type = service.addOption('projectType', { name: 'Multi Type', color: '#123456' }).value;
+    repository.setValue('page_defaults.projects.status', JSON.stringify(['planned', status]));
+    const owner = Number(insertProject(db, { slug: 'multi-owner' }).lastInsertRowid);
+    const other = Number(insertProject(db, { slug: 'multi-other' }).lastInsertRowid);
+    const insertScoped = db.prepare(`
+      INSERT INTO project_page_defaults (project_id, page_key, option_key, value)
+      VALUES (?, 'projects', ?, ?)
+    `);
+    insertScoped.run(owner, 'projectType', JSON.stringify(['images', type]));
+    insertScoped.run(other, 'projectType', type);
+
+    const statusEntry = service.getDeletionMetadata('status').find((entry) => entry.value === status);
+    expect(statusEntry.deletion.savedDefaultBlockers.map(({ code, referenceCount }) => ({ code, referenceCount })))
+      .toEqual([{ code: 'PROJECTS_GLOBAL_STATUS_DEFAULT', referenceCount: 1 }]);
+    const typeEntry = service.getDeletionMetadata('projectType').find((entry) => entry.value === type);
+    expect(typeEntry.deletion.savedDefaultBlockers.map(({ code, referenceCount }) => ({ code, referenceCount })))
+      .toEqual([{ code: 'PROJECTS_PROJECT_TYPE_DEFAULT', referenceCount: 2 }]);
+
+    for (const [kind, value] of [['status', status], ['projectType', type]]) {
+      expect(() => service.deleteOption(kind, value)).toThrowError(
+        expect.objectContaining({ code: 'OPTION_DEFAULT_REFERENCED' }),
+      );
+    }
+    expect(service.getStatusCatalogue().some((entry) => entry.value === status)).toBe(true);
+    expect(service.getProjectTypeCatalogue().some((entry) => entry.value === type)).toBe(true);
+  });
+
+  it('F1 blocks deletion of an option inside saved arrays with leading JSON whitespace', () => {
+    const status = service.addOption('status', { name: 'Review Whitespace', color: '#123456' }).value;
+    const type = service.addOption('projectType', { name: 'Review Whitespace Type', color: '#123456' }).value;
+    const spare = service.addOption('status', { name: 'Unrelated Spare', color: '#123456' }).value;
+    repository.setValue('page_defaults.projects.status', ` \n${JSON.stringify([status])}`);
+    const owner = Number(insertProject(db, { slug: 'whitespace-owner' }).lastInsertRowid);
+    db.prepare(`
+      INSERT INTO project_page_defaults (project_id, page_key, option_key, value)
+      VALUES (?, 'projects', 'projectType', ?)
+    `).run(owner, `\n\t ${JSON.stringify(['images', type])}`);
+    // Malformed Global JSON behind whitespace is handled safely and is not a
+    // reference, so Project Type's only blocker is the project-scoped one.
+    repository.setValue('page_defaults.projects.project_type', ` \n["${type}"`);
+
+    const statusEntry = service.getDeletionMetadata('status').find((entry) => entry.value === status);
+    expect(statusEntry.deletion.savedDefaultBlockers.map(({ code, referenceCount }) => ({ code, referenceCount })))
+      .toEqual([{ code: 'PROJECTS_GLOBAL_STATUS_DEFAULT', referenceCount: 1 }]);
+    const typeEntry = service.getDeletionMetadata('projectType').find((entry) => entry.value === type);
+    expect(typeEntry.deletion.savedDefaultBlockers.map(({ code, referenceCount }) => ({ code, referenceCount })))
+      .toEqual([{ code: 'PROJECTS_PROJECT_TYPE_DEFAULT', referenceCount: 1 }]);
+
+    for (const [kind, value] of [['status', status], ['projectType', type]]) {
+      expect(() => service.deleteOption(kind, value)).toThrowError(
+        expect.objectContaining({ code: 'OPTION_DEFAULT_REFERENCED' }),
+      );
+    }
+    expect(service.getStatusCatalogue().some((entry) => entry.value === status)).toBe(true);
+    expect(service.getProjectTypeCatalogue().some((entry) => entry.value === type)).toBe(true);
+    // An option no saved default selects stays deletable under the usual rules.
+    expect(service.deleteOption('status', spare)).toBe(true);
+  });
+
+  it('WP2 does not treat unrelated, malformed, or non-multivalue stored text as a selection reference', () => {
+    const value = service.addOption('status', { name: 'Loose', color: '#123456' }).value;
+    // Substring and non-array JSON never match; the New Project default is
+    // scalar-only, so a JSON array stored there is not parsed as a selection.
+    repository.setValue('page_defaults.projects.status', `["${value}"`);
+    repository.setValue('page_defaults.new_project.status', JSON.stringify([value]));
+    const owner = Number(insertProject(db, { slug: 'loose-owner' }).lastInsertRowid);
+    db.prepare(`
+      INSERT INTO project_page_defaults (project_id, page_key, option_key, value)
+      VALUES (?, 'projects', 'status', ?)
+    `).run(owner, JSON.stringify({ value }));
+
+    const entry = service.getDeletionMetadata('status').find((candidate) => candidate.value === value);
+    expect(entry.deletion.savedDefaultBlockers).toEqual([]);
+    expect(service.deleteOption('status', value)).toBe(true);
+  });
+
   it('builds authoritative deletion metadata with counts, blockers, and ordered replacements', () => {
     const { value } = service.addOption('status', { name: 'Metadata Source', color: '#123456' });
     insertProject(db, { slug: 'metadata-one', status: value });

@@ -1101,9 +1101,15 @@ function buildProjectsDefaultOptionCatalogues(pageDefaultsService, tagOptions) {
 
 function buildProjectsDefaultsSuccessUrl(validatedValues) {
   const params = new URLSearchParams();
-  if (validatedValues.status !== 'all') params.set('status', validatedValues.status);
-  if (validatedValues.projectType !== 'all') params.set('type', validatedValues.projectType);
-  if (validatedValues.tag !== 'all') params.set('tag', validatedValues.tag);
+  // Multivalue defaults: every saved selection becomes one repeated canonical
+  // parameter (status=a&status=b), matching the filter form's own encoding.
+  const appendSelection = (name, value) => {
+    if (value === 'all') return;
+    for (const item of Array.isArray(value) ? value : [value]) params.append(name, item);
+  };
+  appendSelection('status', validatedValues.status);
+  appendSelection('type', validatedValues.projectType);
+  appendSelection('tag', validatedValues.tag);
   params.set('sort', validatedValues.sort);
   params.set('order', validatedValues.order);
   params.set('view', validatedValues.view);

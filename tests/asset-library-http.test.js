@@ -925,7 +925,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
       `/asset-viewer?category=reference-artwork&tag=${tag.id}&extension=png&presence=present&notice=asset_viewer_defaults_saved`,
     );
     expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(PAGE_DEFAULT_DEFINITIONS.assetViewer.extension.key).value).toBe('["png"]');
-    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(PAGE_DEFAULT_DEFINITIONS.assetViewer.category.key).value).toBe('reference-artwork');
+    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(PAGE_DEFAULT_DEFINITIONS.assetViewer.category.key).value).toBe('["reference-artwork"]');
     expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(PAGE_DEFAULT_DEFINITIONS.assetViewer.presence.key).value).toBe('present');
     expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(PAGE_DEFAULT_DEFINITIONS.assetViewer.tag.key).value).toBe(`["${tag.id}"]`);
 
@@ -1001,6 +1001,81 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(defaultsForm).toMatch(new RegExp(`<option value="${firstTag.id}" selected>First tag<\\/option>`));
     expect(defaultsForm).toMatch(new RegExp(`<option value="${secondTag.id}" selected>Second tag<\\/option>`));
     expect(defaultsForm).not.toMatch(/<option value="all"[^>]*>All (?:extensions|tags)<\/option>/);
+  });
+
+  it('WP2 persists and applies every saved Asset Viewer Category and keeps legacy scalar Categories', async () => {
+    const project = createProject('Category Defaults Project');
+    for (const [displayName, directorySlug] of [['Sketches', 'sketches'], ['Finals', 'finals'], ['Extras', 'extras']]) {
+      createCategory({ displayName, directorySlug });
+    }
+    const sketches = assignCategory(project.id, { displayName: 'Sketches', directorySlug: 'sketches' });
+    const finals = assignCategory(project.id, { displayName: 'Finals', directorySlug: 'finals' });
+    const extras = assignCategory(project.id, { displayName: 'Extras', directorySlug: 'extras' });
+    createAsset(project.id, 'sketch.png', { categoryId: sketches.id, extension: 'png' });
+    createAsset(project.id, 'final.png', { categoryId: finals.id, extension: 'png' });
+    createAsset(project.id, 'extra.jpg', { categoryId: extras.id, extension: 'jpg' });
+    const categoryKey = PAGE_DEFAULT_DEFINITIONS.assetViewer.category.key;
+    const readCategory = () => db.prepare('SELECT value FROM app_meta WHERE key = ?').get(categoryKey)?.value;
+
+    const save = await request(app)
+      .post('/asset-viewer/defaults')
+      .type('form')
+      .send({
+        view: 'grid',
+        gridStyle: 'uncropped',
+        sort: 'filename',
+        order: 'asc',
+        pageSize: '25',
+        extension: 'png',
+        category: ['sketches', 'finals'],
+        presence: 'all',
+        tag: 'all',
+      })
+      .expect(302);
+
+    // Every Category survives alongside the other saved filters.
+    expect(save.headers.location)
+      .toBe('/asset-viewer?category=finals&category=sketches&extension=png&notice=asset_viewer_defaults_saved');
+    expect(readCategory()).toBe('["sketches","finals"]');
+    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
+      .get(PAGE_DEFAULT_DEFINITIONS.assetViewer.extension.key).value).toBe('["png"]');
+
+    const bare = await request(app).get('/asset-viewer').expect(302);
+    expect(bare.headers.location).toBe('/asset-viewer?category=finals&category=sketches&extension=png');
+    const canonical = await request(app).get(bare.headers.location).expect(200);
+    expect(canonical.text).toContain('sketch.png');
+    expect(canonical.text).toContain('final.png');
+    expect(canonical.text).not.toContain('extra.jpg');
+
+    // An explicit Category query still wins over the saved selection.
+    const explicit = await request(app).get('/asset-viewer?category=extras').expect(200);
+    expect(explicit.text).toContain('extra.jpg');
+    expect(explicit.text).not.toContain('sketch.png');
+
+    const reopened = await request(app).get('/asset-viewer?defaults=1').expect(200);
+    const defaultsForm = reopened.text.match(/<form id="asset-viewer-defaults-form"[\s\S]*?<\/form>/)?.[0] || '';
+    const categorySelect = defaultsForm.match(/<select[^>]*name="category"[\s\S]*?<\/select>/)?.[0] || '';
+    expect(categorySelect).toContain(' multiple');
+    expect(categorySelect).toMatch(/<option value="sketches" selected>/);
+    expect(categorySelect).toMatch(/<option value="finals" selected>/);
+    expect(categorySelect).not.toMatch(/<option value="extras" selected>/);
+
+    // A legacy scalar resolves as the one-value selection and is not rewritten.
+    writeAssetViewerDefaults({ category: 'extras', extension: 'all' });
+    const legacy = await request(app).get('/asset-viewer').expect(302);
+    expect(legacy.headers.location).toBe('/asset-viewer?category=extras');
+    expect(readCategory()).toBe('extras');
+
+    // Unrestricted: an omitted multi-select saves 'all' and resolves to no filter.
+    await request(app)
+      .post('/asset-viewer/defaults')
+      .type('form')
+      .send({ view: 'grid', gridStyle: 'uncropped', sort: 'filename', order: 'asc', pageSize: '25', presence: 'all' })
+      .expect(302);
+    expect(readCategory()).toBe('all');
+    const unrestricted = await request(app).get('/asset-viewer').expect(200);
+    expect(unrestricted.text).toContain('sketch.png');
+    expect(unrestricted.text).toContain('extra.jpg');
   });
 
   it('normalizes omitted Asset Viewer multi-select defaults to neutral all', async () => {
@@ -1080,7 +1155,11 @@ describe('cross-project Asset Viewer HTTP route', () => {
     const rendered = await request(app).get('/asset-viewer?defaults=1').expect(200);
     const defaultsForm = rendered.text.match(/<form id="asset-viewer-defaults-form"[\s\S]*?<\/form>/)?.[0] || '';
     expect(defaultsForm).not.toMatch(/<option value="all"[^>]*>All extensions<\/option>/);
-    expect(defaultsForm).toMatch(/<option value="all" selected>All categories<\/option>/);
+    // WP2: Category is multivalue, so its unrestricted default is the empty
+    // selection summarized as "All categories", not an 'all' option.
+    expect(defaultsForm).not.toMatch(/<option value="all"[^>]*>All categories<\/option>/);
+    expect(defaultsForm).toMatch(/<select[^>]*name="category"[^>]* multiple[^>]*>/);
+    expect(defaultsForm).toMatch(/data-cc-dropdown-empty-summary="All categories"/);
     expect(defaultsForm).toMatch(/<option value="all" selected>All assets<\/option>/);
     expect(defaultsForm).not.toMatch(/<option value="all"[^>]*>All tags<\/option>/);
     expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(PAGE_DEFAULT_DEFINITIONS.assetViewer.extension.key).value).toBe('retired');

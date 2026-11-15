@@ -125,6 +125,8 @@ export function buildProjectAssetsDefaultOptionCatalogues(workflowQueryService) 
 
 export const PROJECT_ASSETS_NOTICES = Object.freeze({
   defaultsSaved: 'Project Assets defaults saved successfully.',
+  defaultsReset: 'Project Assets defaults reset.',
+  defaultsScopeActivated: 'Project Assets defaults scope changed.',
 });
 
 export const PROJECT_ASSET_CATEGORY_NOTICES = Object.freeze({
@@ -559,7 +561,7 @@ function hasNonFallbackAssetPresentation(presentation, pageDefaultsService) {
   ));
 }
 
-function resolveProjectAssetsScopedDefaults(pageDefaultsService, optionCatalogues, context) {
+export function resolveProjectAssetsScopedDefaults(pageDefaultsService, optionCatalogues, context) {
   return {
     scope: pageDefaultsService.getPageDefaultScope(ASSET_PAGE_DEFAULTS_PAGE, context),
     global: pageDefaultsService.resolveGlobalPageDefaults(

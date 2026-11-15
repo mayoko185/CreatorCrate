@@ -49,9 +49,12 @@ export const PAGE_DEFAULT_DEFINITIONS = Object.freeze({
     gridStyle: definition('page_defaults.projects.grid_style', ['uncropped', 'cropped'], 'uncropped'),
     sort: definition('page_defaults.projects.sort', ['updated', 'created', 'title'], 'created'),
     order: definition('page_defaults.projects.order', ['asc', 'desc'], 'desc'),
-    status: definition('page_defaults.projects.status', ['all'], 'all'),
-    projectType: definition('page_defaults.projects.project_type', ['all'], 'all'),
-    tag: definition('page_defaults.projects.tag', ['all'], 'all'),
+    // WP2: Status, Project Type and Tag store complete selections. A legacy
+    // scalar resolves as the equivalent one-value selection; nothing is
+    // rewritten on read.
+    status: definition('page_defaults.projects.status', ['all'], 'all', { multi: true }),
+    projectType: definition('page_defaults.projects.project_type', ['all'], 'all', { multi: true }),
+    tag: definition('page_defaults.projects.tag', ['all'], 'all', { multi: true }),
   }),
   [RELEASES]: Object.freeze({
     sort: definition('page_defaults.releases.sort', ['planned', 'updated', 'created', 'title'], 'planned'),
@@ -92,7 +95,7 @@ export const PAGE_DEFAULT_DEFINITIONS = Object.freeze({
       String(ASSET_LIBRARY_DEFAULTS.pageSize),
     ),
     extension: definition('page_defaults.asset_viewer.extension', ['all'], 'all', { multi: true }),
-    category: definition('page_defaults.asset_viewer.category', ['all'], 'all'),
+    category: definition('page_defaults.asset_viewer.category', ['all'], 'all', { multi: true }),
     presence: definition('page_defaults.asset_viewer.presence', ['all', 'present', 'missing'], 'all'),
     tag: definition('page_defaults.asset_viewer.tag', ['all'], 'all', { multi: true }),
   }),
@@ -416,6 +419,35 @@ export function createPageDefaultsService({
     return requireProjectRepository().setPageScope(projectId, page, activeScope);
   }
 
+  /**
+   * WP3 scope activation: makes one project's stored Global or Project-only
+   * defaults active without saving any option value. Option rows (including
+   * dormant project overrides), Global defaults and other projects are never
+   * written. Activating the scope that already resolves as active writes
+   * nothing, so a repeat is a no-op.
+   */
+  function activatePageDefaultScope(page, targetScope, context) {
+    requirePageDefinition(page);
+    const projectId = requireProjectId(context);
+    if (!PAGE_DEFAULT_SCOPES.includes(targetScope)) {
+      invalid({ scope: `Scope "${targetScope}" is not supported.` });
+    }
+    const projectRepository = requireProjectRepository();
+    const storedScope = projectRepository.getPageScope(projectId, page);
+    const previousScope = PAGE_DEFAULT_SCOPES.includes(storedScope) ? storedScope : 'global';
+    const changed = previousScope !== targetScope;
+    const activeScope = changed
+      ? projectRepository.setPageScope(projectId, page, targetScope)
+      : previousScope;
+    return {
+      page,
+      projectId,
+      previousScope,
+      activeScope,
+      changed,
+    };
+  }
+
   function validatePageDefaults(page, values = {}, optionCatalogues = {}) {
     const pageDefinition = requirePageDefinition(page);
     const rawValues = values && typeof values === 'object' && !Array.isArray(values) ? values : {};
@@ -485,6 +517,139 @@ export function createPageDefaultsService({
     return normalizedValue;
   }
 
+  function describeStoredOption(pageDefinition, storedValue, optionCatalogue) {
+    // Presence is key/row existence, never a comparison with the fallback:
+    // a stored '' or a stored fallback-equal value is still a saved default,
+    // and a retained invalid value is reported as stored but not valid.
+    const stored = storedValue !== undefined && storedValue !== null;
+    return {
+      stored,
+      valid: stored && normalizeValue(
+        pageDefinition, readStoredValue(pageDefinition, storedValue), optionCatalogue,
+      ) !== undefined,
+    };
+  }
+
+  /**
+   * Read-only saved-state metadata for one page. With a project context it
+   * also reports that project's persisted scope, its stored overrides, and
+   * where each option's effective default comes from, mirroring resolve().
+   */
+  function describeSavedDefaults(page, optionCatalogues = {}, context) {
+    const pageDefinition = requirePageDefinition(page);
+    const projectId = getProjectId(context);
+    const projectRepository = projectId === undefined ? null : requireProjectRepository();
+    const storedScope = projectRepository ? projectRepository.getPageScope(projectId, page) : undefined;
+    const activeScope = PAGE_DEFAULT_SCOPES.includes(storedScope) ? storedScope : 'global';
+    const projectActive = projectRepository !== null && activeScope === 'project';
+    const options = {};
+
+    for (const option of Object.keys(pageDefinition)) {
+      const definition = pageDefinition[option];
+      const optionCatalogue = resolveOptionCatalogue(page, option, optionCatalogues?.[option]);
+      const globalState = describeStoredOption(
+        definition, repository.getValue(definition.key), optionCatalogue,
+      );
+      const projectState = projectRepository
+        ? describeStoredOption(
+          definition, projectRepository.getOption(projectId, page, option), optionCatalogue,
+        )
+        : null;
+      let source = globalState.valid ? 'global' : 'fallback';
+      if (projectActive && projectState.valid) source = 'project';
+
+      options[option] = {
+        global: globalState,
+        ...(projectState ? { project: projectState } : {}),
+        source,
+      };
+    }
+
+    const states = Object.values(options);
+    const globalSummary = {
+      saved: states.some((state) => state.global.stored),
+      invalid: states.some((state) => state.global.stored && !state.global.valid),
+      active: !projectActive,
+    };
+    let projectSummary = null;
+    if (projectRepository) {
+      const overridden = states.filter((state) => state.source === 'project').length;
+      projectSummary = {
+        projectId,
+        storedScope: storedScope ?? null,
+        active: projectActive,
+        saved: states.some((state) => state.project.stored),
+        invalid: states.some((state) => state.project.stored && !state.project.valid),
+        // Which options the active defaults take from Global (or the
+        // fallback): all of them while Global is active.
+        inheritance: !projectActive || overridden === 0
+          ? 'full'
+          : (overridden === states.length ? 'none' : 'partial'),
+      };
+    }
+
+    return {
+      page,
+      activeScope,
+      hasSavedDefaults: globalSummary.saved || Boolean(projectSummary?.saved),
+      global: globalSummary,
+      ...(projectSummary ? { project: projectSummary } : {}),
+      options,
+    };
+  }
+
+  /**
+   * Deletes the page's recognized Global default keys only. The key list comes
+   * from PAGE_DEFAULT_DEFINITIONS, never from the caller; project overrides,
+   * project scopes, and every other app_meta key are untouched.
+   */
+  function resetGlobalPageDefaults(page) {
+    const pageDefinition = requirePageDefinition(page);
+    if (typeof repository.deleteValues !== 'function') {
+      throw new Error('createPageDefaultsService requires appMetaRepository.deleteValues to reset defaults.');
+    }
+    const optionKeys = Object.keys(pageDefinition);
+    const deletedKeys = new Set(repository.deleteValues(
+      optionKeys.map((option) => pageDefinition[option].key),
+    ));
+    const deletedOptions = optionKeys.filter((option) => deletedKeys.has(pageDefinition[option].key));
+    return {
+      page,
+      scope: 'global',
+      changed: deletedOptions.length > 0,
+      deletedOptions,
+    };
+  }
+
+  /**
+   * Deletes one project's overrides for the page and restores Global as its
+   * active scope in one repository transaction. Global defaults and other
+   * projects are untouched. This is a reset, not a scope switch.
+   */
+  function resetProjectPageDefaults(page, context) {
+    requirePageDefinition(page);
+    const projectId = requireProjectId(context);
+    const projectRepository = requireProjectRepository();
+    if (typeof projectRepository.resetPageToGlobal !== 'function') {
+      throw new Error(
+        'createPageDefaultsService requires projectPageDefaultRepository.resetPageToGlobal to reset defaults.'
+      );
+    }
+    const { deletedOptions, previousScope } = projectRepository.resetPageToGlobal(projectId, page);
+    const normalizedPreviousScope = PAGE_DEFAULT_SCOPES.includes(previousScope) ? previousScope : 'global';
+    const scopeChanged = normalizedPreviousScope !== 'global';
+    return {
+      page,
+      scope: 'project',
+      projectId,
+      changed: deletedOptions.length > 0 || scopeChanged,
+      deletedOptions,
+      previousScope: normalizedPreviousScope,
+      activeScope: 'global',
+      scopeChanged,
+    };
+  }
+
   function clearProjectPageDefaults(page, context) {
     requirePageDefinition(page);
     const projectId = requireProjectId(context);
@@ -501,11 +666,15 @@ export function createPageDefaultsService({
     resolveProjectPageDefaults,
     getPageDefaultScope,
     setPageDefaultScope,
+    activatePageDefaultScope,
     validatePageDefaults,
     saveDefault,
     saveDefaultWithOutcome,
     saveGlobalDefault: saveDefault,
     saveProjectDefault,
     clearProjectPageDefaults,
+    describeSavedDefaults,
+    resetGlobalPageDefaults,
+    resetProjectPageDefaults,
   };
 }

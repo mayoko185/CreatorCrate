@@ -178,6 +178,55 @@ describe('project page-default repository', () => {
     ]);
   });
 
+  it('WP2 lists project references inside stored multivalue selections only', () => {
+    const projectOne = createProject(projectRepository, 'Project One');
+    const projectTwo = createProject(projectRepository, 'Project Two');
+    const projectThree = createProject(projectRepository, 'Project Three');
+    const projectFour = createProject(projectRepository, 'Project Four');
+
+    repository.setOption(projectOne.id, 'projects', 'status', '["planned","custom"]');
+    repository.setOption(projectTwo.id, 'projects', 'status', 'custom');
+    repository.setOption(projectThree.id, 'projects', 'status', '["custom-two","planned"]');
+    repository.setOption(projectFour.id, 'projects', 'status', '["custom"');
+
+    expect(repository.listOptionValueReferences('projects', 'status', 'custom')).toEqual([
+      { project_id: projectOne.id },
+      { project_id: projectTwo.id },
+    ]);
+    expect(repository.listOptionValueReferences('projects', 'status', 'planned')).toEqual([
+      { project_id: projectOne.id },
+      { project_id: projectThree.id },
+    ]);
+    expect(repository.listOptionValueReferences('projects', 'projectType', 'custom')).toEqual([]);
+  });
+
+  it('F1 recognizes stored multivalue arrays with leading JSON whitespace and stays safe on malformed text', () => {
+    const projects = ['Canonical', 'Spaced', 'Newline', 'Legacy', 'Malformed', 'Object', 'Other']
+      .map((title) => createProject(projectRepository, `F1 ${title}`));
+    const [canonical, spaced, newline, legacy, malformed, object, other] = projects;
+
+    repository.setOption(canonical.id, 'projects', 'status', '["review-whitespace-option"]');
+    repository.setOption(spaced.id, 'projects', 'status', '   ["planned","review-whitespace-option"]');
+    repository.setOption(newline.id, 'projects', 'status', ' \n\t["review-whitespace-option"] \n');
+    repository.setOption(legacy.id, 'projects', 'status', 'review-whitespace-option');
+    // Malformed JSON (with and without leading whitespace) and non-array JSON
+    // never throw and never count as a selection reference.
+    repository.setOption(malformed.id, 'projects', 'status', ' \n["review-whitespace-option"');
+    repository.setOption(object.id, 'projects', 'status', ' {"value":"review-whitespace-option"}');
+    repository.setOption(other.id, 'projects', 'status', ' \n["review-whitespace-option-two"]');
+
+    expect(repository.listOptionValueReferences('projects', 'status', 'review-whitespace-option')).toEqual([
+      { project_id: canonical.id },
+      { project_id: spaced.id },
+      { project_id: newline.id },
+      { project_id: legacy.id },
+    ]);
+    expect(repository.listOptionValueReferences('projects', 'status', 'planned')).toEqual([
+      { project_id: spaced.id },
+    ]);
+    expect(repository.listOptionValueReferences('projects', 'status', 'unused')).toEqual([]);
+  });
+
   it('deletes only one project and page option set', () => {
     const projectOne = createProject(projectRepository, 'Project One');
     const projectTwo = createProject(projectRepository, 'Project Two');

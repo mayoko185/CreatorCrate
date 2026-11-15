@@ -193,12 +193,12 @@ describe('page defaults dialog model', () => {
     expect(model.fields.map((field) => field.name)).not.toContain('gridDetails');
   });
 
-  it('marks only Asset Viewer Extension and Tag as multi-select fields', () => {
+  it('marks only Asset Viewer Extension, Category (WP2) and Tag as multi-select fields', () => {
     const model = buildPageDefaultsDialogModel({
       pageDefaultsService: {
         resolvePageDefaults: () => ({
           view: 'grid', sort: 'filename', order: 'asc', pageSize: '25',
-          extension: ['jpg', 'png'], category: 'all', presence: 'all', tag: ['1', '2'],
+          extension: ['jpg', 'png'], category: ['uncategorized', 'videos'], presence: 'all', tag: ['1', '2'],
         }),
       },
       page: 'assetViewer',
@@ -215,6 +215,11 @@ describe('page defaults dialog model', () => {
           { value: 'jpg', label: '.jpg' },
           { value: 'png', label: '.png' },
         ],
+        category: [
+          { value: 'all', label: 'All categories' },
+          { value: 'uncategorized', label: 'Uncategorized' },
+          { value: 'videos', label: 'Videos' },
+        ],
         tag: [
           { value: 'all', label: 'All tags' },
           { value: '1', label: 'First tag' },
@@ -224,7 +229,13 @@ describe('page defaults dialog model', () => {
     });
 
     expect(model.fields.filter((field) => field.multi).map((field) => field.name))
-      .toEqual(['extension', 'tag']);
+      .toEqual(['extension', 'category', 'tag']);
+    expect(model.fields.find((field) => field.name === 'category')).toMatchObject({
+      selectedValues: ['uncategorized', 'videos'],
+      emptySummary: 'All categories',
+      options: [{ value: 'uncategorized', label: 'Uncategorized' }, { value: 'videos', label: 'Videos' }],
+    });
+    expect(model.fields.find((field) => field.name === 'extension').emptySummary).toBe('All extensions');
     expect(model.fields.find((field) => field.name === 'extension')).toMatchObject({
       selectedValues: ['jpg', 'png'],
       options: [{ value: 'jpg', label: '.jpg' }, { value: 'png', label: '.png' }],
@@ -234,7 +245,83 @@ describe('page defaults dialog model', () => {
       options: [{ value: '1', label: 'First tag' }, { value: '2', label: 'Second tag' }],
     });
     expect(model.fields.filter((field) => !field.multi).map((field) => field.name))
-      .toEqual(['view', 'gridStyle', 'sort', 'order', 'pageSize', 'category', 'presence']);
+      .toEqual(['view', 'gridStyle', 'sort', 'order', 'pageSize', 'presence']);
+  });
+
+  it('WP2 renders Projects Status, Type and Tag as multivalue fields whose empty selection keeps the all label', () => {
+    const model = buildPageDefaultsDialogModel({
+      pageDefaultsService: {
+        resolvePageDefaults: () => ({
+          view: 'grid', gridStyle: 'uncropped', sort: 'created', order: 'desc',
+          status: ['planned', 'archived'], projectType: 'all', tag: ['7'],
+        }),
+      },
+      page: 'projects',
+      labels: { fields: {}, options: {} },
+      optionCatalogues: {
+        status: [
+          { value: 'all', label: 'All active' },
+          { value: 'planned', label: 'Planned' },
+          { value: 'archived', label: 'Archived' },
+        ],
+        projectType: [{ value: 'all', label: 'All types' }, { value: 'comic', label: 'Comic' }],
+        tag: [{ value: 'all', label: 'All tags' }, { value: '7', label: 'Seven' }],
+      },
+    });
+
+    expect(model.fields.filter((field) => field.multi).map((field) => field.name))
+      .toEqual(['status', 'projectType', 'tag']);
+    expect(model.fields.find((field) => field.name === 'status')).toMatchObject({
+      selectedValues: ['planned', 'archived'],
+      emptySummary: 'All active',
+      options: [{ value: 'planned', label: 'Planned' }, { value: 'archived', label: 'Archived' }],
+    });
+    expect(model.fields.find((field) => field.name === 'projectType')).toMatchObject({
+      selectedValues: [],
+      emptySummary: 'All types',
+    });
+    expect(model.fields.find((field) => field.name === 'tag').emptySummary).toBe('All tags');
+    expect(model.fields.find((field) => field.name === 'view')).not.toHaveProperty('emptySummary');
+  });
+
+  it('F2 keeps submitted singleton, multiple and all multivalue selections on a validation rerender', () => {
+    const model = buildPageDefaultsDialogModel({
+      pageDefaultsService: { resolvePageDefaults: expect.unreachable },
+      page: 'projects',
+      labels: { fields: {}, options: {} },
+      // A non-JSON form post: one checked option arrives as a plain string.
+      submittedValues: {
+        view: 'grid', gridStyle: 'stretched', sort: 'created', order: 'desc',
+        status: 'planned', projectType: 'comic', tag: '7',
+      },
+      errors: { gridStyle: 'Grid style "stretched" is not supported.' },
+      optionCatalogues: {
+        status: [{ value: 'all', label: 'All active' }, { value: 'planned', label: 'Planned' }],
+        projectType: [{ value: 'all', label: 'All types' }, { value: 'comic', label: 'Comic' }],
+        tag: [{ value: 'all', label: 'All tags' }, { value: '7', label: 'Seven' }],
+      },
+    });
+    const field = (name) => model.fields.find((candidate) => candidate.name === name);
+
+    expect(field('status').selectedValues).toEqual(['planned']);
+    expect(field('projectType').selectedValues).toEqual(['comic']);
+    expect(field('tag').selectedValues).toEqual(['7']);
+    expect(field('gridStyle')).toMatchObject({ error: 'Grid style "stretched" is not supported.' });
+
+    const rerender = (status) => buildPageDefaultsDialogModel({
+      pageDefaultsService: { resolvePageDefaults: expect.unreachable },
+      page: 'projects',
+      labels: { fields: {}, options: {} },
+      submittedValues: { view: 'grid', gridStyle: 'stretched', sort: 'created', order: 'desc', status, projectType: 'all', tag: 'all' },
+      errors: { gridStyle: 'invalid' },
+    }).fields;
+    const [multiple, all, empty] = [['planned', 'archived'], 'all', undefined].map(rerender);
+    expect(multiple.find(({ name }) => name === 'status').selectedValues).toEqual(['planned', 'archived']);
+    for (const fields of [all, empty]) {
+      for (const name of ['status', 'projectType', 'tag']) {
+        expect(fields.find((candidate) => candidate.name === name).selectedValues).toEqual([]);
+      }
+    }
   });
 
   it('maps omitted Asset Viewer multi-select controls to neutral all', () => {
