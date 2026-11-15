@@ -11,6 +11,17 @@ export const PROCESSING_PRESET_OPERATION_TYPES = Object.freeze({
 });
 export const PROCESSING_PRESET_BUNDLE_MARKER = 'processing-presets';
 export const PROCESSING_PRESET_BUNDLE_VERSION = 1;
+// Workflow-prompt bundles may carry `enabled: false` rules. Releases before
+// this field ignore unknown rule keys, so a v1 bundle carrying a disabled rule
+// would import there with that rule silently enabled; those releases reject
+// any marked bundle whose version is not 1, so v2 marks the new contract.
+// Every other operation type stays on v1.
+export const PROCESSING_PRESET_WORKFLOW_BUNDLE_VERSION = 2;
+const SUPPORTED_BUNDLE_VERSIONS = Object.freeze({
+  convert: Object.freeze([PROCESSING_PRESET_BUNDLE_VERSION]),
+  'workflow-prompt': Object.freeze([PROCESSING_PRESET_BUNDLE_VERSION, PROCESSING_PRESET_WORKFLOW_BUNDLE_VERSION]),
+  watermark: Object.freeze([PROCESSING_PRESET_BUNDLE_VERSION]),
+});
 const OPERATION_TYPES = new Set(Object.values(PROCESSING_PRESET_OPERATION_TYPES));
 const CONTROL_CHARACTERS = /[\x00-\x1f\x7f]/u;
 const FORBIDDEN_CONFIG_KEYS = new Set([
@@ -182,10 +193,10 @@ function normalizePresetBundle(bundle) {
   if (hasMarker && bundle.creatorcrate !== PROCESSING_PRESET_BUNDLE_MARKER) {
     throw new ProcessingPresetServiceError('This is not a CreatorCrate processing preset bundle.', { code: 'INVALID_PRESET_BUNDLE' });
   }
-  if (hasVersion && bundle.version !== PROCESSING_PRESET_BUNDLE_VERSION) {
+  const operationType = normalizeOperationType(bundle.operationType);
+  if (hasVersion && !SUPPORTED_BUNDLE_VERSIONS[operationType].includes(bundle.version)) {
     throw new ProcessingPresetServiceError('This processing preset bundle version is unsupported.', { code: 'INVALID_PRESET_BUNDLE' });
   }
-  const operationType = normalizeOperationType(bundle.operationType);
   if (!Array.isArray(bundle.presets)) {
     throw new ProcessingPresetServiceError('Preset bundle presets must be an array.', { code: 'INVALID_PRESET_BUNDLE' });
   }
@@ -198,7 +209,7 @@ function normalizePresetBundle(bundle) {
   });
   return {
     creatorcrate: PROCESSING_PRESET_BUNDLE_MARKER,
-    version: PROCESSING_PRESET_BUNDLE_VERSION,
+    version: hasVersion ? bundle.version : PROCESSING_PRESET_BUNDLE_VERSION,
     operationType,
     presets,
   };

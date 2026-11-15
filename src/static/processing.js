@@ -45,6 +45,18 @@ const LEGACY_WATERMARK_ARCHIVE_FIELDS = new Set([
 ]);
 const PORTABLE_PRESET_MARKER = 'processing-presets';
 const PORTABLE_PRESET_VERSION = 1;
+// Workflow-prompt bundles move to v2 because rules may carry `enabled: false`;
+// releases that predate it reject marked v2 bundles instead of importing a
+// disabled rule as enabled. Convert and Watermark stay on v1.
+const PORTABLE_WORKFLOW_PRESET_VERSION = 2;
+const PORTABLE_PRESET_VERSIONS = Object.freeze({
+  convert: Object.freeze({ accepted: [PORTABLE_PRESET_VERSION], current: PORTABLE_PRESET_VERSION }),
+  'workflow-prompt': Object.freeze({
+    accepted: [PORTABLE_PRESET_VERSION, PORTABLE_WORKFLOW_PRESET_VERSION],
+    current: PORTABLE_WORKFLOW_PRESET_VERSION,
+  }),
+  watermark: Object.freeze({ accepted: [PORTABLE_PRESET_VERSION], current: PORTABLE_PRESET_VERSION }),
+});
 const PORTABLE_PRESET_TYPES = new Set(['convert', 'workflow-prompt', 'watermark']);
 const PORTABLE_PRESET_KEYS = new Set(['creatorcrate', 'version', 'operationType', 'presets']);
 const PORTABLE_PRESET_ENTRY_KEYS = new Set(['displayName', 'config']);
@@ -232,18 +244,24 @@ function normalizePortableWorkflowRules(value, side) {
     if (!isPlainJsonObject(rule) || typeof rule.type !== 'string') {
       throw new ProcessingRequestError(`${side} rule ${index + 1} is invalid.`);
     }
+    // Optional; missing means enabled. Only `enabled: false` is kept so
+    // legacy rules round-trip unchanged.
+    if (rule.enabled !== undefined && typeof rule.enabled !== 'boolean') {
+      throw new ProcessingRequestError(`${side} rule ${index + 1} enabled is invalid.`);
+    }
+    const disabled = rule.enabled === false ? { enabled: false } : {};
     if (rule.type === 'replace') {
-      assertPortableKeys(rule, new Set(['type', 'search', 'replacement']), `${side} rule ${index + 1}`);
+      assertPortableKeys(rule, new Set(['type', 'search', 'replacement', 'enabled']), `${side} rule ${index + 1}`);
       assertPortableString(rule.search, `${side} rule ${index + 1} search`);
       assertPortableString(rule.replacement, `${side} rule ${index + 1} replacement`);
-      return { type: 'replace', search: rule.search, replacement: rule.replacement };
+      return { type: 'replace', search: rule.search, replacement: rule.replacement, ...disabled };
     }
     if (!['remove', 'prepend', 'append'].includes(rule.type)) {
       throw new ProcessingRequestError(`${side} rule ${index + 1} has an unsupported type.`);
     }
-    assertPortableKeys(rule, new Set(['type', 'text']), `${side} rule ${index + 1}`);
+    assertPortableKeys(rule, new Set(['type', 'text', 'enabled']), `${side} rule ${index + 1}`);
     assertPortableString(rule.text, `${side} rule ${index + 1} text`);
-    return { type: rule.type, text: rule.text };
+    return { type: rule.type, text: rule.text, ...disabled };
   });
 }
 
@@ -354,14 +372,17 @@ function normalizePortablePresetEntry(value, expectedOperation, index) {
 function normalizePortablePresetBundle(value, expectedOperation) {
   assertPortableKeys(value, PORTABLE_PRESET_KEYS, 'Preset bundle');
   if (value.creatorcrate !== PORTABLE_PRESET_MARKER) throw new ProcessingRequestError('This is not a CreatorCrate processing preset bundle.');
-  if (value.version !== PORTABLE_PRESET_VERSION) throw new ProcessingRequestError('This processing preset bundle version is unsupported.');
+  const versions = PORTABLE_PRESET_VERSIONS[value.operationType] || PORTABLE_PRESET_VERSIONS.convert;
+  if (!versions.accepted.includes(value.version)) throw new ProcessingRequestError('This processing preset bundle version is unsupported.');
   if (!PORTABLE_PRESET_TYPES.has(value.operationType)) throw new ProcessingRequestError('This preset operation type is unsupported.');
   if (value.operationType !== expectedOperation) throw new ProcessingRequestError('This preset belongs to a different processing dialog.');
   if (!Array.isArray(value.presets)) throw new ProcessingRequestError('Preset bundle presets must be an array.');
 
+  // A normalized bundle is always written at the operation's current version,
+  // so a workflow bundle that may carry `enabled: false` is always marked v2.
   return {
     creatorcrate: PORTABLE_PRESET_MARKER,
-    version: PORTABLE_PRESET_VERSION,
+    version: versions.current,
     operationType: value.operationType,
     presets: value.presets.map((preset, index) => normalizePortablePresetEntry(preset, value.operationType, index)),
   };
@@ -394,7 +415,7 @@ function createPortablePresetBundle(root) {
   if (savedPresets.length === 0) throw new ProcessingRequestError('There are no saved presets to export.');
   const document = {
     creatorcrate: PORTABLE_PRESET_MARKER,
-    version: PORTABLE_PRESET_VERSION,
+    version: PORTABLE_PRESET_VERSIONS[operationType]?.current ?? PORTABLE_PRESET_VERSION,
     operationType,
     presets: savedPresets.map((preset) => ({
       displayName: preset.displayName,
@@ -1539,6 +1560,27 @@ function clearModifiedState(root) {
   if (modifiedNote) modifiedNote.hidden = true;
 }
 
+// The draft no longer matches the selected preset (or the last Preview).
+function markConfigurationModified(root) {
+  root.__ccDirty = true;
+  const select = root.querySelector('[data-processing-preset-select]');
+  const modifiedNote = root.querySelector('[data-processing-preset-modified]');
+  if (select?.value && modifiedNote) modifiedNote.hidden = false;
+  invalidatePreview(root);
+}
+
+// A workflow preset save only clears Modified when the rules still match
+// what was sent: rows edited or toggled while the request was pending are
+// not in the saved preset and stay a modified draft.
+function settleSavedPresetDraft(root, sentConfig) {
+  if (root.dataset.processingOperation === 'workflow-prompt'
+    && JSON.stringify(collectPresetConfig(root)) !== sentConfig) {
+    markConfigurationModified(root);
+    return;
+  }
+  clearModifiedState(root);
+}
+
 function markPresetChanged(root) {
   invalidatePreview(root);
   clearPlan(root);
@@ -1597,11 +1639,12 @@ async function createPresetFromForm(root, displayName) {
     displayName,
     config: collectPresetConfig(root),
   };
+  const sentConfig = JSON.stringify(body.config);
   const payload = await processingFetchJson('/processing/presets', { csrf: root.dataset.csrf, body });
   await loadPresets(root);
   selectPresetOption(root, payload.preset.id);
   root.__ccPreservedWatermarkArchiveConfig = {};
-  clearModifiedState(root);
+  settleSavedPresetDraft(root, sentConfig);
   updatePresetActionState(root);
   markPresetChanged(root);
   return payload.preset;
@@ -1624,10 +1667,18 @@ async function updateSelectedPreset(root) {
     Object.assign(config, root.__ccPreservedWatermarkArchiveConfig || {});
   }
   const body = { config };
+  const sentConfig = JSON.stringify(config);
   await processingFetchJson(`/processing/presets/${id}/replace`, { csrf: root.dataset.csrf, body });
   await loadPresets(root);
-  selectPresetOption(root, id);
-  clearModifiedState(root);
+  // The saved preset stays `id`, but the answer only settles the editor if
+  // the user is still on that preset: after switching away while it was
+  // pending, the visible selection and its draft belong to the newer choice.
+  const select = root.querySelector('[data-processing-preset-select]');
+  if (select?.value !== id) {
+    updatePresetActionState(root);
+    return;
+  }
+  settleSavedPresetDraft(root, sentConfig);
   updatePresetActionState(root);
   markPresetChanged(root);
 }
@@ -1768,11 +1819,7 @@ function bindDirtyTracking(root) {
       root.__ccMissingPresetOutputCategory = false;
       syncWatermarkProcessingState(root);
     }
-    root.__ccDirty = true;
-    const select = root.querySelector('[data-processing-preset-select]');
-    const modifiedNote = root.querySelector('[data-processing-preset-modified]');
-    if (select?.value && modifiedNote) modifiedNote.hidden = false;
-    invalidatePreview(root);
+    markConfigurationModified(root);
   };
   root.addEventListener('input', (event) => {
     handleChange(event);
@@ -2083,8 +2130,33 @@ function createRuleRow(root, side) {
     invalidatePreview(root);
     root.__ccDirty = true;
   });
+  // Toggling only flips this row's state in place: the fields, dropdown
+  // instance and row position are untouched, so re-enabling restores the
+  // exact configuration.
+  row.querySelector('[data-processing-toggle-rule]')?.addEventListener('click', () => {
+    setRuleRowEnabled(row, !isRuleRowEnabled(row));
+    markConfigurationModified(root);
+  });
+  setRuleRowEnabled(row, true);
   syncRuleRowFields(row);
   return row;
+}
+
+// Matches the server contract: a rule runs unless it is explicitly
+// `enabled: false`; the canonical form omits `enabled` for enabled rules.
+function isRuleRowEnabled(row) {
+  return !row.hasAttribute('data-processing-rule-disabled');
+}
+
+function setRuleRowEnabled(row, enabled) {
+  if (enabled) row.removeAttribute('data-processing-rule-disabled');
+  else row.setAttribute('data-processing-rule-disabled', '');
+  const toggle = row.querySelector('[data-processing-toggle-rule]');
+  if (!toggle) return;
+  const action = enabled ? 'Disable rule' : 'Enable rule';
+  toggle.setAttribute('aria-pressed', String(enabled));
+  toggle.setAttribute('aria-label', action);
+  toggle.setAttribute('title', action);
 }
 
 function bindRuleAdders(root) {
@@ -2104,14 +2176,16 @@ function bindRuleAdders(root) {
 
 function serializeRuleRow(row) {
   const type = ruleOperationSelect(row)?.value || 'remove';
+  const disabled = isRuleRowEnabled(row) ? {} : { enabled: false };
   if (type === 'replace') {
     return {
       type,
       search: row.querySelector('[data-processing-rule-search]')?.value ?? '',
       replacement: row.querySelector('[data-processing-rule-replacement]')?.value ?? '',
+      ...disabled,
     };
   }
-  return { type, text: row.querySelector('[data-processing-rule-text]')?.value ?? '' };
+  return { type, text: row.querySelector('[data-processing-rule-text]')?.value ?? '', ...disabled };
 }
 
 function collectWorkflowRules(root, side) {
@@ -2143,6 +2217,7 @@ function applyWorkflowRulesToForm(root, side, ruleList) {
       const text = row.querySelector('[data-processing-rule-text]');
       if (text) text.value = rule.text ?? '';
     }
+    setRuleRowEnabled(row, rule.enabled !== false);
     syncRuleRowFields(row);
     list.append(row);
   });
@@ -2226,10 +2301,16 @@ async function runPreview(root) {
   if (!archive) setBusy(root, true);
   const attempt = {};
   if (archive) root.__ccArchivePreviewAttempt = attempt;
+  // Workflow rule rows stay editable while Preview is pending, so a late plan
+  // only counts when it still describes the current request body.
+  const workflow = root.dataset.processingOperation === 'workflow-prompt';
   const isCurrent = () => {
-    if (!archive) return true;
-    if (root.__ccArchivePreviewAttempt !== attempt || root.__ccArchivePreviewRevision !== revision) return false;
+    if (!archive && !workflow) return true;
+    if (archive && (root.__ccArchivePreviewAttempt !== attempt || root.__ccArchivePreviewRevision !== revision)) return false;
     try { return JSON.stringify(buildRequestBody(root)) === JSON.stringify(body); } catch { return false; }
+  };
+  const discardStale = () => {
+    if (workflow) setStatus(root, 'Workflow rules changed. Run Preview again.');
   };
   setStatus(root, 'Loading preview…');
   try {
@@ -2237,7 +2318,7 @@ async function runPreview(root) {
       OPERATION_PLAN_PATH(root.dataset.projectId, root.dataset.processingOperation),
       { csrf: root.dataset.csrf, body },
     );
-    if (!isCurrent()) return;
+    if (!isCurrent()) { discardStale(); return; }
     if (archive && (payload.plan?.operation !== 'archive' || !Array.isArray(payload.plan.archives)
       || !Array.isArray(payload.plan.items))) {
       throw new ProcessingRequestError('The archive preview returned an unexpected response. Run Preview again.');
@@ -2255,7 +2336,7 @@ async function runPreview(root) {
     }
     setStatus(root, canApply ? 'Preview ready.' : 'Preview ready, but conflicts or blockers must be resolved before Apply.');
   } catch (error) {
-    if (!isCurrent()) return;
+    if (!isCurrent()) { discardStale(); return; }
     if (error.code === PROCESSING_RECOVERY_REQUIRED_CODE) {
       enterProcessingRecoveryRequired(root, error.message);
     } else {

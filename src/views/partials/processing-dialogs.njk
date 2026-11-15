@@ -331,7 +331,10 @@
         <input type="text" data-processing-rule-text aria-label="Rule text" placeholder="Text" autocomplete="off">
         <input type="text" data-processing-rule-search aria-label="Search text" placeholder="Search (may be left empty)" autocomplete="off" hidden>
         <input type="text" data-processing-rule-replacement aria-label="Replacement text" placeholder="Replacement" autocomplete="off" hidden>
-        <button type="button" class="button button-small button-secondary" data-processing-remove-rule aria-label="Remove rule">X</button>
+        <span class="processing-rule-actions">
+          <button type="button" class="button button-small button-secondary processing-rule-toggle" data-processing-toggle-rule aria-pressed="true" aria-label="Disable rule" title="Disable rule"><span class="processing-rule-toggle-icon processing-rule-toggle-icon--on">{{ icons.icon('power') }}</span><span class="processing-rule-toggle-icon processing-rule-toggle-icon--off">{{ icons.icon('power-off') }}</span></button>
+          <button type="button" class="button button-small button-secondary" data-processing-remove-rule aria-label="Remove rule">X</button>
+        </span>
       </li>
     </template>
 

@@ -346,6 +346,88 @@ describe('processing preset service', () => {
     });
   });
 
+  it('stores disabled workflow rules with their configuration and executes presets without them', () => {
+    const config = {
+      positive: [
+        { type: 'remove', text: 'cat', enabled: false },
+        { type: 'replace', search: 'one', replacement: 'the' },
+        { type: 'append', text: ' post', enabled: false },
+      ],
+      negative: [{ type: 'prepend', text: 'bad, ', enabled: false }],
+    };
+    const created = service.createPreset({ operationType: 'workflow-prompt', displayName: 'Toggles', config });
+    expect(created.configVersion).toBe(1);
+    expect(created.config).toEqual(config);
+    expect(service.getPreset(created.id).config).toEqual(config);
+    expect(JSON.parse(db.prepare('SELECT config_json FROM processing_presets WHERE id = ?').get(created.id).config_json))
+      .toEqual(config);
+
+    const resolved = service.resolvePresetForExecution(created.id);
+    expect(resolved.options).toEqual(config);
+    expect(applyPromptRules('one cat', resolved.options.positive)).toBe('the cat');
+    expect(applyPromptRules('worse', resolved.options.negative)).toBe('worse');
+
+    // Re-enabling through the existing replace path restores the rule unchanged.
+    const reenabled = { ...config, positive: config.positive.map(({ enabled, ...rule }) => rule) };
+    const outcome = service.replacePresetWithOutcome(created.id, { config: reenabled });
+    expect(outcome.changed).toBe(true);
+    expect(outcome.preset.config.positive).toEqual([
+      { type: 'remove', text: 'cat' },
+      { type: 'replace', search: 'one', replacement: 'the' },
+      { type: 'append', text: ' post' },
+    ]);
+    expect(applyPromptRules('one cat', outcome.preset.config.positive)).toBe('the  post');
+    // An explicit enabled: true is the same stored configuration as an absent one.
+    expect(service.replacePresetWithOutcome(created.id, {
+      config: { ...reenabled, positive: reenabled.positive.map((rule) => ({ ...rule, enabled: true })) },
+    }).changed).toBe(false);
+
+    expect(() => service.createPreset({
+      operationType: 'workflow-prompt', displayName: 'Bad toggle',
+      config: { positive: [{ type: 'remove', text: 'x', enabled: 'false' }] },
+    })).toThrow(expect.objectContaining({ code: 'INVALID_PROMPT_RULE' }));
+  });
+
+  it('loads legacy workflow preset rows without enabled as enabled, without rewriting them', () => {
+    const legacyJson = JSON.stringify({ positive: [{ type: 'append', text: ' tail' }], negative: [] });
+    const result = db.prepare(`
+      INSERT INTO processing_presets (operation_type, display_name, config_version, config_json)
+      VALUES ('workflow-prompt', 'Legacy rules', 1, ?)
+    `).run(legacyJson);
+    const id = Number(result.lastInsertRowid);
+
+    const preset = service.getPreset(id);
+    expect(preset.config).toEqual({ positive: [{ type: 'append', text: ' tail' }], negative: [] });
+    expect(applyPromptRules('head', service.resolvePresetForExecution(id).options.positive)).toBe('head tail');
+    expect(db.prepare('SELECT config_json FROM processing_presets WHERE id = ?').get(id).config_json).toBe(legacyJson);
+  });
+
+  it('accepts version 2 bundles only for workflow presets and keeps version 1 importable', () => {
+    const disabledConfig = { positive: [{ type: 'remove', text: 'x', enabled: false }], negative: [] };
+    const v2 = service.importPresetBundle({
+      creatorcrate: 'processing-presets', version: 2, operationType: 'workflow-prompt',
+      presets: [{ displayName: 'Portable toggles', config: disabledConfig }],
+    });
+    expect(v2.presets[0].config).toEqual(disabledConfig);
+
+    const v1 = service.importPresetBundle({
+      creatorcrate: 'processing-presets', version: 1, operationType: 'workflow-prompt',
+      presets: [{ displayName: 'Old bundle', config: { positive: [{ type: 'append', text: 'y' }] } }],
+    });
+    expect(v1.presets[0].config).toEqual({ positive: [{ type: 'append', text: 'y' }], negative: [] });
+
+    for (const bundle of [
+      { version: 2, operationType: 'convert', presets: [{ displayName: 'C', config: { format: 'webp', quality: 85, originalHandling: 'keep' } }] },
+      { version: 2, operationType: 'watermark', presets: [] },
+      { version: 3, operationType: 'workflow-prompt', presets: [] },
+      { version: '2', operationType: 'workflow-prompt', presets: [] },
+    ]) {
+      expect(() => service.importPresetBundle({ creatorcrate: 'processing-presets', ...bundle }))
+        .toThrow(expect.objectContaining({ code: 'INVALID_PRESET_BUNDLE' }));
+    }
+    expect(service.listPresets({ operationType: 'convert' })).toEqual([]);
+  });
+
   it('does not expose preset storage corruption as executable options', () => {
     expect(() => service.createPreset({ operationType: 'invalid', displayName: 'No', config: {} }))
       .toThrow(ProcessingPresetServiceError);

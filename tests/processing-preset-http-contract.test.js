@@ -125,6 +125,33 @@ describe('Processing preset HTTP contract (seeded presets, client-shaped payload
     expect(renamed.body.preset.displayName).toBe('Benji v2');
   });
 
+  it('round-trips disabled workflow rules over HTTP (client {rules} shape) and through a v2 bundle', async () => {
+    const preset = await findSeeded('Benji', 'workflow-prompt');
+    const updated = await request(app).post(`/processing/presets/${preset.id}/replace`).send({
+      config: {
+        positive: { rules: [{ type: 'remove', text: 'x', enabled: false }, { type: 'append', text: 'y', enabled: true }] },
+        negative: { rules: [] },
+      },
+    }).expect(200);
+    const expected = { positive: [{ type: 'remove', text: 'x', enabled: false }, { type: 'append', text: 'y' }], negative: [] };
+    expect(updated.body.preset.config).toEqual(expected);
+    const listed = await request(app).get('/processing/presets?operationType=workflow-prompt').expect(200);
+    expect(listed.body.presets.find(({ id }) => id === preset.id).config).toEqual(expected);
+
+    const invalid = await request(app).post(`/processing/presets/${preset.id}/replace`).send({
+      config: { positive: { rules: [{ type: 'remove', text: 'x', enabled: 'no' }] } },
+    });
+    expect(invalid.status).toBe(400);
+
+    const imported = await request(app).post('/processing/presets/import').send({
+      creatorcrate: 'processing-presets',
+      version: 2,
+      operationType: 'workflow-prompt',
+      presets: [{ displayName: 'Portable toggles', config: expected }],
+    }).expect(200);
+    expect(imported.body.presets[0].config).toEqual(expected);
+  });
+
   it('rejects legacy scaleMapId values on create and replace while keeping Watermark identity runtime-only', async () => {
     const preset = await findSeeded('Social Watermark', 'watermark');
     expect(preset.watermarkId).toBeNull();

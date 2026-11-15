@@ -72,6 +72,7 @@ async function createFixture(page) {
 
     return {
       project,
+      app,
       async close() {
         if (server) {
           server.closeAllConnections();
@@ -222,6 +223,131 @@ test('cloned workflow-rule rows keep unique relationships and independent dropdo
     await expect(first.locator('[data-processing-rule-operation]')).toHaveValue('prepend');
     await expect(second.locator('[data-processing-rule-operation]')).toHaveValue('append');
     await expect(third.locator('[data-processing-rule-operation]')).toHaveValue('replace');
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('rule enable/disable toggle sits left of X, matches its size, and toggles by mouse and keyboard', async ({ page }) => {
+  const fixture = await createFixture(page);
+
+  try {
+    await page.getByRole('button', { name: 'Image workflows editor', exact: true }).click();
+    const dialog = page.locator('#processing-workflow-dialog');
+    await expect(dialog).toBeVisible();
+    const row = dialog.locator('[data-processing-rules="positive"] [data-processing-rule-row]').first();
+    const toggle = row.getByRole('button', { name: 'Disable rule', exact: true });
+    const remove = row.getByRole('button', { name: 'Remove rule', exact: true });
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    await expect(toggle).toHaveAttribute('title', 'Disable rule');
+
+    const heightBefore = (await row.boundingBox()).height;
+    const toggleBox = await toggle.boundingBox();
+    const removeBox = await remove.boundingBox();
+    expect(toggleBox.x + toggleBox.width).toBeLessThanOrEqual(removeBox.x);
+    expect(removeBox.x - (toggleBox.x + toggleBox.width)).toBeLessThan(12);
+    expect(Math.abs(toggleBox.y - removeBox.y)).toBeLessThan(2);
+    expect(Math.abs(toggleBox.height - removeBox.height)).toBeLessThan(2);
+    expect(Math.abs(toggleBox.width - removeBox.width)).toBeLessThan(8);
+    await expect(toggle).toHaveText('');
+
+    await row.locator('[data-processing-rule-text]').fill('keep me');
+    await toggle.click();
+    const enable = row.getByRole('button', { name: 'Enable rule', exact: true });
+    await expect(enable).toHaveAttribute('aria-pressed', 'false');
+    await expect(row).toHaveAttribute('data-processing-rule-disabled', '');
+    await expect(row.locator('[data-processing-rule-text]')).toBeEditable();
+    await expect(row.locator('[data-processing-rule-text]')).toHaveValue('keep me');
+    expect(Math.abs((await row.boundingBox()).height - heightBefore)).toBeLessThan(1);
+    await expect(dialog.locator('[data-processing-rules="positive"] [data-processing-rule-row]')).toHaveCount(1);
+
+    await enable.focus();
+    await page.keyboard.press('Space');
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    await expect(row).not.toHaveAttribute('data-processing-rule-disabled', '');
+    await toggle.press('Enter');
+    await expect(enable).toHaveAttribute('aria-pressed', 'false');
+    const focusRing = await enable.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return `${style.outlineStyle} ${style.boxShadow}`;
+    });
+    expect(focusRing).not.toBe('none none');
+
+    await remove.click();
+    await expect(dialog.locator('[data-processing-rules="positive"] [data-processing-rule-row]')).toHaveCount(0);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('a late Update answer after switching presets keeps the new preset selected and the next Update on it', async ({ page }) => {
+  const fixture = await createFixture(page);
+
+  try {
+    const presets = fixture.app.locals.processingPresetService;
+    const byName = (name) => presets.listPresets({ operationType: 'workflow-prompt' }).find((preset) => preset.displayName === name);
+    const general = byName('General');
+    const benji = byName('Benji');
+    const benjiBefore = structuredClone(benji.config);
+    const firstPositiveText = (preset) => (preset.config.positive.rules ?? preset.config.positive)[0].text;
+
+    await page.getByRole('button', { name: 'Image workflows editor', exact: true }).click();
+    const dialog = page.locator('#processing-workflow-dialog');
+    await expect(dialog).toBeVisible();
+    const select = dialog.locator('[data-processing-preset-select]');
+    const presetDropdown = dialog.locator('#workflow-preset-select-dropdown');
+    const visiblePreset = presetDropdown.locator('[data-cc-dropdown-summary-current]');
+    const modified = dialog.locator('[data-processing-preset-modified]');
+    const updateButton = dialog.getByRole('button', { name: 'Update preset', exact: true });
+    const positiveRows = dialog.locator('[data-processing-rules="positive"] [data-processing-rule-row]');
+    const choosePreset = async (name) => {
+      await presetDropdown.locator('summary').click();
+      const option = presetDropdown.getByRole('radio', { name, exact: true });
+      await presetDropdown.locator(`label[for="${await option.getAttribute('id')}"]`).click();
+      await expect(visiblePreset).toHaveText(name);
+    };
+
+    await choosePreset('General');
+    await expect(select).toHaveValue(String(general.id));
+    await positiveRows.first().locator('[data-processing-rule-text]').fill('general edited, ');
+    await expect(modified).toBeVisible();
+
+    let releaseGeneral;
+    const generalHeld = new Promise((resolve) => { releaseGeneral = resolve; });
+    const replaceUrls = [];
+    await page.route('**/processing/presets/*/replace', async (route) => {
+      replaceUrls.push(new URL(route.request().url()).pathname);
+      if (replaceUrls.length === 1) await generalHeld;
+      await route.continue();
+    });
+    const generalAnswer = page.waitForResponse((response) => response.url().endsWith(`/processing/presets/${general.id}/replace`));
+    await updateButton.click();
+    await expect.poll(() => replaceUrls.length).toBe(1);
+
+    await choosePreset('Benji');
+    await expect(select).toHaveValue(String(benji.id));
+    const benjiRuleTexts = await positiveRows.evaluateAll((rows) => rows.map((row) => row.querySelector('[data-processing-rule-text]')?.value));
+    releaseGeneral();
+    await generalAnswer;
+    await expect(dialog.locator('[data-processing-status]')).toHaveText('Preset updated.');
+
+    // General received exactly what was sent while it was selected.
+    expect(firstPositiveText(presets.getPreset(general.id))).toBe('general edited, ');
+    // Benji still owns the native value, the visible label, and the rows.
+    await expect(select).toHaveValue(String(benji.id));
+    await expect(visiblePreset).toHaveText('Benji');
+    expect(await positiveRows.evaluateAll((rows) => rows.map((row) => row.querySelector('[data-processing-rule-text]')?.value)))
+      .toEqual(benjiRuleTexts);
+    await expect(modified).toBeHidden();
+    expect(presets.getPreset(benji.id).config).toEqual(benjiBefore);
+
+    const benjiAnswer = page.waitForResponse((response) => response.url().endsWith(`/processing/presets/${benji.id}/replace`));
+    await updateButton.click();
+    await benjiAnswer;
+    expect(replaceUrls).toEqual([`/processing/presets/${general.id}/replace`, `/processing/presets/${benji.id}/replace`]);
+    expect(firstPositiveText(presets.getPreset(general.id))).toBe('general edited, ');
+    expect(presets.getPreset(benji.id).config).toEqual(benjiBefore);
+    await expect(visiblePreset).toHaveText('Benji');
   } finally {
     await fixture.close();
   }

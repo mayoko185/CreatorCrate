@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { deflateSync, inflateSync } from 'node:zlib';
 import {
   applyPromptRules,
+  normalizeOrUsePromptEditOptions,
+  normalizePromptEditOptions,
   createPngChunk,
   crc32,
   editWorkflowPromptsInPng,
@@ -881,5 +883,114 @@ describe('workflow prompt PNG editor', () => {
       code: 'INVALID_PROMPT_RULE',
     }));
     expect(WorkflowPromptMetadataError).toBeTypeOf('function');
+  });
+});
+
+describe('prompt rule enabled state', () => {
+  const graphPng = () => makePng([textChunk('prompt', graphMetadata())]);
+
+  it('normalizes enabled to the canonical stored form and rejects non-boolean values', () => {
+    expect(normalizePromptEditOptions({
+      positive: {
+        rules: [
+          { type: 'remove', text: 'a' },
+          { type: 'append', text: 'b', enabled: true },
+          { type: 'replace', search: 'c', replacement: 'd', enabled: false },
+          { type: 'prepend', text: '', enabled: false },
+        ],
+      },
+    })).toEqual({
+      positive: [
+        { type: 'remove', text: 'a' },
+        { type: 'append', text: 'b' },
+        { type: 'replace', search: 'c', replacement: 'd', enabled: false },
+        { type: 'prepend', text: '', enabled: false },
+      ],
+      negative: [],
+    });
+
+    for (const enabled of [null, 0, 1, 'false', 'true', {}]) {
+      expect(() => normalizePromptEditOptions({ positive: { rules: [{ type: 'remove', text: 'x', enabled }] } }))
+        .toThrow(expect.objectContaining({ code: 'INVALID_PROMPT_RULE' }));
+    }
+    // A disabled rule still has to satisfy the structural rule contract.
+    expect(() => normalizePromptEditOptions({ positive: { rules: [{ type: 'replace', search: 'x', enabled: false }] } }))
+      .toThrow(expect.objectContaining({ code: 'INVALID_PROMPT_RULE' }));
+    expect(() => normalizePromptEditOptions({ positive: { rules: [{ type: 'unknown', text: 'x', enabled: false }] } }))
+      .toThrow(expect.objectContaining({ code: 'INVALID_PROMPT_RULE' }));
+  });
+
+  it('runs legacy and explicitly enabled rules identically', () => {
+    const legacy = [
+      { type: 'replace', search: 'A', replacement: 'C' },
+      { type: 'remove', text: 'C' },
+      { type: 'append', text: 'S' },
+      { type: 'prepend', text: 'P' },
+      { type: 'replace', search: 'C', replacement: 'D' },
+    ];
+    expect(applyPromptRules('AC', legacy)).toBe('PDS');
+    expect(applyPromptRules('AC', legacy.map((rule) => ({ ...rule, enabled: true })))).toBe('PDS');
+  });
+
+  it.each([
+    ['remove', { type: 'remove', text: 'cat' }],
+    ['replace', { type: 'replace', search: 'cat', replacement: 'dog' }],
+    ['prepend', { type: 'prepend', text: 'pre ' }],
+    ['append', { type: 'append', text: ' post' }],
+  ])('skips a disabled %s rule', (_label, rule) => {
+    expect(applyPromptRules('a cat', [rule])).not.toBe('a cat');
+    expect(applyPromptRules('a cat', [{ ...rule, enabled: false }])).toBe('a cat');
+  });
+
+  it('keeps the fixed phases for the enabled rules when disabled rules are mixed in', () => {
+    // Enabled only: replace A→C, remove C, append S, prepend P, replace C→D → "PDS".
+    // The disabled rules would each change the result if they ran.
+    expect(applyPromptRules('AC', [
+      { type: 'remove', text: 'A', enabled: false },
+      { type: 'replace', search: 'A', replacement: 'C' },
+      { type: 'remove', text: 'C' },
+      { type: 'append', text: 'S' },
+      { type: 'replace', search: 'S', replacement: 'X', enabled: false },
+      { type: 'prepend', text: 'P' },
+      { type: 'append', text: 'Z', enabled: false },
+      { type: 'replace', search: 'C', replacement: 'D' },
+      { type: 'prepend', text: 'Q', enabled: false },
+    ])).toBe('PDS');
+  });
+
+  it('treats an all-disabled configuration exactly like no rules: no edits and no metadata rewrite', () => {
+    const png = graphPng();
+    const disabled = editWorkflowPromptsInPng(png, {
+      positive: { rules: [{ type: 'append', text: ', detailed', enabled: false }] },
+      negative: { rules: [{ type: 'replace', search: 'blurry', replacement: 'sharp', enabled: false }] },
+    });
+    expect(disabled.changed).toBe(false);
+    expect(disabled.buffer).toBe(png);
+    expect(disabled).toEqual(editWorkflowPromptsInPng(png, {}));
+
+    const parameters = makePng([textChunk('parameters', 'prompt\nNegative prompt: bad')]);
+    const disabledParameters = editWorkflowPromptsInPng(parameters, {
+      positive: { rules: [{ type: 'prepend', text: 'x', enabled: false }] },
+    });
+    expect(disabledParameters.buffer).toBe(parameters);
+    expect(disabledParameters).toEqual(editWorkflowPromptsInPng(parameters, {}));
+  });
+
+  it('honours enabled state for preset-shaped (array) options used by Preview, Apply and presets', () => {
+    const options = normalizeOrUsePromptEditOptions({
+      positive: [
+        { type: 'append', text: ', skipped', enabled: false },
+        { type: 'append', text: ', detailed' },
+      ],
+      negative: [{ type: 'replace', search: 'blurry', replacement: 'sharp', enabled: false }],
+    });
+    // Re-normalizing already-normalized options keeps the disabled rules.
+    expect(normalizeOrUsePromptEditOptions(options)).toEqual(options);
+
+    const edited = editWorkflowPromptsInPng(graphPng(), options);
+    const graph = JSON.parse(textValues(edited.buffer).find(([key]) => key === 'prompt')[1]);
+    expect(graph['2'].inputs.text).toBe('portrait subject, detailed');
+    expect(graph['3'].inputs.text).toBe('blurry');
+    expect(edited).toMatchObject({ changed: true, positiveChanged: true, negativeChanged: false });
   });
 });

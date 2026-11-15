@@ -424,6 +424,14 @@ function normalizeRule(rule, side, index) {
   if (!PROMPT_RULE_TYPES.has(rule.type)) {
     fail(`${side}.rules[${index}] has an unsupported type.`, { code: 'INVALID_PROMPT_RULE' });
   }
+  // `enabled` is optional and defaults to true. Only a real boolean is
+  // accepted; the canonical form omits it for enabled rules so configs that
+  // predate the field normalize (and serialize) exactly as before, and keeps
+  // `enabled: false` so a disabled rule survives with its configuration.
+  if (rule.enabled !== undefined && typeof rule.enabled !== 'boolean') {
+    fail(`${side}.rules[${index}] enabled must be a boolean.`, { code: 'INVALID_PROMPT_RULE' });
+  }
+  const disabled = rule.enabled === false ? { enabled: false } : {};
 
   if (rule.type === 'replace') {
     if (typeof rule.search !== 'string' || typeof rule.replacement !== 'string') {
@@ -431,13 +439,25 @@ function normalizeRule(rule, side, index) {
         code: 'INVALID_PROMPT_RULE',
       });
     }
-    return { type: rule.type, search: rule.search, replacement: rule.replacement };
+    return { type: rule.type, search: rule.search, replacement: rule.replacement, ...disabled };
   }
 
   if (typeof rule.text !== 'string') {
     fail(`${side}.rules[${index}] requires a text string.`, { code: 'INVALID_PROMPT_RULE' });
   }
-  return { type: rule.type, text: rule.text };
+  return { type: rule.type, text: rule.text, ...disabled };
+}
+
+/** A normalized rule executes unless it is explicitly disabled. */
+export function isPromptRuleEnabled(rule) {
+  return rule?.enabled !== false;
+}
+
+function enabledPromptRules(rules) {
+  return {
+    positive: rules.positive.filter(isPromptRuleEnabled),
+    negative: rules.negative.filter(isPromptRuleEnabled),
+  };
 }
 
 function normalizeRuleList(value, side) {
@@ -489,7 +509,12 @@ export function applyPromptRules(value, rules) {
     prepend: [],
     append: [],
   };
-  for (const rule of normalizedRules) phases[rule.type].push(rule);
+  // Disabled rules are skipped before phase grouping; enabled rules keep
+  // their relative order inside the fixed Remove → Replace → Prepend → Append
+  // phases.
+  for (const rule of normalizedRules) {
+    if (isPromptRuleEnabled(rule)) phases[rule.type].push(rule);
+  }
 
   let result = value;
 
@@ -1093,7 +1118,10 @@ function rewriteMetadataChunk(chunks, target, text) {
 export function editWorkflowPromptsInPng(input, rawOptions = {}) {
   const buffer = asBuffer(input);
   const chunks = parsePngChunks(buffer);
-  const rules = normalizeOrUsePromptEditOptions(rawOptions);
+  // Disabled rules are validated with the rest of the configuration but take
+  // no part in execution, so an all-disabled side behaves exactly like an
+  // empty one (no graph edits, no prompt excerpts, no metadata rewrite).
+  const rules = enabledPromptRules(normalizeOrUsePromptEditOptions(rawOptions));
 
   const metadata = metadataChunks(chunks);
   const workflow = findWorkflowMetadata(metadata);

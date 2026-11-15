@@ -11063,6 +11063,48 @@
   background: rgba(251, 113, 133, 0.1);
   color: var(--badge-danger-fg);
 }
+/* Enable/disable toggle sits immediately left of X, sharing its footprint. */
+.app-dialog--processing-workflow .processing-rule-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-xs);
+}
+.app-dialog--processing-workflow .processing-dialog-body [data-processing-toggle-rule] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--refined-control-height);
+  min-height: var(--refined-control-height);
+  padding: 0 var(--space-sm);
+}
+.app-dialog--processing-workflow .processing-dialog-body [data-processing-toggle-rule]:not(:disabled):not([aria-disabled="true"]) {
+  border-color: transparent;
+  color: var(--muted);
+}
+.app-dialog--processing-workflow .processing-dialog-body [data-processing-toggle-rule]:hover:not(:disabled):not([aria-disabled="true"]) {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+.app-dialog--processing-workflow .processing-rule-toggle-icon {
+  display: inline-flex;
+}
+.app-dialog--processing-workflow .processing-rule-toggle-icon svg {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+.app-dialog--processing-workflow [data-processing-toggle-rule][aria-pressed="true"] .processing-rule-toggle-icon--off,
+.app-dialog--processing-workflow [data-processing-toggle-rule][aria-pressed="false"] .processing-rule-toggle-icon--on {
+  display: none;
+}
+/* Disabled rules stay visible and editable; only their fields are muted. */
+.app-dialog--processing-workflow .processing-rule-row[data-processing-rule-disabled] {
+  border-style: dashed;
+}
+.app-dialog--processing-workflow .processing-rule-row[data-processing-rule-disabled] .processing-rule-type,
+.app-dialog--processing-workflow .processing-rule-row[data-processing-rule-disabled] input[type="text"] {
+  opacity: 0.7;
+}
 
 /* Plan / result internals; their outer cards use the shared settings-section primitive. */
 .processing-plan-counts {
@@ -11518,7 +11560,8 @@
     width: 100%;
     max-width: none;
   }
-  .app-dialog--processing-workflow [data-processing-remove-rule] { align-self: flex-end; }
+  .app-dialog--processing-workflow [data-processing-remove-rule],
+  .app-dialog--processing-workflow .processing-rule-actions { align-self: flex-end; }
 }
 /* Watermark Processing renders this separately from the small source thumbnail. */
 .processing-watermark-rendered-preview {

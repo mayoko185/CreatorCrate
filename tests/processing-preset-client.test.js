@@ -442,7 +442,14 @@ function buildRuleRowTemplate() {
   const search = makeNode('input', { type: 'text', 'data-processing-rule-search': '', hidden: '' });
   const replacement = makeNode('input', { type: 'text', 'data-processing-rule-replacement': '', hidden: '' });
   row.append(search, replacement);
-  row.appendChild(makeNode('button', { type: 'button', 'data-processing-remove-rule': '' }));
+  const actions = makeNode('span', { class: 'processing-rule-actions' });
+  actions.append(
+    makeNode('button', {
+      type: 'button', 'data-processing-toggle-rule': '', 'aria-pressed': 'true', 'aria-label': 'Disable rule', title: 'Disable rule',
+    }),
+    makeNode('button', { type: 'button', 'data-processing-remove-rule': '' }),
+  );
+  row.appendChild(actions);
   template.content.appendChild(row);
   return template;
 }
@@ -1226,7 +1233,7 @@ describe('Processing dialog preset management', () => {
       const exported = JSON.parse(await exportedBlob.text());
       expect(exported).toMatchObject({
         creatorcrate: 'processing-presets',
-        version: 1,
+        version: 2,
         operationType: 'workflow-prompt',
       });
       expect(exported.presets).toHaveLength(2);
@@ -2438,5 +2445,467 @@ describe('consecutive Workflow Prompt runs in one open dialog', () => {
     expect(requestsTo(APPLY_PATH)).toHaveLength(2);
     expect(pollsFor('job-b')).toBe(1);
     expect(fixture.closeEvents).toBe(0);
+  });
+});
+
+// ─── Workflow rule enable/disable toggle (Image Workflow Editor M2 WP4) ───
+
+describe('Workflow rule enable/disable toggle', () => {
+  const PLAN_PATH = '/projects/1/assets/processing/workflow-prompt/plan';
+  const APPLY_PATH = '/projects/1/assets/processing/workflow-prompt/apply';
+  let doc;
+  let fetchState;
+  let pendingPlans;
+
+  const ok = (body, status = 200) => ({ ok: true, status, json: async () => body });
+  const planResponse = () => ok({
+    ok: true,
+    operation: 'workflow-prompt',
+    plan: { counts: { total: 1, eligible: 1, changed: 1 }, items: [{ assetId: 5, relativePath: 'final/a.png', status: 'ready' }] },
+  });
+
+  beforeEach(() => {
+    doc = makeDocument();
+    fetchState = makeFetchMock();
+    pendingPlans = null;
+    const delegate = fetchState.fetchMock;
+    const fetchMock = vi.fn(async (url, init = {}) => {
+      if (url === PLAN_PATH || url === APPLY_PATH) {
+        fetchState.calls.push({ url, method: init.method || 'POST', body: JSON.parse(init.body) });
+        if (url === PLAN_PATH) {
+          if (pendingPlans) return new Promise((resolve) => pendingPlans.push(() => resolve(planResponse())));
+          return planResponse();
+        }
+        return ok({ ok: true, operation: 'workflow-prompt', result: { changedCount: 1, unchangedCount: 0 } });
+      }
+      return delegate(url, init);
+    });
+    fetchState.fetchMock = fetchMock;
+    vi.stubGlobal('document', doc);
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  async function open(seed = []) {
+    seed.forEach((preset) => fetchState.seed(structuredClone(preset)));
+    const fixture = buildWorkflowRoot(doc);
+    const scope = makeNode('fieldset', { 'data-processing-scope': '' });
+    scope.appendChild(makeNode('input', { type: 'radio', value: 'project', 'data-processing-scope-option': 'project' }));
+    fixture.root.insertBefore(scope, fixture.footer.error);
+    const resultBody = makeNode('div', { 'data-processing-result-body': '' });
+    fixture.footer.result.appendChild(resultBody);
+    enhanceProcessingDialogs(doc);
+    doc.dispatch('click', { target: fixture.trigger });
+    await flush();
+    return fixture;
+  }
+
+  async function selectPreset(fixture, id) {
+    fixture.preset.select.value = String(id);
+    fixture.preset.select.dispatch('change', { target: fixture.preset.select });
+    await flush();
+  }
+
+  const rows = (fixture, side) => fixture.sides[side].list.children;
+  const toggleOf = (row) => row.querySelector('[data-processing-toggle-rule]');
+  const click = async (button) => { button.dispatch('click', { target: button }); await flush(); };
+  const lastCall = (url) => fetchState.calls.filter((call) => call.url === url).at(-1);
+
+  const PRESET = {
+    id: 21, operationType: 'workflow-prompt', displayName: 'Mixed', watermarkId: null,
+    config: {
+      positive: [
+        { type: 'remove', text: 'masterwork, ' },
+        { type: 'replace', search: 'cat', replacement: 'dog', enabled: false },
+      ],
+      negative: [{ type: 'append', text: ', lowres' }],
+    },
+  };
+
+  it('renders legacy rules enabled, enabled:false rules disabled, with the toggle immediately left of X', async () => {
+    const fixture = await open([PRESET]);
+    await selectPreset(fixture, PRESET.id);
+
+    const [legacy, disabled] = rows(fixture, 'positive');
+    for (const row of [legacy, disabled]) {
+      const actions = toggleOf(row).parentNode;
+      const remove = row.querySelector('[data-processing-remove-rule]');
+      expect(remove.parentNode).toBe(actions);
+      expect(actions.children.indexOf(toggleOf(row)) + 1).toBe(actions.children.indexOf(remove));
+      expect(actions.children).toHaveLength(2);
+    }
+    expect(legacy.hasAttribute('data-processing-rule-disabled')).toBe(false);
+    expect(toggleOf(legacy).getAttribute('aria-pressed')).toBe('true');
+    expect(toggleOf(legacy).getAttribute('aria-label')).toBe('Disable rule');
+    expect(toggleOf(legacy).getAttribute('title')).toBe('Disable rule');
+    expect(disabled.hasAttribute('data-processing-rule-disabled')).toBe(true);
+    expect(toggleOf(disabled).getAttribute('aria-pressed')).toBe('false');
+    expect(toggleOf(disabled).getAttribute('aria-label')).toBe('Enable rule');
+    expect(toggleOf(disabled).getAttribute('title')).toBe('Enable rule');
+    expect(disabled.querySelector('[data-processing-rule-search]').value).toBe('cat');
+    expect(disabled.querySelector('[data-processing-rule-replacement]').value).toBe('dog');
+    expect(disabled.querySelector('[data-cc-dropdown-summary-current]').textContent).toBe('Replace');
+    // Fresh rows (Add rule) start enabled.
+    fixture.sides.negative.addButton.dispatch('click');
+    expect(toggleOf(rows(fixture, 'negative').at(-1)).getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('toggles in place, marks the draft modified, invalidates Preview, and restores the same configuration', async () => {
+    const fixture = await open([PRESET]);
+    await selectPreset(fixture, PRESET.id);
+    await click(fixture.footer.previewBtn);
+    expect(fixture.footer.applyBtn.disabled).toBe(false);
+    expect(fixture.preset.modified.hidden).toBe(true);
+
+    const before = rows(fixture, 'positive').slice();
+    const legacy = before[0];
+    const operation = legacy.querySelector('[data-processing-rule-operation]');
+    const dropdown = legacy.querySelector('[data-cc-dropdown]');
+
+    await click(toggleOf(legacy));
+    expect(toggleOf(legacy).getAttribute('aria-pressed')).toBe('false');
+    expect(toggleOf(legacy).getAttribute('aria-label')).toBe('Enable rule');
+    expect(fixture.root.__ccDirty).toBe(true);
+    expect(fixture.preset.modified.hidden).toBe(false);
+    expect(fixture.root.__ccPreviewValid).toBe(false);
+    expect(fixture.footer.applyBtn.disabled).toBe(true);
+    expect(rows(fixture, 'positive')).toEqual(before);
+    expect(legacy.querySelector('[data-processing-rule-operation]')).toBe(operation);
+    expect(legacy.querySelector('[data-cc-dropdown]')).toBe(dropdown);
+
+    // Preview submits the complete arrays, disabled rules included.
+    await click(fixture.footer.previewBtn);
+    expect(lastCall(PLAN_PATH).body.options).toEqual({
+      positive: { rules: [
+        { type: 'remove', text: 'masterwork, ', enabled: false },
+        { type: 'replace', search: 'cat', replacement: 'dog', enabled: false },
+      ] },
+      negative: { rules: [{ type: 'append', text: ', lowres' }] },
+    });
+
+    // Re-enable both: the canonical form omits `enabled` again and the
+    // fields are unchanged; the next Preview body reflects it.
+    await click(toggleOf(legacy));
+    await click(toggleOf(before[1]));
+    await click(fixture.footer.previewBtn);
+    expect(lastCall(PLAN_PATH).body.options.positive.rules).toEqual([
+      { type: 'remove', text: 'masterwork, ' },
+      { type: 'replace', search: 'cat', replacement: 'dog' },
+    ]);
+    expect(fixture.footer.applyBtn.disabled).toBe(false);
+    await click(fixture.footer.applyBtn);
+    expect(lastCall(APPLY_PATH).body.options).toEqual(lastCall(PLAN_PATH).body.options);
+  });
+
+  it('Apply receives disabled rules with enabled:false', async () => {
+    const fixture = await open([PRESET]);
+    await selectPreset(fixture, PRESET.id);
+    await click(toggleOf(rows(fixture, 'negative')[0]));
+    await click(fixture.footer.previewBtn);
+    await click(fixture.footer.applyBtn);
+    expect(lastCall(APPLY_PATH).body.options).toEqual({
+      positive: { rules: [
+        { type: 'remove', text: 'masterwork, ' },
+        { type: 'replace', search: 'cat', replacement: 'dog', enabled: false },
+      ] },
+      negative: { rules: [{ type: 'append', text: ', lowres', enabled: false }] },
+    });
+  });
+
+  it('a Preview that resolves after a toggle does not enable Apply for the newer draft', async () => {
+    const fixture = await open([PRESET]);
+    await selectPreset(fixture, PRESET.id);
+    pendingPlans = [];
+    fixture.footer.previewBtn.dispatch('click', { target: fixture.footer.previewBtn });
+    await flush();
+    expect(pendingPlans).toHaveLength(1);
+    await click(toggleOf(rows(fixture, 'positive')[0]));
+    pendingPlans.shift()();
+    await flush();
+    expect(fixture.root.__ccPreviewValid).toBe(false);
+    expect(fixture.footer.applyBtn.disabled).toBe(true);
+    expect(fixture.footer.plan.hidden).toBe(true);
+    expect(fixture.footer.status.textContent).toBe('Workflow rules changed. Run Preview again.');
+    expect(fixture.footer.previewBtn.disabled).toBe(false);
+  });
+
+  it('disabled rows stay editable and removable', async () => {
+    const fixture = await open([PRESET]);
+    await selectPreset(fixture, PRESET.id);
+    const disabled = rows(fixture, 'positive')[1];
+    const search = disabled.querySelector('[data-processing-rule-search]');
+    search.value = 'cats';
+    search.dispatch('input', { target: search });
+    fixture.preset.updateBtn.dispatch('click');
+    await flush();
+    expect(lastCall('/processing/presets/21/replace').body.config.positive.rules[1])
+      .toEqual({ type: 'replace', search: 'cats', replacement: 'dog', enabled: false });
+
+    disabled.querySelector('[data-processing-remove-rule]').dispatch('click');
+    expect(rows(fixture, 'positive')).toHaveLength(1);
+    expect(rows(fixture, 'positive')[0].querySelector('[data-processing-rule-text]').value).toBe('masterwork, ');
+  });
+
+  it('saves, reloads, and updates enabled:false through the existing preset endpoints', async () => {
+    const fixture = await open();
+    const placeholder = rows(fixture, 'positive')[0];
+    placeholder.querySelector('[data-processing-rule-text]').value = 'drop me';
+    await click(toggleOf(placeholder));
+    fixture.preset.saveBtn.dispatch('click');
+    fixture.preset.nameInput.value = 'With disabled';
+    fixture.preset.nameForm.dispatch('submit', { target: fixture.preset.nameForm });
+    await flush();
+    const create = lastCall('/processing/presets');
+    expect(create.body.config.positive.rules).toEqual([{ type: 'remove', text: 'drop me', enabled: false }]);
+    expect(fixture.preset.select.value).toBe('100');
+    expect(fixture.root.__ccDirty).toBe(false);
+    expect(fixture.preset.modified.hidden).toBe(true);
+
+    // Switch away and back: the disabled state comes from the saved preset.
+    await selectPreset(fixture, '');
+    expect(rows(fixture, 'positive')).toHaveLength(0);
+    await selectPreset(fixture, 100);
+    const reloaded = rows(fixture, 'positive')[0];
+    expect(toggleOf(reloaded).getAttribute('aria-pressed')).toBe('false');
+    expect(reloaded.querySelector('[data-processing-rule-text]').value).toBe('drop me');
+
+    await click(toggleOf(reloaded));
+    fixture.preset.updateBtn.dispatch('click');
+    await flush();
+    expect(lastCall('/processing/presets/100/replace').body.config.positive.rules).toEqual([{ type: 'remove', text: 'drop me' }]);
+    expect(fixture.preset.modified.hidden).toBe(true);
+  });
+
+  it('a failed Update keeps the toggled draft modified and unchanged', async () => {
+    const fixture = await open([PRESET]);
+    await selectPreset(fixture, PRESET.id);
+    await click(toggleOf(rows(fixture, 'negative')[0]));
+    fetchState.fetchMock.mockImplementationOnce(async () => ({
+      ok: false, status: 500, json: async () => ({ ok: false, error: { code: 'INTERNAL', message: 'Preset could not be saved.' } }),
+    }));
+    fixture.preset.updateBtn.dispatch('click');
+    await flush();
+    expect(fixture.footer.error.hidden).toBe(false);
+    expect(fixture.root.__ccDirty).toBe(true);
+    expect(fixture.preset.modified.hidden).toBe(false);
+    expect(toggleOf(rows(fixture, 'negative')[0]).getAttribute('aria-pressed')).toBe('false');
+    expect(rows(fixture, 'negative')[0].querySelector('[data-processing-rule-text]').value).toBe(', lowres');
+    expect(fetchState.presets.get('21').config.negative).toEqual([{ type: 'append', text: ', lowres' }]);
+  });
+
+  it('a toggle made while Update is pending keeps the newer draft modified', async () => {
+    const fixture = await open([PRESET]);
+    await selectPreset(fixture, PRESET.id);
+    await click(toggleOf(rows(fixture, 'negative')[0]));
+    const delegate = fetchState.fetchMock.getMockImplementation();
+    let release;
+    fetchState.fetchMock.mockImplementationOnce((url, init) => new Promise((resolve) => {
+      release = () => resolve(delegate(url, init));
+    }));
+    fixture.preset.updateBtn.dispatch('click');
+    await flush();
+    await click(toggleOf(rows(fixture, 'positive')[0]));
+    release();
+    await flush();
+    expect(lastCall('/processing/presets/21/replace').body.config.positive.rules[0]).toEqual({ type: 'remove', text: 'masterwork, ' });
+    expect(fixture.root.__ccDirty).toBe(true);
+    expect(fixture.preset.modified.hidden).toBe(false);
+    expect(toggleOf(rows(fixture, 'positive')[0]).getAttribute('aria-pressed')).toBe('false');
+  });
+
+  describe('a pending Update keeps selection ownership', () => {
+    const GENERAL = {
+      id: 31, operationType: 'workflow-prompt', displayName: 'General', watermarkId: null,
+      config: { positive: [{ type: 'remove', text: 'general, ' }], negative: [] },
+    };
+    const BENJI = {
+      id: 32, operationType: 'workflow-prompt', displayName: 'Benji', watermarkId: null,
+      config: { positive: [{ type: 'append', text: ', benji', enabled: false }], negative: [{ type: 'prepend', text: 'blurry, ' }] },
+    };
+    const ruleText = (fixture, side) => rows(fixture, side).map((row) => row.querySelector('[data-processing-rule-text]').value);
+
+    function holdNextUpdate() {
+      const delegate = fetchState.fetchMock.getMockImplementation();
+      const held = {};
+      fetchState.fetchMock.mockImplementationOnce((url, init) => new Promise((resolve) => {
+        held.release = () => resolve(delegate(url, init));
+        held.fail = () => resolve({
+          ok: false, status: 500, json: async () => ({ ok: false, error: { code: 'INTERNAL', message: 'Preset could not be saved.' } }),
+        });
+      }));
+      return held;
+    }
+
+    it('A: switching presets while an Update is pending keeps the new selection, its rules, and the next Update target', async () => {
+      const fixture = await open([GENERAL, BENJI]);
+      await selectPreset(fixture, GENERAL.id);
+      rows(fixture, 'positive')[0].querySelector('[data-processing-rule-text]').value = 'general v2, ';
+      const held = holdNextUpdate();
+      fixture.preset.updateBtn.dispatch('click');
+      await flush();
+
+      await selectPreset(fixture, BENJI.id);
+      held.release();
+      await flush();
+
+      // General was saved with what was sent; nothing else changed.
+      expect(fetchState.presets.get('31').config.positive).toEqual({ rules: [{ type: 'remove', text: 'general v2, ' }] });
+      expect(fetchState.presets.get('32').config).toEqual(BENJI.config);
+      // Benji still owns the selector, the visible label, and the rows.
+      expect(fixture.preset.select.value).toBe('32');
+      expect(ruleText(fixture, 'positive')).toEqual([', benji']);
+      expect(toggleOf(rows(fixture, 'positive')[0]).getAttribute('aria-pressed')).toBe('false');
+      expect(ruleText(fixture, 'negative')).toEqual(['blurry, ']);
+      expect(fixture.root.__ccDirty).toBe(false);
+      expect(fixture.preset.modified.hidden).toBe(true);
+
+      // The next Update targets Benji, never General.
+      const replaceCallsBefore = fetchState.calls.filter((call) => call.url.endsWith('/replace')).length;
+      fixture.preset.updateBtn.dispatch('click');
+      await flush();
+      const replaceCalls = fetchState.calls.filter((call) => call.url.endsWith('/replace'));
+      expect(replaceCalls).toHaveLength(replaceCallsBefore + 1);
+      expect(replaceCalls.at(-1).url).toBe('/processing/presets/32/replace');
+      expect(replaceCalls.at(-1).body.config).toEqual({
+        positive: { rules: [{ type: 'append', text: ', benji', enabled: false }] },
+        negative: { rules: [{ type: 'prepend', text: 'blurry, ' }] },
+      });
+      expect(fetchState.presets.get('31').config.positive).toEqual({ rules: [{ type: 'remove', text: 'general v2, ' }] });
+    });
+
+    it('B: staying on the preset settles the pending Update normally', async () => {
+      const fixture = await open([GENERAL, BENJI]);
+      await selectPreset(fixture, GENERAL.id);
+      await click(toggleOf(rows(fixture, 'positive')[0]));
+      expect(fixture.preset.modified.hidden).toBe(false);
+      const held = holdNextUpdate();
+      fixture.preset.updateBtn.dispatch('click');
+      await flush();
+      held.release();
+      await flush();
+
+      expect(lastCall('/processing/presets/31/replace').body.config.positive.rules).toEqual([{ type: 'remove', text: 'general, ', enabled: false }]);
+      expect(fixture.preset.select.value).toBe('31');
+      expect(fixture.root.__ccDirty).toBe(false);
+      expect(fixture.preset.modified.hidden).toBe(true);
+      expect(fixture.footer.status.textContent).toBe('Preset updated.');
+    });
+
+    it('D: a failed pending Update after switching keeps the new selection and draft and shows the error', async () => {
+      const fixture = await open([GENERAL, BENJI]);
+      await selectPreset(fixture, GENERAL.id);
+      const held = holdNextUpdate();
+      fixture.preset.updateBtn.dispatch('click');
+      await flush();
+      await selectPreset(fixture, BENJI.id);
+      await click(toggleOf(rows(fixture, 'negative')[0]));
+      held.fail();
+      await flush();
+
+      expect(fixture.footer.error.hidden).toBe(false);
+      expect(fixture.preset.select.value).toBe('32');
+      expect(fixture.root.__ccDirty).toBe(true);
+      expect(fixture.preset.modified.hidden).toBe(false);
+      expect(toggleOf(rows(fixture, 'negative')[0]).getAttribute('aria-pressed')).toBe('false');
+      expect(fetchState.presets.get('31').config).toEqual(GENERAL.config);
+    });
+  });
+
+  it('exports marked v2 bundles with enabled:false and imports v1 and v2 workflow bundles', async () => {
+    let exportedBlob;
+    vi.stubGlobal('URL', {
+      createObjectURL: vi.fn((blob) => { exportedBlob = blob; return 'blob:creatorcrate-workflow'; }),
+      revokeObjectURL: vi.fn(),
+    });
+    const fixture = await open([PRESET]);
+    fixture.preset.exportBtn.dispatch('click');
+    await flush();
+    const exported = JSON.parse(await exportedBlob.text());
+    expect(exported.creatorcrate).toBe('processing-presets');
+    expect(exported.version).toBe(2);
+    expect(exported.presets[0].config).toEqual(PRESET.config);
+
+    const importBundle = async (bundle) => {
+      fixture.preset.importInput.files = [{ text: async () => JSON.stringify(bundle) }];
+      fixture.preset.importInput.dispatch('change', { target: fixture.preset.importInput });
+      await flush();
+    };
+    await importBundle(exported);
+    expect(fixture.footer.error.hidden).toBe(true);
+    const v2Import = lastCall('/processing/presets/import');
+    expect(v2Import.body.version).toBe(2);
+    expect(v2Import.body.presets[0].config).toEqual(PRESET.config);
+
+    await importBundle({
+      creatorcrate: 'processing-presets', version: 1, operationType: 'workflow-prompt',
+      presets: [{ displayName: 'Legacy', config: { positive: [{ type: 'append', text: 'x', enabled: true }], negative: [] } }],
+    });
+    expect(fixture.footer.error.hidden).toBe(true);
+    const v1Import = lastCall('/processing/presets/import');
+    expect(v1Import.body.version).toBe(2);
+    expect(v1Import.body.presets[0].config).toEqual({ positive: [{ type: 'append', text: 'x' }], negative: [] });
+    const legacyId = Array.from(fetchState.presets.values()).find((preset) => preset.displayName === 'Legacy').id;
+    await selectPreset(fixture, legacyId);
+    expect(toggleOf(rows(fixture, 'positive')[0]).getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('rejects unsupported workflow versions and invalid enabled values without touching the draft', async () => {
+    const fixture = await open([PRESET]);
+    await selectPreset(fixture, PRESET.id);
+    await click(toggleOf(rows(fixture, 'positive')[0]));
+    const snapshot = () => JSON.stringify(rows(fixture, 'positive').map((row) => [
+      row.querySelector('[data-processing-rule-operation]').value,
+      row.querySelector('[data-processing-rule-text]').value,
+      toggleOf(row).getAttribute('aria-pressed'),
+    ]));
+    const draft = snapshot();
+    const bad = [
+      { creatorcrate: 'processing-presets', version: 3, operationType: 'workflow-prompt', presets: [] },
+      { creatorcrate: 'processing-presets', version: 0, operationType: 'workflow-prompt', presets: [] },
+      { creatorcrate: 'processing-presets', version: 2, operationType: 'workflow-prompt', presets: [
+        { displayName: 'Bad', config: { positive: [{ type: 'remove', text: 'x', enabled: 'false' }] } },
+      ] },
+      { creatorcrate: 'processing-presets', version: 2, operationType: 'workflow-prompt', presets: [
+        { displayName: 'Bad', config: { positive: [{ type: 'replace', search: 'a', replacement: 'b', enabled: null }] } },
+      ] },
+      { creatorcrate: 'processing-presets', version: 2, operationType: 'workflow-prompt', presets: [
+        { displayName: 'Bad', config: { positive: [{ type: 'remove', text: 'x', disabled: true }] } },
+      ] },
+    ];
+    for (const bundle of bad) {
+      fixture.preset.importInput.files = [{ text: async () => JSON.stringify(bundle) }];
+      fixture.preset.importInput.dispatch('change', { target: fixture.preset.importInput });
+      await flush();
+      expect(fixture.footer.error.hidden).toBe(false);
+    }
+    expect(fetchState.calls.some((call) => call.url === '/processing/presets/import')).toBe(false);
+    expect(fixture.root.__ccDirty).toBe(true);
+    expect(fixture.preset.select.value).toBe(String(PRESET.id));
+    expect(snapshot()).toBe(draft);
+  });
+
+  it('keeps Convert bundles on v1 only', async () => {
+    const convert = buildConvertRoot(doc);
+    enhanceProcessingDialogs(doc);
+    doc.dispatch('click', { target: convert.trigger });
+    await flush();
+    const importConvert = async (version) => {
+      convert.preset.importInput.files = [{ text: async () => JSON.stringify({
+        creatorcrate: 'processing-presets', version, operationType: 'convert',
+        presets: [{ displayName: 'C', config: { format: 'webp', originalHandling: 'keep' } }],
+      }) }];
+      convert.preset.importInput.dispatch('change', { target: convert.preset.importInput });
+      await flush();
+    };
+    for (const version of [2, 3]) {
+      await importConvert(version);
+      expect(convert.footer.errorText.textContent).toBe('This processing preset bundle version is unsupported.');
+    }
+    expect(fetchState.calls.some((call) => call.url === '/processing/presets/import')).toBe(false);
+    await importConvert(1);
+    expect(lastCall('/processing/presets/import').body.version).toBe(1);
   });
 });
