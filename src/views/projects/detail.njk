@@ -80,30 +80,38 @@
 
     <div class="project-detail-summary">
       <div class="project-detail-meta">
-        {% set projectStatusOption = project.projectStatusOption %}
-        {% set status = project.status %}{% include "partials/status-badge.njk" %}
-        {% set projectStatusOption = none %}
-        {% set projectTypeOption = project.projectTypeOption %}
-        {% set projectType = project.project_type %}{% include "partials/project-type-badge.njk" %}
-        {% set projectTypeOption = none %}
-        <nav class="project-detail-action-toolbar" aria-label="Project actions">
-          {% if not project.isArchived %}
-            <a class="button button-small button-secondary project-detail-action asset-tooltip asset-tooltip--right"
-               href="/projects/{{ project.id }}/edit" aria-label="Edit project" data-project-edit-id="{{ project.id }}" data-tooltip="Edit project">
-              {{ icons.icon('edit') }}
-            </a>
+        {# Status, Type, then the project's tags: one wrapping group. #}
+        <div class="project-detail-badges">
+          {% set projectStatusOption = project.projectStatusOption %}
+          {% set status = project.status %}{% include "partials/status-badge.njk" %}
+          {% set projectStatusOption = none %}
+          {% set projectTypeOption = project.projectTypeOption %}
+          {% set projectType = project.project_type %}{% include "partials/project-type-badge.njk" %}
+          {% set projectTypeOption = none %}
+          {% if projectTags.length > 0 %}
+            <ul class="tag-chip-list project-detail-tags" role="list" aria-label="Project tags">
+              {% for tag in projectTags %}
+                <li class="tag-chip">{{ tag.displayName }}</li>
+              {% endfor %}
+            </ul>
           {% endif %}
-          <a class="button button-small button-secondary project-detail-action asset-tooltip asset-tooltip--right"
-             href="/projects/{{ project.id }}/assets" aria-label="View Assets" data-tooltip="View Assets">
-            {{ icons.icon('assets') }}
-          </a>
-          {% if openLocallyUri %}
-            <a class="button button-small button-secondary project-detail-action asset-tooltip asset-tooltip--right"
-               href="{{ openLocallyUri }}" aria-label="Open locally" data-tooltip="Open locally">
-              {{ icons.icon('open-locally') }}
-            </a>
-          {% endif %}
-        </nav>
+        </div>
+        {% if not project.isArchived or openLocallyUri %}
+          <nav class="project-detail-action-toolbar" aria-label="Project actions">
+            {% if not project.isArchived %}
+              <a class="button button-small button-secondary project-detail-action asset-tooltip asset-tooltip--right"
+                 href="/projects/{{ project.id }}/edit" aria-label="Edit project" data-project-edit-id="{{ project.id }}" data-tooltip="Edit project">
+                {{ icons.icon('edit') }}
+              </a>
+            {% endif %}
+            {% if openLocallyUri %}
+              <a class="button button-small button-secondary project-detail-action asset-tooltip asset-tooltip--right"
+                 href="{{ openLocallyUri }}" aria-label="Open locally" data-tooltip="Open locally">
+                {{ icons.icon('open-locally') }}
+              </a>
+            {% endif %}
+          </nav>
+        {% endif %}
       </div>
 
       {% if project.notes %}
@@ -111,30 +119,26 @@
         <p class="notes">{{ project.notes }}</p>
       {% endif %}
 
-      <section class="project-detail-health">
+      <section class="project-detail-health" aria-labelledby="project-detail-health-title">
+        <div class="project-detail-health-header">
+          <h2 id="project-detail-health-title">Assets</h2>
+          <a class="button button-small button-secondary project-detail-health-action" href="/projects/{{ project.id }}/assets">
+            {{ icons.icon('assets') }}<span>View Assets</span>
+          </a>
+        </div>
         <div class="count-grid">
           <div class="count-card"><span class="count">{{ assetHealth.total }}</span> Total assets</div>
-          <div class="count-card"><span class="count">{{ assetHealth.present }}</span> Present</div>
-          <div class="count-card">
+          <div class="count-card{% if assetHealth.missing > 0 %} count-card--attention{% endif %}">
             <span class="count">{{ assetHealth.missing }}</span> Missing
             {% if assetHealth.missingByReleases > 0 %}
-              <small>({{ assetHealth.missingByReleases }} referenced by releases)</small>
+              <small>{{ assetHealth.missingByReleases }} referenced by releases</small>
             {% endif %}
           </div>
+          <div class="count-card"><span class="count">{{ assetHealth.uncategorized }}</span> Uncategorized</div>
+          <div class="count-card"><span class="count">{{ assetHealth.categoriesInUse }}</span> Categories in use</div>
         </div>
+        <p class="project-detail-health-note">Indexed assets · presence reflects the last scan</p>
       </section>
-
-      <div class="project-detail-tags">
-        {% if projectTags.length > 0 %}
-          <ul class="tag-chip-list">
-            {% for tag in projectTags %}
-              <li class="tag-chip">{{ tag.displayName }}</li>
-            {% endfor %}
-          </ul>
-        {% else %}
-          <p class="help-text">No tags assigned to this project.</p>
-        {% endif %}
-      </div>
 
       {# ─── Project details ────────────────────────────────────────── #}
       <section class="project-detail-info project-detail-section">
@@ -194,8 +198,9 @@
             <li>
               <a href="/releases/{{ r.id }}">{{ r.title }}</a>
               <span class="meta">
-                {% set status = r.project_status %}{% include "partials/status-badge.njk" %}{% if r.published_date %} · published {{ r.published_date }}{% elif r.planned_date %} · planned {{ r.planned_date }}{% endif %}
-                · updated {{ r.updated_at | formatSqliteTimestamp(clockFormat) }}
+                {#- The parent project's status is shown once, in the hero; a
+                    release row carries only its own dates. -#}
+                {% if r.published_date %}published {{ r.published_date }} · {% elif r.planned_date %}planned {{ r.planned_date }} · {% endif %}updated {{ r.updated_at | formatSqliteTimestamp(clockFormat) }}
               </span>
               {{ socialPrepSummary.render(r.socialPreparation, r.id, _csrf, false, false, false) }}
               {% if r.thumbnails and r.thumbnails.length > 0 %}

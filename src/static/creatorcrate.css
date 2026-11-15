@@ -7903,20 +7903,94 @@
       .project-detail-link {
         font-size: 0.875rem;
       }
+      /* Status, Type, and tags wrap as one group; the tag list adds no box of
+         its own, so each chip wraps beside the badges like a peer. */
+      .project-detail-badges {
+        display: flex;
+        flex: 1 1 18rem;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--space-xs);
+        min-width: 0;
+      }
+      .project-detail-badges > .project-detail-tags {
+        display: contents;
+      }
+      .project-detail-badges .tag-chip {
+        max-width: 100%;
+        min-width: 0;
+      }
+      /* Project asset summary: a label + View Assets header over four compact
+         metrics, two per row when the summary column is narrow. */
       .project-detail-health {
         margin-top: var(--space-xs);
+        container-type: inline-size;
+      }
+      .project-detail-health-header {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--space-sm);
+        margin-bottom: var(--space-sm);
+      }
+      .project-detail-health-header h2 {
+        margin: 0;
+        color: var(--muted);
+        font-size: 0.75rem;
+        font-weight: 500;
+        letter-spacing: 0.08em;
+        line-height: 1.3;
+        text-transform: uppercase;
+      }
+      .project-detail-health-action {
+        display: inline-flex;
+        align-items: center;
+        gap: var(--space-xs);
+      }
+      .project-detail-health-action svg {
+        display: block;
+        flex: 0 0 auto;
+        width: 1rem;
+        height: 1rem;
+      }
+      .project-detail-health .count-grid {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: var(--space-sm);
+      }
+      @container (max-width: 34rem) {
+        .project-detail-health .count-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
       }
       .project-detail-health .count-card {
+        min-width: 0;
         padding: var(--space-sm) var(--space-md);
         background: var(--surface);
         border: 1px solid var(--border);
         border-radius: var(--radius-md);
-        text-align: center;
+        text-align: left;
         color: var(--muted);
         font-size: 0.875rem;
+        overflow-wrap: anywhere;
+      }
+      .project-detail-health .count-card--attention {
+        border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
       }
       .project-detail-health .count {
         font-size: 1.25rem;
+      }
+      .project-detail-health-note {
+        margin: var(--space-xs) 0 0;
+        color: var(--muted);
+        font-size: 0.75rem;
+      }
+      @media (max-width: 767px) {
+        /* On a phone the actions drop below the badge group, left-aligned. */
+        .project-detail-badges + .project-detail-action-toolbar {
+          margin-left: 0;
+          justify-content: flex-start;
+        }
       }
       .tag-chip-list {
         display: flex;
@@ -15468,7 +15542,7 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   overflow-wrap: anywhere;
 }
 :where(.refined-page main) .project-detail-health .count-card {
-  padding: var(--space-md);
+  padding: var(--space-sm) var(--space-md);
   border-radius: var(--radius-lg);
   font-size: 0.8125rem;
   line-height: 1.4;
@@ -15492,7 +15566,6 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
-:where(.refined-page main) .project-detail-tags .help-text,
 :where(.refined-page main) .project-detail-info small {
   color: var(--muted);
   font-size: 0.75rem;
@@ -15545,9 +15618,6 @@ button[aria-disabled="true"] > .project-create-submit-icon {
 :where(.refined-page main) .project-detail-releases .release-list .meta {
   font-size: 0.8125rem;
   line-height: 1.6;
-}
-:where(.refined-page main) .project-detail-releases .release-list .meta .status-badge {
-  vertical-align: 0.0625rem;
 }
 :where(.refined-page main) .project-detail-releases :is(.release-social-prep-summary, .release-thumbnail-strip) {
   margin-top: 0;

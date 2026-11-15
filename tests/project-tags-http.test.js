@@ -19,7 +19,15 @@ function extractProjectDetailActionToolbar(html) {
 }
 
 function extractProjectTagsSection(html) {
-  return html.match(/<div class="project-detail-tags">([\s\S]*?)<\/div>/)?.[1] || '';
+  return html.match(/<ul class="tag-chip-list project-detail-tags"[^>]*>([\s\S]*?)<\/ul>/)?.[1] || '';
+}
+
+function extractProjectDetailBadges(html) {
+  return html.match(/<div class="project-detail-badges">([\s\S]*?)<\/div>/)?.[1] || '';
+}
+
+function extractProjectAssetSummaryHeader(html) {
+  return html.match(/<div class="project-detail-health-header">([\s\S]*?)<\/div>/)?.[1] || '';
 }
 
 function extractCurrentTagsSection(html) {
@@ -100,7 +108,10 @@ describe('project tags — HTTP', () => {
   it('shows assigned display names in service order and a clear untagged state', async () => {
     const untaggedProjectId = await createProject('Untagged Project');
     const untagged = await agent.get(`/projects/${untaggedProjectId}`).expect(200);
-    expect(extractProjectTagsSection(untagged.text)).toContain('No tags assigned to this project.');
+    // No tags: the badge group holds only Status and Type, with no empty tag list.
+    expect(extractProjectDetailBadges(untagged.text)).toContain('project-type-badge');
+    expect(untagged.text).not.toContain('project-detail-tags');
+    expect(untagged.text).not.toContain('No tags assigned to this project.');
 
     const projectId = await createProject('Tagged Project');
     const zebra = createTag('Zebra Display');
@@ -109,6 +120,10 @@ describe('project tags — HTTP', () => {
 
     const detail = await agent.get(`/projects/${projectId}`).expect(200);
     const tagsSection = extractProjectTagsSection(detail.text);
+    const badges = extractProjectDetailBadges(detail.text);
+    // Tags sit in the badge group immediately after the Project Type badge.
+    expect(badges).toMatch(/project-status-badge[\s\S]*?project-type-badge[^>]*>[^<]*<\/span>\s*<ul class="tag-chip-list project-detail-tags" role="list" aria-label="Project tags">\s*<li class="tag-chip">Alpha Display<\/li>\s*<li class="tag-chip">Zebra Display<\/li>/);
+    expect(detail.text.match(/class="tag-chip-list project-detail-tags"/g)).toHaveLength(1);
     expect(tagsSection.indexOf('Alpha Display')).toBeLessThan(tagsSection.indexOf('Zebra Display'));
     expect(tagsSection).not.toContain('zebra display');
     expect(tagsSection).not.toContain('alpha display');
@@ -128,8 +143,9 @@ describe('project tags — HTTP', () => {
     expect(detail.text).not.toContain(`href="/projects/${projectId}/tags"`);
     expect(toolbar).toContain(`href="/projects/${projectId}/edit"`);
     expect(toolbar).toContain(`data-project-edit-id="${projectId}"`);
-    expect(toolbar).toContain(`href="/projects/${projectId}/assets"`);
-    expect(toolbar).toContain('aria-label="View Assets"');
+    expect(toolbar).not.toContain('View Assets');
+    expect(extractProjectAssetSummaryHeader(detail.text)).toContain(`href="/projects/${projectId}/assets"`);
+    expect(extractProjectAssetSummaryHeader(detail.text)).toContain('<span>View Assets</span>');
     expect(detail.text).not.toContain(`href="/projects/${projectId}/asset-categories"`);
     expect(detail.text).not.toMatch(new RegExp(`<section class="workflow-actions">[\\s\\S]*?/projects/${projectId}/tags`));
 
@@ -150,8 +166,9 @@ describe('project tags — HTTP', () => {
     expect(extractProjectTagsSection(detail.text)).toContain('Archived Display');
     expect(detailActions).toBe('');
     expect(detailActions).not.toContain(`href="/projects/${projectId}/tags">Manage tags</a>`);
-    expect(toolbar).toContain(`href="/projects/${projectId}/assets"`);
-    expect(toolbar).toContain('aria-label="View Assets"');
+    expect(toolbar).toBe('');
+    expect(extractProjectAssetSummaryHeader(detail.text)).toContain(`href="/projects/${projectId}/assets"`);
+    expect(extractProjectAssetSummaryHeader(detail.text)).toContain('<span>View Assets</span>');
     // Asset Categories is reached from the assets page, not the project detail header.
     expect(detailActions).not.toContain(`href="/projects/${projectId}/asset-categories"`);
 

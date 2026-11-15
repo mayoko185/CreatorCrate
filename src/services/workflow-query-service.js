@@ -875,10 +875,12 @@ export function createWorkflowQueryService({
    *     hasAnyReleases: boolean,
    *   },
    *   assetHealth: {
-   *     total: number,
-   *     present: number,
-   *     missing: number,
-   *     missingByReleases: number,
+   *     total: number,            // all indexed project assets, incl. missing
+   *     present: number,          // total - missing
+   *     missing: number,          // is_present = 0
+   *     uncategorized: number,    // category_id IS NULL, incl. missing
+   *     categoriesInUse: number,  // distinct non-null category_id values with >= 1 asset
+   *     missingByReleases: number, // distinct missing assets in non-archived releases
    *   },
    * }}
    */
@@ -908,9 +910,11 @@ export function createWorkflowQueryService({
       includeArchived: true,
     });
 
-    const assetTotal = assetRepository.countByProjectId(projectId);
-    const assetPresent = assetRepository.countPresentByProjectId(projectId);
-    const assetMissing = assetRepository.countMissingByProjectId(projectId);
+    // One bounded GROUP BY aggregate (shared with the asset browser's
+    // category navigation) supplies every whole-project asset metric:
+    // total and uncategorized include missing assets, and categories in use
+    // counts only non-null categories holding at least one indexed asset.
+    const assetCounts = assetRepository.getProjectAssetNavigationCounts(projectId);
     const assetMissingByReleases = releaseRepository.countMissingAssetsReferencedByProjectId(projectId);
 
     // Attach the retained primary image using the same helper the project list
@@ -926,9 +930,11 @@ export function createWorkflowQueryService({
         hasAnyReleases: releaseCount > 0,
       },
       assetHealth: {
-        total: assetTotal,
-        present: assetPresent,
-        missing: assetMissing,
+        total: assetCounts.total,
+        present: assetCounts.total - assetCounts.missing,
+        missing: assetCounts.missing,
+        uncategorized: assetCounts.uncategorized,
+        categoriesInUse: Object.keys(assetCounts.byCategoryId).length,
         missingByReleases: assetMissingByReleases,
       },
     };

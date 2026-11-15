@@ -9,6 +9,7 @@ import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { MANIFEST_FILENAME } from '../src/storage/manifest.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createReleaseRepository } from '../src/data/release-repository.js';
+import { createAssetCategoryRepository } from '../src/data/asset-category-repository.js';
 import { buildAssetRevisionToken } from '../src/services/preview-service.js';
 import { createAppMetaRepository } from '../src/data/app-meta-repository.js';
 import { createProjectImageSettingsService } from '../src/services/project-image-settings-service.js';
@@ -2661,7 +2662,7 @@ describe('project HTTP workflow', () => {
     const meta = metaStart >= 0 ? extractHtmlElement(res.text, metaStart) : '';
     const summaryStart = res.text.indexOf('<div class="project-detail-summary">');
     const summary = summaryStart >= 0 ? extractHtmlElement(res.text, summaryStart) : '';
-    const healthStart = res.text.indexOf('<section class="project-detail-health">');
+    const healthStart = res.text.indexOf('<section class="project-detail-health"');
     const dialog = res.text.match(/<dialog id="project-edit-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
 
     expect(res.text).toContain('Detail Project');
@@ -2674,10 +2675,11 @@ describe('project HTTP workflow', () => {
     expect(toolbar).toContain(`href="${location}/edit"`);
     expect(toolbar).toContain(`data-project-edit-id="${location.split('/').pop()}"`);
     expect(toolbar).toContain('aria-label="Edit project"');
-    expect(toolbar).toContain(`href="${location}/assets"`);
-    expect(toolbar).toContain('aria-label="View Assets"');
+    // View Assets lives in the asset summary header, not the icon toolbar.
+    expect(toolbar).not.toContain(`href="${location}/assets"`);
+    expect(toolbar).not.toContain('View Assets');
     expect(toolbar).not.toContain('aria-label="Open locally"');
-    expect((toolbar.match(/<a\b/g) || [])).toHaveLength(2);
+    expect((toolbar.match(/<a\b/g) || [])).toHaveLength(1);
     expect(dialog).not.toBe('');
     expect(dialog).toContain('<dialog id="project-edit-dialog" class="app-dialog project-form-dialog app-dialog--refined"');
     expect(dialog).toContain('<h2 id="project-edit-dialog-title">Edit Project</h2>');
@@ -2741,17 +2743,29 @@ describe('project HTTP workflow', () => {
     expect(dialog).not.toContain('inline-confirmation');
     expect(meta.indexOf('status-badge')).toBeGreaterThanOrEqual(0);
     expect(meta.indexOf('project-detail-action-toolbar')).toBeGreaterThan(meta.indexOf('status-badge'));
-    expect(summary).toMatch(/<div class="project-detail-meta">[\s\S]*?<\/div>\s*<section class="project-detail-health">\s*<div class="count-grid">/);
+    expect(meta).toMatch(/<div class="project-detail-badges">[\s\S]*?<\/div>\s*<nav class="project-detail-action-toolbar"/);
+    // An untagged project shows no empty tag group.
+    expect(meta).not.toContain('project-detail-tags');
+    expect(res.text).not.toContain('No tags assigned to this project.');
+    expect(summary).toMatch(/<div class="project-detail-meta">[\s\S]*?<\/nav>\s*<\/div>\s*<section class="project-detail-health" aria-labelledby="project-detail-health-title">/);
     expect(healthStart).toBeGreaterThan(metaStart);
     const health = extractProjectDetailSection(res.text, 'project-detail-health');
-    expect(health).toContain('<section class="project-detail-health">');
+    expect(health).toMatch(/<div class="project-detail-health-header">\s*<h2 id="project-detail-health-title">Assets<\/h2>\s*<a class="button button-small button-secondary project-detail-health-action" href="\/projects\/\d+\/assets">\s*<svg[\s\S]*?<\/svg><span>View Assets<\/span>\s*<\/a>/);
+    expect(health).toContain(`href="${location}/assets"`);
+    // One View Assets action on the page.
+    expect(res.text.match(/View Assets/g) || []).toHaveLength(1);
     const countGridStart = health.indexOf('<div class="count-grid">');
     const countGrid = countGridStart >= 0 ? extractHtmlElement(health, countGridStart) : '';
-    const countCards = extractDirectHtmlChildren(countGrid).filter((child) => child.includes('class="count-card"'));
-    expect(countCards).toHaveLength(3);
+    const countCards = extractDirectHtmlChildren(countGrid).filter((child) => child.includes('class="count-card'));
+    expect(countCards).toHaveLength(4);
     expect(countCards[0]).toContain('<span class="count">0</span> Total assets');
-    expect(countCards[1]).toContain('<span class="count">0</span> Present');
-    expect(countCards[2]).toContain('<span class="count">0</span> Missing');
+    expect(countCards[1]).toContain('<span class="count">0</span> Missing');
+    expect(countCards[1]).not.toContain('count-card--attention');
+    expect(countCards[1]).not.toContain('referenced by releases');
+    expect(countCards[2]).toContain('<span class="count">0</span> Uncategorized');
+    expect(countCards[3]).toContain('<span class="count">0</span> Categories in use');
+    expect(health).not.toContain('Present');
+    expect(health).toContain('<p class="project-detail-health-note">Indexed assets · presence reflects the last scan</p>');
     expect(meta).not.toContain('project-detail-health');
     expect(summary.indexOf('project-detail-action-toolbar')).toBeGreaterThanOrEqual(0);
     expect(summary.indexOf('project-detail-action-toolbar')).toBeLessThan(summary.indexOf('project-detail-health'));
@@ -2790,16 +2804,21 @@ describe('project HTTP workflow', () => {
     expect(healthRule).not.toContain('background:');
     expect(healthRule).not.toContain('border:');
     expect(healthRule).not.toContain('border-radius:');
+    expect(healthRule).toContain('container-type: inline-size');
     const countGridRule = css.match(/\.count-grid\s*\{[^}]*\}/)?.[0] || '';
     expect(countGridRule).toContain('display: grid');
     expect(countGridRule).toContain('grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr))');
     expect(countGridRule).toContain('gap: 0.75rem');
+    // Four metric columns where the summary has room, two when it is narrow.
+    expect(css).toMatch(/\.project-detail-health \.count-grid\s*\{[^}]*grid-template-columns:\s*repeat\(4, minmax\(0, 1fr\)\)/);
+    expect(css).toMatch(/@container \(max-width: 34rem\)\s*\{\s*\.project-detail-health \.count-grid\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/);
+    expect(css).toMatch(/\.project-detail-badges > \.project-detail-tags\s*\{[^}]*display:\s*contents/);
     const countCardRule = css.match(/\.project-detail-health\s+\.count-card\s*\{[^}]*\}/)?.[0] || '';
     expect(countCardRule).toContain('padding: var(--space-sm) var(--space-md)');
     expect(countCardRule).toContain('background: var(--surface)');
     expect(countCardRule).toContain('border: 1px solid var(--border)');
     expect(countCardRule).toContain('border-radius: var(--radius-md)');
-    expect(countCardRule).toContain('text-align: center');
+    expect(countCardRule).toContain('text-align: left');
     expect(countCardRule).toContain('color: var(--muted)');
     expect(countCardRule).toContain('font-size: 0.875rem');
     const countNumberRule = css.match(/\.project-detail-health\s+\.count\s*\{[^}]*\}/)?.[0] || '';
@@ -3953,11 +3972,71 @@ describe('project HTTP workflow', () => {
       db.prepare("INSERT INTO releases (project_id, title, published_date) VALUES (?, 'Published Release', '2026-11-20')")
         .run(id);
 
+      db.prepare("INSERT INTO releases (project_id, title) VALUES (?, 'Unscheduled Release')")
+        .run(id);
+
       const res = await agent.get(`/projects/${id}`).expect(200);
       const releases = extractProjectDetailSection(res.text, 'project-detail-releases');
+      const hero = extractProjectDetailSection(res.text, 'project-detail-hero');
+      const metaLines = (releases.match(/<span class="meta">[\s\S]*?<\/span>/g) || [])
+        .map((meta) => meta.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim());
 
-      expect(releases).toMatch(/Planned Release[\s\S]*?· planned 2026-11-10/);
-      expect(releases).toMatch(/Published Release[\s\S]*?· published 2026-11-20/);
+      // The parent project's status is shown once, in the hero, not per release.
+      expect(hero).toMatch(/<div class="project-detail-badges">\s*<span class="status-badge[^"]*"[^>]*>[^<]+<\/span>/);
+      expect(releases).not.toContain('status-badge');
+      expect(metaLines).toHaveLength(3);
+      for (const line of metaLines) {
+        expect(line).not.toMatch(/^·|·$|· ·/);
+      }
+      expect(metaLines).toEqual(expect.arrayContaining([
+        expect.stringMatching(/^planned 2026-11-10 · updated \S/),
+        expect.stringMatching(/^published 2026-11-20 · updated \S/),
+        expect.stringMatching(/^updated \S/),
+      ]));
+      expect(releases).toMatch(/Planned Release[\s\S]*?planned 2026-11-10/);
+      expect(releases).toMatch(/Published Release[\s\S]*?published 2026-11-20/);
+    });
+
+    it('project detail asset summary renders the four metrics with the missing-by-releases detail', async () => {
+      const id = await createProject({ title: 'Asset Summary Metrics' });
+      const assetRepository = createAssetRepository(db);
+      const categories = createAssetCategoryRepository(db);
+      const addCategory = (slug) => categories.addProjectCategory({
+        projectId: Number(id), displayName: slug, directorySlug: slug, displayOrder: 0, enabled: true,
+      });
+      const addAsset = (relativePath, { categoryId = null, isPresent = 1 } = {}) => {
+        const filename = path.posix.basename(relativePath);
+        const asset = assetRepository.upsert(id, relativePath, {
+          filename, extension: 'png', mimeType: 'image/png', sizeBytes: 1, modifiedAt: '2026-11-15 12:00:00',
+        });
+        db.prepare('UPDATE assets SET category_id = ?, is_present = ? WHERE id = ?').run(categoryId, isPresent, asset.id);
+        return asset;
+      };
+      const renders = addCategory('renders');
+      const sketches = addCategory('sketches');
+      addCategory('unused');
+      addAsset('renders/a.png', { categoryId: renders.id });
+      const missingRender = addAsset('renders/b.png', { categoryId: renders.id, isPresent: 0 });
+      addAsset('sketches/c.png', { categoryId: sketches.id });
+      addAsset('loose.png');
+      addAsset('loose-missing.png', { isPresent: 0 });
+      const release = db.prepare("INSERT INTO releases (project_id, title) VALUES (?, 'Metrics Release')").run(id);
+      db.prepare('INSERT INTO release_assets (release_id, asset_id) VALUES (?, ?)').run(release.lastInsertRowid, missingRender.id);
+
+      const res = await agent.get(`/projects/${id}`).expect(200);
+      const health = extractProjectDetailSection(res.text, 'project-detail-health');
+      const countGridStart = health.indexOf('<div class="count-grid">');
+      const cards = extractDirectHtmlChildren(extractHtmlElement(health, countGridStart))
+        .map((card) => card.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim());
+
+      expect(cards).toEqual([
+        '5 Total assets',
+        '2 Missing 1 referenced by releases',
+        '2 Uncategorized',
+        '2 Categories in use',
+      ]);
+      expect(health).toContain('count-card count-card--attention');
+      expect(health).not.toContain('Present');
     });
 
   });
@@ -4271,8 +4350,11 @@ describe('project HTTP workflow', () => {
       const toolbar = extractProjectDetailActionToolbar(res.text);
       expect(res.text).toContain('<title>CreatorCrate — Projects — Requested Archived Detail</title>');
       expect(res.text).toContain('This project is archived and read-only.');
-      expect(toolbar).toContain(`href="/projects/${id}/assets" aria-label="View Assets"`);
-      expect(toolbar).not.toContain(`href="/projects/${id}/edit"`);
+      // Nothing is left for the icon toolbar; View Assets stays in the asset summary.
+      expect(toolbar).toBe('');
+      expect(extractProjectDetailSection(res.text, 'project-detail-health'))
+        .toMatch(new RegExp(`<a class="button button-small button-secondary project-detail-health-action" href="/projects/${id}/assets">[\\s\\S]*?<span>View Assets</span>`));
+      expect(res.text).not.toContain(`href="/projects/${id}/edit"`);
       expect(res.text).not.toContain('id="project-edit-dialog"');
       expect(res.text).not.toContain(`/releases/new?projectId=${id}`);
       expect(res.text).not.toContain(`/projects/${id}/archive"`);
@@ -4317,7 +4399,8 @@ describe('project HTTP workflow', () => {
       expect(row.project_dir).toBeTruthy();
       const actions = extractProjectDetailActionToolbar(res.text);
       expect(actions).toContain('aria-label="Edit project"');
-      expect(actions).toContain('aria-label="View Assets"');
+      expect(actions).not.toContain('View Assets');
+      expect(extractProjectDetailSection(res.text, 'project-detail-health')).toContain('<span>View Assets</span>');
       expect(actions).toContain('aria-label="Open locally"');
       expect(actions).toContain(
         `href="creatorcrate-open://open?v=2&amp;path=${encodeURIComponent(`D:\\example\\${row.project_dir}`)}&amp;select=0"`
@@ -4334,8 +4417,9 @@ describe('project HTTP workflow', () => {
       const res = await agent.get(`/projects/${id}`).expect(200);
       const toolbar = extractProjectDetailActionToolbar(res.text);
 
-      expect(toolbar).toContain(`href="/projects/${id}/assets"`);
-      expect(toolbar).toContain('aria-label="View Assets"');
+      expect(toolbar).not.toContain(`href="/projects/${id}/assets"`);
+      expect(extractProjectDetailSection(res.text, 'project-detail-health')).toContain(`href="/projects/${id}/assets"`);
+      expect(extractProjectDetailSection(res.text, 'project-detail-health')).toContain('<span>View Assets</span>');
       expect(toolbar).toContain('aria-label="Open locally"');
       expect(toolbar).toContain(
         `href="creatorcrate-open://open?v=2&amp;path=${encodeURIComponent(`D:\\example\\${row.project_dir}`)}&amp;select=0"`

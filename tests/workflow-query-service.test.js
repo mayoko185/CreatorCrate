@@ -653,6 +653,8 @@ describe('workflow query service', () => {
         total: 0,
         present: 0,
         missing: 0,
+        uncategorized: 0,
+        categoriesInUse: 0,
         missingByReleases: 0,
       });
     });
@@ -992,7 +994,109 @@ describe('workflow query service', () => {
         total: 3,
         present: 2,
         missing: 1,
+        uncategorized: 3,
+        categoriesInUse: 0,
         missingByReleases: 0,
+      });
+    });
+
+    describe('four-metric asset summary', () => {
+      function addCategory(project, slug) {
+        return createAssetCategoryRepository(db).addProjectCategory({
+          projectId: project.id, displayName: slug, directorySlug: slug, displayOrder: 0, enabled: true,
+        });
+      }
+
+      function addAsset(project, relativePath, { categoryId = null, isPresent = 1 } = {}) {
+        const asset = insertAsset(db, {
+          projectId: project.id, relativePath, filename: path.posix.basename(relativePath), isPresent,
+        });
+        if (categoryId !== null) {
+          db.prepare('UPDATE assets SET category_id = ? WHERE id = ?').run(categoryId, asset.id);
+        }
+        return asset;
+      }
+
+      it('returns zero for all four metrics on an empty project, even with unused categories', () => {
+        const project = insertProject(db, { title: 'Metrics Empty' });
+        addCategory(project, 'metrics-empty-unused');
+
+        const { assetHealth } = service.getProjectWorkspace(project.id);
+        expect(assetHealth.total).toBe(0);
+        expect(assetHealth.missing).toBe(0);
+        expect(assetHealth.uncategorized).toBe(0);
+        expect(assetHealth.categoriesInUse).toBe(0);
+        expect(assetHealth.present).toBe(0);
+        expect(assetHealth.missingByReleases).toBe(0);
+      });
+
+      it('counts total, missing, uncategorized (incl. missing) and only populated categories', () => {
+        const project = insertProject(db, { title: 'Metrics Mixed' });
+        const renders = addCategory(project, 'metrics-renders');
+        const sketches = addCategory(project, 'metrics-sketches');
+        addCategory(project, 'metrics-unused');
+        const missingOnly = addCategory(project, 'metrics-missing-only');
+
+        addAsset(project, 'renders/a.png', { categoryId: renders.id });
+        addAsset(project, 'renders/b.png', { categoryId: renders.id, isPresent: 0 });
+        addAsset(project, 'sketches/c.png', { categoryId: sketches.id });
+        addAsset(project, 'missing-only/d.png', { categoryId: missingOnly.id, isPresent: 0 });
+        addAsset(project, 'loose-present.png');
+        addAsset(project, 'loose-missing.png', { isPresent: 0 });
+
+        // Another project's assets and categories never leak in.
+        const other = insertProject(db, { title: 'Metrics Other' });
+        const otherCategory = addCategory(other, 'metrics-other');
+        addAsset(other, 'other/x.png', { categoryId: otherCategory.id, isPresent: 0 });
+        addAsset(other, 'other-loose.png');
+
+        const { assetHealth } = service.getProjectWorkspace(project.id);
+        expect(assetHealth).toEqual({
+          total: 6,
+          present: 3,
+          missing: 3,
+          uncategorized: 2,
+          // renders, sketches, missing-only — the unused category is excluded.
+          categoriesInUse: 3,
+          missingByReleases: 0,
+        });
+      });
+
+      it('preserves distinct missing-assets-referenced-by-releases alongside the new metrics', () => {
+        const project = insertProject(db, { title: 'Metrics Releases' });
+        const category = addCategory(project, 'metrics-rel');
+        const missingA = addAsset(project, 'rel/a.png', { categoryId: category.id, isPresent: 0 });
+        const missingB = addAsset(project, 'b.png', { isPresent: 0 });
+        addAsset(project, 'c.png', { isPresent: 0 });
+        const first = insertRelease(db, { projectId: project.id, title: 'Metrics R1' });
+        const second = insertRelease(db, { projectId: project.id, title: 'Metrics R2' });
+        // missingA is referenced by both releases but counts once.
+        linkAssetToRelease(db, { releaseId: first.id, assetId: missingA.id });
+        linkAssetToRelease(db, { releaseId: second.id, assetId: missingA.id });
+        linkAssetToRelease(db, { releaseId: second.id, assetId: missingB.id });
+
+        const { assetHealth } = service.getProjectWorkspace(project.id);
+        expect(assetHealth.missing).toBe(3);
+        expect(assetHealth.missingByReleases).toBe(2);
+        expect(assetHealth.uncategorized).toBe(2);
+        expect(assetHealth.categoriesInUse).toBe(1);
+      });
+
+      it('reuses the shared navigation aggregate instead of separate count queries', () => {
+        const project = insertProject(db, { title: 'Metrics Reuse' });
+        addAsset(project, 'a.png');
+        const aggregate = vi.spyOn(assetRepository, 'getProjectAssetNavigationCounts');
+        const total = vi.spyOn(assetRepository, 'countByProjectId');
+        const present = vi.spyOn(assetRepository, 'countPresentByProjectId');
+        const missing = vi.spyOn(assetRepository, 'countMissingByProjectId');
+
+        service.getProjectWorkspace(project.id);
+
+        expect(aggregate).toHaveBeenCalledTimes(1);
+        expect(aggregate).toHaveBeenCalledWith(project.id);
+        expect(total).not.toHaveBeenCalled();
+        expect(present).not.toHaveBeenCalled();
+        expect(missing).not.toHaveBeenCalled();
       });
     });
 
