@@ -133,6 +133,240 @@ async function expectRowRelationships(row) {
   }
 }
 
+// The rule-row's own surface: a point inside the row that hits no control.
+async function rowSurfacePoint(row) {
+  return row.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const y = box.top + (box.height / 2);
+    for (let x = box.right - 2; x > box.left; x -= 1) {
+      if (element.ownerDocument.elementFromPoint(x, y) === element) return { x, y };
+    }
+    for (let x = box.left + 1; x < box.right; x += 1) {
+      if (element.ownerDocument.elementFromPoint(x, box.top + 2) === element) return { x, y: box.top + 2 };
+    }
+    throw new Error('row has no exposed surface');
+  });
+}
+
+// A real primary-button press, move, and release (Chromium native drag).
+async function mouseDrag(page, from, to, { release = true } = {}) {
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down();
+  await page.mouse.move(from.x + 3, from.y + 3, { steps: 2 });
+  await page.mouse.move(to.x, to.y, { steps: 10 });
+  if (release) await page.mouse.up();
+}
+
+async function lowerHalf(locator) {
+  const box = await locator.boundingBox();
+  return { x: box.x + (box.width / 2), y: box.y + (box.height * 0.8) };
+}
+
+async function ruleSummaries(rows) {
+  return rows.evaluateAll((elements) => elements.map((row) => {
+    const type = row.querySelector('[data-processing-rule-operation]').value;
+    const value = type === 'replace'
+      ? `${row.querySelector('[data-processing-rule-search]').value}>${row.querySelector('[data-processing-rule-replacement]').value}`
+      : row.querySelector('[data-processing-rule-text]').value;
+    return `${type}:${value}${row.hasAttribute('data-processing-rule-disabled') ? ':off' : ''}`;
+  }));
+}
+
+async function expectNoDragResidue(dialog) {
+  await expect(dialog.locator('.is-dragging, .is-drop-before, .is-drop-after, [data-drop-position]')).toHaveCount(0);
+}
+
+test('rule rows reorder by real mouse drag and keyboard within their own list while controls keep working', async ({ page }) => {
+  const fixture = await createFixture(page);
+
+  try {
+    await page.getByRole('button', { name: 'Image workflows editor', exact: true }).click();
+    const dialog = page.locator('#processing-workflow-dialog');
+    await expect(dialog).toBeVisible();
+    const positive = dialog.locator('[data-processing-rules="positive"]');
+    const negative = dialog.locator('[data-processing-rules="negative"]');
+    const positiveRows = positive.locator('[data-processing-rule-row]');
+    const negativeRows = negative.locator('[data-processing-rule-row]');
+    await positive.getByRole('button', { name: 'Add rule', exact: true }).click();
+    await positive.getByRole('button', { name: 'Add rule', exact: true }).click();
+    await negative.getByRole('button', { name: 'Add rule', exact: true }).click();
+    for (const [index, text] of ['one', 'two', 'three'].entries()) {
+      await positiveRows.nth(index).locator('[data-processing-rule-text]').fill(text);
+    }
+    await negativeRows.nth(0).locator('[data-processing-rule-text]').fill('n1');
+    await negativeRows.nth(1).locator('[data-processing-rule-text]').fill('n2');
+    await positiveRows.nth(1).getByRole('button', { name: 'Disable rule', exact: true }).click();
+    await expect(positiveRows.nth(1)).toHaveAttribute('data-processing-rule-disabled', '');
+
+    // Idle rows carry no extra visible affordance.
+    const idle = await positiveRows.first().evaluate((row) => {
+      const style = getComputedStyle(row);
+      return {
+        children: Array.from(row.children).map((child) => child.tagName),
+        actions: row.querySelector('.processing-rule-actions').children.length,
+        opacity: style.opacity,
+        boxShadow: style.boxShadow,
+        cursor: style.cursor,
+        draggable: row.draggable,
+        tabIndex: row.tabIndex,
+        label: row.getAttribute('aria-label'),
+      };
+    });
+    expect(idle).toEqual({
+      children: ['DIV', 'INPUT', 'INPUT', 'INPUT', 'SPAN'],
+      actions: 2,
+      opacity: '1',
+      boxShadow: 'none',
+      cursor: 'auto',
+      draggable: true,
+      tabIndex: 0,
+      label: 'Positive rule',
+    });
+
+    // A real mouse drag from the row surface (Preview invalidation is unit-tested;
+    // this fixture's plain PNG has no workflow metadata, so Apply never enables).
+    await mouseDrag(page, await rowSurfacePoint(positiveRows.nth(0)), await lowerHalf(positiveRows.nth(2)));
+    await expect.poll(() => ruleSummaries(positiveRows)).toEqual(['remove:two:off', 'remove:three', 'remove:one']);
+    await expectNoDragResidue(dialog);
+    expect(await ruleSummaries(negativeRows)).toEqual(['remove:n1', 'remove:n2']);
+    await expect(positive.locator('[data-processing-rule-reorder-live]')).toHaveText('Positive rule moved to position 3 of 3.');
+    await expect(positiveRows.nth(0).getByRole('button', { name: 'Enable rule', exact: true })).toHaveAttribute('aria-pressed', 'false');
+
+    // Positive rows cannot be dropped into the Negative list.
+    await mouseDrag(page, await rowSurfacePoint(positiveRows.nth(0)), await lowerHalf(negativeRows.nth(0)));
+    await expectNoDragResidue(dialog);
+    expect(await ruleSummaries(positiveRows)).toEqual(['remove:two:off', 'remove:three', 'remove:one']);
+    expect(await ruleSummaries(negativeRows)).toEqual(['remove:n1', 'remove:n2']);
+
+    // Pressing inside a text input selects text instead of dragging the row.
+    const threeInput = positiveRows.nth(1).locator('[data-processing-rule-text]');
+    const inputBox = await threeInput.boundingBox();
+    await mouseDrag(
+      page,
+      { x: inputBox.x + 4, y: inputBox.y + (inputBox.height / 2) },
+      await lowerHalf(positiveRows.nth(2)),
+    );
+    await expectNoDragResidue(dialog);
+    expect(await ruleSummaries(positiveRows)).toEqual(['remove:two:off', 'remove:three', 'remove:one']);
+    const selected = await threeInput.evaluate((input) => [input.selectionStart, input.selectionEnd]);
+    expect(selected[1]).toBeGreaterThan(selected[0]);
+
+    // Keys inside an input keep their text behavior.
+    await threeInput.focus();
+    await page.keyboard.press('End');
+    await page.keyboard.press('Home');
+    await expect(threeInput).toBeFocused();
+    expect(await ruleSummaries(positiveRows)).toEqual(['remove:two:off', 'remove:three', 'remove:one']);
+
+    // The focused row moves by keyboard and keeps focus.
+    const oneRow = positiveRows.nth(2);
+    await oneRow.focus();
+    const focusRing = await oneRow.evaluate((row) => getComputedStyle(row).outlineStyle);
+    expect(focusRing).not.toBe('none');
+    await page.keyboard.press('Home');
+    await expect.poll(() => ruleSummaries(positiveRows)).toEqual(['remove:one', 'remove:two:off', 'remove:three']);
+    await expect(positiveRows.nth(0)).toBeFocused();
+    await expect(positiveRows.nth(0)).toHaveAttribute('aria-posinset', '1');
+    await page.keyboard.press('ArrowUp');
+    await page.keyboard.press('ArrowDown');
+    await expect.poll(() => ruleSummaries(positiveRows)).toEqual(['remove:two:off', 'remove:one', 'remove:three']);
+    await expect(positiveRows.nth(1)).toBeFocused();
+    await expect(positive.locator('[data-processing-rule-reorder-live]')).toHaveText('Positive rule moved to position 2 of 3.');
+
+    // The moved disabled row's toggle and X still work; a new row can move.
+    await positiveRows.nth(0).getByRole('button', { name: 'Enable rule', exact: true }).click();
+    await expect(positiveRows.nth(0)).not.toHaveAttribute('data-processing-rule-disabled', '');
+    await positiveRows.nth(2).getByRole('button', { name: 'Remove rule', exact: true }).click();
+    await positive.getByRole('button', { name: 'Add rule', exact: true }).click();
+    await positiveRows.nth(2).locator('[data-processing-rule-text]').fill('four');
+    await mouseDrag(page, await rowSurfacePoint(positiveRows.nth(2)), { ...(await lowerHalf(positiveRows.nth(0))), y: (await positiveRows.nth(0).boundingBox()).y + 3 });
+    await expect.poll(() => ruleSummaries(positiveRows)).toEqual(['remove:four', 'remove:two', 'remove:one']);
+    await expect(positiveRows.nth(0)).toHaveAttribute('aria-setsize', '3');
+
+    // Preview submits the reordered arrays.
+    const plan = page.waitForRequest((request) => request.url().endsWith('/workflow-prompt/plan'));
+    await dialog.locator('[data-processing-preview]').click();
+    const body = (await plan).postDataJSON();
+    expect(body.options.positive.rules.map((rule) => rule.text)).toEqual(['four', 'two', 'one']);
+    expect(body.options.negative.rules.map((rule) => rule.text)).toEqual(['n1', 'n2']);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('a reordered preset saves, reloads in its own order, and a drag cut off by closing leaves no residue', async ({ page }) => {
+  const fixture = await createFixture(page);
+
+  try {
+    const presets = fixture.app.locals.processingPresetService;
+    const byName = (name) => presets.listPresets({ operationType: 'workflow-prompt' }).find((preset) => preset.displayName === name);
+    const benji = byName('Benji');
+    const oliver = byName('Oliver');
+    const rulesOf = (preset) => preset.config.positive.rules ?? preset.config.positive;
+    const benjiPositive = rulesOf(benji);
+
+    await page.getByRole('button', { name: 'Image workflows editor', exact: true }).click();
+    const dialog = page.locator('#processing-workflow-dialog');
+    await expect(dialog).toBeVisible();
+    const presetDropdown = dialog.locator('#workflow-preset-select-dropdown');
+    const modified = dialog.locator('[data-processing-preset-modified]');
+    const positiveRows = dialog.locator('[data-processing-rules="positive"] [data-processing-rule-row]');
+    const choosePreset = async (name) => {
+      await presetDropdown.locator('summary').click();
+      const option = presetDropdown.getByRole('radio', { name, exact: true });
+      await presetDropdown.locator(`label[for="${await option.getAttribute('id')}"]`).click();
+      await expect(presetDropdown.locator('[data-cc-dropdown-summary-current]')).toHaveText(name);
+    };
+
+    await choosePreset('Benji');
+    const loaded = await ruleSummaries(positiveRows);
+    expect(loaded).toHaveLength(2);
+    await expect(modified).toBeHidden();
+
+    // An ineffective boundary move leaves the preset clean.
+    await positiveRows.nth(0).focus();
+    await page.keyboard.press('ArrowUp');
+    await expect(modified).toBeHidden();
+
+    await mouseDrag(page, await rowSurfacePoint(positiveRows.nth(0)), await lowerHalf(positiveRows.nth(1)));
+    await expect.poll(() => ruleSummaries(positiveRows)).toEqual([loaded[1], loaded[0]]);
+    await expect(modified).toBeVisible();
+
+    const update = page.waitForResponse((response) => response.url().endsWith(`/processing/presets/${benji.id}/replace`));
+    await dialog.getByRole('button', { name: 'Update preset', exact: true }).click();
+    await update;
+    await expect(modified).toBeHidden();
+    expect(rulesOf(presets.getPreset(benji.id))).toEqual([benjiPositive[1], benjiPositive[0]]);
+
+    await choosePreset('Oliver');
+    expect(await ruleSummaries(positiveRows)).toHaveLength(rulesOf(oliver).length);
+    await choosePreset('Benji');
+    expect(await ruleSummaries(positiveRows)).toEqual([loaded[1], loaded[0]]);
+    await expect(modified).toBeHidden();
+
+    // Start a real drag, close the dialog under it, then reopen.
+    await mouseDrag(page, await rowSurfacePoint(positiveRows.nth(0)), await lowerHalf(positiveRows.nth(1)), { release: false });
+    await expect(positiveRows.nth(0)).toHaveClass(/is-dragging/);
+    await dialog.evaluate((element) => element.close());
+    await page.mouse.up();
+    await expect(dialog).toBeHidden();
+    await page.getByRole('button', { name: 'Image workflows editor', exact: true }).click();
+    await expect(dialog).toBeVisible();
+    await expectNoDragResidue(dialog);
+
+    // One key press moves exactly one position after the reopen.
+    await choosePreset('Benji');
+    await positiveRows.nth(0).focus();
+    await page.keyboard.press('ArrowDown');
+    await expect.poll(() => ruleSummaries(positiveRows)).toEqual([loaded[0], loaded[1]]);
+    await expect(positiveRows.nth(1)).toBeFocused();
+    await expect(modified).toBeVisible();
+    expect(rulesOf(presets.getPreset(benji.id))).toEqual([benjiPositive[1], benjiPositive[0]]);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test('cloned workflow-rule rows keep unique relationships and independent dropdowns', async ({ page }) => {
   const fixture = await createFixture(page);
 

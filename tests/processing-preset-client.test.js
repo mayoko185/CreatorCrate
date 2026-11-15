@@ -220,6 +220,12 @@ function makeNode(tagName, attrs = {}) {
       set(value) { node.__attrs.set(attrName, String(value)); },
     });
   });
+  Object.defineProperty(node, 'nextSibling', {
+    get() {
+      const siblings = node.parentNode?.children;
+      return siblings ? siblings[siblings.indexOf(node) + 1] || null : null;
+    },
+  });
   Object.defineProperty(node, 'innerHTML', {
     get() { return ''; },
     set() { node.children.slice().forEach((child) => child.remove()); },
@@ -2489,9 +2495,10 @@ describe('Workflow rule enable/disable toggle', () => {
     vi.unstubAllGlobals();
   });
 
-  async function open(seed = []) {
+  async function open(seed = [], prepare = () => {}) {
     seed.forEach((preset) => fetchState.seed(structuredClone(preset)));
     const fixture = buildWorkflowRoot(doc);
+    prepare(fixture);
     const scope = makeNode('fieldset', { 'data-processing-scope': '' });
     scope.appendChild(makeNode('input', { type: 'radio', value: 'project', 'data-processing-scope-option': 'project' }));
     fixture.root.insertBefore(scope, fixture.footer.error);
@@ -2907,5 +2914,357 @@ describe('Workflow rule enable/disable toggle', () => {
     expect(fetchState.calls.some((call) => call.url === '/processing/presets/import')).toBe(false);
     await importConvert(1);
     expect(lastCall('/processing/presets/import').body.version).toBe(1);
+  });
+
+  describe('row reordering through the shared dedicated-reorder helper', () => {
+    const ORDERED = {
+      id: 41, operationType: 'workflow-prompt', displayName: 'Ordered', watermarkId: null,
+      config: {
+        positive: [
+          { type: 'remove', text: 'a, ' },
+          { type: 'replace', search: 'cat', replacement: 'dog', enabled: false },
+          { type: 'append', text: ', c' },
+        ],
+        negative: [{ type: 'prepend', text: 'n1, ' }, { type: 'append', text: ', n2' }],
+      },
+    };
+    const OTHER = {
+      id: 42, operationType: 'workflow-prompt', displayName: 'Other', watermarkId: null,
+      config: { positive: [{ type: 'remove', text: 'x, ' }, { type: 'remove', text: 'y, ' }], negative: [] },
+    };
+    const key = (row, name) => row.querySelector(`[data-processing-rule-${name}]`);
+    const summary = (row) => {
+      const type = key(row, 'operation').value;
+      const value = type === 'replace' ? `${key(row, 'search').value}>${key(row, 'replacement').value}` : key(row, 'text').value;
+      return `${type}:${value}${row.hasAttribute('data-processing-rule-disabled') ? ':off' : ''}`;
+    };
+    const order = (fixture, side) => rows(fixture, side).map(summary);
+    const press = (row, keyName, target = row) => row.dispatch('keydown', { target, key: keyName });
+    // Simulates the helper's native-drag sequence on the shim: dragstart on
+    // the row, dragover/drop on a destination row (lower half = after).
+    const drag = (fixture, side, from, { to, after = false, toSide = side, cancel = false }) => {
+      const source = rows(fixture, side)[from];
+      const start = source.dispatch('dragstart', { target: source, dataTransfer: null });
+      if (start.defaultPrevented || cancel) {
+        source.dispatch('dragend', { target: source });
+        return start;
+      }
+      const target = rows(fixture, toSide)[to];
+      target.getBoundingClientRect = () => ({ top: 0, height: 10 });
+      const point = { target, clientY: after ? 9 : 1, dataTransfer: null };
+      target.dispatch('dragover', point);
+      target.dispatch('drop', point);
+      source.dispatch('dragend', { target: source });
+      return start;
+    };
+    async function openOrdered(seed = [ORDERED, OTHER]) {
+      // Mirrors the template's per-list screen-reader live region.
+      const fixture = await open(seed, (built) => ['positive', 'negative'].forEach((side) => {
+        const live = makeNode('p', { 'data-processing-rule-reorder-live': '', role: 'status' });
+        built.sides[side].section.appendChild(live);
+        built.sides[side].live = live;
+      }));
+      await selectPreset(fixture, ORDERED.id);
+      return fixture;
+    }
+
+    it('makes each list reorderable from the row itself, by keyboard, without leaving its list', async () => {
+      const fixture = await openOrdered();
+      const positive = rows(fixture, 'positive').slice();
+      for (const row of [...positive, ...rows(fixture, 'negative')]) {
+        expect(row.draggable).toBe(true);
+        expect(row.tabIndex).toBe(0);
+        expect(row.dataset.processingRuleKey).toMatch(/^rule-\d+$/);
+      }
+      expect(positive[0].getAttribute('aria-label')).toBe('Positive rule');
+      expect(rows(fixture, 'negative')[0].getAttribute('aria-label')).toBe('Negative rule');
+      expect(positive.map((row) => row.getAttribute('aria-posinset'))).toEqual(['1', '2', '3']);
+      expect(fixture.preset.modified.hidden).toBe(true);
+      expect(fixture.root.__ccDirty).toBe(false);
+
+      // Boundary moves are ineffective and leave the draft clean.
+      press(positive[0], 'ArrowUp');
+      press(positive[0], 'Home');
+      press(positive[2], 'End');
+      expect(fixture.root.__ccDirty).toBe(false);
+      expect(fixture.preset.modified.hidden).toBe(true);
+
+      // Keys typed inside the row's controls keep their ordinary meaning.
+      const keyFromInput = press(positive[0], 'ArrowDown', key(positive[0], 'text'));
+      expect(keyFromInput.defaultPrevented).toBe(false);
+      expect(rows(fixture, 'positive')).toEqual(positive);
+
+      press(positive[0], 'ArrowDown');
+      expect(order(fixture, 'positive')).toEqual(['replace:cat>dog:off', 'remove:a, ', 'append:, c']);
+      expect(positive[0].focused).toBe(true);
+      expect(positive[0].getAttribute('aria-posinset')).toBe('2');
+      expect(fixture.sides.positive.live.textContent).toBe('Positive rule moved to position 2 of 3.');
+      expect(fixture.root.__ccDirty).toBe(true);
+      expect(fixture.preset.modified.hidden).toBe(false);
+
+      press(positive[0], 'End');
+      expect(order(fixture, 'positive')).toEqual(['replace:cat>dog:off', 'append:, c', 'remove:a, ']);
+      press(positive[0], 'Home');
+      press(positive[2], 'ArrowUp');
+      expect(order(fixture, 'positive')).toEqual(['remove:a, ', 'append:, c', 'replace:cat>dog:off']);
+      // The other list never moved.
+      expect(order(fixture, 'negative')).toEqual(['prepend:n1, ', 'append:, n2']);
+      expect(fixture.sides.negative.live.textContent).toBe('');
+    });
+
+    it('drags rows within a list, keeps every value with its row, and serializes the new order', async () => {
+      const fixture = await openOrdered();
+      await click(fixture.footer.previewBtn);
+      expect(fixture.footer.applyBtn.disabled).toBe(false);
+      const disabledRow = rows(fixture, 'positive')[1];
+      const operation = key(disabledRow, 'operation');
+      const dropdown = disabledRow.querySelector('[data-cc-dropdown]');
+      const dropdownIds = disabledRow.querySelectorAll('[id]').map((node) => node.id);
+
+      // Canceled, self and cross-list drags change nothing and stay clean.
+      drag(fixture, 'positive', 0, { cancel: true });
+      drag(fixture, 'positive', 0, { to: 0, after: true });
+      drag(fixture, 'positive', 0, { to: 1, toSide: 'negative' });
+      expect(order(fixture, 'positive')).toEqual(['remove:a, ', 'replace:cat>dog:off', 'append:, c']);
+      expect(order(fixture, 'negative')).toEqual(['prepend:n1, ', 'append:, n2']);
+      expect(fixture.root.__ccDirty).toBe(false);
+      expect(fixture.footer.applyBtn.disabled).toBe(false);
+      for (const row of [...rows(fixture, 'positive'), ...rows(fixture, 'negative')]) {
+        expect(row.classList.contains('is-dragging')).toBe(false);
+        expect(row.classList.contains('is-drop-before') || row.classList.contains('is-drop-after')).toBe(false);
+      }
+
+      drag(fixture, 'positive', 1, { to: 2, after: true });
+      expect(order(fixture, 'positive')).toEqual(['remove:a, ', 'append:, c', 'replace:cat>dog:off']);
+      expect(rows(fixture, 'positive')[2]).toBe(disabledRow);
+      expect(key(disabledRow, 'operation')).toBe(operation);
+      expect(disabledRow.querySelector('[data-cc-dropdown]')).toBe(dropdown);
+      expect(disabledRow.querySelector('[data-cc-dropdown-summary-current]').textContent).toBe('Replace');
+      expect(disabledRow.querySelectorAll('[id]').map((node) => node.id)).toEqual(dropdownIds);
+      expect(disabledRow.classList.contains('is-dragging')).toBe(false);
+      expect(fixture.root.__ccDirty).toBe(true);
+      expect(fixture.preset.modified.hidden).toBe(false);
+      expect(fixture.root.__ccPreviewValid).toBe(false);
+      expect(fixture.footer.applyBtn.disabled).toBe(true);
+
+      // The moved disabled rule still toggles and edits in place.
+      await click(toggleOf(disabledRow));
+      await click(toggleOf(disabledRow));
+      expect(toggleOf(disabledRow).getAttribute('aria-pressed')).toBe('false');
+
+      await click(fixture.footer.previewBtn);
+      const expected = {
+        positive: { rules: [
+          { type: 'remove', text: 'a, ' },
+          { type: 'append', text: ', c' },
+          { type: 'replace', search: 'cat', replacement: 'dog', enabled: false },
+        ] },
+        negative: { rules: [{ type: 'prepend', text: 'n1, ' }, { type: 'append', text: ', n2' }] },
+      };
+      expect(lastCall(PLAN_PATH).body.options).toEqual(expected);
+      await click(fixture.footer.applyBtn);
+      expect(lastCall(APPLY_PATH).body.options).toEqual(expected);
+    });
+
+    it('does not start a drag from the operation dropdown, text inputs, toggle, or X', async () => {
+      const fixture = await openOrdered();
+      const row = rows(fixture, 'positive')[0];
+      const controls = [
+        row.querySelector('summary'),
+        row.querySelector('input[type="radio"]'),
+        key(row, 'text'),
+        toggleOf(row),
+        row.querySelector('[data-processing-remove-rule]'),
+      ];
+      for (const control of controls) {
+        // The browser spec covers Chromium's retargeted dragstart; here the
+        // control is the drag origin and the helper's exclusion must refuse it.
+        const start = control.dispatch('dragstart', { target: control, dataTransfer: null });
+        expect(start.defaultPrevented).toBe(true);
+        expect(row.classList.contains('is-dragging')).toBe(false);
+      }
+      expect(drag(fixture, 'positive', 0, { to: 1, after: true }).defaultPrevented).toBe(false);
+      expect(order(fixture, 'positive')).toEqual(['replace:cat>dog:off', 'remove:a, ', 'append:, c']);
+
+      await click(toggleOf(row));
+      expect(toggleOf(row).getAttribute('aria-pressed')).toBe('false');
+      row.querySelector('[data-processing-remove-rule]').dispatch('click');
+      expect(order(fixture, 'positive')).toEqual(['replace:cat>dog:off', 'append:, c']);
+    });
+
+    it('follows added, removed, emptied, and reloaded rows without duplicate movement', async () => {
+      const fixture = await openOrdered();
+      // Added row joins the list and can be moved.
+      fixture.sides.positive.addButton.dispatch('click');
+      const added = rows(fixture, 'positive')[3];
+      key(added, 'text').value = 'new';
+      press(added, 'Home');
+      expect(order(fixture, 'positive')).toEqual(['remove:new', 'remove:a, ', 'replace:cat>dog:off', 'append:, c']);
+      expect(added.getAttribute('aria-setsize')).toBe('4');
+
+      // A row removed mid-drag can neither be reinserted nor serve as a target.
+      const departing = rows(fixture, 'positive')[1];
+      departing.dispatch('dragstart', { target: departing, dataTransfer: null });
+      departing.querySelector('[data-processing-remove-rule]').dispatch('click');
+      const target = rows(fixture, 'positive')[0];
+      target.dispatch('dragover', { target, clientY: 1 });
+      target.dispatch('drop', { target, clientY: 1 });
+      expect(order(fixture, 'positive')).toEqual(['remove:new', 'replace:cat>dog:off', 'append:, c']);
+      expect(rows(fixture, 'positive').map((row) => row.getAttribute('aria-setsize'))).toEqual(['3', '3', '3']);
+      expect(rows(fixture, 'positive').some((row) => row.classList.contains('is-drop-before'))).toBe(false);
+
+      // Empty list, then a later row; a single row is a no-op.
+      await selectPreset(fixture, '');
+      expect(rows(fixture, 'positive')).toHaveLength(0);
+      fixture.sides.positive.addButton.dispatch('click');
+      const single = rows(fixture, 'positive')[0];
+      press(single, 'ArrowDown');
+      press(single, 'End');
+      fixture.sides.positive.addButton.dispatch('click');
+      key(single, 'text').value = 'first';
+      press(single, 'ArrowDown');
+      expect(order(fixture, 'positive')).toEqual(['remove:', 'remove:first']);
+
+      // Reopening and reselecting re-runs the lifecycle without stacking listeners.
+      doc.dispatch('click', { target: fixture.trigger });
+      await flush();
+      doc.dispatch('click', { target: fixture.trigger });
+      await flush();
+      await selectPreset(fixture, OTHER.id);
+      await selectPreset(fixture, ORDERED.id);
+      const first = rows(fixture, 'positive')[0];
+      press(first, 'ArrowDown');
+      expect(order(fixture, 'positive')).toEqual(['replace:cat>dog:off', 'remove:a, ', 'append:, c']);
+      const live = fixture.sides.positive.live;
+      expect(live.textContent).toBe('Positive rule moved to position 2 of 3.');
+    });
+
+    it('closing the dialog mid-drag clears the drag appearance through the helper', async () => {
+      const fixture = await openOrdered();
+      const row = rows(fixture, 'positive')[0];
+      row.dispatch('dragstart', { target: row, dataTransfer: null });
+      const target = rows(fixture, 'positive')[1];
+      target.dispatch('dragover', { target, clientY: 1 });
+      expect(row.classList.contains('is-dragging')).toBe(true);
+      expect(fixture.sides.positive.list.classList.contains('is-dragging')).toBe(true);
+      expect(target.classList.contains('is-drop-before')).toBe(true);
+      fixture.dialog.dispatch('close');
+      expect(row.classList.contains('is-dragging')).toBe(false);
+      expect(fixture.sides.positive.list.classList.contains('is-dragging')).toBe(false);
+      expect(target.classList.contains('is-drop-before')).toBe(false);
+      expect(order(fixture, 'positive')).toEqual(['remove:a, ', 'replace:cat>dog:off', 'append:, c']);
+      expect(fixture.root.__ccDirty).toBe(false);
+    });
+
+    it('saves, updates, reloads, switches, exports, and imports the reordered arrays', async () => {
+      let exportedBlob;
+      vi.stubGlobal('URL', {
+        createObjectURL: vi.fn((blob) => { exportedBlob = blob; return 'blob:creatorcrate-workflow'; }),
+        revokeObjectURL: vi.fn(),
+      });
+      const fixture = await openOrdered();
+      press(rows(fixture, 'positive')[2], 'Home');
+      press(rows(fixture, 'negative')[0], 'ArrowDown');
+      const reordered = {
+        positive: [
+          { type: 'append', text: ', c' },
+          { type: 'remove', text: 'a, ' },
+          { type: 'replace', search: 'cat', replacement: 'dog', enabled: false },
+        ],
+        negative: [{ type: 'append', text: ', n2' }, { type: 'prepend', text: 'n1, ' }],
+      };
+
+      fixture.preset.updateBtn.dispatch('click');
+      await flush();
+      expect(lastCall('/processing/presets/41/replace').body.config).toEqual({
+        positive: { rules: reordered.positive }, negative: { rules: reordered.negative },
+      });
+      expect(fixture.root.__ccDirty).toBe(false);
+      expect(fixture.preset.modified.hidden).toBe(true);
+
+      press(rows(fixture, 'positive')[0], 'End');
+      fixture.preset.saveBtn.dispatch('click');
+      fixture.preset.nameInput.value = 'Ordered copy';
+      fixture.preset.nameForm.dispatch('submit', { target: fixture.preset.nameForm });
+      await flush();
+      const copyPositive = [reordered.positive[1], reordered.positive[2], reordered.positive[0]];
+      expect(lastCall('/processing/presets').body.config.positive.rules).toEqual(copyPositive);
+
+      // Each preset reloads its own saved order.
+      await selectPreset(fixture, OTHER.id);
+      expect(order(fixture, 'positive')).toEqual(['remove:x, ', 'remove:y, ']);
+      await selectPreset(fixture, ORDERED.id);
+      expect(order(fixture, 'positive')).toEqual(['append:, c', 'remove:a, ', 'replace:cat>dog:off']);
+      expect(order(fixture, 'negative')).toEqual(['append:, n2', 'prepend:n1, ']);
+      expect(fixture.root.__ccDirty).toBe(false);
+      await selectPreset(fixture, 100);
+      expect(order(fixture, 'positive')).toEqual(['remove:a, ', 'replace:cat>dog:off', 'append:, c']);
+
+      fixture.preset.exportBtn.dispatch('click');
+      await flush();
+      const exported = JSON.parse(await exportedBlob.text());
+      const exportedOrdered = exported.presets.find((preset) => preset.displayName === 'Ordered');
+      const normalize = (rules) => rules.rules ?? rules;
+      expect(normalize(exportedOrdered.config.positive)).toEqual(reordered.positive);
+      expect(normalize(exportedOrdered.config.negative)).toEqual(reordered.negative);
+
+      fixture.preset.importInput.files = [{ text: async () => JSON.stringify({
+        creatorcrate: 'processing-presets', version: 2, operationType: 'workflow-prompt',
+        presets: [{ displayName: 'Imported order', config: { positive: reordered.positive, negative: reordered.negative } }],
+      }) }];
+      fixture.preset.importInput.dispatch('change', { target: fixture.preset.importInput });
+      await flush();
+      expect(lastCall('/processing/presets/import').body.presets[0].config.positive).toEqual(reordered.positive);
+      const importedId = Array.from(fetchState.presets.values()).find((preset) => preset.displayName === 'Imported order').id;
+      await selectPreset(fixture, importedId);
+      expect(order(fixture, 'positive')).toEqual(['append:, c', 'remove:a, ', 'replace:cat>dog:off']);
+      const moved = rows(fixture, 'positive')[0];
+      press(moved, 'ArrowDown');
+      expect(rows(fixture, 'positive')[1]).toBe(moved);
+    });
+
+    it('a reorder during a pending Preview or Update defeats neither stale-response guard', async () => {
+      const fixture = await openOrdered();
+      pendingPlans = [];
+      fixture.footer.previewBtn.dispatch('click', { target: fixture.footer.previewBtn });
+      await flush();
+      expect(pendingPlans).toHaveLength(1);
+      press(rows(fixture, 'positive')[0], 'ArrowDown');
+      pendingPlans.shift()();
+      await flush();
+      pendingPlans = null;
+      expect(fixture.root.__ccPreviewValid).toBe(false);
+      expect(fixture.footer.applyBtn.disabled).toBe(true);
+      expect(fixture.footer.status.textContent).toBe('Workflow rules changed. Run Preview again.');
+
+      // Update sends the order at click time; a later reorder stays a modified draft.
+      const delegate = fetchState.fetchMock.getMockImplementation();
+      let release;
+      fetchState.fetchMock.mockImplementationOnce((url, init) => new Promise((resolve) => {
+        release = () => resolve(delegate(url, init));
+      }));
+      fixture.preset.updateBtn.dispatch('click');
+      await flush();
+      drag(fixture, 'negative', 0, { to: 1, after: true });
+      release();
+      await flush();
+      expect(lastCall('/processing/presets/41/replace').body.config.negative.rules)
+        .toEqual([{ type: 'prepend', text: 'n1, ' }, { type: 'append', text: ', n2' }]);
+      expect(order(fixture, 'negative')).toEqual(['append:, n2', 'prepend:n1, ']);
+      expect(fixture.root.__ccDirty).toBe(true);
+      expect(fixture.preset.modified.hidden).toBe(false);
+
+      // A failed Update keeps the reordered draft and its Modified state.
+      fetchState.fetchMock.mockImplementationOnce(async () => ({
+        ok: false, status: 500, json: async () => ({ ok: false, error: { code: 'INTERNAL', message: 'Preset could not be saved.' } }),
+      }));
+      fixture.preset.updateBtn.dispatch('click');
+      await flush();
+      expect(fixture.footer.error.hidden).toBe(false);
+      expect(order(fixture, 'negative')).toEqual(['append:, n2', 'prepend:n1, ']);
+      expect(order(fixture, 'positive')).toEqual(['replace:cat>dog:off', 'remove:a, ', 'append:, c']);
+      expect(fixture.root.__ccDirty).toBe(true);
+      expect(fixture.preset.modified.hidden).toBe(false);
+    });
   });
 });

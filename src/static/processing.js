@@ -10,6 +10,7 @@ import {
 } from './client/dropdowns.js';
 import { RECOVERY_DETAILS_SYNC_EVENT } from './client/processing-recovery-details.js';
 import { collectArchiveOptions, initializeArchiveEditor, resetArchiveEditor, setArchiveEditorFrozen } from './client/archive-dialog.js';
+import { NOTES_REORDER_INTERACTIVE_SELECTOR, refreshDedicatedReorder } from './client/dedicated-reorder.js';
 
 /**
  * Processing actions: Rename, Convert, Workflow Prompt Editor, Watermark, and Archives
@@ -2080,6 +2081,59 @@ function bindDeleteSourceWarning(root) {
 
 let ruleRowCounter = 0;
 
+// Rule rows reorder through the shared dedicated-reorder helper: the row
+// itself is the drag surface and the focused row takes Up/Down/Home/End.
+// The rule's controls (and the operation dropdown's panel) never start a drag.
+const RULE_ROW_SELECTOR = '[data-processing-rule-row]';
+const RULE_REORDER_EXCLUDED_SELECTOR = `${NOTES_REORDER_INTERACTIVE_SELECTOR}, [data-cc-dropdown]`;
+const RULE_REORDER_HELP_ID = 'processing-workflow-rule-reorder-help';
+
+function workflowRuleReorderConfig(root) {
+  return {
+    listSelector: '[data-processing-rule-list]',
+    itemSelector: RULE_ROW_SELECTOR,
+    wholeCardKeyboard: true,
+    pointerDragSurfaceSelector: RULE_ROW_SELECTOR,
+    pointerDragExcludedSelector: RULE_REORDER_EXCLUDED_SELECTOR,
+    form: root,
+    liveSelector: '[data-processing-rule-reorder-live]',
+    // Rows render no visible position text; aria-posinset/setsize carry it.
+    positionSelector: '[data-processing-rule-position]',
+    idDataset: 'processingRuleKey',
+    idAttribute: 'data-processing-rule-key',
+    labelDataset: 'processingRuleLabel',
+    labelAttribute: 'data-processing-rule-label',
+    label: 'Rule',
+    bindingKey: 'processingRuleReorderBound',
+    isBusy: () => root.isConnected === false,
+    // Rule order is read straight from DOM order by collectWorkflowRules().
+    syncInput: () => true,
+    // Fired only for a real order change, never for setup or refresh.
+    onOrderChange: () => markConfigurationModified(root),
+  };
+}
+
+// Each side is its own list, so a row can only move within its own side.
+function refreshWorkflowRuleReorder(root) {
+  ['positive', 'negative'].forEach((side) => {
+    const section = root.querySelector(`[data-processing-rules="${side}"]`);
+    if (section) refreshDedicatedReorder(section, workflowRuleReorderConfig(root));
+  });
+}
+
+// A drag interrupted by the dialog closing ends through the helper's own
+// dragend path, so no dragging/drop-indicator state survives a reopen.
+function bindWorkflowRuleReorderLifecycle(root) {
+  if (root.dataset.processingOperation !== 'workflow-prompt' || isBound(root, 'ruleReorderLifecycle')) return;
+  markBound(root, 'ruleReorderLifecycle');
+  root.closest?.('dialog')?.addEventListener('close', () => {
+    const EventConstructor = root.ownerDocument?.defaultView?.Event || globalThis.Event;
+    root.querySelectorAll(`${RULE_ROW_SELECTOR}.is-dragging`).forEach((row) => {
+      row.dispatchEvent(new EventConstructor('dragend'));
+    });
+  });
+}
+
 function ruleOperationSelect(row) {
   return row.querySelector('[data-processing-rule-operation]');
 }
@@ -2121,12 +2175,21 @@ function createRuleRow(root, side) {
   const row = fragment.querySelector('[data-processing-rule-row]');
   ruleRowCounter += 1;
   makeRuleRowDropdownIdsUnique(row, ruleRowCounter);
+  // Stable reorder identity plus the row-level drag/keyboard surface.
+  const label = side === 'negative' ? 'Negative rule' : 'Positive rule';
+  row.dataset.processingRuleKey = `rule-${ruleRowCounter}`;
+  row.dataset.processingRuleLabel = label;
+  row.draggable = true;
+  row.tabIndex = 0;
+  row.setAttribute('aria-label', label);
+  row.setAttribute('aria-describedby', RULE_REORDER_HELP_ID);
 
   const operation = ruleOperationSelect(row);
   initializeCreatorCrateDropdown(row.querySelector('[data-cc-dropdown]'));
   operation?.addEventListener('change', () => syncRuleRowFields(row));
   row.querySelector('[data-processing-remove-rule]').addEventListener('click', () => {
     row.remove();
+    refreshWorkflowRuleReorder(root);
     invalidatePreview(root);
     root.__ccDirty = true;
   });
@@ -2168,6 +2231,7 @@ function bindRuleAdders(root) {
       const list = root.querySelector(`[data-processing-rules="${side}"] [data-processing-rule-list]`);
       if (!list) return;
       list.append(createRuleRow(root, side));
+      refreshWorkflowRuleReorder(root);
       root.__ccDirty = true;
       invalidatePreview(root);
     });
@@ -2221,6 +2285,7 @@ function applyWorkflowRulesToForm(root, side, ruleList) {
     syncRuleRowFields(row);
     list.append(row);
   });
+  refreshWorkflowRuleReorder(root);
 }
 
 // ─── Payload assembly ────────────────────────────────────────────────────
@@ -2989,6 +3054,7 @@ export function enhanceProcessingDialogs(scope = globalThis.document) {
     bindWatermarkPreviewLifecycle(root);
     bindDeleteSourceWarning(root);
     bindRuleAdders(root);
+    bindWorkflowRuleReorderLifecycle(root);
     initializeArchiveEditor(root);
     updateScopeDisplay(root);
     syncWatermarkFormatSettings(root);
@@ -3009,6 +3075,7 @@ export function ensureInitialWorkflowRow(root) {
     const list = root.querySelector(`[data-processing-rules="${side}"] [data-processing-rule-list]`);
     if (list && list.children.length === 0) list.append(createRuleRow(root, side));
   });
+  refreshWorkflowRuleReorder(root);
 }
 
 if (typeof document !== 'undefined') {

@@ -35,6 +35,11 @@ import {
   enhanceTimePickers,
 } from '../src/static/creatorcrate.js';
 import { parseBookCoverAuthority } from '../src/static/client/book-edit-fetch-save.js';
+import {
+  enhanceDedicatedReorder,
+  refreshDedicatedReorder,
+  NOTES_REORDER_INTERACTIVE_SELECTOR,
+} from '../src/static/client/dedicated-reorder.js';
 
 function makeElement(props = {}) {
   const listeners = [];
@@ -10240,5 +10245,230 @@ describe('Notes editor progressive enhancement', () => {
     expect(fixture.textarea.hidden).toBe(false);
     expect(fixture.textarea.value).toBe('fallback source');
     expect(warnings).toHaveLength(1);
+  });
+});
+
+describe('dedicated reorder dynamic membership', () => {
+  const ROW = '[data-dyn-row]';
+
+  function makeRow(document, id) {
+    const row = makeCategoryNode({ tagName: 'li', attrs: { 'data-dyn-row': '', 'data-dyn-id': id, 'data-dyn-label': `Rule ${id}` } });
+    row.ownerDocument = document;
+    const input = makeCategoryNode({ tagName: 'input' });
+    row.appendChild(input);
+    row.input = input;
+    return row;
+  }
+
+  function makeDynamicFixture(ids = ['a', 'b', 'c']) {
+    const document = makeCategoryNode({ tagName: 'document' });
+    document.ownerDocument = document;
+    const section = makeCategoryNode();
+    const form = makeCategoryNode({ tagName: 'form' });
+    const list = makeCategoryNode({ tagName: 'ol', attrs: { 'data-dyn-list': '' } });
+    const live = makeCategoryNode({ attrs: { 'data-dyn-live': '' } });
+    document.appendChild(section);
+    section.appendChild(form);
+    section.appendChild(list);
+    section.appendChild(live);
+    ids.forEach((id) => list.appendChild(makeRow(document, id)));
+    const synced = [];
+    const onOrderChange = vi.fn();
+    const config = {
+      listSelector: '[data-dyn-list]', itemSelector: ROW,
+      wholeCardKeyboard: true, pointerDragSurfaceSelector: ROW,
+      pointerDragExcludedSelector: NOTES_REORDER_INTERACTIVE_SELECTOR,
+      form, liveSelector: '[data-dyn-live]', positionSelector: '[data-dyn-position]',
+      idDataset: 'dynId', idAttribute: 'data-dyn-id',
+      labelDataset: 'dynLabel', labelAttribute: 'data-dyn-label',
+      label: 'Rule', bindingKey: 'dynReorderBound',
+      syncInput: (values) => { synced.push(values); return true; },
+      onOrderChange,
+    };
+    const rows = () => list.querySelectorAll(ROW);
+    return {
+      document, section, list, live, config, synced, onOrderChange, rows,
+      row: (id) => rows().find((row) => row.dataset.dynId === id),
+      order: () => rows().map((row) => row.dataset.dynId),
+      add(id) { const row = makeRow(document, id); list.appendChild(row); return row; },
+      key: (row, key, target = row) => row.dispatch('keydown', { key, target }),
+      count: (node, type) => node.listeners.filter((listener) => listener.type === type).length,
+    };
+  }
+
+  it('binds rows added after enhancement once, and keyboard End reaches the current last row', () => {
+    const f = makeDynamicFixture();
+    expect(enhanceDedicatedReorder(f.section, f.config)).toBe(1);
+    const d = f.add('d');
+    const e = f.add('e');
+
+    // Unbound before refresh: the new row has no reorder listeners yet.
+    expect(f.count(d, 'keydown')).toBe(0);
+    refreshDedicatedReorder(f.section, f.config);
+    refreshDedicatedReorder(f.section, f.config);
+    enhanceDedicatedReorder(f.section, f.config);
+
+    for (const row of f.rows()) {
+      expect(f.count(row, 'keydown')).toBe(1);
+      expect(f.count(row, 'dragstart')).toBe(1);
+      expect(f.count(row, 'dragend')).toBe(1);
+    }
+    expect(f.count(f.list, 'dragover')).toBe(1);
+    expect(f.count(f.list, 'drop')).toBe(1);
+    expect(f.count(f.config.form, 'submit')).toBe(1);
+    expect(e.getAttribute('aria-setsize')).toBe('5');
+    expect(e.getAttribute('aria-posinset')).toBe('5');
+    expect(f.synced.at(-1)).toEqual(['a', 'b', 'c', 'd', 'e']);
+    expect(f.onOrderChange).not.toHaveBeenCalled();
+
+    const a = f.row('a');
+    const end = f.key(a, 'End');
+    expect(end.defaultPrevented).toBe(true);
+    expect(f.order()).toEqual(['b', 'c', 'd', 'e', 'a']);
+    expect(a.focused).toBe(true);
+    expect(f.live.textContent).toBe('Rule a moved to position 5 of 5.');
+    expect(f.onOrderChange).toHaveBeenCalledTimes(1);
+    expect(f.onOrderChange.mock.calls[0][0]).toMatchObject({ item: a, keyboard: true });
+
+    f.key(d, 'Home');
+    expect(f.order()).toEqual(['d', 'b', 'c', 'e', 'a']);
+    expect(f.live.textContent).toBe('Rule d moved to position 1 of 5.');
+    f.key(d, 'ArrowDown');
+    expect(f.order()).toEqual(['b', 'd', 'c', 'e', 'a']);
+    expect(f.onOrderChange).toHaveBeenCalledTimes(3);
+    expect(f.synced.at(-1)).toEqual(['b', 'd', 'c', 'e', 'a']);
+  });
+
+  it('lets a new row drag past existing rows and an existing row drag past new rows, keeping nodes and controls', () => {
+    const f = makeDynamicFixture();
+    enhanceDedicatedReorder(f.section, f.config);
+    const d = f.add('d');
+    d.getBoundingClientRect = () => ({ top: 150, height: 40 });
+    refreshDedicatedReorder(f.section, f.config);
+    const a = f.row('a');
+    const aInput = a.input;
+
+    d.dispatch('pointerdown', { button: 0 });
+    d.dispatch('dragstart', { dataTransfer: { setData() {} } });
+    expect(d.classList.contains('is-dragging')).toBe(true);
+    f.list.dispatch('dragover', { target: a, clientY: 5 });
+    expect(a.classList.contains('is-drop-before')).toBe(true);
+    f.list.dispatch('drop', { target: a, clientY: 5 });
+    d.dispatch('dragend');
+    expect(f.order()).toEqual(['d', 'a', 'b', 'c']);
+    expect(d.classList.contains('is-dragging')).toBe(false);
+    expect(a.classList.contains('is-drop-before')).toBe(false);
+    expect(f.live.textContent).toBe('Rule d moved to position 1 of 4.');
+
+    a.dispatch('pointerdown', { button: 0 });
+    a.dispatch('dragstart', { dataTransfer: { setData() {} } });
+    f.list.dispatch('dragover', { target: f.row('c'), clientY: 200 });
+    f.list.dispatch('drop', { target: f.row('c'), clientY: 200 });
+    expect(f.order()).toEqual(['d', 'b', 'c', 'a']);
+    expect(f.row('a')).toBe(a);
+    expect(a.input).toBe(aInput);
+    expect(aInput.parentElement).toBe(a);
+    expect(f.onOrderChange).toHaveBeenCalledTimes(2);
+    expect(f.onOrderChange.mock.calls[1][0]).toMatchObject({ item: a, keyboard: false });
+  });
+
+  it('keeps interactive controls of new rows out of drag and keyboard reordering', () => {
+    const f = makeDynamicFixture();
+    enhanceDedicatedReorder(f.section, f.config);
+    const d = f.add('d');
+    refreshDedicatedReorder(f.section, f.config);
+
+    const start = d.dispatch('dragstart', { target: d.input, dataTransfer: { setData() {} } });
+    expect(start.defaultPrevented).toBe(true);
+    expect(d.classList.contains('is-dragging')).toBe(false);
+
+    const key = f.key(d, 'Home', d.input);
+    expect(key.defaultPrevented).toBe(false);
+    expect(f.order()).toEqual(['a', 'b', 'c', 'd']);
+    expect(f.onOrderChange).not.toHaveBeenCalled();
+  });
+
+  it('drops removed rows from boundaries, metadata, and serialized order', () => {
+    const f = makeDynamicFixture(['a', 'b', 'c', 'd', 'e']);
+    enhanceDedicatedReorder(f.section, f.config);
+    const d = f.row('d');
+    f.row('e').remove();
+    d.remove();
+    refreshDedicatedReorder(f.section, f.config);
+    expect(f.synced.at(-1)).toEqual(['a', 'b', 'c']);
+    expect(f.row('c').getAttribute('aria-setsize')).toBe('3');
+
+    const a = f.row('a');
+    f.key(a, 'End');
+    expect(f.order()).toEqual(['b', 'c', 'a']);
+    expect(f.live.textContent).toBe('Rule a moved to position 3 of 3.');
+    const boundary = f.key(a, 'ArrowDown');
+    expect(boundary.defaultPrevented).toBe(true);
+    expect(f.order()).toEqual(['b', 'c', 'a']);
+
+    // A removed row's still-attached listeners can no longer move anything.
+    f.key(d, 'Home');
+    d.dispatch('dragstart', { dataTransfer: { setData() {} } });
+    expect(d.classList.contains('is-dragging')).toBe(false);
+    expect(f.order()).toEqual(['b', 'c', 'a']);
+    expect(f.onOrderChange).toHaveBeenCalledTimes(1);
+  });
+
+  it('never reinserts or targets rows removed during a drag, and cleans up the gesture', () => {
+    const f = makeDynamicFixture();
+    enhanceDedicatedReorder(f.section, f.config);
+    const [a, b, c] = f.rows();
+
+    // Removed drop target: its indicator is cleared and it is not used as a reference.
+    b.dispatch('dragstart', { dataTransfer: { setData() {} } });
+    f.list.dispatch('dragover', { target: c, clientY: 200 });
+    expect(c.classList.contains('is-drop-after')).toBe(true);
+    c.remove();
+    f.list.dispatch('drop', { target: b });
+    expect(c.classList.contains('is-drop-after')).toBe(false);
+    expect(c.getAttribute('data-drop-position')).toBe(null);
+    expect(c.parentElement).toBe(null);
+    expect(f.order()).toEqual(['a', 'b']);
+    expect(f.list.classList.contains('is-dragging')).toBe(false);
+    expect(b.classList.contains('is-dragging')).toBe(false);
+
+    // Removed dragged row: refresh ends the gesture and the row is not moved back in.
+    a.dispatch('dragstart', { dataTransfer: { setData() {} } });
+    f.list.dispatch('dragover', { target: b, clientY: 200 });
+    a.remove();
+    refreshDedicatedReorder(f.section, f.config);
+    expect(a.classList.contains('is-dragging')).toBe(false);
+    expect(f.list.classList.contains('is-dragging')).toBe(false);
+    expect(b.classList.contains('is-drop-after')).toBe(false);
+    f.list.dispatch('drop', { target: b, clientY: 200 });
+    expect(a.parentElement).toBe(null);
+    expect(f.order()).toEqual(['b']);
+    expect(f.onOrderChange).not.toHaveBeenCalled();
+  });
+
+  it('enhances a list that was empty at enhancement once rows arrive, and keeps single rows inert', () => {
+    const f = makeDynamicFixture([]);
+    enhanceDedicatedReorder(f.section, f.config);
+    expect(f.list.dataset.dynReorderBound).toBeUndefined();
+
+    const a = f.add('a');
+    refreshDedicatedReorder(f.section, f.config);
+    expect(f.list.dataset.dynReorderBound).toBe('true');
+    expect(f.count(a, 'keydown')).toBe(1);
+    for (const key of ['ArrowUp', 'ArrowDown', 'Home', 'End']) {
+      expect(f.key(a, key).defaultPrevented).toBe(true);
+    }
+    expect(f.onOrderChange).not.toHaveBeenCalled();
+
+    const b = f.add('b');
+    refreshDedicatedReorder(f.section, f.config);
+    f.key(b, 'Home');
+    expect(f.order()).toEqual(['b', 'a']);
+    expect(f.count(a, 'keydown')).toBe(1);
+
+    a.remove();
+    b.remove();
+    refreshDedicatedReorder(f.section, f.config);
+    expect(f.synced.at(-1)).toEqual([]);
   });
 });

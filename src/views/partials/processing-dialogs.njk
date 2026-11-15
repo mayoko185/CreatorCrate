@@ -303,6 +303,7 @@
     {{ scopeSection('workflow', processingCategoryOptions) }}
 
     <p class="help-text">Rules run in Remove → Replace → Prepend → Append order, regardless of the order added below. Within each type, row order matters.</p>
+    <p class="sr-only" id="processing-workflow-rule-reorder-help">Focus a rule and press Up, Down, Home, or End to move it, or drag the rule.</p>
 
     <template data-processing-rule-row-template>
       <li class="processing-rule-row" data-processing-rule-row>
@@ -342,6 +343,7 @@
       <h3>Positive prompt rules</h3>
       <div class="processing-dialog-section-body">
         <ul class="processing-rule-list" data-processing-rule-list aria-label="Positive prompt rules"></ul>
+        <p class="sr-only" data-processing-rule-reorder-live role="status" aria-live="polite" aria-atomic="true"></p>
         <button type="button" class="button button-small" data-processing-add-rule="positive">Add rule</button>
       </div>
     </section>
@@ -349,6 +351,7 @@
       <h3>Negative prompt rules</h3>
       <div class="processing-dialog-section-body">
         <ul class="processing-rule-list" data-processing-rule-list aria-label="Negative prompt rules"></ul>
+        <p class="sr-only" data-processing-rule-reorder-live role="status" aria-live="polite" aria-atomic="true"></p>
         <button type="button" class="button button-small" data-processing-add-rule="negative">Add rule</button>
       </div>
     </section>

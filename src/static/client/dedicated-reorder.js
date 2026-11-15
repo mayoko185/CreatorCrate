@@ -1216,158 +1216,220 @@ function finishDedicatedDrag(state) {
   state.draggedItem = null;
 }
 
+// Membership is the live DOM: an item belongs to the list only while it is
+// still inside it and still matches the configured item selector.
+function isDedicatedReorderMember(list, item, config) {
+  return Boolean(item)
+    && item.matches?.(config.itemSelector) !== false
+    && typeof list?.contains === 'function'
+    && list.contains(item);
+}
+
+// Drop any gesture state that points at a row which has left the list, so a
+// removed row can neither be moved back in nor serve as a drop reference.
+function pruneDedicatedReorderState(state, config) {
+  if (state.draggedItem && !isDedicatedReorderMember(state.list, state.draggedItem, config)) {
+    finishDedicatedDrag(state);
+    return;
+  }
+  if (state.dropItem && !isDedicatedReorderMember(state.list, state.dropItem, config)) {
+    clearDedicatedDropIndicator(state);
+  }
+}
+
+const DEDICATED_REORDER_KEYS = new Set(['ArrowUp', 'ArrowDown', 'Home', 'End']);
+
+// list -> Map(bindingKey -> membership refresh) for lists bound by this module.
+const dedicatedReorderRefreshers = new WeakMap();
+
 export function enhanceDedicatedReorder(scope, config) {
   if (!scope || typeof scope.querySelectorAll !== 'function') return 0;
 
   const lists = scope.querySelectorAll(config.listSelector);
+  lists.forEach((list) => enhanceDedicatedReorderList(list, scope, config));
+  return lists.length;
+}
+
+// Re-reads a bound list's membership after rows were added or removed: binds
+// rows that arrived since enhancement (each row is bound at most once), drops
+// gesture state held by departed rows, and refreshes position metadata and the
+// serialized order. A list that was never bound (for example one that was
+// empty at enhancement) is enhanced instead. Never reports an order change.
+export function refreshDedicatedReorder(scope, config) {
+  if (!scope || typeof scope.querySelectorAll !== 'function') return 0;
+
+  const lists = scope.querySelectorAll(config.listSelector);
   lists.forEach((list) => {
-    if (isEnhancementBound(list, config.bindingKey)) return;
+    const refresh = dedicatedReorderRefreshers.get(list)?.get(config.bindingKey);
+    if (refresh) refresh();
+    else enhanceDedicatedReorderList(list, scope, config);
+  });
+  return lists.length;
+}
 
-    const items = dedicatedReorderItems(list, config);
-    const form = config.form || findDedicatedReorderForm(list, scope, config);
-    const handles = items.map((item) => config.wholeCardKeyboard ? item : item.querySelector?.(config.handleSelector));
-    if (!form || items.length === 0 || handles.some((handle) => !handle)) return;
+function enhanceDedicatedReorderList(list, scope, config) {
+  if (isEnhancementBound(list, config.bindingKey)) return;
 
-    const state = {
-      list,
-      form,
-      live: dedicatedReorderLiveRegion(list, scope, config),
-      draggedItem: null,
-      dropItem: null,
-      dropBefore: null,
-    };
+  const items = dedicatedReorderItems(list, config);
+  const form = config.form || findDedicatedReorderForm(list, scope, config);
+  const handles = items.map((item) => config.wholeCardKeyboard ? item : item.querySelector?.(config.handleSelector));
+  if (!form || items.length === 0 || handles.some((handle) => !handle)) return;
 
-    // Chromium can retarget dragstart to the draggable ancestor. Remember the
-    // pressed descendant only until this gesture is consumed or terminated.
-    let pointerGesture = null;
-    const document = list.ownerDocument;
-    const windowObject = document?.defaultView;
-    const clearPointerTarget = () => {
-      pointerGesture = null;
-      document?.removeEventListener?.('pointerdown', clearPointerTarget, true);
-      document?.removeEventListener?.('pointerup', clearPointerTarget, true);
-      document?.removeEventListener?.('pointercancel', clearPointerTarget, true);
-      windowObject?.removeEventListener?.('blur', clearPointerTarget);
-    };
-    state.clearPointerTarget = clearPointerTarget;
+  const state = {
+    list,
+    form,
+    live: dedicatedReorderLiveRegion(list, scope, config),
+    draggedItem: null,
+    dropItem: null,
+    dropBefore: null,
+  };
+  const boundItems = new WeakSet();
 
-    markEnhancementBound(list, config.bindingKey);
-    updateDedicatedReorderMetadata(list, config);
+  // Chromium can retarget dragstart to the draggable ancestor. Remember the
+  // pressed descendant only until this gesture is consumed or terminated.
+  let pointerGesture = null;
+  const document = list.ownerDocument;
+  const windowObject = document?.defaultView;
+  const clearPointerTarget = () => {
+    pointerGesture = null;
+    document?.removeEventListener?.('pointerdown', clearPointerTarget, true);
+    document?.removeEventListener?.('pointerup', clearPointerTarget, true);
+    document?.removeEventListener?.('pointercancel', clearPointerTarget, true);
+    windowObject?.removeEventListener?.('blur', clearPointerTarget);
+  };
+  state.clearPointerTarget = clearPointerTarget;
+
+  markEnhancementBound(list, config.bindingKey);
+  updateDedicatedReorderMetadata(list, config);
+  syncDedicatedReorderInput(state, config);
+  config.onInitialize?.(state);
+
+  form.addEventListener?.('submit', (event) => {
+    // A list replaced inside its form leaves the serializing to its successor.
+    if (list.isConnected === false) return;
+    if (config.isBusy?.(state)) {
+      event.preventDefault?.();
+      return;
+    }
     syncDedicatedReorderInput(state, config);
-    config.onInitialize?.(state);
-
-    form.addEventListener?.('submit', (event) => {
-      // A list replaced inside its form leaves the serializing to its successor.
-      if (list.isConnected === false) return;
-      if (config.isBusy?.(state)) {
-        event.preventDefault?.();
-        return;
-      }
-      syncDedicatedReorderInput(state, config);
-    });
-
-    items.forEach((item) => {
-      const handle = config.wholeCardKeyboard ? item : item.querySelector?.(config.handleSelector);
-
-      item.addEventListener?.('pointerdown', (event) => {
-        clearPointerTarget();
-        if (event.button !== 0 || event.isPrimary === false) return;
-        pointerGesture = { item, target: event.target };
-        document?.addEventListener?.('pointerdown', clearPointerTarget, true);
-        document?.addEventListener?.('pointerup', clearPointerTarget, true);
-        document?.addEventListener?.('pointercancel', clearPointerTarget, true);
-        windowObject?.addEventListener?.('blur', clearPointerTarget);
-      }, true);
-
-      item.addEventListener?.('dragstart', (event) => {
-        const target = pointerGesture?.item === item ? pointerGesture.target : event.target;
-        clearPointerTarget();
-        if (config.isBusy?.(state) || !canStartDedicatedReorderDrag(item, { target }, config)) {
-          event.preventDefault?.();
-          return;
-        }
-
-        state.draggedItem = item;
-        item.classList?.add('is-dragging');
-        list.classList?.add('is-dragging');
-        if (event.dataTransfer) {
-          event.dataTransfer.effectAllowed = 'move';
-          event.dataTransfer.setData?.('text/plain', dedicatedReorderId(item, config));
-        }
-      });
-
-      item.addEventListener?.('dragend', () => finishDedicatedDrag(state));
-
-      handle.addEventListener?.('keydown', (event) => {
-        if (config.wholeCardKeyboard && event.target !== item) return;
-        const keyTargets = { ArrowUp: -1, ArrowDown: 1, Home: 0, End: items.length - 1 };
-        if (!Object.prototype.hasOwnProperty.call(keyTargets, event.key)) return;
-
-        event.preventDefault?.();
-        if (config.isBusy?.(state)) return;
-        const currentItems = dedicatedReorderItems(list, config);
-        const currentIndex = currentItems.indexOf(item);
-        if (currentIndex === -1) return;
-        const targetIndex = event.key === 'Home'
-          ? 0
-          : event.key === 'End'
-            ? currentItems.length - 1
-            : currentIndex + keyTargets[event.key];
-        if (targetIndex < 0 || targetIndex >= currentItems.length || targetIndex === currentIndex) return;
-
-        if (moveDedicatedItemToIndex(list, item, targetIndex, config)) {
-          announceDedicatedMove(state, item, config);
-          syncDedicatedReorderInput(state, config);
-          handle.focus?.();
-          config.onOrderChange?.({ item, keyboard: true, state });
-        }
-      });
-    });
-
-    list.addEventListener?.('dragover', (event) => {
-      if (config.isBusy?.(state)) {
-        finishDedicatedDrag(state);
-        return;
-      }
-      if (!state.draggedItem) return;
-      event.preventDefault?.();
-      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
-      const target = resolveDedicatedDropTarget(list, event, state.draggedItem, config);
-      if (target) setDedicatedDropIndicator(state, target.item, target.before);
-      else clearDedicatedDropIndicator(state);
-    });
-
-    list.addEventListener?.('dragleave', (event) => {
-      const relatedTarget = event.relatedTarget;
-      if (!relatedTarget || !list.contains?.(relatedTarget)) clearDedicatedDropIndicator(state);
-    });
-
-    list.addEventListener?.('drop', (event) => {
-      if (config.isBusy?.(state)) {
-        event.preventDefault?.();
-        finishDedicatedDrag(state);
-        return;
-      }
-      if (!state.draggedItem) return;
-      event.preventDefault?.();
-      const draggedItem = state.draggedItem;
-      const target = state.dropItem
-        ? { item: state.dropItem, before: state.dropBefore }
-        : resolveDedicatedDropTarget(list, event, draggedItem, config);
-      const beforeIds = dedicatedReorderOrder(list, config);
-      if (target) moveDedicatedItemToDropTarget(list, draggedItem, target.item, target.before);
-      finishDedicatedDrag(state);
-      const afterIds = dedicatedReorderOrder(list, config);
-      if (!sameDedicatedReorder(beforeIds, afterIds)) {
-        updateDedicatedReorderMetadata(list, config);
-        syncDedicatedReorderInput(state, config);
-        if (config.onOrderChange) announceDedicatedMove(state, draggedItem, config);
-        config.onOrderChange?.({ item: draggedItem, keyboard: false, state });
-      }
-    });
   });
 
-  return lists.length;
+  const bindItem = (item) => {
+    if (boundItems.has(item)) return;
+    const handle = config.wholeCardKeyboard ? item : item.querySelector?.(config.handleSelector);
+    if (!handle) return;
+    boundItems.add(item);
+
+    item.addEventListener?.('pointerdown', (event) => {
+      clearPointerTarget();
+      if (event.button !== 0 || event.isPrimary === false) return;
+      pointerGesture = { item, target: event.target };
+      document?.addEventListener?.('pointerdown', clearPointerTarget, true);
+      document?.addEventListener?.('pointerup', clearPointerTarget, true);
+      document?.addEventListener?.('pointercancel', clearPointerTarget, true);
+      windowObject?.addEventListener?.('blur', clearPointerTarget);
+    }, true);
+
+    item.addEventListener?.('dragstart', (event) => {
+      const target = pointerGesture?.item === item ? pointerGesture.target : event.target;
+      clearPointerTarget();
+      if (config.isBusy?.(state)
+        || !isDedicatedReorderMember(list, item, config)
+        || !canStartDedicatedReorderDrag(item, { target }, config)) {
+        event.preventDefault?.();
+        return;
+      }
+
+      state.draggedItem = item;
+      item.classList?.add('is-dragging');
+      list.classList?.add('is-dragging');
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData?.('text/plain', dedicatedReorderId(item, config));
+      }
+    });
+
+    item.addEventListener?.('dragend', () => finishDedicatedDrag(state));
+
+    handle.addEventListener?.('keydown', (event) => {
+      if (config.wholeCardKeyboard && event.target !== item) return;
+      if (!DEDICATED_REORDER_KEYS.has(event.key)) return;
+
+      event.preventDefault?.();
+      if (config.isBusy?.(state)) return;
+      // Boundaries come from the list's membership at the moment of the key.
+      const currentItems = dedicatedReorderItems(list, config);
+      const currentIndex = currentItems.indexOf(item);
+      if (currentIndex === -1) return;
+      const targetIndex = event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? currentItems.length - 1
+          : currentIndex + (event.key === 'ArrowUp' ? -1 : 1);
+      if (targetIndex < 0 || targetIndex >= currentItems.length || targetIndex === currentIndex) return;
+
+      if (moveDedicatedItemToIndex(list, item, targetIndex, config)) {
+        announceDedicatedMove(state, item, config);
+        syncDedicatedReorderInput(state, config);
+        handle.focus?.();
+        config.onOrderChange?.({ item, keyboard: true, state });
+      }
+    });
+  };
+  items.forEach(bindItem);
+
+  const refresh = () => {
+    pruneDedicatedReorderState(state, config);
+    dedicatedReorderItems(list, config).forEach(bindItem);
+    updateDedicatedReorderMetadata(list, config);
+    syncDedicatedReorderInput(state, config);
+  };
+  if (!dedicatedReorderRefreshers.has(list)) dedicatedReorderRefreshers.set(list, new Map());
+  dedicatedReorderRefreshers.get(list).set(config.bindingKey, refresh);
+
+  list.addEventListener?.('dragover', (event) => {
+    if (config.isBusy?.(state)) {
+      finishDedicatedDrag(state);
+      return;
+    }
+    pruneDedicatedReorderState(state, config);
+    if (!state.draggedItem) return;
+    event.preventDefault?.();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+    const target = resolveDedicatedDropTarget(list, event, state.draggedItem, config);
+    if (target) setDedicatedDropIndicator(state, target.item, target.before);
+    else clearDedicatedDropIndicator(state);
+  });
+
+  list.addEventListener?.('dragleave', (event) => {
+    const relatedTarget = event.relatedTarget;
+    if (!relatedTarget || !list.contains?.(relatedTarget)) clearDedicatedDropIndicator(state);
+  });
+
+  list.addEventListener?.('drop', (event) => {
+    if (config.isBusy?.(state)) {
+      event.preventDefault?.();
+      finishDedicatedDrag(state);
+      return;
+    }
+    pruneDedicatedReorderState(state, config);
+    if (!state.draggedItem) return;
+    event.preventDefault?.();
+    const draggedItem = state.draggedItem;
+    const target = state.dropItem
+      ? { item: state.dropItem, before: state.dropBefore }
+      : resolveDedicatedDropTarget(list, event, draggedItem, config);
+    const beforeIds = dedicatedReorderOrder(list, config);
+    if (target) moveDedicatedItemToDropTarget(list, draggedItem, target.item, target.before);
+    finishDedicatedDrag(state);
+    const afterIds = dedicatedReorderOrder(list, config);
+    if (!sameDedicatedReorder(beforeIds, afterIds)) {
+      updateDedicatedReorderMetadata(list, config);
+      syncDedicatedReorderInput(state, config);
+      if (config.onOrderChange) announceDedicatedMove(state, draggedItem, config);
+      config.onOrderChange?.({ item: draggedItem, keyboard: false, state });
+    }
+  });
 }
 
 function setBookReorderStatus(state, message, status) {
