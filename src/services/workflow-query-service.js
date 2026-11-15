@@ -1988,6 +1988,59 @@ function normalizeAssetBrowserQuery(
     }));
   }
 
+  /**
+   * Render-ready presentation for the Assets the Project Detail Related Notes
+   * section shows. `assetIds` come from the Notes read model; full rows are
+   * re-read here only because preview classification and revision tokens need
+   * the scan metadata that read model does not carry. Rows owned by any other
+   * Project are dropped, so another Project's asset never reaches the page.
+   * The result is keyed by asset id and keeps the shared preview model and
+   * list-row fields the asset-presentation list card already renders.
+   *
+   * @param {number} projectId
+   * @param {number[]} assetIds
+   * @returns {Map<number, object>}
+   */
+  function presentProjectRelatedNoteAssets(projectId, assetIds) {
+    const uniqueIds = [...new Set(Array.isArray(assetIds) ? assetIds : [])]
+      .filter((assetId) => Number.isSafeInteger(assetId) && assetId > 0);
+    if (uniqueIds.length === 0) return new Map();
+
+    const rows = assetRepository.findByIds(uniqueIds)
+      .filter((asset) => asset.project_id === projectId);
+    if (rows.length === 0) return new Map();
+
+    const tagsByAssetId = new Map();
+    for (const tag of tagRepository.listForAssetIds(rows.map((asset) => asset.id))) {
+      if (!tagsByAssetId.has(tag.asset_id)) tagsByAssetId.set(tag.asset_id, []);
+      tagsByAssetId.get(tag.asset_id).push({ displayName: tag.display_name, normalizedName: tag.normalized_name });
+    }
+    const policyFingerprint = imageFingerprint();
+
+    return new Map(rows.map((asset) => {
+      const preview = presentAssetPreview(asset, policyFingerprint);
+      return [asset.id, {
+        id: asset.id,
+        project_id: asset.project_id,
+        filename: asset.filename,
+        relative_path: asset.relative_path,
+        extension: asset.extension,
+        is_present: asset.is_present,
+        preview,
+        preview_state: preview.state,
+        preview_revision: preview.revision,
+        thumbnail_url: preview.urls.thumbnail,
+        preview_url: preview.urls.preview,
+        // WP7.4: the unified viewer's Original, when inline-eligible.
+        original_url: buildAssetOriginalUrl(asset),
+        tags: tagsByAssetId.get(asset.id) || [],
+        ...buildAssetRowPresentation({ ...asset, category: null, release_usage: [] }),
+        // Note cards identify an asset by filename only.
+        locationLabel: '',
+      }];
+    }));
+  }
+
   function appendQuery(basePath, query) {
     const search = buildAssetBrowserQueryString(query);
     return search ? `${basePath}?${search}` : basePath;
@@ -2764,6 +2817,7 @@ function normalizeAssetBrowserQuery(
   return {
     getDashboardData,
     getProjectWorkspace,
+    presentProjectRelatedNoteAssets,
     getProjectList,
     getProjectTagFilterOptions,
     getProjectsPageFilterOptions,

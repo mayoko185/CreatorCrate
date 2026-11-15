@@ -57,7 +57,8 @@ function initializeNotesEditor({ form, host, textarea }, Editor) {
     }
 
     editor.removeHook('addImageBlobHook');
-    form.__creatorCrateNotesEditor.attach(editor);
+    // A form unmounted while the editor loaded keeps its textarea.
+    if (form.__creatorCrateNotesEditor.attach(editor) === false) return;
   } catch {
     editor?.destroy?.();
     return;
@@ -84,9 +85,23 @@ export function enhanceNotesEditor(scope = globalThis.document, { loadEditor = l
     if (!host || !textarea || typeof form.addEventListener !== 'function') return;
 
     let editor = null;
+    let destroyed = false;
     form.__creatorCrateNotesEditor = {
       attach(nextEditor) {
+        if (destroyed) {
+          nextEditor.destroy?.();
+          return false;
+        }
         editor = nextEditor;
+        return true;
+      },
+      // For a host that removes the form (a dialog mounted per Page): the
+      // editor's document listeners go with it, and a pending load attaches none.
+      destroy() {
+        destroyed = true;
+        const current = editor;
+        editor = null;
+        current?.destroy?.();
       },
       getMarkdown() {
         return editor ? editor.getMarkdown() : textarea.value;

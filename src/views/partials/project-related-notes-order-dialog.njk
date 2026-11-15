@@ -1,0 +1,61 @@
+{#
+  Project Detail "Reorder Notes" dialog (WP7.3).
+
+  Usage (Project Detail overlay, outside every refresh region):
+    {% import "partials/project-related-notes-order-dialog.njk" as relatedNotesOrderDialog %}
+    {{ relatedNotesOrderDialog.render(project, _csrf) }}
+
+  Rendered closed and empty. Each opening reads the authoritative order
+  (GET /notes/projects/:projectId/order, WP7.2) and client/project-related-notes-order.js
+  fills the list from the row template below, then binds it with the shared
+  Notes reorder engine (enhanceDedicatedReorder in client/dedicated-reorder.js):
+  drag a row, or focus its handle and use Arrow Up, Arrow Down, Home or End.
+  Save sends the one ordering POST to the same URL; Cancel and Close discard
+  the draft. The form is not a [data-dialog-form]: its JSON submission is the
+  module's own, and app-dialogs.js only provides the dialog lifecycle.
+  The rows reuse the Chapter "Change order" compact reorder card classes.
+#}
+{% import "partials/dialog.njk" as dialog %}
+{% macro render(project, csrf) %}
+  {% call dialog.render('project-related-notes-order-dialog', 'Reorder Notes', false, 'project-related-notes-order-instructions', '', 'project-form-dialog app-dialog--refined') %}
+    <form id="project-related-notes-order-form" class="app-dialog-form project-form project-edit-dialog-form" method="post"
+          action="/notes/projects/{{ project.id }}/order" data-project-related-notes-order-form data-project-id="{{ project.id }}" novalidate>
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      <div class="app-dialog-body">
+        <div class="error-summary" role="alert" data-project-related-notes-order-error hidden><p data-project-related-notes-order-error-text></p></div>
+        <section class="notes-chapter-order project-edit-dialog-section" aria-labelledby="project-related-notes-order-heading">
+          <h3 id="project-related-notes-order-heading">Related Notes</h3>
+          <div class="project-edit-dialog-section-body">
+            <p class="help-text" id="project-related-notes-order-instructions">
+              Drag a Note card to move it, or focus its handle and use Arrow Up, Arrow Down, Home, or End. Select Save to keep the new order for this project.
+            </p>
+            <ol class="notes-chapter-page-list notes-chapter-order-list notes-reorder-list"
+                data-project-related-notes-order-list
+                aria-label="Related Notes in {{ project.title }}"
+                aria-describedby="project-related-notes-order-instructions"></ol>
+            <p class="help-text" data-project-related-notes-order-few hidden>There are fewer than two related notes now, so there is nothing to reorder.</p>
+            <div class="notes-chapter-order-live-region notes-reorder-live-region sr-only" data-project-related-notes-order-live aria-live="polite" aria-atomic="true"></div>
+          </div>
+        </section>
+        <template data-project-related-notes-order-row>
+          <li class="notes-chapter-page-row notes-chapter-order-row notes-reorder-row notes-reorder-row--compact"
+              data-project-related-notes-order-item draggable="true">
+            <button type="button" class="notes-chapter-order-handle notes-reorder-handle" data-project-related-notes-order-handle draggable="true"
+                    title="Drag to reorder; use the arrow keys to move">
+              <span aria-hidden="true">⠿</span>
+            </button>
+            <div class="notes-chapter-page-copy" draggable="true">
+              <h4 class="notes-chapter-page-title" data-project-related-notes-order-title></h4>
+              <span class="notes-chapter-order-position notes-reorder-position" data-project-related-notes-order-position></span>
+            </div>
+          </li>
+        </template>
+      </div>
+      <div class="app-dialog-status" data-project-related-notes-order-status role="status" aria-live="polite"></div>
+      <footer class="app-dialog-footer">
+        <button class="button button-secondary" type="button" data-dialog-close>Cancel</button>
+        <button class="button button-primary" type="submit" data-project-related-notes-order-save>Save</button>
+      </footer>
+    </form>
+  {% endcall %}
+{% endmacro %}

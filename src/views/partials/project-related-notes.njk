@@ -1,0 +1,142 @@
+{#
+  Project Detail Related Notes (WP3A).
+
+  Usage (Project Detail only):
+    {% import "partials/project-related-notes.njk" as projectRelatedNotes %}
+    {{ projectRelatedNotes.region(relatedNotes, project) }}
+
+  The region wrapper and its section are always rendered (WP6.5), with the
+  "Create new note" action (data-project-related-note-create, which opens the
+  Create Note dialog in place through client/project-related-note-editor.js)
+  and either the cards, the "No related notes yet." empty state, or the inline
+  notice of a failed Notes read. The wrapper (display: contents) is the
+  "related-notes" Project Detail refresh region (client/project-detail-refresh.js,
+  WP5): every in-place refresh of the page, after a Project Edit, an Archive or
+  a confirmed Related Notes Page save or Move, replaces it from the new render.
+
+  Cards are the Notes Book Detail Page preview cards (.notes-page-preview-*,
+  WP6.1): the title row carries the icon-only Edit and Pin controls (revealed
+  on hover or focus where a fine hovering pointer exists, always shown
+  otherwise), asset previews stay visible, and the complete rendered Page
+  sits behind the Show note / Hide note disclosure. Hooks:
+    data-project-related-note="<id>"                 card
+    data-project-related-note-disclosure="<id>"      disclosure button
+    data-project-related-note-disclosure-label       its visible Show/Hide note text
+    data-project-related-note-preview="<id>"         content container
+    data-project-related-note-edit="<id>"            Edit (opens the Notes Edit Page dialog)
+    data-project-related-note-pin="<id>"             Pin toggle (aria-pressed)
+  Disclosure and browser-local Pin behavior come from
+  client/project-related-notes.js (WP3B); Edit opens the Notes Edit Page dialog
+  in place through client/project-related-note-editor.js (WP4).
+
+  WP7.3: "Reorder Notes" (data-project-related-notes-reorder, id
+  project-related-notes-reorder) sits beside Create new note. It is enabled
+  only when two or more Notes qualify; otherwise it is disabled and described
+  by why. It opens the Reorder Notes dialog
+  (partials/project-related-notes-order-dialog.njk, outside this region)
+  through client/project-related-notes-order.js.
+
+  Asset previews reuse the shared asset-presentation list card. WP7.4: the card
+  opts in to viewer activation (options.viewerActivation) with the Related
+  Notes trigger attributes, so an eligible image's thumbnail and filename open
+  it in the page's one unified viewer, a readable comic's open the unified
+  comic reader, and a supported video's open the shared video preview dialog.
+  The existing Project Detail viewer host (client/project-detail-viewer.js)
+  handles them; missing and unsupported files keep their Asset Details links.
+#}
+{% import "partials/icons.njk" as icons %}
+{% import "partials/asset-presentation.njk" as assetPresentation %}
+
+{% macro noteCard(note, project) %}
+  <li class="project-related-note-item">
+  <article class="notes-page-preview-item project-related-note" id="{{ note.domIds.card }}" data-project-related-note="{{ note.id }}"
+           aria-labelledby="{{ note.domIds.title }}">
+    <div class="project-related-note-header">
+      <h3 class="project-related-note-title" id="{{ note.domIds.title }}">
+        <a class="notes-page-preview-title" href="{{ note.pageUrl }}" data-project-related-note-page-link>{{ note.title }}</a>
+      </h3>
+      <div class="project-related-note-actions">
+        <button class="button button-small button-secondary project-detail-action project-related-note-action asset-tooltip asset-tooltip--right" type="button"
+                aria-haspopup="dialog" aria-label="Edit {{ note.title }}" data-tooltip="Edit note" data-project-related-note-edit="{{ note.id }}">
+          {{ icons.icon('edit') }}
+        </button>
+        <button class="button button-small button-secondary project-detail-action project-related-note-action asset-tooltip asset-tooltip--right" type="button"
+                aria-pressed="false" aria-label="Pin {{ note.title }}" data-tooltip="Pin note" data-project-related-note-pin="{{ note.id }}">
+          {{ icons.icon('pin') }}
+        </button>
+      </div>
+    </div>
+
+    {% if note.assets.length > 0 %}
+      <ul class="asset-list project-related-note-assets" aria-label="Associated assets">
+        {% for asset in note.assets %}
+          <li class="asset-list-item{% if not asset.is_present %} is-missing{% endif %}" data-project-related-note-asset="{{ asset.id }}">
+            {{ assetPresentation.listCard(asset, {
+              columns: ['asset'],
+              headingTag: 'h4',
+              nsfwBlur: asset.nsfwBlur,
+              cardClass: 'project-related-note-asset',
+              viewerActivation: true,
+              viewerTrigger: 'data-project-related-note-viewer-trigger',
+              comicTrigger: 'data-project-related-note-comic-trigger',
+              projectName: project.title
+            }) }}
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+
+    <div class="project-related-note-content">
+      <button class="project-related-note-disclosure" type="button" aria-expanded="false"
+              aria-controls="{{ note.domIds.preview }}" data-project-related-note-disclosure="{{ note.id }}">
+        {{ icons.icon('chevron-right') }}<span data-project-related-note-disclosure-label>Show note</span><span class="sr-only">: {{ note.title }}</span>
+      </button>
+      <div class="project-related-note-preview" id="{{ note.domIds.preview }}" data-project-related-note-preview="{{ note.id }}" hidden>
+        {% if note.contentHtml %}
+          <div class="notes-content book-page-preview-content">{{ note.contentHtml | safe }}</div>
+        {% else %}
+          <p class="notes-page-preview-empty-content">No content yet.</p>
+        {% endif %}
+        <p class="project-related-note-full-link"><a href="{{ note.pageUrl }}">Open in notes</a></p>
+      </div>
+    </div>
+  </article>
+  </li>
+{% endmacro %}
+
+{% macro region(relatedNotes, project) %}
+  <div class="project-related-notes-region" data-project-related-notes-region data-project-id="{{ project.id }}" data-project-detail-region="related-notes">
+    {% set unavailable = not relatedNotes or relatedNotes.state == 'unavailable' %}
+    <section class="project-detail-section project-related-notes" aria-labelledby="project-related-notes-heading" data-project-related-notes{% if unavailable %} data-project-related-notes-state="unavailable"{% elif relatedNotes.state == 'empty' %} data-project-related-notes-state="empty"{% endif %}>
+      <h2 id="project-related-notes-heading">Related Notes</h2>
+      <div class="project-detail-section-body">
+        {% set reorderable = not unavailable and relatedNotes.state == 'ready' and relatedNotes.notes.length >= 2 %}
+        <div class="workflow-actions">
+          <button class="button button-secondary" type="button" aria-haspopup="dialog" data-project-related-note-create>Create new note</button>
+          <button class="button button-secondary" type="button" id="project-related-notes-reorder" aria-haspopup="dialog" data-project-related-notes-reorder
+                  {%- if not reorderable %} disabled aria-describedby="project-related-notes-reorder-unavailable"{% endif %}>Reorder Notes</button>
+          {% if not reorderable %}
+            <span class="sr-only" id="project-related-notes-reorder-unavailable">
+              {%- if unavailable %}Related notes couldn't be loaded, so they can't be reordered.{% else %}At least two related notes are needed to reorder them.{% endif -%}
+            </span>
+          {% endif %}
+        </div>
+        {% if unavailable %}
+          <div class="notice notice--error" role="status" data-project-related-notes-error>
+            <p>Related notes couldn't be loaded. Reload the page to try again.</p>
+          </div>
+        {% elif relatedNotes.state == 'ready' %}
+          <ul class="notes-page-preview-list project-related-note-list">
+            {% for note in relatedNotes.notes %}
+              {{ noteCard(note, project) }}
+            {% endfor %}
+          </ul>
+        {% else %}
+          <div class="empty-state" data-project-related-notes-empty>
+            <h3 class="empty-state-heading">No related notes yet.</h3>
+          </div>
+        {% endif %}
+      </div>
+    </section>
+  </div>
+{% endmacro %}

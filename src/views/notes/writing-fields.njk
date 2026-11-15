@@ -1,5 +1,5 @@
         <div class="field app-dialog-field {% if errors.title %}field-error{% endif %}" data-dialog-field="title">
-          <label for="{{ noteTitleId or 'title' }}">Page title <span class="required" aria-label="required">*</span></label>
+          <label for="{{ noteTitleId or 'title' }}">{{ noteTitleLabel or 'Page title' }} <span class="required" aria-label="required">*</span></label>
           <input type="text" id="{{ noteTitleId or 'title' }}" name="title" value="{{ values.title or '' }}" maxlength="200" required{% if errors.title %} aria-describedby="{{ noteTitleId or 'title' }}-error" aria-invalid="true"{% endif %}>
           {% if errors.title %}<span class="field-error-message" id="{{ noteTitleId or 'title' }}-error">{{ errors.title }}</span>{% endif %}
         </div>

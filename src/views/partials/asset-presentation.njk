@@ -290,6 +290,27 @@
   {% set previewUrl = asset.preview.comic.cover.urls.preview if comicCover else (asset.preview_url or asset.thumbnail_url) %}
   {% set previewAvailable = comicCover or (asset.is_present and previewUrl and asset.preview_state != 'unsupported' and asset.preview_state != 'missing') %}
   {% set typeLabel = asset.typeLabel or 'File' %}
+  {% set headingTag = options.headingTag or 'h2' %}
+  {#
+    options.viewerActivation (opt-in, Project Detail Related Notes only): the
+    filename link carries the same activation as the thumbnail (image viewer,
+    comic reader or shared video preview), and a reader-eligible comic shown
+    without a cover keeps its placeholder inside a Read comic link. Missing and
+    unsupported files keep their plain Asset Details links. Other callers are
+    unchanged.
+  #}
+  {% set comicPlaceholderReader = options.viewerActivation and not comicCover and asset.viewerUrl and comicReadable(asset, options.comicTrigger) | length %}
+  {% set filenameActivation %}
+    {%- if options.viewerActivation and asset.viewerUrl -%}
+      {%- if comicCover or comicPlaceholderReader -%}
+        {{ comicReaderAttributes(asset, options.comicTrigger, asset.viewerUrl, options.comicLabel, options.projectName) }}
+      {%- elif previewAvailable -%}
+        {{ viewerTriggerAttributes(asset, options.viewerTrigger, options.projectName) }}
+      {%- elif asset.is_present and asset.preview_state == 'video' and asset.preview and asset.preview.playbackUrl -%}
+        {{ ' ' }}data-asset-video-preview-trigger data-video-src="{{ asset.preview.playbackUrl }}" data-video-title="{{ displayName }}"
+      {%- endif -%}
+    {%- endif -%}
+  {% endset %}
   <article class="asset-list-card{% if options.cardClass %} {{ options.cardClass }}{% endif %}{% if options.selected %} is-selected{% endif %}" data-asset-id="{{ asset.id }}"{% if options.selectable %} data-asset-selectable-card aria-selected="{% if options.selected %}true{% else %}false{% endif %}"{% endif %}>
     {% for column in columns %}
       {% set slotContent = (caller(column) | trim) if caller and column in ['select', 'order', 'role', 'releases'] else '' %}
@@ -325,6 +346,10 @@
               <span class="asset-list-card-media-placeholder asset-list-card-media-placeholder--missing" title="Missing at last scan">{{ icons.icon('warning') }}<span class="sr-only">Missing at last scan</span></span>
             {% elif asset.preview_state == 'video' %}
               {{ videoPlaceholder(asset, 'list', asset.viewerUrl, 'Play video ' ~ filenameLabel ~ ((' from ' ~ options.mediaContextLabel) if options.mediaContextLabel else ''), { nsfwBlur: options.nsfwBlur, title: displayName }) }}
+            {% elif comicPlaceholderReader %}
+              <a class="asset-list-card-media-link" href="{{ asset.viewerUrl }}" aria-label="Read comic {{ filenameLabel }}{% if options.mediaContextLabel %} from {{ options.mediaContextLabel }}{% endif %}"{{ comicReaderAttributes(asset, options.comicTrigger, asset.viewerUrl, options.comicLabel, options.projectName) }}>
+                <span class="asset-list-card-media-placeholder" title="{{ typeLabel }} — preview not supported">{{ typeLabel }}<span class="sr-only"> — preview not supported</span></span>
+              </a>
             {% elif asset.preview_state == 'unsupported' %}
               <span class="asset-list-card-media-placeholder" title="{{ typeLabel }} — preview not supported">{{ typeLabel }}<span class="sr-only"> — preview not supported</span></span>
             {% else %}
@@ -335,17 +360,17 @@
             {% set titleInfoCard = (caller('title-info') | trim) if caller and options.titleInfoId else '' %}
             {% if titleInfoCard | length %}
               <div class="dashboard-title-info asset-list-card-title-info" data-dashboard-title-info>
-                <h2 class="asset-list-card-title">{{ titleInfo.trigger(displayName, options.titleInfoId) }}</h2>
+                <{{ headingTag }} class="asset-list-card-title">{{ titleInfo.trigger(displayName, options.titleInfoId) }}</{{ headingTag }}>
                 {{ titleInfoCard | safe }}
               </div>
             {% else %}
-              <h2 class="asset-list-card-title">
+              <{{ headingTag }} class="asset-list-card-title">
                 {% if (options.filenameLink is not defined or options.filenameLink) and asset.viewerUrl %}
-                  <a class="asset-file-link" href="{{ asset.viewerUrl }}">{{ displayName }}</a>
+                  <a class="asset-file-link" href="{{ asset.viewerUrl }}"{% if filenameActivation | trim | length %} {{ filenameActivation | trim | safe }}{% endif %}>{{ displayName }}</a>
                 {% else %}
                   {{ displayName }}
                 {% endif %}
-              </h2>
+              </{{ headingTag }}>
             {% endif %}
             {% set assetDetails = (caller('asset') | trim) if caller else '' %}
             {% if asset.locationLabel or assetDetails | length %}

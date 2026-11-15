@@ -5,6 +5,8 @@
 {% import "partials/project-edit-dialog.njk" as projectEditDialog %}
 {% import "partials/release-social-prep-summary.njk" as socialPrepSummary %}
 {% import "partials/asset-presentation.njk" as assetPresentation %}
+{% import "partials/project-related-notes.njk" as projectRelatedNotes %}
+{% import "partials/project-related-notes-order-dialog.njk" as relatedNotesOrderDialog %}
 
 {% set page_title = "Projects — " ~ project.title %}
 {% set assetVideoPreview = true %}
@@ -171,6 +173,9 @@
     </div>
   </section>
 
+  {# ─── Related Notes (full width; region always present) ─────────── #}
+  {{ projectRelatedNotes.region(relatedNotes, project) }}
+
   {# ─── Releases (full width) ─────────────────────────────────────── #}
   <section class="release-summary project-detail-releases project-detail-section">
     <h2>Releases</h2>
@@ -244,6 +249,11 @@
 {% endblock %}
 
 {% block overlay %}
+  {# Related Notes Edit mounts the Notes Edit Page dialog here, outside the
+     Related Notes region a refresh may replace (client/project-related-note-editor.js). #}
+  <div class="project-related-note-editor" data-project-related-note-editor></div>
+  {# Reorder Notes (WP7.3), outside the Related Notes region a refresh may replace. #}
+  {{ relatedNotesOrderDialog.render(project, _csrf) }}
   {% if ownershipNotice %}
     {% call dialog.render('project-ownership-dialog', 'Project folder ownership', false, 'project-ownership-dialog-description') %}
       <div class="app-dialog-body" data-project-ownership-dialog data-project-id="{{ project.id }}" data-project-title="{{ project.title }}">

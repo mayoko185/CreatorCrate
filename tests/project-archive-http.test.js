@@ -255,7 +255,7 @@ describe('Project Archive — enhanced JSON and native', () => {
       const active = await agent.get(`/projects/${project.id}`).expect(200);
       await postJson(archiveRoute(project.id)).expect(200);
       const archived = await agent.get(`/projects/${project.id}`).expect(200);
-      expect(names(active.text)).toEqual(['archive-heading', 'archive-notice', 'hero', 'release-actions']);
+      expect(names(active.text)).toEqual(['archive-heading', 'archive-notice', 'hero', 'related-notes', 'release-actions']);
       expect(names(archived.text)).toEqual(names(active.text));
     });
   });

@@ -11,8 +11,11 @@ import { bindRecordDelete, readPageDeletionStatus, refusedWithoutWriting } from 
 import { syncCreatorCrateDropdownFromNative } from './dropdowns.js';
 import { beginBookDetailDefaultsLiveRefresh, supersedeBookDetailLiveRefresh } from './live-regions.js';
 import {
+  noteDialogDraftSaved,
   noteDialogIsDirty,
+  readCompleteNoteDialogBaseline,
   readNoteDialogBaseline,
+  readNoteDialogDraft,
   resetNoteDialogToBaseline,
   setNoteDialogBaseline,
 } from './note-dialog-dirty.js';
@@ -43,6 +46,23 @@ const CHAPTER_EDIT_TRIGGER_SELECTOR = '.page-heading [data-dialog-open="chapter-
 const BOOK_PAGE_PREVIEWS_SELECTOR = '.notes-page-previews';
 const BOOK_DETAILS_SELECTOR = '.notes-detail-details';
 const PREVIEW_PAGE_CHOICES_SELECTOR = '#book-preview-pages';
+// Edit Page mounted on Project Detail (project-related-note-editor.js) sits in
+// this host. There is no Page Detail around it, so its reads of /notes/:id
+// adopt only the dialog's own saved values and Move destinations.
+const PROJECT_DETAIL_NOTE_EDITOR_SELECTOR = '[data-project-related-note-editor]';
+// Dispatched (bubbling) on that dialog once a save or Move is acknowledged.
+export const NOTE_EDIT_COMMITTED_EVENT = 'creatorcrate:note-edit-committed';
+// Dispatched (bubbling) once, after a save whose answer was lost or unconfirmed,
+// when the read that followed it installed the Page's saved values and they are
+// exactly the draft that save sent: the server holds it, though no answer said
+// so. Not a commit: detail { noteId } only, and the dialog keeps its message.
+export const NOTE_EDIT_RECONCILED_EVENT = 'creatorcrate:note-edit-reconciled';
+// Create Note mounted in the same host (WP6.4): dispatched (bubbling) on its
+// dialog once the binder has closed it after an acknowledged HTTP 201, with
+// detail { noteId, projectId, payload } taken from the response.
+export const NOTE_CREATE_COMMITTED_EVENT = 'creatorcrate:note-create-committed';
+const PROJECT_NOTE_CREATE_ACTION = /^\/notes\/projects\/([1-9]\d*)$/;
+const PROJECT_NOTE_CREATE_TRIGGER_SELECTOR = '[data-project-related-note-create]';
 const PAGE_DELETED_URL = /^\/notes\/(?:books|chapters)\/[1-9]\d*\?notice=page_deleted&undo=[0-9a-f]{64}$/;
 const PAGE_PARENT_URL = /^\/notes\/(?:books|chapters)\/[1-9]\d*$/;
 const PAGE_CONTENT_SELECTOR = '.notes-page-detail-content';
@@ -71,7 +91,7 @@ function feedbackParts(document) {
 }
 
 function openerFor(ctrl) {
-  return ctrl.document.querySelector(`[data-dialog-open="${ctrl.dialog.id}"]`);
+  return ctrl.document.querySelector(`[data-dialog-open="${ctrl.dialog.id}"]`) || ctrl.fallbackOpener?.() || null;
 }
 
 // Runs after the binder writes the success message, so the link and Dismiss sit
@@ -443,6 +463,117 @@ function installPageDetail(ctrl, parsed) {
   ctrl.move?.adoptTargets(parsed);
 }
 
+// Where the dialog was bound, fixed for its lifetime: a Project Detail dialog
+// replaced by another Page's is detached, and its late reads must still adopt
+// only its own state, never fall through to the Page Detail installer.
+function onProjectDetail(ctrl) {
+  ctrl.projectDetail ??= Boolean(ctrl.dialog.closest?.(PROJECT_DETAIL_NOTE_EDITOR_SELECTOR));
+  return ctrl.projectDetail;
+}
+
+// The same read as on Page Detail, installing only what the dialog itself holds.
+// Its saved values must be whole: an incomplete read is a failed one, so it is
+// neither adopted nor able to confirm an unconfirmed save (reconcilePageSave).
+function installPageEditorState(ctrl, parsed) {
+  const nextForm = parsed.querySelector(NOTE_FORM_SELECTOR);
+  const sameForm = nextForm?.getAttribute('action') === ctrl.dialogState.form.getAttribute('action');
+  const baseline = sameForm ? readCompleteNoteDialogBaseline(nextForm) : null;
+  if (!baseline) throw new Error('Page response did not include this Page.');
+  adoptPageBaseline(ctrl, baseline);
+  ctrl.move?.adoptTargets(parsed);
+}
+
+// Tells the Project Detail host what the server acknowledged. Nothing here
+// changes that page: whoever listens reads it again.
+function announcePageCommitted(ctrl, kind, payload) {
+  if (!onProjectDetail(ctrl)) return;
+  const windowObject = ctrl.document.defaultView || globalThis;
+  ctrl.dialog.dispatchEvent(new windowObject.CustomEvent(NOTE_EDIT_COMMITTED_EVENT, {
+    bubbles: true,
+    detail: { kind, noteId: ctrl.hostUrl.split('/').pop(), payload },
+  }));
+}
+
+// A dialog replaced since (by another Page's) is detached, so it is announced
+// from the host it was mounted in, which is still Project Detail's.
+function announcePageReconciled(ctrl) {
+  if (!onProjectDetail(ctrl)) return;
+  const target = ctrl.dialog.isConnected
+    ? ctrl.dialog
+    : ctrl.document.querySelector(PROJECT_DETAIL_NOTE_EDITOR_SELECTOR);
+  if (!target) return;
+  const windowObject = ctrl.document.defaultView || globalThis;
+  target.dispatchEvent(new windowObject.CustomEvent(NOTE_EDIT_RECONCILED_EVENT, {
+    bubbles: true,
+    detail: { noteId: ctrl.hostUrl.split('/').pop() },
+  }));
+}
+
+// Kept as the unconfirmed save sent it (the form was frozen while it was in
+// flight). Answers what to run once the read after it has installed: an
+// announcement when the saved values read are that draft, and nothing else.
+function reconcilePageSave(ctrl) {
+  if (!onProjectDetail(ctrl)) return null;
+  const draft = readNoteDialogDraft(ctrl.dialogState.form);
+  // What the server stores for it: a title trimmed (note-service.js
+  // normalizeTitle). Nothing else the draft sent is rewritten on save.
+  const sent = draft && { ...draft, title: draft.title.trim() };
+  return () => {
+    if (noteDialogDraftSaved(sent, readNoteDialogBaseline(ctrl.dialogState.form))) announcePageReconciled(ctrl);
+  };
+}
+
+function canonicalId(value) {
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value > 0 ? String(value) : null;
+  return typeof value === 'string' && /^[1-9]\d*$/.test(value) ? value : null;
+}
+
+// The Page and Project a Create Note acknowledgement names (WP6.2's 201), or
+// null unless it is that answer whole: a canonical Page id with its own URL, and
+// the Project this form creates for. Anything less confirms nothing.
+function createdNoteIdentity(ctrl, payload, response) {
+  if (response?.status !== 201 || payload?.status !== 'success') return null;
+  const noteId = canonicalId(payload.page?.id);
+  const projectId = canonicalId(payload.project?.id);
+  const formProjectId = ctrl.dialogState.form.getAttribute('action').match(PROJECT_NOTE_CREATE_ACTION)?.[1];
+  if (!noteId || !projectId || projectId !== formProjectId
+    || payload.page.url !== `/notes/${noteId}`
+    || payload.project.url !== `/projects/${projectId}`) return null;
+  return { noteId, projectId };
+}
+
+// A creation whose outcome is unknown keeps its dialog, draft and message, with
+// Save locked so nothing is sent twice. WP6-F4: it may be closed for a while
+// (retainsDraft, bindDialog) without its draft, message or lock being reset,
+// and the next Create new note reopens this same dialog; replacing it would
+// drop the draft, so project-related-note-editor.js holds it, open or closed.
+// Nothing here can confirm the outcome; a reload of the page shows whether the
+// Note exists.
+function holdUnresolvedOutcome(ctrl) {
+  ctrl.dialogState.unresolvedOutcome = true;
+  const error = ctrl.dialog.querySelector('[data-dialog-error]');
+  if (error) error.hidden = false;
+  ctrl.dialog.querySelectorAll('[data-dialog-submit]').forEach((control) => { control.disabled = true; });
+}
+
+// Tells Project Detail which Page the server created: the identity its
+// acknowledgement was confirmed with.
+function announcePageCreated(ctrl) {
+  const { created } = ctrl;
+  if (!created) return;
+  const { noteId, projectId, payload } = created;
+  const windowObject = ctrl.document.defaultView || globalThis;
+  ctrl.dialog.dispatchEvent(new windowObject.CustomEvent(NOTE_CREATE_COMMITTED_EVENT, {
+    bubbles: true,
+    detail: { noteId, projectId, payload },
+  }));
+}
+
+function createdNoteMessage(payload) {
+  const title = payload?.page?.title;
+  return typeof title === 'string' && title ? `Note “${title}” created.` : 'Note created.';
+}
+
 function orderLinkedItems(list, ids) {
   if (!list) return;
   const items = new Map(Array.from(list.children).map((item) => [
@@ -556,10 +687,13 @@ export async function refreshPageDeletionParent(document, parentUrl) {
   return installed;
 }
 
-// A read nobody is waiting on: it reports nothing if it fails.
-function readHostQuietly(ctrl) {
+// A read nobody is waiting on: it reports nothing if it fails. onInstalled runs
+// once, only if this read installed (a superseded or failed one never does).
+function readHostQuietly(ctrl, onInstalled = null) {
   startHostRead(ctrl, (read) => read.then((installed) => {
-    if (installed) setRefreshNote(ctrl, '');
+    if (!installed) return;
+    setRefreshNote(ctrl, '');
+    onInstalled?.();
   }).catch(() => {}));
 }
 
@@ -611,8 +745,12 @@ function showUnconfirmed(ctrl) {
   if (errorText) errorText.textContent = ctrl.unconfirmedMessage;
   const status = ctrl.dialog.querySelector('[data-dialog-status]');
   if (status) status.textContent = '';
+  if (ctrl.holdsUnresolved) holdUnresolvedOutcome(ctrl);
+  // A dialog with no host of its own to read (Project Detail's Create Note)
+  // keeps the draft and the message, and reads nothing.
+  if (!ctrl.installHost) return;
   supersedeBookDetailLiveRefresh(ctrl.document);
-  readHostQuietly(ctrl);
+  readHostQuietly(ctrl, ctrl.reconciles?.(ctrl));
 }
 
 // A Chapter that is gone has no detail page left, so it returns to its Book. The
@@ -755,6 +893,7 @@ function bindPageMoveToHost(ctrl) {
     refresh: (options) => refreshHost(ctrl, options),
     readQuietly: () => readHostQuietly(ctrl),
     showMoved: (payload) => {
+      announcePageCommitted(ctrl, 'moved', payload);
       removeStatusRetry(ctrl.host, RETRY_KEY);
       appDialogFeedback(ctrl.document, payload.message);
       decorateFeedback({
@@ -799,8 +938,16 @@ function bindDialog(document, config) {
     viewAttribute: config.viewAttribute || 'data-chapter-view',
     refreshFailureMessage: config.refreshFailureMessage,
     unconfirmedMessage: config.unconfirmedMessage,
+    holdsUnresolved: Boolean(config.holdsUnresolved),
+    reconciles: config.reconciles,
   };
   if (config.role) ctrl.host[config.role] = ctrl;
+  if (ctrl.holdsUnresolved) {
+    dialogState.submitLocked = () => dialogState.unresolvedOutcome === true;
+    // Closing an unresolved creation only hides it: the binder neither resets
+    // the form nor runs onClose, and reopening applies no saved values.
+    dialogState.retainsDraft = () => dialogState.unresolvedOutcome === true;
+  }
 
   dialogState.preserveValuesOnError = true;
   // Dismissal restores this baseline, and each save replaces it, rather than
@@ -808,8 +955,10 @@ function bindDialog(document, config) {
   setAppDialogBaseline(document, config.dialogId, config.baseline(form));
 
   // A save in flight may already have written, so the dialog stays open until
-  // its outcome is known.
-  dialogState.beforeClose = () => !dialogState.submitting;
+  // its outcome is known. A settled unknown outcome closes only where its draft
+  // is retained across the close.
+  dialogState.beforeClose = () => !dialogState.submitting
+    && (!dialogState.unresolvedOutcome || dialogState.retainsDraft?.() === true);
 
   dialogState.onUnconfirmedSubmit = () => {
     showUnconfirmed(ctrl);
@@ -824,14 +973,26 @@ function bindDialog(document, config) {
   if (config.onOpen) dialogState.onOpen = () => config.onOpen(ctrl);
   if (config.onClose) dialogState.onClose = () => config.onClose(ctrl);
 
-  dialogState.onSuccessfulSubmit = (payload) => {
+  dialogState.onSuccessfulSubmit = (payload, response) => {
+    // An acknowledgement the host cannot confirm is no success: the dialog,
+    // draft and message stay, as for an answer that never arrived.
+    if (config.confirmsSuccess && !config.confirmsSuccess(ctrl, payload, response)) {
+      showUnconfirmed(ctrl);
+      config.onFailed?.(ctrl);
+      return true;
+    }
     ctrl.pendingTitle = null;
     config.onSaved?.(ctrl, payload);
     // After the binder records the saved values, shows the message and closes
     // the dialog.
     Promise.resolve().then(() => {
       removeStatusRetry(ctrl.host, RETRY_KEY);
+      if (config.successMessage) appDialogFeedback(ctrl.document, config.successMessage(payload));
       decorateFeedback(ctrl, config.viewUrl?.(payload));
+      config.onCommitted?.(ctrl, payload);
+      // Without a host to read, whoever listens for the commit brings the page
+      // up to date.
+      if (!ctrl.installHost) return;
       supersedeBookDetailLiveRefresh(ctrl.document);
       refreshHost(ctrl);
     });
@@ -911,20 +1072,73 @@ export function enhanceChapterDialogs(scope = globalThis.document) {
     refreshFailureMessage: 'The Page was created, but this page could not refresh.',
     unconfirmedMessage: 'Could not confirm whether the Page was created. It may already exist, so check the Pages listed in Book contents before trying again. Your draft is kept here.',
   });
+  // Create Note on Project Detail (project-related-note-editor.js): the New Page
+  // lifecycle above, with its chosen Note location in the saved values, and no
+  // host read. The binder closes the dialog and its close resets it to the
+  // rendered baseline (nothing chosen, no Assets, the locked Project), so a
+  // created Note leaves no draft or location behind; the next Create mounts a
+  // fresh dialog. Refreshing Project Detail is left to the commit's listener.
+  // Only a whole 201 (createdNoteIdentity) confirms the creation; an outcome
+  // left unknown, by a lost answer or an incomplete one, holds the dialog.
+  bindDialog(document, {
+    dialogId: 'project-note-create-dialog',
+    hostUrl: (form) => {
+      const projectId = form.getAttribute('action').match(PROJECT_NOTE_CREATE_ACTION)?.[1];
+      return projectId ? `/projects/${projectId}` : null;
+    },
+    baseline: (form) => {
+      const { title, content, targetContainer } = readNoteDialogBaseline(form) || {};
+      return { title: title ?? '', content: content ?? '', targetContainer: targetContainer ?? '' };
+    },
+    installHost: null,
+    holdsUnresolved: true,
+    confirmsSuccess: (ctrl, payload, response) => {
+      const identity = createdNoteIdentity(ctrl, payload, response);
+      ctrl.created = identity && { ...identity, payload };
+      return Boolean(identity);
+    },
+    onBind: (ctrl) => {
+      ctrl.fallbackOpener = () => ctrl.document.querySelector(PROJECT_NOTE_CREATE_TRIGGER_SELECTOR);
+      syncEditorBeforeSubmit(ctrl);
+    },
+    onClose: (ctrl) => resetNoteDialogToBaseline(ctrl.dialogState.form),
+    onFailed: focusAfterNewPageFailure,
+    successMessage: createdNoteMessage,
+    viewUrl: createdPageUrl,
+    viewLabel: 'View Note',
+    viewAttribute: 'data-page-view',
+    onCommitted: announcePageCreated,
+    unconfirmedMessage: 'Could not confirm whether the Note was created. It may already exist, so check this project’s Related Notes (reload the page if needed) before trying again. Your draft is kept here.',
+  });
   bindDialog(document, {
     dialogId: 'note-edit-dialog',
     hostUrl: (form) => form.getAttribute('action').match(/^\/notes\/[1-9]\d*$/)?.[0],
     baseline: readNoteDialogBaseline,
-    installHost: installPageDetail,
+    installHost: (ctrl, parsed) => (onProjectDetail(ctrl)
+      ? installPageEditorState(ctrl, parsed)
+      : installPageDetail(ctrl, parsed)),
+    // On Project Detail, an unconfirmed save the read after it shows was saved
+    // is announced (NOTE_EDIT_RECONCILED_EVENT) so Related Notes read again.
+    reconciles: reconcilePageSave,
     onBind: (ctrl) => {
+      if (onProjectDetail(ctrl)) {
+        const noteId = ctrl.hostUrl.split('/').pop();
+        ctrl.fallbackOpener = () => ctrl.document.querySelector(`[data-project-related-note-edit="${noteId}"]`);
+        ctrl.refreshFailureMessage = 'The Page was saved, but its saved version could not be read again.';
+        ctrl.unconfirmedMessage = 'Could not confirm whether the Page was saved. Your draft is kept here; check the Page before trying again.';
+      }
       syncEditorBeforeSubmit(ctrl);
       bindPageMoveToHost(ctrl);
       bindPageDelete(ctrl);
     },
     // Acknowledged, so the dialog's saved values and the title change even if the
-    // refresh fails.
+    // refresh fails. Project Detail is told once the binder has closed the dialog.
     onSaved: (ctrl, payload) => {
       if (payload?.values) setNoteDialogBaseline(ctrl.dialogState.form, payload.values);
+      if (onProjectDetail(ctrl)) {
+        Promise.resolve().then(() => announcePageCommitted(ctrl, 'saved', payload));
+        return;
+      }
       if (typeof payload?.page?.title === 'string') showPageTitle(ctrl.document, payload.page.title);
     },
     onClose: (ctrl) => {

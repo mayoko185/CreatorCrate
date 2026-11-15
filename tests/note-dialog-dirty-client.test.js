@@ -4,12 +4,18 @@ import {
   noteDialogIsDirty,
 } from '../src/static/creatorcrate.js';
 
-function makeFixture() {
+function makeFixture({ location = undefined } = {}) {
   const baseline = {
     title: 'Original title',
     content: '# Original',
+    ...(location === undefined ? {} : { targetContainer: location }),
     projectIds: ['2', '1'],
     assetIds: ['20', '10'],
+  };
+  // Project Detail's Create Note: the native select behind the Note location dropdown.
+  const locationSelect = {
+    value: location ?? '',
+    options: [{ value: '' }, { value: 'book:1' }, { value: 'chapter:2' }],
   };
   const title = { value: baseline.title };
   const textarea = { value: baseline.content };
@@ -44,6 +50,7 @@ function makeFixture() {
       if (selector === '[name="title"]') return title;
       if (selector === '[data-notes-editor-source]') return textarea;
       if (selector === '[data-note-connections]') return connections;
+      if (selector === '#note-location-target') return location === undefined ? null : locationSelect;
       return null;
     },
     querySelectorAll: vi.fn(() => []),
@@ -59,6 +66,7 @@ function makeFixture() {
     document,
     editor,
     form,
+    locationSelect,
     scope,
     state,
     title,
@@ -132,6 +140,26 @@ describe('Page dialog dirty state', () => {
     expect(noteDialogIsDirty(page.form, page.baseline)).toBe(false);
   });
 
+  it('WP6-F4: an unresolved creation closes without Discard or reset only where its draft is retained', () => {
+    const page = makeFixture();
+    const requestConfirmation = vi.fn();
+    enhanceNoteDialogUnsavedChanges(page.scope, { requestConfirmation });
+    page.title.value = 'Unresolved draft';
+    page.state.unresolvedOutcome = true;
+
+    // Without a host that retains it, an unresolved creation stays open.
+    expect(page.state.beforeClose({ lifecycle: 1, opener: null })).toBe(false);
+    page.state.retainsDraft = () => page.state.unresolvedOutcome === true;
+    expect(page.state.beforeClose({ lifecycle: 1, opener: null })).toBe(true);
+    // A save in flight stays open whatever is retained.
+    page.state.submitting = true;
+    expect(page.state.beforeClose({ lifecycle: 1, opener: null })).toBe(false);
+
+    expect(requestConfirmation).not.toHaveBeenCalled();
+    expect(page.title.value).toBe('Unresolved draft');
+    expect(page.editor.resetMarkdown).not.toHaveBeenCalled();
+  });
+
   it('ignores a confirmed result from a stale Page-dialog lifecycle', async () => {
     const page = makeFixture();
     page.title.value = 'Old draft';
@@ -148,5 +176,60 @@ describe('Page dialog dirty state', () => {
     expect(page.title.value).toBe('New lifecycle draft');
     expect(page.editor.resetMarkdown).not.toHaveBeenCalled();
     expect(page.connections.__creatorCrateNoteConnections.resetState).not.toHaveBeenCalled();
+  });
+
+  describe('Create Note location (WP6.3)', () => {
+    it('marks a location-only change dirty and becomes clean when it is reverted', () => {
+      const page = makeFixture({ location: '' });
+      expect(noteDialogIsDirty(page.form, page.baseline)).toBe(false);
+
+      page.locationSelect.value = 'chapter:2';
+      expect(noteDialogIsDirty(page.form, page.baseline)).toBe(true);
+      page.locationSelect.value = 'book:1';
+      expect(noteDialogIsDirty(page.form, page.baseline)).toBe(true);
+      page.locationSelect.value = '';
+      expect(noteDialogIsDirty(page.form, page.baseline)).toBe(false);
+    });
+
+    it('reads the location from the rendered baseline only when the form has one', async () => {
+      const { readNoteDialogBaseline } = await import('../src/static/client/note-dialog-dirty.js');
+      expect(readNoteDialogBaseline(makeFixture({ location: '' }).form)).toHaveProperty('targetContainer', '');
+      expect(readNoteDialogBaseline(makeFixture().form)).not.toHaveProperty('targetContainer');
+    });
+
+    it('keeps the chosen location on Keep Editing and restores the original on Discard', async () => {
+      const page = makeFixture({ location: '' });
+      page.locationSelect.value = 'chapter:2';
+      const requestConfirmation = vi.fn()
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(true);
+      enhanceNoteDialogUnsavedChanges(page.scope, { requestConfirmation });
+
+      await expect(page.state.beforeClose({ lifecycle: 1, opener: null })).resolves.toBe(false);
+      expect(page.locationSelect.value).toBe('chapter:2');
+
+      await expect(page.state.beforeClose({ lifecycle: 1, opener: null })).resolves.toBe(true);
+      expect(page.locationSelect.value).toBe('');
+      expect(noteDialogIsDirty(page.form, page.baseline)).toBe(false);
+    });
+
+    it('restores a saved location that is still offered, and the placeholder when it is gone', async () => {
+      const { resetNoteDialogToBaseline } = await import('../src/static/client/note-dialog-dirty.js');
+      const kept = makeFixture({ location: 'book:1' });
+      kept.locationSelect.value = 'chapter:2';
+      resetNoteDialogToBaseline(kept.form);
+      expect(kept.locationSelect.value).toBe('book:1');
+
+      const gone = makeFixture({ location: 'chapter:9' });
+      gone.locationSelect.value = 'book:1';
+      resetNoteDialogToBaseline(gone.form);
+      expect(gone.locationSelect.value).toBe('');
+    });
+
+    it('leaves a dialog without a Note location unaffected by any location field', () => {
+      const page = makeFixture();
+      page.locationSelect.value = 'chapter:2';
+      expect(noteDialogIsDirty(page.form, page.baseline)).toBe(false);
+    });
   });
 });

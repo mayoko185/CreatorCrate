@@ -22,7 +22,9 @@ describe('Notes workspace layout contract', () => {
 
   it('reduces only Page contents horizontal spacing using the compact body token', () => {
     expect(formTemplate.match(/notes-page-contents-body/g)).toHaveLength(1);
-    expect(formTemplate).toMatch(/Page contents<\/h3>\s*<div class="project-form-section-body project-edit-dialog-section-body notes-page-contents-body">/);
+    // The writing section's heading names a Page, or a Note in Create Note (WP6-F3).
+    expect(formTemplate).toMatch(/<h3 id="notes-editor-heading">\{\{ noteContentsHeading \}\}<\/h3>\s*<div class="project-form-section-body project-edit-dialog-section-body notes-page-contents-body">/);
+    expect(formTemplate).toContain("{% set noteContentsHeading = 'Note contents' if noteFormModel.location else 'Page contents' %}");
     expect(notesCss).toMatch(/\.project-form-dialog \.notes-page-contents-body\s*\{\s*padding-inline: var\(--space-md\);\s*\}/);
     expect(notesCss).toMatch(/\.project-form-dialog \.project-edit-dialog-section-body\s*\{[^}]*padding: var\(--space-md\) var\(--space-lg\) var\(--space-lg\);/);
     expect(notesCss).toMatch(/\.project-form \.project-form-section-body\s*\{\s*display: flex;\s*flex-direction: column;\s*gap: var\(--space-lg\);\s*\}/);
@@ -119,7 +121,9 @@ describe('Notes workspace layout contract', () => {
   });
 
   it('lightens only Note detail copy blocks using an existing surface token', () => {
-    expect(notesCss).toMatch(/\.notes-page-detail-content \.notes-content pre\s*\{\s*background: var\(--surface-hover\);\s*\}/);
+    // Book Detail's copy blocks, shared since WP6.1 with the Project Detail
+    // Related Notes cards that reuse its preview card styling.
+    expect(notesCss).toMatch(/\.notes-page-detail-content \.notes-content pre,\s*\.project-related-notes \.notes-content pre\s*\{\s*background: var\(--surface-hover\);\s*\}/);
     expect(notesCss).toMatch(/\.notes-content pre\s*\{[^}]*background: var\(--bg\);/);
     expect(notesCss).toMatch(/\.notes-content pre > code\s*\{[^}]*background: transparent;/);
   });
@@ -194,7 +198,9 @@ describe('Notes workspace layout contract', () => {
     expect(createTemplate).toContain("'project-form-dialog app-dialog--refined'");
     expect(createTemplate).toContain('app-dialog-body project-edit-dialog-body');
     expect(createTemplate).toContain('project-edit-dialog-form');
-    expect(createTemplate.match(/<section class="settings-section project-form-section project-edit-dialog-section"/g)).toHaveLength(2);
+    // Book contents and Page contents, plus Project Detail's Create Note location,
+    // which renders in place of Book contents (never beside it).
+    expect(createTemplate.match(/<section class="settings-section project-form-section project-edit-dialog-section"/g)).toHaveLength(3);
     expect(createTemplate.indexOf('partials/book-navigator.njk')).toBeLessThan(createTemplate.indexOf('notes/writing-fields.njk'));
     expect(createTemplate.indexOf('notes/writing-fields.njk')).toBeLessThan(createTemplate.indexOf('notes/connections-fields.njk'));
     expect(createTemplate).not.toMatch(/notes-page-sidebar|notes-page-workspace-layout|class="notes-workspace-editor"/);

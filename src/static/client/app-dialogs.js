@@ -234,12 +234,32 @@ function appDialogNavigateToReturnLocation(state, returnLocation) {
   windowObject.location?.assign?.(returnLocation);
 }
 
+// Forgets a tracked press and drops the document listeners that watched for its
+// end (appDialogBind), so a lifecycle ending mid-press leaves none behind.
+function appDialogEndBackdropPress(state) {
+  state.backdropPointer = null;
+  state.stopBackdropTracking?.();
+}
+
+// A host may keep a dialog's whole draft across a close (state.retainsDraft,
+// asked at each close and open): its form is neither reset nor given its saved
+// values, and its onClose/onOpen hooks do not run, so the same draft, messages
+// and locks come back when it reopens. Nothing else about closing changes.
+function appDialogRetainsDraft(state) {
+  try {
+    return state.retainsDraft?.() === true;
+  } catch {
+    return false;
+  }
+}
+
 function appDialogFinishClose(state) {
   const returnLocation = state.pendingReturnLocation;
   state.pendingReturnLocation = null;
-  state.backdropPointer = null;
+  appDialogEndBackdropPress(state);
   cleanupScrollableCategoryDialogDropdowns(state.dialog);
-  if (state.form?.hasAttribute?.('data-dialog-reset-on-close')) {
+  const retained = appDialogRetainsDraft(state);
+  if (!retained && state.form?.hasAttribute?.('data-dialog-reset-on-close')) {
     state.form.reset?.();
     const resetValues = state.form.getAttribute?.('data-dialog-reset-values');
     if (state.authoritativeBaseline) {
@@ -267,7 +287,7 @@ function appDialogFinishClose(state) {
     }
     state.form.querySelectorAll?.('select').forEach(syncCreatorCrateDropdownFromNative);
   }
-  state.onClose?.();
+  if (!retained) state.onClose?.();
   state.open = false;
   appDialogBodyLock(state, false);
   appDialogRestoreFocus(state);
@@ -1090,7 +1110,7 @@ function appDialogBindForm(state) {
           return;
         }
         // A successful-submit hook that begins navigation owns the terminal lifecycle.
-        if (state.onSuccessfulSubmit?.(payload) === true) return;
+        if (state.onSuccessfulSubmit?.(payload, response) === true) return;
         state.savedValues = payload?.values || appDialogValues(form);
         syncProjectAssetsSizePreferences(state.dialog, state.savedValues);
         appDialogStatus(state, '');
@@ -1143,14 +1163,16 @@ function appDialogOpen(state, opener = null, openerAllowsFallback = true) {
   }
   state.lifecycle += 1;
   state.closeRequest = null;
-  state.backdropPointer = null;
+  appDialogEndBackdropPress(state);
   state.pendingReturnLocation = null;
   state.opener = opener || (openerAllowsFallback
     ? state.document.querySelector?.(`${APP_DIALOG_TRIGGER_SELECTOR}[data-dialog-open="${state.dialog.id}"]`)
     : null);
   state.openerAllowsFallback = openerAllowsFallback;
-  appDialogApplyValues(state.form, state.savedValues || {});
-  state.onOpen?.();
+  if (!appDialogRetainsDraft(state)) {
+    appDialogApplyValues(state.form, state.savedValues || {});
+    state.onOpen?.();
+  }
   try {
     if (typeof state.dialog.showModal === 'function') {
       if (state.dialog.open) {
@@ -1204,19 +1226,44 @@ function appDialogBind(state) {
     if (appDialogCloseOpenDropdown(state)) return;
     appDialogRequestClose(state, state.document.activeElement);
   });
+  // The document listeners that see where a press ends exist only while a
+  // press on this dialog is tracked, so a dialog removed from the page (for
+  // example a replaced, dynamically mounted one) leaves none behind. A close or
+  // reopen forgets the press (appDialogEndBackdropPress) and drops them too.
+  let tracking = false;
+  const stopTracking = () => {
+    if (!tracking) return;
+    tracking = false;
+    state.document.removeEventListener?.('pointerup', onDocumentPointerUp);
+    state.document.removeEventListener?.('pointercancel', onDocumentPointerCancel);
+  };
+  state.stopBackdropTracking = stopTracking;
+  // Another pointer's end leaves the tracked press alone; with none tracked,
+  // nothing is left to watch for.
+  function onDocumentPointerUp(event) {
+    if (!state.backdropPointer) {
+      stopTracking();
+      return;
+    }
+    if (state.backdropPointer.id !== event.pointerId) return;
+    state.backdropPointer.endedOnBackdrop = event.target === state.dialog;
+    stopTracking();
+  }
+  function onDocumentPointerCancel(event) {
+    if (state.backdropPointer && state.backdropPointer.id !== event.pointerId) return;
+    state.backdropPointer = null;
+    stopTracking();
+  }
   state.dialog.addEventListener?.('pointerdown', (event) => {
     state.backdropPointer = {
       id: event.pointerId,
       startedOnBackdrop: event.target === state.dialog,
       endedOnBackdrop: false,
     };
-  });
-  state.document.addEventListener?.('pointerup', (event) => {
-    if (state.backdropPointer?.id !== event.pointerId) return;
-    state.backdropPointer.endedOnBackdrop = event.target === state.dialog;
-  });
-  state.document.addEventListener?.('pointercancel', (event) => {
-    if (state.backdropPointer?.id === event.pointerId) state.backdropPointer = null;
+    if (tracking) return;
+    tracking = true;
+    state.document.addEventListener?.('pointerup', onDocumentPointerUp);
+    state.document.addEventListener?.('pointercancel', onDocumentPointerCancel);
   });
   state.dialog.addEventListener?.('click', (event) => {
     const dismissFromBackdrop = event.target === state.dialog
@@ -1346,6 +1393,7 @@ export function enhanceAppDialogs(scope = globalThis.document) {
       pendingReturnLocation: null,
       returnVetoes: new Set(),
       beforeClose: null,
+      retainsDraft: null,
       preserveValuesOnError: false,
       submitLocked: null,
       onOpen: null,

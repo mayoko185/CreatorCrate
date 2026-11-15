@@ -141,6 +141,9 @@ import { enhanceAssetDetailsViewer } from './client/asset-details-viewer.js';
 import { enhanceReleaseAssetsViewer } from './client/release-assets-viewer.js';
 import { enhanceReleaseDetailViewer } from './client/release-detail-viewer.js';
 import { enhanceProjectDetailViewer } from './client/project-detail-viewer.js';
+import { enhanceProjectRelatedNotes, projectRelatedNoteExpansion } from './client/project-related-notes.js';
+import { enhanceProjectRelatedNoteEditor } from './client/project-related-note-editor.js';
+import { enhanceProjectRelatedNotesOrder } from './client/project-related-notes-order.js';
 
 import {
   beginAssetViewerDefaultsLiveRefresh,
@@ -241,6 +244,9 @@ export {
   enhanceReleaseAssetsViewer,
   enhanceReleaseDetailViewer,
   enhanceProjectDetailViewer,
+  enhanceProjectRelatedNotes,
+  projectRelatedNoteExpansion,
+  enhanceProjectRelatedNoteEditor,
   syncCreatorCrateDropdownFromNative,
   enhanceAssetViewerFilterDisclosures,
   enhanceDropdowns,
@@ -361,9 +367,12 @@ if (typeof document !== 'undefined') {
     enhanceProjectArchive(document);
     enhanceProjectDelete(document);
     enhanceProjectDetailRefresh(document);
+    enhanceProjectRelatedNotes(document);
     enhanceProjectEditHostRefresh(document);
     enhanceReleaseDetailRefresh(document);
     enhanceNoteDialogUnsavedChanges(document);
+    enhanceProjectRelatedNoteEditor(document);
+    enhanceProjectRelatedNotesOrder(document);
     enhanceBookHierarchyReorder(document);
     enhanceLogViewerAutoRefresh(document);
     enhanceAssetViewerFilterDisclosures(document);

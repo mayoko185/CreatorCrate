@@ -16,9 +16,11 @@ import {
   NoteNotFoundError,
   NoteOperationError,
   NoteRevisionAssociationUnavailableError,
+  NoteRelatedOrderStaleError,
   NoteRevisionNotFoundError,
   NoteValidationError,
 } from '../services/note-service.js';
+import { ProjectNotFoundError } from '../services/project-service.js';
 import {
   BookContentIntegrityError,
   BookNotEmptyError,
@@ -1731,6 +1733,179 @@ export function createNotesRouter({
     }
   });
 
+  // ─── Project-scoped Page creation (Project Detail, WP6.2) ────────────────
+  // The route's Project is authoritative: it is always the Page's one direct
+  // Project connection, a submitted project value may only repeat it, and every
+  // selected Asset must belong to it. The location is the Move Page-style
+  // `targetContainer` (`book:<id>` | `chapter:<id>`). The host checks and the one
+  // existing createNote() call share a transaction, so a refusal at any point
+  // leaves no Page and no connection behind.
+  const createProjectPageTx = db.transaction((projectId, body) => {
+    const location = parseProjectPageLocation(body);
+    const input = parseNoteInput(body);
+    input.projectIds = resolveHostProjectIds(projectId, body);
+    assertHostProjectAssets(projectId, input.assetIds, assetRepository);
+    return noteService.createNote({ ...location, ...input });
+  });
+
+  // POST /notes/projects/:projectId — Create a Page connected to this Project.
+  // Registered before the dynamic Note routes.
+  router.post('/projects/:projectId', (req, res, next) => {
+    const body = req.body || {};
+    const wantsJson = req.accepts(['html', 'json']) === 'json';
+
+    try {
+      const projectId = parseId(req.params.projectId);
+      const project = projectId === null ? null : projectService.findById(projectId);
+      if (!project) {
+        return wantsJson
+          ? res.status(404).json({
+            status: 'error', code: 'PROJECT_NOT_FOUND', message: 'This project is no longer available.',
+          })
+          : next(createNotFound());
+      }
+
+      const note = createProjectPageTx(project.id, body);
+      if (wantsJson) {
+        return res.status(201).json({
+          status: 'success',
+          message: `Note “${note.title}” created.`,
+          page: {
+            id: note.id,
+            title: note.title,
+            bookId: note.book_id,
+            chapterId: note.chapter_id,
+            url: `/notes/${note.id}`,
+            projectIds: note.projectIds,
+            assetIds: note.assetIds,
+          },
+          project: { id: project.id, url: `/projects/${project.id}` },
+          values: { title: '', content: '' },
+        });
+      }
+      return res.redirect(`/notes/${note.id}`);
+    } catch (err) {
+      if (err instanceof ChapterNotFoundError || err instanceof BookNotFoundError) {
+        return wantsJson ? sendPageUnavailable(res, err) : next(createNotFound());
+      }
+      if (err instanceof NoteValidationError) {
+        if (wantsJson) return sendChapterValidation(res, err);
+        err.status = 422;
+        return next(err);
+      }
+      if (wantsJson) {
+        return sendChapterFailure(req, res, 'note.create_failed', 'The Note could not be created.', err, 'PAGE_OPERATION_FAILED');
+      }
+      return next(err);
+    }
+  });
+
+  // GET /notes/projects/:projectId/new — The closed Create Note dialog alone,
+  // which Project Detail mounts on demand (WP6.4). It is the shared Notes form
+  // with two Project Detail differences: a required, always-visible Note
+  // location (the Move Page destinations, nothing preselected) replaces Book
+  // contents, and the route's Project is the one fixed, locked connection, so
+  // only that Project's Assets are offered. Its submit target is the WP6.2
+  // POST above, which enforces the same Project on the server.
+  router.get('/projects/:projectId/new', (req, res, next) => {
+    try {
+      const projectId = parseId(req.params.projectId);
+      const project = projectId === null ? null : projectService.findById(projectId);
+      if (!project) return next(createNotFound());
+
+      const fixedProject = toProjectOption(project);
+      const values = { ...emptyFormValues(), projectIds: [project.id], targetContainer: '' };
+      const noteCreateForm = {
+        ...buildNoteFormModel({
+          assetRepository, tagRepository, nsfwFilterSettingsService, projectImageSettingsService,
+          appName,
+          note: null,
+          values,
+          projects: [fixedProject],
+          selectedAssets: [],
+          errors: {},
+          action: 'Create',
+          submitUrl: `/notes/projects/${project.id}`,
+          moveTargets: listChapterOptions(bookService, chapterService),
+        }),
+        location: true,
+        lockedProject: fixedProject,
+      };
+      return res.render('notes/project-create-dialog.njk', { appName, noteCreateForm });
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  // ─── Project-specific Related Notes order (WP7.2) ────────────────────────
+  // Both routes read the one authoritative Related Notes read model, so the
+  // order they report is exactly the order Project Detail renders. The order
+  // is a Project Detail presentation only: Notes hierarchy ordering and other
+  // Projects' orders are never written. Archived Projects follow the existing
+  // Related Notes policy and are not refused.
+  const sendProjectUnavailable = (res) => res.status(404).json({
+    status: 'error', code: 'PROJECT_NOT_FOUND', message: 'This project is no longer available.',
+  });
+
+  // GET /notes/projects/:projectId/order — the current effective order, as the
+  // snapshot a reorder submits back as `expectedNoteIds`. Never writes.
+  router.get('/projects/:projectId/order', (req, res, next) => {
+    try {
+      const projectId = parseId(req.params.projectId);
+      const project = projectId === null ? null : projectService.findById(projectId);
+      if (!project) return sendProjectUnavailable(res);
+      const { notes } = noteService.listRelatedNotesForProject(project.id);
+      return res.json({ status: 'success', ...relatedOrderResponse(project, notes) });
+    } catch (err) {
+      if (err instanceof ProjectNotFoundError) return sendProjectUnavailable(res);
+      return next(err);
+    }
+  });
+
+  // POST /notes/projects/:projectId/order — save a complete order. Body:
+  // `{ expectedNoteIds, orderedNoteIds }` (JSON arrays of Note IDs; canonical
+  // digit strings are accepted for form posts). 422 for malformed input or a
+  // non-permutation, 409 with the current order for a stale snapshot.
+  router.post('/projects/:projectId/order', (req, res, next) => {
+    const projectId = parseId(req.params.projectId);
+    if (projectId === null) return sendProjectUnavailable(res);
+
+    try {
+      const submission = parseRelatedOrderSubmission(req.body);
+      const outcome = noteService.reorderRelatedNotesForProject(projectId, submission);
+      const project = projectService.findById(projectId);
+      if (!project) return sendProjectUnavailable(res);
+      return res.json({
+        status: 'success',
+        message: 'Note order saved.',
+        changed: outcome.changed,
+        ...relatedOrderResponse(project, outcome.notes),
+      });
+    } catch (err) {
+      if (err instanceof ProjectNotFoundError) return sendProjectUnavailable(res);
+      if (err instanceof NoteValidationError) return sendChapterValidation(res, err);
+      if (err instanceof NoteRelatedOrderStaleError) {
+        try {
+          const project = projectService.findById(projectId);
+          if (!project) return sendProjectUnavailable(res);
+          const { notes } = noteService.listRelatedNotesForProject(projectId);
+          return res.status(409).json({
+            status: 'error',
+            code: err.code,
+            message: 'Related notes changed since this order was opened. Review the current order and try again.',
+            ...relatedOrderResponse(project, notes),
+          });
+        } catch (readError) {
+          if (readError instanceof ProjectNotFoundError) return sendProjectUnavailable(res);
+          return sendChapterFailure(req, res, 'note.related_order_failed',
+            'The note order could not be saved.', readError, 'RELATED_NOTES_ORDER_FAILED');
+        }
+      }
+      return sendChapterFailure(req, res, 'note.related_order_failed',
+        'The note order could not be saved.', err, 'RELATED_NOTES_ORDER_FAILED');
+    }
+  });
+
   // GET /notes/new?chapterId=:chapterId or ?bookId=:bookId — Create form
   router.get('/new', async (req, res, next) => {
     const query = req.query || {};
@@ -2294,6 +2469,9 @@ function buildNoteDialogBaseline(values, assetRepository) {
   return {
     title: String(values.title ?? ''),
     content: String(values.content ?? ''),
+    // Only a form with an editable Note location (Project Detail's Create Note)
+    // carries one; every other Notes dialog's baseline is unchanged.
+    ...(typeof values.targetContainer === 'string' ? { targetContainer: values.targetContainer } : {}),
     projectIds: [...new Set(values.projectIds.map(String))].sort(),
     assetIds: [...new Set(values.assetIds.map(String))].sort(),
     assets: assets.map(asset => ({
@@ -2443,6 +2621,134 @@ function parseMoveTarget(body) {
   throw new NoteValidationError({
     targetContainer: 'Choose a Book or Chapter destination.',
   });
+}
+
+// A Related Notes reorder body: `expectedNoteIds` and `orderedNoteIds`, each an
+// array whose items are positive safe-integer numbers or their canonical digit
+// strings. Objects, nested arrays and any other value are refused rather than
+// coerced; duplicate and membership checks belong to the Note service.
+function parseRelatedOrderSubmission(body) {
+  const source = body !== null && typeof body === 'object' && !Array.isArray(body) ? body : {};
+  const errors = {};
+  const submission = {};
+  for (const field of ['expectedNoteIds', 'orderedNoteIds']) {
+    const value = source[field];
+    if (!Array.isArray(value)) {
+      errors[field] = `${field} must be an array of Note IDs.`;
+      continue;
+    }
+    const ids = value.map((item) => {
+      if (typeof item === 'number') return Number.isSafeInteger(item) && item > 0 ? item : null;
+      if (typeof item === 'string' && /^[1-9]\d*$/.test(item)) {
+        const id = Number(item);
+        return Number.isSafeInteger(id) ? id : null;
+      }
+      return null;
+    });
+    if (ids.includes(null)) {
+      errors[field] = `${field} must contain canonical positive integer Note IDs.`;
+      continue;
+    }
+    submission[field] = ids;
+  }
+  if (Object.keys(errors).length > 0) throw new NoteValidationError(errors);
+  return submission;
+}
+
+// The authoritative Related Notes order of one Project, as both order routes
+// report it. `expectedNoteIds` is the snapshot a reorder must submit back.
+function relatedOrderResponse(project, notes) {
+  const ordered = notes.map((note) => ({
+    id: note.id,
+    title: typeof note.title === 'string' && note.title.trim() !== '' ? note.title : 'Untitled page',
+    url: `/notes/${note.id}`,
+  }));
+  return {
+    project: {
+      id: project.id,
+      title: project.title,
+      url: `/projects/${project.id}`,
+      archived: toProjectOption(project).archived,
+    },
+    notes: ordered,
+    expectedNoteIds: ordered.map((note) => note.id),
+    saveUrl: `/notes/projects/${project.id}/order`,
+  };
+}
+
+// The Project Detail Create Page location: one required Move Page-style
+// `targetContainer`. Any other parent identifier submitted alongside it must
+// name the same place; a Chapter's Book is otherwise derived by createNote().
+function parseProjectPageLocation(body) {
+  if (typeof body.targetContainer !== 'string' || body.targetContainer === '') {
+    throw new NoteValidationError({ targetContainer: 'Choose a Book or Chapter for this Note.' });
+  }
+  const target = parseMoveTarget({ targetContainer: body.targetContainer });
+  // Parser-built objects (`bookId[toString]=1`) and nested structures cannot
+  // be coerced safely, so they are refused before parseId(); plain values and
+  // flat repeats keep their existing contradiction handling below.
+  const isPlain = (value) => value === null || typeof value !== 'object';
+  const claims = (keys) => keys
+    .filter((key) => Object.hasOwn(body, key))
+    .map((key) => {
+      const value = body[key];
+      if (!isPlain(value) && !(Array.isArray(value) && value.every(isPlain))) {
+        throw new NoteValidationError({ [key]: `${key} must be a canonical positive integer.` });
+      }
+      return { key, id: parseId(value) };
+    });
+  const contradiction = (key) => new NoteValidationError({
+    [key]: 'This does not match the chosen Note location.',
+  });
+  const bookClaims = claims(['bookId', 'targetBookId']);
+  const chapterClaims = claims(['chapterId', 'targetChapterId']);
+
+  if (target.kind === 'book') {
+    if (chapterClaims.length > 0) throw contradiction(chapterClaims[0].key);
+    const mismatch = bookClaims.find((claim) => claim.id !== target.id);
+    if (mismatch) throw contradiction(mismatch.key);
+    return { bookId: target.id };
+  }
+
+  const chapterMismatch = chapterClaims.find((claim) => claim.id !== target.id);
+  if (chapterMismatch) throw contradiction(chapterMismatch.key);
+  let bookId;
+  for (const claim of bookClaims) {
+    if (claim.id === null || (bookId !== undefined && claim.id !== bookId)) throw contradiction(claim.key);
+    bookId = claim.id;
+  }
+  // A submitted Book is passed through, so createNote() refuses a Chapter
+  // that lives in another Book (BOOK_CHAPTER_MISMATCH).
+  return bookId === undefined ? { chapterId: target.id } : { chapterId: target.id, bookId };
+}
+
+// The host Project is the Page's one direct Project connection. A submitted
+// `projectId`/`projectIds` may repeat it but never replace or add to it.
+function resolveHostProjectIds(projectId, body) {
+  const submitted = [
+    ...(Object.hasOwn(body, 'projectId') ? normalizeProjectIds(body.projectId) : []),
+    ...(Object.hasOwn(body, 'projectIds') ? normalizeProjectIds(body.projectIds) : []),
+  ];
+  if (submitted.some((id) => id !== projectId)) {
+    throw new NoteValidationError({
+      projectIds: 'This Note is created for this project; another project cannot be chosen here.',
+    });
+  }
+  return [projectId];
+}
+
+// Every selected Asset must be one of the host Project's own. IDs that are not
+// well-formed or not indexed are left to createNote()'s existing validation;
+// missing files and archived Projects stay eligible, as everywhere in Notes.
+function assertHostProjectAssets(projectId, assetIds, assetRepository) {
+  if (!Array.isArray(assetIds) || assetIds.length === 0) return;
+  if (!assetIds.every((id) => Number.isSafeInteger(id) && id > 0)) return;
+  const foreign = assetRepository.findByIds(assetIds).find((asset) => asset.project_id !== projectId);
+  if (foreign) {
+    throw new NoteValidationError({
+      assetIds: `Asset ${foreign.id} does not belong to this project.`,
+    });
+  }
 }
 
 function listProjectOptions(projectService) {

@@ -1,0 +1,7 @@
+{# The closed Create Note dialog alone, for Project Detail to mount on demand (WP6.4).
+   The shared Notes form, with its Note location section and locked Project. #}
+{% set noteFormModel = noteCreateForm %}
+{% set noteDialogId = 'project-note-create-dialog' %}
+{% set noteDialogTitle = 'Create Note' %}
+{% set noteDialogOpen = false %}
+{% include "notes/form.njk" %}

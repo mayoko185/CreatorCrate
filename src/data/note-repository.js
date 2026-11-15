@@ -8,8 +8,7 @@
 
 const COLUMNS = ['id', 'book_id', 'chapter_id', 'title', 'content', 'sort_order', 'created_at', 'updated_at'];
 const SELECT_ALL = `SELECT ${COLUMNS.join(', ')} FROM notes`;
-const HIERARCHY_ORDER = `
-  ORDER BY
+const HIERARCHY_ORDER_TERMS = `
     books.sort_order ASC,
     books.id ASC,
     CASE WHEN notes.chapter_id IS NULL THEN 1 ELSE 0 END ASC,
@@ -18,6 +17,14 @@ const HIERARCHY_ORDER = `
     notes.sort_order ASC,
     notes.id ASC
 `;
+const HIERARCHY_ORDER = `
+  ORDER BY${HIERARCHY_ORDER_TERMS}`;
+// Project Related Notes: Notes ranked for the Project first, by their saved
+// project-specific position, then every unranked Note in hierarchy order.
+const RELATED_ORDER = `
+  ORDER BY
+    CASE WHEN related_rank.sort_order IS NULL THEN 1 ELSE 0 END ASC,
+    related_rank.sort_order ASC,${HIERARCHY_ORDER_TERMS}`;
 const NOTE_COLUMNS_QUALIFIED = COLUMNS.map((c) => `notes.${c}`).join(', ');
 const DEFAULT_REVISION_RETENTION = 10;
 const REVISION_COLUMNS = [
@@ -420,7 +427,9 @@ export function createNoteRepository(db) {
   // Project-scoped related Notes: the union of direct Project links and links
   // to Assets owned by the Project. The UNION deduplicates Notes reached by
   // both paths; the LEFT JOIN on the (note_id, project_id) primary key reports
-  // the direct link without multiplying rows.
+  // the direct link without multiplying rows. The project-specific rank is a
+  // LEFT JOIN on its (project_id, note_id) primary key: it orders qualifying
+  // Notes and never adds one, so a rank whose Note lost its last link is inert.
   const listRelatedForProjectStmt = db.prepare(`
     SELECT ${NOTE_COLUMNS_QUALIFIED},
       CASE WHEN direct.note_id IS NULL THEN 0 ELSE 1 END AS project_linked
@@ -435,10 +444,35 @@ export function createNoteRepository(db) {
     JOIN notes ON notes.id = related.note_id
     LEFT JOIN note_projects direct
       ON direct.note_id = notes.id AND direct.project_id = ?
+    LEFT JOIN project_related_note_order related_rank
+      ON related_rank.project_id = ? AND related_rank.note_id = notes.id
     LEFT JOIN chapters ON chapters.id = notes.chapter_id
     JOIN books ON books.id = notes.book_id
-    ${HIERARCHY_ORDER}
+    ${RELATED_ORDER}
   `);
+  const listRelatedOrderStmt = db.prepare(`
+    SELECT note_id, sort_order
+    FROM project_related_note_order
+    WHERE project_id = ?
+    ORDER BY sort_order ASC
+  `);
+  const clearRelatedOrderStmt = db.prepare(
+    'DELETE FROM project_related_note_order WHERE project_id = ?'
+  );
+  const insertRelatedOrderStmt = db.prepare(`
+    INSERT INTO project_related_note_order (project_id, note_id, sort_order)
+    VALUES (?, ?, ?)
+  `);
+  // Replaces every rank of one Project, obsolete ones included. Which Notes
+  // may be ranked is the caller's decision (the Note service validates the
+  // complete current Related Notes set first); other Projects are untouched.
+  const replaceRelatedOrderTx = db.transaction((projectId, orderedIds) => {
+    clearRelatedOrderStmt.run(projectId);
+    for (let index = 0; index < orderedIds.length; index++) {
+      insertRelatedOrderStmt.run(projectId, orderedIds[index], index);
+    }
+    return listRelatedOrderStmt.all(projectId).map((row) => row.note_id);
+  });
   // Every (Note, Asset) link whose Asset belongs to the Project. Assets owned
   // by other Projects never appear, even for Notes also linked to this one.
   const listProjectAssetLinksStmt = db.prepare(`
@@ -449,7 +483,7 @@ export function createNoteRepository(db) {
     ORDER BY na.note_id ASC, na.asset_id ASC
   `);
   const listRelatedForProjectTx = db.transaction((projectId) => {
-    const rows = listRelatedForProjectStmt.all(projectId, projectId, projectId);
+    const rows = listRelatedForProjectStmt.all(projectId, projectId, projectId, projectId);
     const assetIdsByNoteId = new Map();
     for (const { note_id: noteId, asset_id: assetId } of listProjectAssetLinksStmt.all(projectId)) {
       const assetIds = assetIdsByNoteId.get(noteId);
@@ -903,9 +937,11 @@ export function createNoteRepository(db) {
     },
 
     /**
-     * List each Note related to a Project exactly once, in hierarchy order: a
-     * Note qualifies through a direct Project link, a link to an Asset owned by
-     * the Project, or both. Two set-based reads in one transaction; no per-Asset
+     * List each Note related to a Project exactly once, in that Project's
+     * effective order: Notes with a saved project-specific rank first, by rank,
+     * then unranked Notes in hierarchy order. A Note qualifies through a direct
+     * Project link, a link to an Asset owned by the Project, or both; a rank
+     * alone never makes a Note qualify. Two set-based reads in one transaction; no per-Asset
      * or per-Note queries. Asset presence (`is_present`) is not consulted, so a
      * missing file never hides a link.
      *
@@ -919,6 +955,44 @@ export function createNoteRepository(db) {
     listRelatedForProject(projectId) {
       assertId(projectId, 'Project');
       return listRelatedForProjectTx(projectId);
+    },
+
+    /**
+     * The saved project-specific Related Notes ranks, ascending by position.
+     * Includes obsolete ranks whose Note no longer qualifies.
+     *
+     * @param {number} projectId
+     * @returns {Array<{ note_id: number, sort_order: number }>}
+     */
+    listRelatedOrderForProject(projectId) {
+      assertId(projectId, 'Project');
+      return listRelatedOrderStmt.all(projectId);
+    },
+
+    /**
+     * Atomically replace every Related Notes rank of one Project with
+     * contiguous 0..n-1 positions in the given order, removing obsolete ranks.
+     * Callers must pass the complete, validated qualifying set; Notes
+     * hierarchy ordering and other Projects' ranks are never touched.
+     *
+     * @param {number} projectId
+     * @param {number[]} orderedIds distinct positive Note IDs
+     * @returns {number[]} the persisted ranked Note IDs, in order
+     */
+    replaceRelatedOrderForProject(projectId, orderedIds) {
+      assertId(projectId, 'Project');
+      if (!Array.isArray(orderedIds)) {
+        throw new NoteError('Related Notes order must be an array.', { code: 'INVALID_INPUT' });
+      }
+      const seen = new Set();
+      for (const id of orderedIds) {
+        assertId(id, 'Note');
+        if (seen.has(id)) {
+          throw new NoteError(`Duplicate note ID: ${id}.`, { code: 'DUPLICATE_ID' });
+        }
+        seen.add(id);
+      }
+      return replaceRelatedOrderTx(projectId, [...orderedIds]);
     },
 
     // ─── Asset associations ────────────────────────────────────────────────

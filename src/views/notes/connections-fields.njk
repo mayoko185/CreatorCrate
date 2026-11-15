@@ -1,5 +1,9 @@
 <div class="project-form-section-body" data-note-connections data-assets-url="/notes/asset-picker/assets" data-dialog-field="associations" data-dialog-error-ref="associations-error">
+          {% if noteFormModel.lockedProject %}
+          <p class="notes-connections-description">Link this Note to assets from this project.</p>
+          {% else %}
           <p class="notes-connections-description">Link this Page to existing projects and assets.</p>
+          {% endif %}
 
           {% set projectError = errors.projectIds or errors.associations %}
           {% set projectSummary = 'No projects selected' %}
@@ -18,6 +22,36 @@
             {% set _ = projectOptions.push({ value: project.id | string, label: project.title ~ (" (Archived)" if project.archived else ""), attributes: [["data-project-archived", "true" if project.archived else "false"]] }) %}
           {% endfor %}
 
+          {% if noteFormModel.lockedProject %}
+          {# Project Detail's Create Note: its Project is the Note's one fixed
+             connection, shown checked in the established disabled dropdown. A
+             disabled checkbox is not submitted; the route supplies the Project.
+             The shared dropdown rewrites the trigger's aria-label after its
+             "Label:" prefix, so the disabled state (aria-disabled) and the
+             described-by help text, not a label suffix, say it cannot change. #}
+          {% set lockedProject = noteFormModel.lockedProject %}
+          {% set lockedSummary = lockedProject.title ~ (" (Archived)" if lockedProject.archived else "") %}
+          {{ dropdown.multiSelect({
+            id: "note-projects-form",
+            name: "projectIds[]",
+            classes: "asset-project-filter-disclosure",
+            label: "Project",
+            options: [{ value: lockedProject.id | string, label: lockedSummary, attributes: [["data-project-archived", "true" if lockedProject.archived else "false"]] }],
+            selectedValues: [lockedProject.id | string],
+            disabled: true,
+            countLabel: "projects",
+            summary: lockedSummary,
+            triggerAriaLabel: "Project: " ~ lockedSummary,
+            summaryAttributes: [
+              ["aria-describedby", ("note-locked-project-help" ~ (" projectIds-error" if projectError else ""))],
+              ["aria-invalid", "true" if projectError else none]
+            ],
+            fieldClasses: "asset-viewer-filter-field asset-viewer-project-filter" ~ (" field-error" if projectError else ""),
+            fieldAttributes: [["data-dialog-field", "projectIds"], ["data-note-locked-project", lockedProject.id | string]],
+            panelLabel: "Project options"
+          }) }}
+          <p class="help-text" id="note-locked-project-help">Notes created here are always connected to this project. The Project cannot be changed.</p>
+          {% else %}
           {{ dropdown.multiSelect({
             id: "note-projects-form",
             name: "projectIds[]",
@@ -50,6 +84,7 @@
             fieldAttributes: [["data-dialog-field", "projectIds"]],
             panelLabel: "Project options"
           }) }}
+          {% endif %}
           {% if projectError %}<span class="field-error-message" id="projectIds-error">{{ projectError }}</span>{% endif %}
 
           {% set assetError = errors.assetIds or errors.associations %}

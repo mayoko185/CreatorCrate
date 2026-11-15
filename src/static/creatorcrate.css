@@ -1097,7 +1097,8 @@
         border-radius: var(--radius-md);
         line-height: 1.45;
       }
-      .notes-page-detail-content .notes-content pre {
+      .notes-page-detail-content .notes-content pre,
+      .project-related-notes .notes-content pre {
         background: var(--surface-hover);
       }
       .notes-content pre > code::-webkit-scrollbar { height: 0.45rem; }
@@ -4681,6 +4682,7 @@
       #project-create-dialog,
       #note-create-dialog,
       #note-edit-dialog,
+      #project-note-create-dialog,
       #release-create-dialog,
       #release-edit-dialog,
       #release-publish-dialog {
@@ -7963,7 +7965,8 @@
       .project-detail-releases {
         margin-bottom: var(--space-xl);
       }
-      .project-detail-releases .workflow-actions {
+      .project-detail-releases .workflow-actions,
+      .project-related-notes .workflow-actions {
         margin: 0 0 var(--space-md);
       }
       .project-detail-releases .release-social-prep-summary {
@@ -8591,6 +8594,7 @@
       }
       .notes-workspace > * { min-width: 0; }
       #note-edit-dialog .notes-workspace,
+      #project-note-create-dialog .notes-workspace,
       #note-create-dialog .notes-workspace {
         display: flex;
         flex-direction: column;
@@ -9066,14 +9070,18 @@
         outline: 2px solid var(--focus-ring);
         outline-offset: 2px;
       }
-      .notes-page-detail-content .notes-page-preview-list {
+      /* Project Detail Related Notes cards (.project-related-notes) are these
+         Book Detail Page preview cards (WP6.1). */
+      .notes-page-detail-content .notes-page-preview-list,
+      .project-related-notes .notes-page-preview-list {
         display: grid;
         gap: var(--space-sm);
         margin: 0;
         padding: 0;
         list-style: none;
       }
-      .notes-page-detail-content .notes-page-preview-item {
+      .notes-page-detail-content .notes-page-preview-item,
+      .project-related-notes .notes-page-preview-item {
         display: grid;
         gap: var(--space-xs);
         min-width: 0;
@@ -9082,7 +9090,8 @@
         border: 1px solid var(--border);
         border-radius: var(--radius-sm);
       }
-      .notes-page-detail-content .notes-page-preview-title {
+      .notes-page-detail-content .notes-page-preview-title,
+      .project-related-notes .notes-page-preview-title {
         color: var(--link);
         font-weight: 700;
         line-height: 1.35;
@@ -9090,8 +9099,10 @@
         word-break: break-word;
         text-decoration: none;
       }
-      .notes-page-detail-content .notes-page-preview-title:hover { text-decoration: underline; }
-      .notes-page-detail-content .notes-page-preview-title:focus-visible {
+      .notes-page-detail-content .notes-page-preview-title:hover,
+      .project-related-notes .notes-page-preview-title:hover { text-decoration: underline; }
+      .notes-page-detail-content .notes-page-preview-title:focus-visible,
+      .project-related-notes .notes-page-preview-title:focus-visible {
         outline: 2px solid var(--focus-ring);
         outline-offset: 2px;
       }
@@ -9099,7 +9110,8 @@
       .notes-page-detail-content .notes-page-preview-empty-content,
       .notes-page-detail-content .notes-page-preview-truncated,
       .notes-page-detail-content .notes-page-preview-updated,
-      .notes-page-detail-content .notes-page-previews-empty { margin: 0; }
+      .notes-page-detail-content .notes-page-previews-empty,
+      .project-related-notes .notes-page-preview-empty-content { margin: 0; }
       .notes-page-detail-content .notes-page-preview-context,
       .notes-page-detail-content .notes-page-preview-truncated,
       .notes-page-detail-content .notes-page-preview-updated {
@@ -9108,7 +9120,8 @@
         line-height: 1.4;
         overflow-wrap: anywhere;
       }
-      .notes-page-detail-content .book-page-preview-content {
+      .notes-page-detail-content .book-page-preview-content,
+      .project-related-notes .book-page-preview-content {
         min-inline-size: 0;
         max-inline-size: 100%;
         padding: var(--space-md);
@@ -14206,7 +14219,7 @@ button[aria-disabled="true"] > .project-create-submit-icon {
    scale. Change book order has no section heading, so its list sits directly
    in the dialog body. The ids sit in :where() so the hierarchy's own Page
    and drag-state rules keep precedence. */
-:where(#books-order-dialog, #book-order-dialog, #chapter-order-dialog).app-dialog--refined .help-text {
+:where(#books-order-dialog, #book-order-dialog, #chapter-order-dialog, #project-related-notes-order-dialog).app-dialog--refined .help-text {
   margin: 0;
   color: var(--muted);
   font-size: 0.8125rem;
@@ -14219,30 +14232,30 @@ button[aria-disabled="true"] > .project-create-submit-icon {
 }
 /* The hierarchy and Pages sections are not settings sections, so they take
    the column layout that spaces the heading from the section body. */
-:where(#book-order-dialog, #chapter-order-dialog).app-dialog--refined .project-edit-dialog-section {
+:where(#book-order-dialog, #chapter-order-dialog, #project-related-notes-order-dialog).app-dialog--refined .project-edit-dialog-section {
   display: flex;
   flex-direction: column;
 }
-:where(#books-order-dialog, #book-order-dialog, #chapter-order-dialog).app-dialog--refined .notes-reorder-row {
+:where(#books-order-dialog, #book-order-dialog, #chapter-order-dialog, #project-related-notes-order-dialog).app-dialog--refined .notes-reorder-row {
   border-color: var(--border);
   border-radius: var(--refined-control-radius);
   background: var(--surface-card);
 }
-:where(#books-order-dialog, #book-order-dialog, #chapter-order-dialog).app-dialog--refined .notes-reorder-row:hover {
+:where(#books-order-dialog, #book-order-dialog, #chapter-order-dialog, #project-related-notes-order-dialog).app-dialog--refined .notes-reorder-row:hover {
   background: var(--surface-hover);
 }
-:where(#books-order-dialog, #book-order-dialog, #chapter-order-dialog).app-dialog--refined .notes-reorder-row:focus-within {
+:where(#books-order-dialog, #book-order-dialog, #chapter-order-dialog, #project-related-notes-order-dialog).app-dialog--refined .notes-reorder-row:focus-within {
   border-color: var(--border-strong);
 }
-:where(#books-order-dialog, #book-order-dialog, #chapter-order-dialog).app-dialog--refined :is(.notes-book-content-title, .notes-chapter-page-title) {
+:where(#books-order-dialog, #book-order-dialog, #chapter-order-dialog, #project-related-notes-order-dialog).app-dialog--refined :is(.notes-book-content-title, .notes-chapter-page-title) {
   font-size: 0.875rem;
   font-weight: 600;
   line-height: 1.4;
 }
-:where(#books-order-dialog, #book-order-dialog, #chapter-order-dialog).app-dialog--refined .notes-reorder-handle {
+:where(#books-order-dialog, #book-order-dialog, #chapter-order-dialog, #project-related-notes-order-dialog).app-dialog--refined .notes-reorder-handle {
   font-size: 1.125rem;
 }
-:where(#books-order-dialog, #book-order-dialog, #chapter-order-dialog).app-dialog--refined .notes-reorder-handle:hover {
+:where(#books-order-dialog, #book-order-dialog, #chapter-order-dialog, #project-related-notes-order-dialog).app-dialog--refined .notes-reorder-handle:hover {
   border-color: var(--border-strong);
 }
 /* Saves report on the status line as they settle; it keeps its height while
@@ -15422,6 +15435,22 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   min-inline-size: 2.25rem;
   padding: var(--space-sm);
 }
+/* The Edit Project, View Assets, and Open Locally icon actions keep their
+   pre-refresh secondary treatment: a surface fill with muted glyphs at rest,
+   and text-colored glyphs and border over the hover surface. Only colors are
+   restored; geometry, focus ring, and disabled styling are unchanged. */
+:where(.refined-page main) .project-detail-action-toolbar .project-detail-action.button-secondary:not(:disabled):not([aria-disabled="true"]),
+:where(.refined-page main) .project-related-note-actions .project-detail-action.button-secondary:not(:disabled):not([aria-disabled="true"]) {
+  border-color: var(--border-strong);
+  background: var(--surface);
+  color: var(--muted);
+}
+:where(.refined-page main) .project-detail-action-toolbar .project-detail-action.button-secondary:hover:not(:disabled):not([aria-disabled="true"]),
+:where(.refined-page main) .project-related-note-actions .project-detail-action.button-secondary:hover:not(:disabled):not([aria-disabled="true"]) {
+  border-color: var(--text);
+  background: var(--surface-hover);
+  color: var(--text);
+}
 :where(.refined-page main) .project-detail-media {
   border-radius: var(--radius-lg);
 }
@@ -15478,7 +15507,8 @@ button[aria-disabled="true"] > .project-create-submit-icon {
 :where(.refined-page main) .project-detail-link:is(:link, :visited) {
   color: var(--link);
 }
-:where(.refined-page main) .project-detail-releases .workflow-actions {
+:where(.refined-page main) .project-detail-releases .workflow-actions,
+:where(.refined-page main) .project-related-notes .workflow-actions {
   flex-wrap: wrap;
   gap: var(--space-sm);
   margin: 0;
@@ -16035,11 +16065,13 @@ button[aria-disabled="true"] > .project-create-submit-icon {
 :where(.refined-page main) .notes-book-content-actions {
   margin-top: var(--space-xs);
 }
-:where(.refined-page main) .notes-page-detail-content .notes-page-preview-item {
+:where(.refined-page main) .notes-page-detail-content .notes-page-preview-item,
+:where(.refined-page main) .project-related-notes .notes-page-preview-item {
   gap: 0.375rem;
   border-radius: var(--radius-md);
 }
-:where(.refined-page main) .notes-page-detail-content .notes-page-preview-title {
+:where(.refined-page main) .notes-page-detail-content .notes-page-preview-title,
+:where(.refined-page main) .project-related-notes .notes-page-preview-title {
   justify-self: start;
   max-width: 100%;
   font-size: 0.9375rem;
@@ -17066,4 +17098,193 @@ html:has(.unified-viewer-dialog > .app-dialog-card:fullscreen) {
   .unified-viewer-context-actions {
     column-gap: 0.125rem;
   }
+}
+/* ── Project Detail: Related Notes (WP3A, cards WP6.1) ──
+   Sits above Releases. Each card is a Notes Book Detail Page preview card
+   (.notes-page-preview-list/-item/-title, extended to .project-related-notes
+   in those rules), so background, border, radius, padding, spacing and the
+   title's hover treatment come from them. Only the card's own layout lives
+   here: the title row with the icon-only Edit and Pin (the Project Detail
+   icon action and tooltip), compact asset list cards, and the disclosure.
+   The region adds no box. */
+.project-related-notes-region {
+  display: contents;
+}
+.project-related-notes {
+  margin-bottom: var(--space-xl);
+}
+.project-related-note-item {
+  min-width: 0;
+}
+/* The title wraps in the first column; the actions keep the second, so they
+   never overlap it and showing or hiding them moves nothing. */
+.project-related-note-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+.project-related-note-title {
+  min-width: 0;
+  margin: 0;
+  font-family: inherit;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.35;
+  text-transform: none;
+  overflow-wrap: anywhere;
+}
+/* Icon actions centre on the title's first line without growing the row;
+   at 2rem their overhang stays inside the card's row gap. */
+.project-related-note-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-block: calc((0.9375rem * 1.35 - 2rem) / 2);
+}
+:where(.refined-page main) .project-related-note-actions .project-detail-action.button {
+  min-block-size: 2rem;
+  min-inline-size: 2rem;
+  padding: 0.375rem;
+}
+.project-related-note-action[aria-pressed="true"] svg path:first-child {
+  fill: currentColor;
+}
+/* Where a fine pointer can hover, Edit and Pin appear while the card is
+   hovered or holds focus (the Notes code-block Copy convention). They stay
+   in the layout and the tab order; touch and no-hover devices always show
+   them. */
+@media (hover: hover) and (pointer: fine) {
+  .project-related-note .project-related-note-actions {
+    opacity: 0;
+    transition: opacity var(--transition-fast);
+  }
+  .project-related-note:hover .project-related-note-actions,
+  .project-related-note:focus-within .project-related-note-actions {
+    opacity: 1;
+  }
+}
+.project-related-note-assets.asset-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 14rem), 1fr));
+  gap: var(--space-sm);
+  margin: 0;
+}
+.project-related-note-assets .asset-list-card {
+  display: block;
+  padding: var(--space-xs);
+}
+.project-related-note-assets .asset-list-card:hover,
+.project-related-note-assets .asset-list-card:focus-within {
+  transform: none;
+}
+.project-related-note-assets .asset-list-cell--asset {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+.project-related-note-assets .asset-list-card-media {
+  --dashboard-thumb-size: 3.5rem;
+  display: grid;
+  place-items: center;
+  flex: 0 0 var(--dashboard-thumb-size);
+  width: var(--dashboard-thumb-size);
+  height: var(--dashboard-thumb-size);
+  min-height: 0;
+}
+.project-related-note-assets .asset-list-card-media > * {
+  grid-area: 1 / 1;
+}
+.project-related-note-assets .asset-list-card-media-image {
+  object-fit: contain;
+}
+.project-related-note-assets :is(.asset-list-card-media-fallback, .asset-list-card-media-placeholder) {
+  min-height: 0;
+  padding: 2px;
+  font-size: 0.625rem;
+  line-height: 1.2;
+}
+.project-related-note-assets .asset-list-card-media-placeholder svg {
+  flex: none;
+  width: 1.25rem;
+  height: 1.25rem;
+}
+.project-related-note-assets :is(.asset-video-frame--list, .asset-video-frame--list .asset-video-frame-media) {
+  height: 100%;
+}
+.project-related-note-assets .asset-video-badge > span,
+.project-related-note-assets .asset-video-placeholder > span {
+  display: none;
+}
+.project-related-note-assets .asset-list-card-heading {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.project-related-note-assets .asset-list-card-title {
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+.project-related-note-disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.project-related-note-disclosure:hover { color: var(--text); }
+.project-related-note-disclosure:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+.project-related-note-disclosure svg {
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  transition: transform var(--transition-fast);
+}
+.project-related-note-disclosure[aria-expanded="true"] svg {
+  transform: rotate(90deg);
+}
+/* The complete Page: no height limit. Wide code scrolls inside the shared
+   Notes content rules; a wide table scrolls inside its own box. The content
+   region is a grid item of the card, so it may shrink below its widest line
+   (M2 F1): otherwise that line sizes the card's column and the page. */
+.project-related-note-content {
+  min-width: 0;
+}
+.project-related-note-preview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  margin-top: var(--space-sm);
+  min-width: 0;
+}
+.project-related-note-preview[hidden] { display: none; }
+.project-related-note-preview .notes-content table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.project-related-note-preview :is(.notes-page-preview-empty-content, .project-related-note-full-link) {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+/* WP3B: a pinned note keeps the pressed secondary-tool treatment used by the
+   viewer toggles. */
+:where(.refined-page main) .project-related-note-actions .project-related-note-action.button-secondary[aria-pressed="true"]:not(:disabled):not([aria-disabled="true"]) {
+  border-color: var(--text);
+  background: var(--surface-hover);
+  color: var(--text);
 }

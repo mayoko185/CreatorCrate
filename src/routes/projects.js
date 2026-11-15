@@ -19,6 +19,7 @@ import { buildNewProjectFormModel, buildProjectEditDialogFormModel, createFormVa
 import { isProjectArchived } from '../services/project-state.js';
 import { isSafeRedirectTarget } from '../middleware/auth.js';
 import { renderDashboardPage } from './dashboard-render.js';
+import { buildProjectRelatedNotesModel } from './project-related-notes.js';
 import {
   buildPageDefaultsDialogModel,
   handlePageDefaultsPost,
@@ -476,12 +477,18 @@ function renderProjectDetailPage(req, res, {
     };
   }
 
+  const project = presentProjectOptions(
+    withNsfwBlur(workspace.project, assignedProjectTags, nsfwFilterEnabled),
+    optionPresentation,
+  );
+
   res.status(status).render('projects/detail.njk', {
     appName,
-    project: presentProjectOptions(
-      withNsfwBlur(workspace.project, assignedProjectTags, nsfwFilterEnabled),
-      optionPresentation,
-    ),
+    project,
+    relatedNotes: buildProjectRelatedNotes(req, workflowQueryService, id, {
+      projectNsfw: project.nsfwBlur,
+      nsfwFilterEnabled,
+    }),
     releaseSummary: workspace.releaseSummary,
     assetHealth: workspace.assetHealth,
     projectTags,
@@ -496,6 +503,35 @@ function renderProjectDetailPage(req, res, {
     ownershipNotice: getProjectOwnershipAttention(req, id),
   });
   return true;
+}
+
+// Related Notes on Project Detail. A failed read becomes an inline
+// "unavailable" state (never an empty section) and is logged without
+// exposing its detail to the page. NSFW blur follows the Notes asset policy:
+// the asset's own tags or this Project's tags.
+function buildProjectRelatedNotes(req, workflowQueryService, projectId, { projectNsfw, nsfwFilterEnabled }) {
+  const locals = req.app?.locals ?? {};
+  return buildProjectRelatedNotesModel({
+    projectId,
+    noteService: locals.noteService,
+    markdownRenderer: locals.markdownRenderer,
+    workflowQueryService,
+    isNsfwAsset: (asset) => Boolean(nsfwFilterEnabled && (projectNsfw
+      || (Array.isArray(asset.tags) && asset.tags.some(isNsfwTag)))),
+    logError: (error) => {
+      try {
+        locals.applicationLogger?.error?.({
+          kind: 'diagnostic',
+          subsystem: 'projects',
+          event: 'project_detail.related_notes_failed',
+          message: 'Project Detail could not read its related Notes.',
+          error,
+        });
+      } catch {
+        // Diagnostic logging must never replace the rendered page.
+      }
+    },
+  });
 }
 
 // PM-1C2B: SQLite-only ownership hint; never reads the project folder.

@@ -14,21 +14,41 @@
      visited /notes/new or /notes/:id/edit (and its validation render) stays native. #}
   {% set noteFormAsync = not noteDialogOpen %}
   {% set noteFormIsEdit = noteFormModel.action == 'Edit' %}
+  {# Book and Chapter destinations, as Move Page lists them; Project Detail's
+     Create Note offers the same ones as its required Note location. #}
+  {% set destinationOptions = [] %}
+  {% for target in noteFormModel.moveTargets %}
+    {% set _ = destinationOptions.push({ value: 'book:' ~ target.book.id, label: 'Book: ' ~ target.book.title ~ ' (direct Pages)' }) %}
+    {% for targetChapter in target.chapters %}
+      {% set _ = destinationOptions.push({ value: 'chapter:' ~ targetChapter.id, label: 'Chapter: ' ~ target.book.title ~ ' / ' ~ targetChapter.title }) %}
+    {% endfor %}
+  {% endfor %}
+  {% set noteLocationUnavailable = noteFormModel.location and destinationOptions.length == 0 %}
+  {# Project Detail's Create Note (the form with a Note location) names what it
+     makes a Note; New Page and Edit Page keep their Page wording. #}
+  {% set noteTitleLabel = 'Note title' if noteFormModel.location else 'Page title' %}
+  {% set noteContentsHeading = 'Note contents' if noteFormModel.location else 'Page contents' %}
+  {% set noteCreatePendingMessage = 'Creating Note…' if noteFormModel.location else 'Creating Page…' %}
+  {% set noteCreateErrorMessage = 'The Note could not be created.' if noteFormModel.location else 'The Page could not be created.' %}
   {% call noteDialog.render(noteDialogId, noteDialogTitle, noteDialogOpen, '', 'note-form', 'project-form-dialog app-dialog--refined') %}
     <div class="app-dialog-body project-edit-dialog-body">
       <form id="note-form" method="post" action="{{ noteFormModel.submitUrl }}" class="app-dialog-form project-form project-edit-dialog-form notes-form notes-workspace"
-            data-notes-editor-form data-note-dialog-dirty data-dialog-form data-dialog-async="{{ 'true' if noteFormAsync else 'false' }}"{% if noteFormAsync %} data-dialog-reset-on-close data-dialog-pending-message="{{ 'Saving Page…' if noteFormIsEdit else 'Creating Page…' }}" data-dialog-error-message="{{ 'The Page could not be saved.' if noteFormIsEdit else 'The Page could not be created.' }}"{% endif %} novalidate>
+            data-notes-editor-form data-note-dialog-dirty data-dialog-form data-dialog-async="{{ 'true' if noteFormAsync else 'false' }}"{% if noteFormAsync %} data-dialog-reset-on-close data-dialog-pending-message="{{ 'Saving Page…' if noteFormIsEdit else noteCreatePendingMessage }}" data-dialog-error-message="{{ 'The Page could not be saved.' if noteFormIsEdit else noteCreateErrorMessage }}"{% endif %} novalidate>
         <input type="hidden" name="_csrf" value="{{ _csrf }}">
         <script type="application/json" data-note-dialog-baseline>{{ noteFormModel.dialogBaselineJson | safe }}</script>
         {% if noteFormAsync %}
           <div class="error-summary" role="alert" data-dialog-error hidden><p data-dialog-error-text></p></div>
         {% endif %}
-        {% if noteFormModel.action == 'Create' and noteFormModel.chapter %}
-          <input type="hidden" name="chapterId" value="{{ values.chapterId }}">
-        {% elif noteFormModel.action == 'Create' %}
-          <input type="hidden" name="bookId" value="{{ values.bookId }}">
+        {# A chosen Note location is the only parent a Create Note form submits. #}
+        {% if noteFormModel.action == 'Create' and not noteFormModel.location %}
+          {% if noteFormModel.chapter %}
+            <input type="hidden" name="chapterId" value="{{ values.chapterId }}">
+          {% else %}
+            <input type="hidden" name="bookId" value="{{ values.bookId }}">
+          {% endif %}
         {% endif %}
 
+        {% if not noteFormModel.location %}
         <section class="settings-section project-form-section project-edit-dialog-section" data-notes-dialog-compact-section aria-labelledby="notes-book-contents-heading">
           <h3 id="notes-book-contents-heading">Book contents</h3>
           <details class="notes-book-contents-disclosure">
@@ -47,8 +67,40 @@
             </div>
           </details>
         </section>
+        {% else %}
+          {% set locationError = errors.targetContainer %}
+          <section class="settings-section project-form-section project-edit-dialog-section" data-notes-dialog-compact-section data-note-location aria-labelledby="notes-location-heading">
+            <h3 id="notes-location-heading">Note location</h3>
+            <div class="project-form-section-body project-edit-dialog-section-body">
+              {% if destinationOptions.length %}
+                {{ dropdown.singleSelect({
+                  id: 'note-location-dropdown', name: 'targetContainer', label: 'Book or Chapter', required: true,
+                  placeholder: 'Choose a Book or Chapter', options: destinationOptions,
+                  selected: values.targetContainer or '',
+                  panelLabel: 'Note locations',
+                  fieldClasses: 'field-error' if locationError else '',
+                  fieldAttributes: [['data-dialog-field', 'targetContainer']],
+                  summaryAttributes: [
+                    ['aria-describedby', 'targetContainer-error' if locationError else none],
+                    ['aria-invalid', 'true' if locationError else none]
+                  ],
+                  nativeSelect: { id: 'note-location-target', attributes: [
+                    ['required', true],
+                    ['aria-describedby', 'targetContainer-error' if locationError else none],
+                    ['aria-invalid', 'true' if locationError else none]
+                  ] }
+                }) }}
+              {% else %}
+                <div class="field app-dialog-field{% if locationError %} field-error{% endif %}" data-dialog-field="targetContainer" data-dialog-error-ref="targetContainer-error">
+                  <p class="notes-location-empty" id="note-location-unavailable" data-note-location-empty>A Book is required before a Note can be created. <a href="/notes/books/new">Create a Book</a>, then create the Note.</p>
+                </div>
+              {% endif %}
+              {% if locationError %}<span class="field-error-message" id="targetContainer-error">{{ locationError }}</span>{% endif %}
+            </div>
+          </section>
+        {% endif %}
         <section class="settings-section project-form-section project-edit-dialog-section" data-notes-dialog-compact-section aria-labelledby="notes-editor-heading">
-          <h3 id="notes-editor-heading">Page contents</h3>
+          <h3 id="notes-editor-heading">{{ noteContentsHeading }}</h3>
           <div class="project-form-section-body project-edit-dialog-section-body notes-page-contents-body">
             {% include "notes/writing-fields.njk" %}
           </div>
@@ -72,16 +124,9 @@
             <details class="notes-workspace-disclosure notes-workspace-disclosure--move">
               <summary>Move Page</summary>
               <div class="notes-workspace-disclosure-content">
-                {% set moveOptions = [] %}
-                {% for target in moveTargets %}
-                  {% set _ = moveOptions.push({ value: 'book:' ~ target.book.id, label: 'Book: ' ~ target.book.title ~ ' (direct Pages)' }) %}
-                  {% for targetChapter in target.chapters %}
-                    {% set _ = moveOptions.push({ value: 'chapter:' ~ targetChapter.id, label: 'Chapter: ' ~ target.book.title ~ ' / ' ~ targetChapter.title }) %}
-                  {% endfor %}
-                {% endfor %}
                 {{ dropdown.singleSelect({
                   id: 'note-move-dropdown', name: 'targetContainer', label: 'Move Page destination',
-                  visuallyHiddenLabel: true, options: moveOptions,
+                  visuallyHiddenLabel: true, options: destinationOptions,
                   selected: ('chapter:' ~ chapter.id) if chapter else ('book:' ~ book.id),
                   panelLabel: 'Page destinations',
                   nativeSelect: { id: 'note-move-target', attributes: [['required', true], ['form', 'note-move-form']] }
@@ -110,7 +155,7 @@
     </div>
     <div class="app-dialog-status" data-dialog-status role="status" aria-live="polite"></div>
     <footer class="app-dialog-footer">
-      <button class="button button-primary" type="submit" form="note-form" data-dialog-submit>{% if noteFormModel.action == 'Edit' %}Save{% else %}<span class="project-create-submit-icon" aria-hidden="true">{{ icons.icon('plus') }}</span>Create{% endif %}</button>
+      <button class="button button-primary" type="submit" form="note-form" data-dialog-submit{% if noteLocationUnavailable %} disabled aria-describedby="note-location-unavailable"{% endif %}>{% if noteFormModel.action == 'Edit' %}Save{% else %}<span class="project-create-submit-icon" aria-hidden="true">{{ icons.icon('plus') }}</span>Create{% endif %}</button>
     </footer>
   {% endcall %}
 {% endif %}

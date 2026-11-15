@@ -44,6 +44,20 @@ export class NoteOperationError extends Error {
   }
 }
 
+/**
+ * A Related Notes reorder was based on a membership or order snapshot that no
+ * longer matches the Project's current effective order. Nothing was saved.
+ */
+export class NoteRelatedOrderStaleError extends Error {
+  constructor(projectId) {
+    super(`Related Notes for Project ${projectId} changed. Reload before changing their order.`);
+    this.name = 'NoteRelatedOrderStaleError';
+    this.status = 409;
+    this.code = 'RELATED_NOTES_ORDER_STALE';
+    this.projectId = projectId;
+  }
+}
+
 export class NoteRevisionNotFoundError extends Error {
   constructor(noteId, revisionId) {
     super(`Revision ${revisionId} for Note ${noteId} not found`);
@@ -206,6 +220,46 @@ function isForeignKeyConstraint(error) {
 
 function isNoteRepositoryError(error) {
   return error instanceof NoteError;
+}
+
+const RELATED_ORDER_FIELDS = ['expectedNoteIds', 'orderedNoteIds'];
+
+function sameIdSequence(left, right) {
+  return left.length === right.length && left.every((id, index) => id === right[index]);
+}
+
+/**
+ * Structural validation of a Related Notes reorder submission: both lists are
+ * arrays of distinct positive safe-integer Note IDs. Nothing is coerced,
+ * deduplicated, or dropped. Membership is checked later, against the current
+ * Related Notes set, inside the write transaction.
+ */
+function normalizeRelatedOrderSubmission(submission) {
+  assertPlainObject(submission, 'order');
+  const errors = {};
+  const normalized = {};
+  for (const field of RELATED_ORDER_FIELDS) {
+    const value = submission[field];
+    if (!Array.isArray(value)) {
+      errors[field] = `${field} must be an array of Note IDs.`;
+      continue;
+    }
+    const seen = new Set();
+    for (const id of value) {
+      if (typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0) {
+        errors[field] = `${field} must contain positive integer Note IDs.`;
+        break;
+      }
+      if (seen.has(id)) {
+        errors[field] = `${field} must not contain duplicate Note IDs.`;
+        break;
+      }
+      seen.add(id);
+    }
+    normalized[field] = [...value];
+  }
+  throwValidationIfNeeded(errors);
+  return normalized;
 }
 
 /**
@@ -438,6 +492,39 @@ export function createNoteService({
   }
 
   const readRelatedNotesForProjectTx = db ? db.transaction(readRelatedNotesForProject) : null;
+
+  // One write transaction (run IMMEDIATE) recomputes the qualifying set and
+  // its effective order, refuses a stale snapshot, requires an exact
+  // permutation, replaces only this Project's ranks, and verifies the result.
+  // Any failure rolls every rank change back.
+  const reorderRelatedNotesForProjectTx = db && typeof db.transaction === 'function'
+    ? db.transaction((projectId, { expectedNoteIds, orderedNoteIds }) => {
+      if (!projectRepository.findById(projectId)) {
+        throw new ProjectNotFoundError(projectId);
+      }
+      const currentIds = noteRepository.listRelatedForProject(projectId).map((note) => note.id);
+      if (!sameIdSequence(currentIds, expectedNoteIds)) {
+        throw new NoteRelatedOrderStaleError(projectId);
+      }
+      const currentSet = new Set(currentIds);
+      if (orderedNoteIds.length !== currentIds.length
+        || orderedNoteIds.some((id) => !currentSet.has(id))) {
+        throw new NoteValidationError({
+          orderedNoteIds: 'Note order must contain every related Note exactly once.',
+        }, { code: 'RELATED_NOTES_ORDER_INVALID' });
+      }
+
+      noteRepository.replaceRelatedOrderForProject(projectId, orderedNoteIds);
+      const notes = noteRepository.listRelatedForProject(projectId);
+      if (!sameIdSequence(notes.map((note) => note.id), orderedNoteIds)) {
+        throw new NoteOperationError(
+          'Persisted Related Notes order does not match the validated target.',
+          { code: 'RELATED_NOTES_ORDER_INTEGRITY' },
+        );
+      }
+      return { projectId, changed: !sameIdSequence(currentIds, orderedNoteIds), notes };
+    })
+    : null;
 
   function getRevisionRetention() {
     return noteRevisionSettingsService?.getRevisionRetention?.() ?? 10;
@@ -1123,7 +1210,8 @@ export function createNoteService({
 
     /**
      * Notes Pages related to one Project, for the Project Detail Related Notes
-     * read model. Each Note appears once, in Notes hierarchy order, whether it
+     * read model. Each Note appears once, in the Project's effective order
+     * (saved project-specific ranks first, then Notes hierarchy order), whether it
      * is linked to the Project directly, through Assets owned by the Project,
      * or both. `assets` holds the note-association metadata (ascending id) for
      * every Asset referenced by any Note's `assetIds`; records whose file is
@@ -1137,6 +1225,34 @@ export function createNoteService({
       return readRelatedNotesForProjectTx
         ? readRelatedNotesForProjectTx(projectId)
         : readRelatedNotesForProject(projectId);
+    },
+
+    /**
+     * Save one Project's Related Notes order. `orderedNoteIds` must be an
+     * exact permutation of the Project's current Related Notes, and
+     * `expectedNoteIds` must equal their current effective order (the snapshot
+     * the reorder was based on). Content edits never affect the snapshot;
+     * membership changes and fallback hierarchy moves do.
+     *
+     * Throws NoteValidationError (malformed input or not an exact
+     * permutation), ProjectNotFoundError, or NoteRelatedOrderStaleError (409).
+     * Ranks of other Projects and all Notes hierarchy ordering are untouched.
+     *
+     * @param {number} projectId
+     * @param {{ expectedNoteIds: number[], orderedNoteIds: number[] }} submission
+     * @returns {{ projectId: number, changed: boolean, notes: Array<object & { projectLinked: boolean, assetIds: number[] }> }}
+     */
+    reorderRelatedNotesForProject(projectId, submission) {
+      assertPositiveIntegerId(projectId, 'projectId');
+      const normalized = normalizeRelatedOrderSubmission(submission);
+      if (!reorderRelatedNotesForProjectTx) {
+        throw new Error('createNoteService requires a db dependency for Related Notes reordering.');
+      }
+      const outcome = reorderRelatedNotesForProjectTx.immediate(projectId, normalized);
+      if (outcome.changed) {
+        logActivity('note.related_order.saved', { projectId, affectedCount: outcome.notes.length });
+      }
+      return outcome;
     },
 
     listNotesForChapter(chapterId) {

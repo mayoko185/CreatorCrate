@@ -603,7 +603,9 @@ describe('Notes Page detail hierarchy and layout contract', () => {
     expect(noteFormTemplate).toContain('<h3 id="notes-connections-heading">Connections</h3>');
     expect(noteFormTemplate).toContain('Link this Page to existing projects and assets.');
     expect(noteFormTemplate).not.toContain('Writing surface');
-    expect(noteFormTemplate).toContain('<h3 id="notes-editor-heading">Page contents</h3>');
+    // Page contents, or Note contents in Project Detail's Create Note (WP6-F3).
+    expect(noteFormTemplate).toContain('<h3 id="notes-editor-heading">{{ noteContentsHeading }}</h3>');
+    expect(noteFormTemplate).toContain("'Note contents' if noteFormModel.location else 'Page contents'");
     expect(noteFormTemplate).not.toContain('Secondary metadata');
     expect(notesCss).toContain('.notes-workspace-kicker');
     expect(notesCss).toMatch(/\.app-section-title\s*\{[^}]*font-size: 0\.8125rem;/);
