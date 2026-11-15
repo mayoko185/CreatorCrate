@@ -598,22 +598,31 @@
         </div>
       </div>
 
-      {% set activeCategoryLabel = "All" %}
-      {% if filters.category == 'uncategorized' %}
-        {% set activeCategoryLabel = "Uncategorized" %}
-      {% elif filters.category != 'all' %}
-        {% for cat in categoryNavigation.enabled %}
-          {% if (cat.id ~ '') == (filters.category ~ '') %}{% set activeCategoryLabel = cat.displayName %}{% endif %}
-        {% endfor %}
-        {% for cat in categoryNavigation.disabled %}
-          {% if (cat.id ~ '') == (filters.category ~ '') %}{% set activeCategoryLabel = cat.displayName %}{% endif %}
-        {% endfor %}
-      {% endif %}
+      {% set inlineCategorySummary = "" %}
+      {% for option in inlineCategoryFilterOptions %}
+        {% if option.selected %}{% set inlineCategorySummary = option.label ~ ((" " ~ option.suffix) if option.suffix else "") %}{% endif %}
+      {% endfor %}
       <div class="asset-results-metadata">
         {% if assets.length > 0 and not isArchived %}
           <p class="results-meta" data-selected-count data-selected-total="{{ assets.length }}">0 of {{ assets.length }} selected</p>
         {% endif %}
-        <p class="results-meta asset-results-category">Category: {{ activeCategoryLabel }}</p>
+        {# Choosing here checks the matching #asset-filters Category radio, so
+           the Filter dialog form stays the only filter state (live-regions.js).
+           The fieldset keeps its "Category" legend for assistive technology;
+           the visible prefix sits beside it. #}
+        <div class="results-meta asset-results-category" data-project-assets-inline-category>
+          <span class="asset-results-category-label" aria-hidden="true">Category:</span>
+          {{ dropdown.singleSelect({
+            id: "project-assets-inline-category",
+            name: "projectAssetsInlineCategory",
+            label: "Category",
+            visuallyHiddenLabel: true,
+            fieldClasses: "asset-results-category-field",
+            options: inlineCategoryFilterOptions,
+            summary: inlineCategorySummary,
+            panelLabel: "Category options"
+          }) }}
+        </div>
       </div>
 
       {# Project actions render independently of the asset result count so

@@ -751,6 +751,7 @@ export function buildBrowserRenderModel(
     inheritedFilterDefaults,
   );
   const defaultsUrl = appendQueryValue(pageUrl({}), 'defaults', '1');
+  const categoryFilterOptions = buildProjectAssetCategoryFilterOptions(data.categoryNavigation, data.filters);
 
   return {
     project,
@@ -785,7 +786,8 @@ export function buildBrowserRenderModel(
     extensionChoices: data.extensionChoices,
     tagOptions: data.tagOptions || [],
     categoryNavigation: data.categoryNavigation,
-    categoryFilterOptions: buildProjectAssetCategoryFilterOptions(data.categoryNavigation, data.filters),
+    categoryFilterOptions,
+    inlineCategoryFilterOptions: buildProjectAssetInlineCategoryFilterOptions(categoryFilterOptions),
     emptyState: data.emptyState,
     isArchived: data.isArchived,
     releaseTargets: data.releaseTargets,
@@ -1114,6 +1116,15 @@ function buildActionContext(context, contextFields, inheritedFilterDefaults = []
     context: { ...context, [INHERITED_FILTER_DEFAULTS_QUERY_KEY]: inheritedFilterDefaults.join(',') },
     contextFields: [...contextFields, INHERITED_FILTER_DEFAULTS_QUERY_KEY],
   };
+}
+
+// The results-header Category dropdown offers the Filter dialog's options under
+// its own DOM ids; the dialog's #asset-filters radios stay the filter state.
+function buildProjectAssetInlineCategoryFilterOptions(categoryFilterOptions) {
+  return categoryFilterOptions.map((option) => ({
+    ...option,
+    id: option.id.replace(/^asset-category-option-/, 'project-assets-inline-category-option-'),
+  }));
 }
 
 function buildProjectAssetCategoryFilterOptions(categoryNavigation, filters) {

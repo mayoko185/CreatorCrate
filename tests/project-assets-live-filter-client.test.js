@@ -246,6 +246,7 @@ function makePage({
   resetUrl = '/projects/1/assets?resetFilters=1&view=list',
   projectsResetUrl = null,
   filteredEmptyResetUrl = null,
+  withInlineCategory = false,
 } = {}) {
   const document = makeNode({ tagName: 'document' });
   document.nodeType = 9;
@@ -337,6 +338,45 @@ function makePage({
   categoryDetails.appendChild(categoryOptions);
   categoryFilter.appendChild(categoryDetails);
   form.appendChild(categoryFilter);
+
+  // The results-header Category dropdown: same values and presence markers,
+  // its own ids and radio group, outside #asset-filters.
+  const inlineCategory = withInlineCategory
+    ? (() => {
+      const field = makeNode({ tagName: 'fieldset', attrs: { 'data-project-assets-inline-category': '' } });
+      const details = makeNode({
+        tagName: 'details',
+        attrs: { id: 'project-assets-inline-category', 'data-cc-dropdown': '', 'data-cc-dropdown-mode': 'single' },
+      });
+      const summary = makeNode({ tagName: 'summary', attrs: { 'aria-label': 'Category filter: All categories' } });
+      const current = makeNode({ attrs: { 'data-cc-dropdown-summary-current': '' } });
+      summary.appendChild(current);
+      details.appendChild(summary);
+      const panel = makeNode();
+      const makeInlineOption = (label, suffix, value, categoryPresence, selected) => {
+        const option = makeNode({ attrs: { class: 'asset-filter-multiselect-option' } });
+        const labelNode = makeNode({ tagName: 'label' });
+        labelNode.textContent = label;
+        const input = addInput(labelNode, {
+          id: `project-assets-inline-category-option-${suffix}`,
+          name: 'projectAssetsInlineCategory',
+          type: 'radio',
+          value,
+          'data-asset-category-presence': categoryPresence,
+        }, value, selected);
+        option.appendChild(labelNode);
+        panel.appendChild(option);
+        return input;
+      };
+      const all = makeInlineOption('All categories', 'all', 'all', 'all', presence !== 'missing');
+      const renders = makeInlineOption('Renders', '7', '7', 'all', false);
+      const missing = makeInlineOption('Missing', 'missing', 'all', 'missing', presence === 'missing');
+      details.appendChild(panel);
+      field.appendChild(details);
+      current.textContent = presence === 'missing' ? 'Missing' : 'All categories';
+      return { field, details, summary, current, all, renders, missing };
+    })()
+    : null;
 
   const presenceField = makeNode();
   const presenceAll = addInput(presenceField, { name: 'presence', type: 'radio', value: 'all' }, 'all', presence === 'all');
@@ -509,6 +549,7 @@ function makePage({
   if (projectPreviewLink) region.appendChild(projectPreviewLink);
 
   region.appendChild(status);
+  if (inlineCategory) region.appendChild(inlineCategory.field);
   region.appendChild(nsfwForm);
   region.appendChild(gridSizeControls);
   if (selectedCount) region.appendChild(selectedCount);
@@ -546,6 +587,7 @@ function makePage({
     categoryAll: categoryAll.input,
     categoryRenders: categoryRenders.input,
     categoryMissing: categoryMissing.input,
+    inlineCategory,
     presenceAll,
     presencePresent,
     presenceMissing,
@@ -2137,5 +2179,157 @@ describe('Project Assets post-mutation refresh contract', () => {
     const { initial, windowObject } = scenario({ ids: [1] }, { ids: [1] });
     windowObject.fetch.mockReturnValueOnce(deferred().promise);
     expect(refreshProjectAssetsLiveRegion(initial.document)).toBe(true);
+  });
+});
+
+describe('Project Assets results Category dropdown', () => {
+  const choose = (input, siblings) => {
+    siblings.forEach((candidate) => { candidate.checked = candidate === input; });
+    input.dispatch('change');
+  };
+  const inlineInputs = (page) => [page.inlineCategory.all, page.inlineCategory.renders, page.inlineCategory.missing];
+  const checkedInline = (page) => inlineInputs(page).filter((input) => input.checked);
+
+  it('checks the matching Filter radio and runs one canonical request that keeps other filters and resets page', async () => {
+    const initial = makePage({
+      withInlineCategory: true, searchValue: 'keep', usage: 'used', tags: ['8'], extensions: ['png'], page: '3',
+    });
+    const next = makePage({ withInlineCategory: true, searchValue: 'keep', usage: 'used', tags: ['8'], extensions: ['png'] });
+    next.categoryAll.checked = false;
+    next.categoryRenders.checked = true;
+    next.inlineCategory.all.checked = false;
+    next.inlineCategory.renders.checked = true;
+    const { windowObject } = makeWindow(initial.document, new Map([['renders', next.document]]));
+    const responseUrl = 'http://creatorcrate.test/projects/1/assets?category=7&presence=all&view=list';
+    windowObject.fetch.mockResolvedValue(htmlResponse('renders', responseUrl));
+
+    expect(enhanceProjectAssetsLiveFiltering(initial.document)).toBe(1);
+    choose(initial.inlineCategory.renders, inlineInputs(initial));
+    expect(initial.categoryRenders.checked).toBe(true);
+    expect(initial.presenceAll.checked).toBe(true);
+    await flush();
+
+    expect(windowObject.fetch).toHaveBeenCalledTimes(1);
+    const requested = new URL(windowObject.fetch.mock.calls[0][0]);
+    expect(requested.searchParams.get('category')).toBe('7');
+    expect(requested.searchParams.get('presence')).toBe('all');
+    expect(requested.searchParams.get('search')).toBe('keep');
+    expect(requested.searchParams.get('usage')).toBe('used');
+    expect(requested.searchParams.getAll('tag')).toEqual(['8']);
+    expect(requested.searchParams.getAll('extension')).toEqual(['png']);
+    expect(requested.searchParams.has('page')).toBe(false);
+    expect(requested.searchParams.has('projectAssetsInlineCategory')).toBe(false);
+    expect(windowObject.history.pushes.map(({ url }) => url)).toEqual([responseUrl]);
+    expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(next.region);
+    expect(checkedInline(next)).toEqual([next.inlineCategory.renders]);
+
+    // The replacement binds once, however often enhancement runs again.
+    enhanceProjectAssetsLiveFiltering(next.region);
+    enhanceProjectAssetsLiveFiltering(initial.document);
+    expect(next.inlineCategory.field.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+    expect(initial.form.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+    choose(next.inlineCategory.all, inlineInputs(next));
+    await flush();
+    expect(windowObject.fetch).toHaveBeenCalledTimes(2);
+    expect(new URL(windowObject.fetch.mock.calls[1][0]).searchParams.get('category')).toBe('all');
+  });
+
+  it('tells Missing from All by presence', () => {
+    const initial = makePage({ withInlineCategory: true });
+    const { windowObject } = makeWindow(initial.document);
+    windowObject.fetch.mockReturnValue(deferred().promise);
+    enhanceProjectAssetsLiveFiltering(initial.document);
+
+    choose(initial.inlineCategory.missing, inlineInputs(initial));
+    expect(initial.categoryMissing.checked).toBe(true);
+    expect(initial.presenceMissing.checked).toBe(true);
+    const missing = new URL(windowObject.fetch.mock.calls[0][0]);
+    expect(missing.searchParams.get('category')).toBe('all');
+    expect(missing.searchParams.get('presence')).toBe('missing');
+
+    const missingPage = makePage({ withInlineCategory: true, presence: 'missing' });
+    const { windowObject: missingWindow } = makeWindow(missingPage.document);
+    missingWindow.fetch.mockReturnValue(deferred().promise);
+    enhanceProjectAssetsLiveFiltering(missingPage.document);
+    expect(checkedInline(missingPage)).toEqual([missingPage.inlineCategory.missing]);
+
+    choose(missingPage.inlineCategory.all, inlineInputs(missingPage));
+    expect(missingPage.categoryAll.checked).toBe(true);
+    expect(missingPage.presenceAll.checked).toBe(true);
+    const all = new URL(missingWindow.fetch.mock.calls[0][0]);
+    expect(all.searchParams.get('category')).toBe('all');
+    expect(all.searchParams.get('presence')).toBe('all');
+  });
+
+  it('follows Filter dialog Category and Show changes without a request of its own', () => {
+    const initial = makePage({ withInlineCategory: true, presence: 'missing' });
+    const { windowObject } = makeWindow(initial.document);
+    windowObject.fetch.mockReturnValue(deferred().promise);
+    enhanceProjectAssetsLiveFiltering(initial.document);
+
+    initial.presenceMissing.checked = false;
+    initial.presenceAll.checked = true;
+    initial.presenceAll.dispatch('change');
+    expect(initial.categoryAll.checked).toBe(true);
+    expect(checkedInline(initial)).toEqual([initial.inlineCategory.all]);
+    expect(windowObject.fetch).toHaveBeenCalledTimes(1);
+
+    initial.categoryAll.checked = false;
+    initial.categoryMissing.checked = false;
+    initial.categoryRenders.checked = true;
+    initial.categoryRenders.dispatch('change');
+    expect(checkedInline(initial)).toEqual([initial.inlineCategory.renders]);
+    expect(initial.inlineCategory.current.textContent).toBe('Renders');
+    expect(initial.inlineCategory.summary.getAttribute('aria-label')).toBe('Category filter: Renders');
+    expect(windowObject.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows the reconciled Filter form category after Back/Forward replaces the region', async () => {
+    const initial = makePage({ withInlineCategory: true });
+    initial.categoryAll.checked = false;
+    initial.categoryRenders.checked = true;
+    initial.inlineCategory.all.checked = false;
+    initial.inlineCategory.renders.checked = true;
+    const previous = makePage({ withInlineCategory: true, presence: 'missing' });
+    // A stale inline choice in the response still yields to the Filter form.
+    previous.inlineCategory.missing.checked = false;
+    previous.inlineCategory.renders.checked = true;
+    const { windowObject, setLocation } = makeWindow(initial.document, new Map([['previous', previous.document]]));
+    const previousUrl = 'http://creatorcrate.test/projects/1/assets?category=all&presence=missing';
+    windowObject.fetch.mockResolvedValue(htmlResponse('previous', previousUrl));
+    enhanceProjectAssetsLiveFiltering(initial.document);
+
+    setLocation(previousUrl);
+    windowObject.dispatch('popstate');
+    await flush();
+
+    expect(windowObject.fetch).toHaveBeenCalledTimes(1);
+    expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(previous.region);
+    expect(initial.form.querySelector('input[name="category"]:checked')).toBe(previous.categoryMissing);
+    expect(checkedInline(previous)).toEqual([previous.inlineCategory.missing]);
+    expect(previous.inlineCategory.current.textContent).toBe('Missing');
+  });
+
+  it('keeps the attempted category through a failed request and retries it with the existing Retry', async () => {
+    const initial = makePage({ withInlineCategory: true });
+    const next = makePage({ withInlineCategory: true });
+    const { windowObject } = makeWindow(initial.document, new Map([['next', next.document]]));
+    windowObject.fetch.mockRejectedValueOnce(new Error('offline'));
+    enhanceProjectAssetsLiveFiltering(initial.document);
+
+    choose(initial.inlineCategory.renders, inlineInputs(initial));
+    await flush();
+    expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(initial.region);
+    expect(liveFailureNotice(initial.document)).toBeTruthy();
+    expect(liveFailureRetries(initial.document)).toHaveLength(1);
+    expect(initial.categoryRenders.checked).toBe(true);
+    expect(checkedInline(initial)).toEqual([initial.inlineCategory.renders]);
+
+    windowObject.fetch.mockResolvedValueOnce(htmlResponse('next', windowObject.fetch.mock.calls[0][0]));
+    liveFailureRetries(initial.document)[0].dispatch('click');
+    await flush();
+    expect(windowObject.fetch).toHaveBeenCalledTimes(2);
+    expect(windowObject.fetch.mock.calls[1][0]).toBe(windowObject.fetch.mock.calls[0][0]);
+    expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(next.region);
   });
 });

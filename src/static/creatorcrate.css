@@ -992,6 +992,48 @@
         margin-inline-start: auto;
         text-align: right;
       }
+      /* Category: [dropdown] — the visible prefix and the shared dropdown
+         share one row; rules are scoped under the metadata row so they
+         outrank the shared dropdown field rules declared later. */
+      .asset-results-metadata > .asset-results-category {
+        display: flex;
+        flex: 0 1 auto;
+        align-items: center;
+        gap: var(--space-xs) var(--space-sm);
+        max-width: 100%;
+        margin-inline-start: auto;
+      }
+      .asset-results-category-label {
+        flex: 0 0 auto;
+      }
+      .asset-results-metadata > .asset-results-category > .asset-results-category-field {
+        flex: 0 1 auto;
+        width: auto;
+        min-width: 0;
+        max-width: 22rem;
+        margin: 0;
+        color: var(--text);
+        font-weight: 400;
+        text-align: left;
+      }
+      .asset-results-metadata > .asset-results-category .cc-dropdown,
+      .asset-results-metadata > .asset-results-category .cc-dropdown summary {
+        max-width: 100%;
+      }
+      .asset-results-metadata > .asset-results-category .cc-dropdown .asset-filter-multiselect-summary {
+        grid-template-columns: minmax(0, max-content);
+        max-width: 100%;
+      }
+      .asset-results-metadata > .asset-results-category .cc-dropdown .asset-filter-multiselect-summary-current {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      /* Right-aligned trigger: the panel opens toward the page, not past it. */
+      .asset-results-metadata > .asset-results-category .cc-dropdown .asset-filter-multiselect-panel {
+        right: 0;
+        left: auto;
+      }
       .detail-list {
         display: grid;
         grid-template-columns: minmax(0, 8rem) minmax(0, 1fr);
@@ -11259,6 +11301,24 @@
   .asset-results-category {
     margin-inline-start: 0;
     text-align: left;
+  }
+  .asset-results-metadata > .asset-results-category {
+    margin-inline-start: 0;
+  }
+  .asset-results-metadata > .asset-results-category > .asset-results-category-field {
+    flex: 1 1 auto;
+    max-width: none;
+  }
+  .asset-results-metadata > .asset-results-category .cc-dropdown,
+  .asset-results-metadata > .asset-results-category .cc-dropdown summary {
+    width: 100%;
+  }
+  .asset-results-metadata > .asset-results-category .cc-dropdown .asset-filter-multiselect-summary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .asset-results-metadata > .asset-results-category .cc-dropdown .asset-filter-multiselect-panel {
+    right: auto;
+    left: 0;
   }
   .page-heading:has(.project-assets-heading-action) > .page-heading-lead.asset-tooltip--left[data-tooltip]::after,
   .page-heading-actions .project-assets-heading-action.asset-tooltip--left[data-tooltip]::after,

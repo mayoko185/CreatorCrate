@@ -35,6 +35,7 @@ import {
 } from './info-cards.js';
 import { enhanceNumberInputs } from './number-input.js';
 import {
+  CC_DROPDOWN_SELECTOR,
   enhanceAssetViewerFilterDisclosures,
   enhanceDropdowns,
   enhanceProjectAssetCategoryFilter,
@@ -2363,6 +2364,81 @@ function clearResolvedProjectAssetsDefaultsRefreshError(state, region) {
   projectAssetsLiveEngine.status(region, '', null);
 }
 
+// The results-header Category dropdown is a second view of the Filter
+// dialog's Category radios. A choice there checks the matching #asset-filters
+// radio and sends one bubbling change, so category/presence coupling, URL
+// building, history, page reset and failure/Retry stay the form's own. The
+// value alone is ambiguous: All and Missing are both category=all, told apart
+// by data-asset-category-presence.
+const PROJECT_ASSETS_INLINE_CATEGORY_SELECTOR = '[data-project-assets-inline-category]';
+const PROJECT_ASSETS_CATEGORY_PRESENCE_ATTRIBUTE = 'data-asset-category-presence';
+
+function projectAssetsCategoryKey(input) {
+  return {
+    value: String(input?.value ?? input?.getAttribute?.('value') ?? ''),
+    presence: input?.getAttribute?.(PROJECT_ASSETS_CATEGORY_PRESENCE_ATTRIBUTE) || 'all',
+  };
+}
+
+function findProjectAssetsCategoryRadio(inputs, key) {
+  return inputs.find((input) => {
+    const candidate = projectAssetsCategoryKey(input);
+    return candidate.value === key.value && candidate.presence === key.presence;
+  }) || null;
+}
+
+function projectAssetsCanonicalCategoryRadios(document) {
+  const form = document?.querySelector?.('#asset-filters');
+  return Array.from(form?.querySelectorAll?.('input[type="radio"][name="category"]') || []);
+}
+
+function projectAssetsInlineCategoryRadios(field) {
+  return Array.from(field?.querySelectorAll?.('input[type="radio"]') || []);
+}
+
+// Reflect the canonical form's Category radio without sending a change.
+function syncProjectAssetsInlineCategory(document) {
+  const field = document?.querySelector?.(PROJECT_ASSETS_INLINE_CATEGORY_SELECTOR);
+  const canonical = projectAssetsCanonicalCategoryRadios(document).find((input) => input.checked);
+  if (!field || !canonical) return;
+  const inlineInputs = projectAssetsInlineCategoryRadios(field);
+  const match = findProjectAssetsCategoryRadio(inlineInputs, projectAssetsCategoryKey(canonical));
+  if (!match) return;
+  inlineInputs.forEach((input) => { input.checked = input === match; });
+  const dropdown = field.querySelector?.(CC_DROPDOWN_SELECTOR);
+  if (dropdown) initializeCreatorCrateDropdown(dropdown);
+}
+
+function selectProjectAssetsInlineCategory(document, inlineInput) {
+  if (!inlineInput?.checked) return;
+  const canonicalInputs = projectAssetsCanonicalCategoryRadios(document);
+  const canonical = findProjectAssetsCategoryRadio(canonicalInputs, projectAssetsCategoryKey(inlineInput));
+  if (!canonical) {
+    syncProjectAssetsInlineCategory(document);
+    return;
+  }
+  if (canonical.checked) return;
+  canonicalInputs.forEach((input) => { input.checked = input === canonical; });
+  const EventConstructor = document.defaultView?.Event || globalThis.Event;
+  canonical.dispatchEvent?.(new EventConstructor('change', { bubbles: true }));
+}
+
+function enhanceProjectAssetsInlineCategory(region) {
+  const document = liveRegionDocument(region);
+  const field = region?.querySelector?.(PROJECT_ASSETS_INLINE_CATEGORY_SELECTOR);
+  if (field && !isEnhancementBound(field, 'projectAssetsInlineCategoryBound')) {
+    markEnhancementBound(field, 'projectAssetsInlineCategoryBound');
+    field.addEventListener?.('change', (event) => {
+      if (event.target?.type !== 'radio') return;
+      selectProjectAssetsInlineCategory(document, event.target);
+    });
+  }
+  // Filter dialog Category/Show changes reach the inline control through the
+  // engine's onFormChange; a replaced region syncs here after the dialog form
+  // has been reconciled with the response.
+  syncProjectAssetsInlineCategory(document);
+}
+
 function enhanceProjectAssetsLiveRegion(region) {
   enhancePreviewMedia(region);
   enhanceAssetViewerInfoCards(region);
@@ -2376,6 +2452,7 @@ function enhanceProjectAssetsLiveRegion(region) {
   enhanceAppConfirmationControls(region);
   enhanceProjectAssetCategoryFilter(liveRegionDocument(region));
   enhanceDropdowns(liveRegionDocument(region));
+  enhanceProjectAssetsInlineCategory(region);
   // Image previews and the Slideshow button open the unified viewer through
   // one delegated binding; a replaced region only reconciles an open viewer
   // with the sequence onResponseParsed has just copied in.
@@ -2402,6 +2479,7 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
   enhanceRegion: enhanceProjectAssetsLiveRegion,
   onFormChange(state, form, event) {
     updateInheritedProjectAssetsFilterDefaults(form, event);
+    syncProjectAssetsInlineCategory(state.document);
   },
   transformParams: omitInheritedProjectAssetsFiltersForCategory,
   onResponseParsed(state, parsed) {

@@ -5547,7 +5547,7 @@ describe('asset browser HTTP workflow', () => {
     expect(disabledActionRule).toMatch(/(?:^|;)\s*text-decoration:\s*none\s*;/);
   });
 
-  it('renders the active category label from canonical filters and enabled or disabled navigation entries', async () => {
+  it('renders the results Category dropdown from the Filter options with its own ids and radio group', async () => {
     const res = await createProject('Active Category Metadata');
     const id = Number(res.headers.location.replace('/projects/', ''));
     const enabled = assetCategoryRepo.addProjectCategory({
@@ -5566,17 +5566,53 @@ describe('asset browser HTTP workflow', () => {
       filename: 'old.png', extension: 'png', mimeType: 'image/png', sizeBytes: 10, modifiedAt: null, categoryId: disabled.id, nestedPath: '',
     });
 
+    const inlineId = (suffix) => `project-assets-inline-category-option-${suffix}`;
     const cases = [
-      ['', 'Category: All'],
-      ['?category=uncategorized', 'Category: Uncategorized'],
-      [`?category=${enabled.id}`, 'Category: Finished Renders'],
-      [`?category=${disabled.id}`, 'Category: Legacy Sources'],
+      ['', 'all', 'All categories (3)'],
+      ['?category=uncategorized', 'uncategorized', 'Uncategorized (1)'],
+      [`?category=${enabled.id}`, String(enabled.id), 'Finished Renders (1)'],
+      [`?category=${disabled.id}`, String(disabled.id), 'Legacy Sources (1) (disabled)'],
+      ['?category=all&presence=missing', 'missing', 'Missing (0)'],
     ];
-    for (const [query, expected] of cases) {
+    for (const [query, selectedSuffix, summary] of cases) {
       const response = await agent.get(`/projects/${id}/assets${query}`).expect(200);
-      const metadata = response.text.match(/<div class="asset-results-metadata">[\s\S]*?<\/div>/)?.[0] || '';
-      expect(metadata).toContain(`class="results-meta asset-results-category">${expected}</p>`);
-      expect((metadata.match(/data-selected-count/g) || [])).toHaveLength(1);
+      const html = response.text;
+      const metadataStart = html.indexOf('<div class="asset-results-metadata">');
+      const inline = html.slice(metadataStart).match(/<div class=\"results-meta asset-results-category\" data-project-assets-inline-category>[\s\S]*?<\/fieldset>\s*<\/div>/)?.[0] || '';
+      expect(inline).not.toBe('');
+      const beforeInline = html.slice(metadataStart, html.indexOf(inline));
+      expect(beforeInline).not.toContain('</div>');
+      expect((beforeInline.match(/data-selected-count/g) || [])).toHaveLength(selectedSuffix === 'missing' ? 0 : 1);
+      expect(html).not.toContain('<p class="results-meta asset-results-category">');
+
+      expect(inline).toContain('<span class="asset-results-category-label" aria-hidden="true">Category:</span>');
+      expect(inline).toContain('<legend class="sr-only">Category</legend>');
+      expect(inline).toContain(`<span data-cc-dropdown-summary-current class="asset-filter-multiselect-summary-current">${summary}</span>`);
+      expect(inline).toContain(`aria-label="Category filter: ${summary}"`);
+      expect(inline).not.toContain('name="category"');
+
+      const inlineInputs = [...inline.matchAll(/<input\b[^>]*>/g)].map((match) => match[0]);
+      const inlineIds = inlineInputs.map((input) => input.match(/\bid="([^"]+)"/)[1]);
+      expect(inlineIds.slice(0, 2)).toEqual([inlineId('all'), inlineId('uncategorized')]);
+      expect(inlineIds.at(-1)).toBe(inlineId('missing'));
+      expect(inlineIds).toEqual(expect.arrayContaining([inlineId(enabled.id), inlineId(disabled.id)]));
+      inlineInputs.forEach((input) => expect(input).toContain('name="projectAssetsInlineCategory" type="radio"'));
+      expect(inlineInputs.filter((input) => /\schecked(?:\s|=|>)/.test(input))).toEqual([
+        inlineInputs.find((input) => input.includes(`id="${inlineId(selectedSuffix)}"`)),
+      ]);
+      expect(inline).toMatch(new RegExp(`id="${inlineId('all')}"[^>]*value="all"[^>]*data-asset-category-presence="all"`));
+      expect(inline).toMatch(new RegExp(`id="${inlineId('missing')}"[^>]*value="all"[^>]*data-asset-category-presence="missing"`));
+      expect(inline).toMatch(new RegExp(`id="${inlineId(disabled.id)}"[\\s\\S]*?Legacy Sources \\(1\\) <em class="asset-category-disabled-marker">\\(disabled\\)</em>`));
+
+      // The Filter dialog keeps its own Category radios; no id is rendered twice.
+      const filterForm = html.match(/<form id="asset-filters"[\s\S]*?<\/form>/)?.[0] || '';
+      expect(filterForm).toContain(`id="asset-category-option-${selectedSuffix}"`);
+      expect(filterForm).not.toContain('project-assets-inline-category');
+      const dialogCategoryIds = [...filterForm.matchAll(/<input id="asset-category-option-([^"]+)" name="category"/g)]
+        .map((match) => inlineId(match[1]));
+      expect(inlineIds).toEqual(dialogCategoryIds);
+      const ids = [...html.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1]);
+      expect(ids.filter((value, index) => ids.indexOf(value) !== index)).toEqual([]);
     }
   });
 

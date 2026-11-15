@@ -467,7 +467,23 @@ test('Project Assets action cards and Rename dialog remain contained across desk
 
       const metadata = page.locator('.asset-results-metadata');
       await expect(metadata.locator('[data-selected-count]')).toHaveText('0 of 9 selected');
-      await expect(metadata.locator('.asset-results-category')).toHaveText(`Category: ${longCategoryName}`);
+      const inlineCategory = metadata.locator('[data-project-assets-inline-category]');
+      await expect(inlineCategory.locator('.asset-results-category-label')).toHaveText('Category:');
+      await expect(inlineCategory.locator('[data-cc-dropdown-summary-current]')).toHaveText(`${longCategoryName} (9)`);
+      const inlineSummary = inlineCategory.locator('summary');
+      const inlineSummaryBox = await inlineSummary.boundingBox();
+      const inlineLabelBox = await inlineCategory.locator('.asset-results-category-label').boundingBox();
+      expect(Math.abs((inlineSummaryBox.y + inlineSummaryBox.height / 2) - (inlineLabelBox.y + inlineLabelBox.height / 2)))
+        .toBeLessThan(inlineSummaryBox.height / 2);
+      await inlineSummary.click();
+      const inlinePanel = inlineCategory.locator('.asset-filter-multiselect-panel');
+      await expect(inlinePanel).toBeVisible();
+      const inlinePanelBox = await inlinePanel.boundingBox();
+      expect(inlinePanelBox.x).toBeGreaterThanOrEqual(0);
+      expect(inlinePanelBox.x + inlinePanelBox.width).toBeLessThanOrEqual(375);
+      await expectNoDocumentOverflow();
+      await page.keyboard.press('Escape');
+      await expect(inlinePanel).toBeHidden();
       const metadataLayout = await metadata.evaluate((node) => {
         const container = node.getBoundingClientRect();
         return Array.from(node.children).map((child) => {

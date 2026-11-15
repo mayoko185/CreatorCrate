@@ -266,7 +266,11 @@ describe('intentional asset-browser parity: releases vs projects', () => {
     }
 
     const dialog = extractDialog(pages.projectCategory, 'project-assets-filter-dialog');
-    expect(pages.projectCategory).toContain(`Category: ${category.display_name}`);
+    const inline = pages.projectCategory.match(/<div class=\"results-meta asset-results-category\" data-project-assets-inline-category>[\s\S]*?<\/fieldset>\s*<\/div>/)?.[0] || '';
+    expect(inline).toContain('<span class="asset-results-category-label" aria-hidden="true">Category:</span>');
+    expect(inline).toContain('<legend class="sr-only">Category</legend>');
+    expect(inline).toContain(`aria-label="Category filter: ${category.display_name} (1)"`);
+    expect(extractInputTag(inline, `project-assets-inline-category-option-${category.id}`)).toMatch(/\schecked(?:\s|=|>)/);
     expect(dialog).toContain(`aria-label="Category filter: ${category.display_name} (1)"`);
     const activeCategoryInput = extractInputTag(dialog, `asset-category-option-${category.id}`);
     expect(activeCategoryInput).toContain(`value="${category.id}"`);
