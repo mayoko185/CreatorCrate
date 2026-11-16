@@ -494,11 +494,13 @@ test.describe('Control-click destination synchronization', () => {
 });
 
 async function projectStyle(page, value) {
-  await page.getByRole('link', { name: 'Project Assets defaults', exact: true }).click();
-  const dialog = page.locator('#project-assets-defaults-dialog');
+  // WP7: Grid style is a default in Filters & Defaults, applied by Save.
+  await page.getByRole('link', { name: 'Filters & Defaults', exact: true }).click();
+  const dialog = page.locator('#project-assets-filter-dialog');
   await dialog.locator('[data-dialog-field="gridStyle"] summary').click();
   await dialog.locator('[data-dialog-field="gridStyle"] .asset-filter-multiselect-panel')
     .getByText(value === 'cropped' ? 'Cropped' : 'Uncropped', { exact: true }).click();
+  await dialog.getByRole('button', { name: 'Save new defaults', exact: true }).click();
   await expect(page.locator('.asset-grid')).toHaveAttribute('data-grid-style', value);
   await page.keyboard.press('Escape'); await expect(dialog).toBeHidden();
 }

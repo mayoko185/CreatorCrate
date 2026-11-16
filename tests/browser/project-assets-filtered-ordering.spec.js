@@ -115,7 +115,7 @@ function pageHelpers(page, f) {
     },
     openFilters: async () => {
       if (!(await filterDialog.isVisible())) {
-        await page.getByRole('link', { name: 'Filter assets', exact: true }).click();
+        await page.getByRole('link', { name: 'Filters & Defaults', exact: true }).click();
       }
       await expect(filterDialog).toBeVisible();
     },

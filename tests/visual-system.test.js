@@ -1103,12 +1103,46 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       for (const templatePath of [
         'projects/index.njk',
         'assets/index.njk',
-        'projects/assets.njk',
       ]) {
         expect(fs.readFileSync(path.join(VIEWS_DIR, templatePath), 'utf8'))
           .toContain('<div class="page-defaults-grid">');
       }
+      // WP7: Project Assets lays its controls out in the Filters & Defaults
+      // sections' three-column grid instead.
+      {
+        expect(fs.readFileSync(path.join(VIEWS_DIR, 'projects/assets.njk'), 'utf8'))
+          .toContain('<div class="filters-defaults-grid">');
+      }
       expect(css).not.toMatch(/\.project-assets-defaults-grid\b/);
+    });
+
+    it('Filters & Defaults status row keeps the compact scope choices anchored right (Package A)', async () => {
+      const css = STYLESHEET.replace(/\/\*[\s\S]*?\*\//g, '');
+      const rule = (selector) => css.match(new RegExp(`(?:^|\\})\\s*${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{([^}]*)\\}`))?.[1] || '';
+      const row = rule('.app-dialog--filters-defaults .filters-defaults-status-row');
+      expect(row).toContain('display: grid;');
+      expect(row).toContain('grid-template-columns: minmax(0, 1fr) auto;');
+      expect(row).toContain('align-items: start;');
+      expect(row).not.toContain('flex-wrap');
+      const scope = rule('.app-dialog--filters-defaults .filters-defaults-scope');
+      expect(scope).toContain('grid-column: 2;');
+      expect(scope).toContain('justify-self: end;');
+      expect(scope).toContain('flex-wrap: nowrap;');
+      expect(rule('.app-dialog--filters-defaults .filters-defaults-saved-indicator')).toContain('grid-column: 1;');
+      // Narrow dialogs stack: scope first, status below, one column.
+      expect(css).toMatch(/@media\s*\(max-width:\s*540px\)\s*\{\s*\.app-dialog--filters-defaults \.filters-defaults-status-row\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\);/);
+
+      // U2: the radios join the processing dialogs' shared compact choice surface,
+      // scoped to this dialog only; no global radio restyle, no segmented toggle.
+      const radio = ".app-dialog--filters-defaults .filters-defaults-scope-option input[type='radio']";
+      const sharedBase = css.match(/([^{}]*\.app-dialog--processing :is\(\.processing-scope-option, \.processing-checkbox-label\) input:is\(\[type='checkbox'\], \[type='radio'\]\),[^{}]*)\{([^}]*)\}/);
+      expect(sharedBase?.[1]).toContain(`${radio},`);
+      expect(sharedBase?.[2]).toContain('appearance: none;');
+      expect(css).toMatch(/\.app-dialog--filters-defaults \.filters-defaults-scope-option input\[type='radio'\]:checked,[^{]*\{[^}]*background: var\(--accent\);/);
+      expect(rule(radio)).toContain('border-radius: 50%;');
+      expect(rule(`${radio}:focus-visible`)).toContain('outline: 2px solid var(--focus-ring);');
+      expect(css).not.toMatch(/(?:^|[},])\s*input\[type='radio'\]\s*\{/);
+      expect(css).not.toMatch(/\.filters-defaults-scope(?:-option)?(?::[\w-]+(?:\([^)]*\))?)*\s*\{[^}]*background:/);
     });
 
     it('Project Assets defaults scope control is a narrow, focus-visible segmented toggle', async () => {

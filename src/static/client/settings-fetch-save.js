@@ -15,7 +15,7 @@ function fetchSaveStatus(form) {
   return form.querySelector?.(FETCH_AUTOSUBMIT_STATUS_SELECTOR) || null;
 }
 
-function setFetchSaveStatus(form, message, state) {
+export function setFetchSaveStatus(form, message, state) {
   const status = fetchSaveStatus(form);
   form.setAttribute?.('data-settings-fetch-save-state', state);
   if (!status) return;

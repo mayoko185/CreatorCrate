@@ -351,21 +351,22 @@ export function createAssetsRouter({
       const query = req.query;
       const queryKeys = Object.keys(query);
       const hasReset = queryKeys.some((key) => key === 'resetFilters' || key.startsWith('resetFilters['));
-      let resetView;
+      // Package B: Reset filters restores the effective saved/default View, so
+      // the intent is validated on its own. A legacy scalar view is still
+      // accepted on a Reset URL but never chooses the destination.
       if (hasReset) {
         if (query.resetFilters !== '1'
           || queryKeys.some((key) => key.startsWith('resetFilters[') || key.startsWith('view['))
-          || typeof query.view !== 'string'
-          || !['grid', 'list'].includes(query.view)) {
+          || (Object.hasOwn(query, 'view')
+            && (typeof query.view !== 'string' || !['grid', 'list'].includes(query.view)))) {
           const error = new Error('Invalid asset filter reset request.');
           error.status = 400;
           throw error;
         }
-        resetView = query.view;
         res.set('Cache-Control', 'no-store');
       }
       await renderProjectAssetsPage(req, res, {
-        resetView,
+        resetFilters: hasReset,
         appName,
         projectService,
         workflowQueryService,

@@ -818,3 +818,279 @@ describe('viewport disclosure right-edge clamp', () => {
     expect(panel.style.left).toBe('20px');
   });
 });
+
+describe('opt-in Select all filter dropdowns (Filters & Defaults M2 WP5)', () => {
+  const EXTENSIONS = [
+    { value: 'all', label: 'All extensions' },
+    { value: 'jpg', label: '.jpg' },
+    { value: 'png', label: '.png' },
+    { value: 'webp', label: '.webp' },
+  ];
+
+  function markSelectAll(input) {
+    input.hasAttribute = (name) => name === 'data-cc-dropdown-select-all';
+    return input;
+  }
+
+  // Native-backed control: the native catalogue has the neutral 'all' value,
+  // rendered as the leading Select all row (the defaults catalogues' shape).
+  function selectAllFixture(nativeSelected = [], { emptySummary = 'All extensions' } = {}) {
+    const fixture = makeDropdown('multiple', EXTENSIONS, [], { value: '', dispatchNativeChange: true });
+    fixture.nativeSelect.multiple = true;
+    fixture.nativeSelect.options.forEach((option) => {
+      option.selected = nativeSelected.includes(option.value);
+    });
+    fixture.dropdown.dataset.ccDropdownSelectAll = 'all';
+    fixture.dropdown.dataset.ccDropdownEmptySummary = emptySummary;
+    fixture.dropdown.dataset.ccDropdownCountLabel = 'extensions';
+    markSelectAll(fixture.inputs[0]);
+    const [selectAll, jpg, png, webp] = fixture.inputs;
+    const nativeValues = () => fixture.nativeSelect.options
+      .filter((option) => option.selected).map((option) => option.value);
+    const checkedValues = () => fixture.inputs.filter((input) => input.checked).map((input) => input.value);
+    return { ...fixture, selectAll, jpg, png, webp, nativeValues, checkedValues };
+  }
+
+  it('Select all clears individual values and a value leaves All, keeping rows, native values and summary in step', () => {
+    const fixture = selectAllFixture(['jpg', 'png']);
+    enhanceDropdowns(fixture.scope);
+    expect(fixture.checkedValues()).toEqual(['jpg', 'png']);
+    expect(fixture.currentSummary.textContent).toBe('2 extensions selected');
+
+    fixture.selectAll.checked = true;
+    fixture.scope.dispatch('change', fixture.selectAll);
+    expect(fixture.checkedValues()).toEqual(['all']);
+    expect(fixture.nativeValues()).toEqual(['all']);
+    expect(fixture.currentSummary.textContent).toBe('All extensions');
+    expect(fixture.summaryAttrs['aria-label']).toBe('Tag filter: All extensions');
+    expect(fixture.nativeSelect.dispatchEvent).toHaveBeenCalledTimes(1);
+
+    fixture.jpg.checked = true;
+    fixture.scope.dispatch('change', fixture.jpg);
+    expect(fixture.checkedValues()).toEqual(['jpg']);
+    expect(fixture.nativeValues()).toEqual(['jpg']);
+    expect(fixture.currentSummary.textContent).toBe('.jpg');
+    expect(fixture.nativeSelect.dispatchEvent).toHaveBeenCalledTimes(2);
+
+    // Clearing the last explicit value returns to the unrestricted state.
+    fixture.jpg.checked = false;
+    fixture.scope.dispatch('change', fixture.jpg);
+    expect(fixture.checkedValues()).toEqual(['all']);
+    expect(fixture.nativeValues()).toEqual(['all']);
+    expect(fixture.currentSummary.textContent).toBe('All extensions');
+    expect(fixture.nativeSelect.dispatchEvent).toHaveBeenCalledTimes(3);
+  });
+
+  it('shows the unrestricted state on load and after reopening, and an explicit full set stays explicit', () => {
+    const unrestricted = selectAllFixture([]);
+    enhanceDropdowns(unrestricted.scope);
+    expect(unrestricted.checkedValues()).toEqual(['all']);
+    expect(unrestricted.currentSummary.textContent).toBe('All extensions');
+    unrestricted.dropdown.open = true;
+    unrestricted.scope.dispatch('toggle', unrestricted.dropdown);
+    unrestricted.dropdown.open = false;
+    unrestricted.scope.dispatch('toggle', unrestricted.dropdown);
+    unrestricted.dropdown.open = true;
+    unrestricted.scope.dispatch('toggle', unrestricted.dropdown);
+    expect(unrestricted.checkedValues()).toEqual(['all']);
+
+    const everyValue = selectAllFixture(['jpg', 'png', 'webp']);
+    enhanceDropdowns(everyValue.scope);
+    expect(everyValue.checkedValues()).toEqual(['jpg', 'png', 'webp']);
+    expect(everyValue.currentSummary.textContent).toBe('3 extensions selected');
+  });
+
+  it('cancels keyboard or pointer activation of a checked Select all without a change event', () => {
+    const fixture = selectAllFixture([]);
+    enhanceDropdowns(fixture.scope);
+
+    // Space on the focused checkbox, or a click, toggles it before the click event.
+    fixture.selectAll.checked = false;
+    const cancelled = fixture.scope.dispatch('click', fixture.selectAll);
+    expect(cancelled.defaultPrevented).toBe(true);
+    expect(fixture.nativeSelect.dispatchEvent).not.toHaveBeenCalled();
+
+    // A fallback change (no click) still lands on the unrestricted state.
+    fixture.scope.dispatch('change', fixture.selectAll);
+    expect(fixture.selectAll.checked).toBe(true);
+
+    fixture.png.checked = true;
+    fixture.scope.dispatch('change', fixture.png);
+    expect(fixture.selectAll.checked).toBe(false);
+    fixture.selectAll.checked = true;
+    expect(fixture.scope.dispatch('click', fixture.selectAll).defaultPrevented).toBe(false);
+    expect(fixture.scope.dispatch('click', fixture.webp).defaultPrevented).toBe(false);
+  });
+
+  it('dispatches exactly one native change per user selection', () => {
+    const fixture = selectAllFixture(['jpg', 'png', 'webp']);
+    enhanceDropdowns(fixture.scope);
+    enhanceDropdowns(fixture.scope);
+
+    fixture.selectAll.checked = true;
+    fixture.scope.dispatch('change', fixture.selectAll);
+    expect(fixture.nativeSelect.dispatchEvent).toHaveBeenCalledTimes(1);
+    expect(fixture.checkedValues()).toEqual(['all']);
+  });
+
+  it('includes values discovered later while unrestricted, and keeps an explicit set restricted', () => {
+    const fixture = makeDropdown('multiple', EXTENSIONS.slice(0, 2), [], { value: '', dispatchNativeChange: true });
+    fixture.nativeSelect.multiple = true;
+    fixture.nativeSelect.options.forEach((option) => { option.selected = false; });
+    fixture.dropdown.dataset.ccDropdownSelectAll = 'all';
+    fixture.dropdown.dataset.ccDropdownEmptySummary = 'All extensions';
+    fixture.dropdown.dataset.ccDropdownCountLabel = 'extensions';
+    wireNativeSyncFixture(fixture);
+    const document = fixture.dropdown.ownerDocument;
+    const panel = fixture.dropdown.querySelector('.asset-filter-multiselect-panel');
+    const wrapper = document.createElement('div');
+    wrapper.setAttribute('class', 'asset-filter-multiselect-option cc-dropdown-select-all-option');
+    const selectAll = markSelectAll(document.createElement('input'));
+    selectAll.setAttribute('type', 'checkbox');
+    selectAll.setAttribute('value', 'all');
+    wrapper.appendChild(selectAll);
+    panel.appendChild(wrapper);
+    const checkboxes = () => fixture.dropdown.querySelectorAll('input[type="checkbox"]');
+    const checkedValues = () => checkboxes().filter((input) => input.checked).map((input) => input.value);
+    const nativeValues = () => fixture.nativeSelect.options
+      .filter((option) => option.selected).map((option) => option.value);
+    const routed = (input) => {
+      const closest = input.closest.bind(input);
+      input.closest = (selector) => (selector === '[data-cc-dropdown]' ? fixture.dropdown : closest(selector));
+      return input;
+    };
+    routed(selectAll);
+
+    enhanceDropdowns(fixture.scope);
+    expect(checkboxes().map((input) => input.value)).toEqual(['all', 'jpg']);
+    expect(checkedValues()).toEqual(['all']);
+
+    fixture.nativeSelect.options.push({ value: 'webp', textContent: '.webp', selected: false });
+    fixture.scope.dispatch('change', fixture.nativeSelect);
+    expect(checkboxes().map((input) => input.value)).toEqual(['all', 'jpg', 'webp']);
+    expect(checkedValues()).toEqual(['all']);
+    expect(fixture.currentSummary.textContent).toBe('All extensions');
+
+    const jpg = routed(checkboxes()[1]);
+    jpg.checked = true;
+    fixture.scope.dispatch('change', jpg);
+    expect(nativeValues()).toEqual(['jpg']);
+
+    fixture.nativeSelect.options.push({ value: 'png', textContent: '.png', selected: false });
+    fixture.scope.dispatch('change', fixture.nativeSelect);
+    expect(checkedValues()).toEqual(['jpg']);
+    expect(nativeValues()).toEqual(['jpg']);
+
+    // A catalogue without the neutral option keeps the Select all row; unrestricted
+    // then leaves the native select empty (the existing unrestricted value).
+    fixture.nativeSelect.options.splice(0, 1);
+    fixture.scope.dispatch('change', fixture.nativeSelect);
+    expect(checkboxes()[0]).toBe(selectAll);
+    selectAll.checked = true;
+    fixture.scope.dispatch('change', selectAll);
+    expect(checkedValues()).toEqual(['all']);
+    expect(nativeValues()).toEqual([]);
+  });
+
+  it('handles an empty option list without errors', () => {
+    const fixture = makeDropdown('multiple', [], [], { value: '', dispatchNativeChange: true });
+    fixture.nativeSelect.multiple = true;
+    fixture.dropdown.dataset.ccDropdownSelectAll = 'all';
+    fixture.dropdown.dataset.ccDropdownEmptySummary = '';
+    const selectAll = markSelectAll({
+      type: 'checkbox',
+      value: 'all',
+      checked: false,
+      closest(selector) {
+        if (selector === 'label') return { textContent: 'Select all' };
+        if (selector === '[data-cc-dropdown]') return fixture.dropdown;
+        return null;
+      },
+    });
+    fixture.inputs.push(selectAll);
+
+    expect(() => enhanceDropdowns(fixture.scope)).not.toThrow();
+    expect(selectAll.checked).toBe(true);
+    expect(fixture.currentSummary.textContent).toBe('All');
+  });
+
+  it('leaves dropdowns that do not opt in unchanged, including a literal "all" option', () => {
+    const fixture = makeDropdown('multiple', [
+      { value: 'all', label: 'All' },
+      { value: 'alpha', label: 'Alpha' },
+    ], ['all']);
+    enhanceDropdowns(fixture.scope);
+    const [all, alpha] = fixture.inputs;
+
+    alpha.checked = true;
+    fixture.scope.dispatch('change', alpha);
+    expect(all.checked).toBe(true);
+    expect(fixture.currentSummary.textContent).toBe('2 tags selected');
+
+    all.checked = false;
+    expect(fixture.scope.dispatch('click', all).defaultPrevented).toBe(false);
+    alpha.checked = false;
+    fixture.scope.dispatch('change', alpha);
+    expect(all.checked).toBe(false);
+    expect(fixture.currentSummary.textContent).toBe('All tags');
+  });
+});
+
+describe('Filters & Defaults dialog dropdown overlay hook', () => {
+  function dialogDropdown(bodyClassName) {
+    const panelStyle = {};
+    const panel = {
+      style: panelStyle,
+      getBoundingClientRect() { return { width: 240, height: 120 }; },
+      setAttribute() {},
+      removeAttribute() {},
+    };
+    const summary = {
+      getBoundingClientRect() { return { left: 40, top: 200, bottom: 236, right: 280, width: 240 }; },
+      setAttribute() {},
+    };
+    const body = {
+      scrollTop: 0,
+      scrollLeft: 0,
+      classList: {
+        contains: (name) => bodyClassName.split(' ').includes(name),
+        remove() {},
+        toggle() {},
+      },
+      closest: () => null,
+      addEventListener() {},
+      removeEventListener() {},
+    };
+    const dropdown = {
+      open: true,
+      isConnected: true,
+      hasAttribute: () => false,
+      closest: (selector) => (selector === '.app-dialog-body' ? body : null),
+      querySelector: (selector) => (selector === 'summary' ? summary : panel),
+      ownerDocument: {
+        documentElement: { clientWidth: 1200 },
+        defaultView: {
+          innerWidth: 1200,
+          innerHeight: 800,
+          addEventListener() {},
+          removeEventListener() {},
+          getComputedStyle() { return { maxWidth: 'none' }; },
+        },
+      },
+    };
+    return { dropdown, panelStyle };
+  }
+
+  it('opens panels in the scrolling Filters & Defaults body as fixed overlays', () => {
+    const { dropdown, panelStyle } = dialogDropdown('app-dialog-body filters-defaults-dialog-body');
+    updateAssetViewerFilterDisclosureState(dropdown);
+    expect(panelStyle.position).toBe('fixed');
+    expect(panelStyle.top).toBe('240px');
+  });
+
+  it('does not change other dialog bodies', () => {
+    const { dropdown, panelStyle } = dialogDropdown('app-dialog-body');
+    updateAssetViewerFilterDisclosureState(dropdown);
+    expect(panelStyle.position).toBeUndefined();
+  });
+});

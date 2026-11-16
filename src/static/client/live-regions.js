@@ -43,10 +43,13 @@ import {
   syncCreatorCrateDropdownFromNative,
 } from './dropdowns.js';
 import {
+  ASSET_GRID_SIZE_CONFIG,
+  ASSET_LIST_SIZE_CONFIG,
   enhanceAssetGridSize,
   enhanceAssetGridStyle,
   enhanceAssetListSize,
   enhanceProjectGridSize,
+  gridSizeIsValid,
 } from './size-preferences.js';
 import {
   PROJECT_ASSETS_VIEWER_SEQUENCE_SELECTOR,
@@ -712,6 +715,9 @@ export function createLiveRegionEngine(config) {
     invalidate,
     installRegion,
     load,
+    // WP7: a control associated with a live form through form="…" but placed
+    // outside it changes the view the same way the form's own controls do.
+    schedule,
   };
 
   return engine;
@@ -1959,6 +1965,64 @@ const PROJECT_ASSETS_NSFW_TOGGLE_SELECTOR = '[data-project-assets-nsfw-toggle]';
 const PROJECT_ASSETS_LIVE_DEBOUNCE_MS = 350;
 export const PROJECT_ASSETS_REGION_LOADED_EVENT = 'project-assets-region-loaded';
 
+// Package B: Reset filters is an ordinary live GET of ?resetFilters=1 whose
+// destination (filters, Sort, View, page size and page 1) the server resolves
+// from the effective saved/default state, so no request-time View can leak
+// into it. Its lifecycle rides on the engine's own generation ownership: one
+// load owns one Reset, and each phase is announced once on the document as
+// PROJECT_ASSETS_FILTERS_RESET_EVENT with detail { id, phase, generation, url }:
+// - 'started':    the Reset GET was issued (initial click, Retry, or a
+//                 post-mutation refresh re-reading a pending/failed Reset).
+// - 'prepared':   its response was parsed and validated, before install;
+//                 detail.parsed is that response document.
+// - 'installed':  its region and controls are installed (after
+//                 PROJECT_ASSETS_REGION_LOADED_EVENT for the same load).
+// - 'failed':     it did not install; the last valid state stays, with Retry.
+// - 'superseded': a newer load (newer user intent) took over before install.
+// Only 'installed' means the Reset happened. Nothing here writes defaults or
+// browser storage.
+export const PROJECT_ASSETS_FILTERS_RESET_EVENT = 'project-assets-filters-reset';
+
+function isProjectAssetsFiltersResetUrl(url) {
+  return Boolean(url?.searchParams?.has?.('resetFilters'));
+}
+
+function announceProjectAssetsFiltersReset(state, reset, phase, extra = {}) {
+  const document = state.document;
+  const CustomEventConstructor = state.window?.CustomEvent || globalThis.CustomEvent;
+  if (!document?.dispatchEvent || typeof CustomEventConstructor !== 'function') return;
+  try {
+    document.dispatchEvent(new CustomEventConstructor(PROJECT_ASSETS_FILTERS_RESET_EVENT, {
+      detail: {
+        id: reset.id,
+        phase,
+        generation: reset.generation,
+        url: reset.url,
+        ...extra,
+      },
+    }));
+  } catch { /* a listener's failure is never the Reset's */ }
+}
+
+function beginProjectAssetsFiltersReset(state, generation, url) {
+  state.projectAssetsFiltersResetId += 1;
+  const reset = {
+    id: state.projectAssetsFiltersResetId,
+    generation,
+    url: url?.href || String(url || ''),
+    phase: 'pending',
+  };
+  state.projectAssetsFiltersReset = reset;
+  announceProjectAssetsFiltersReset(state, reset, 'started');
+}
+
+function settleProjectAssetsFiltersReset(state, phase, generation = null) {
+  const reset = state.projectAssetsFiltersReset;
+  if (!reset || (generation !== null && reset.generation !== generation)) return;
+  state.projectAssetsFiltersReset = null;
+  announceProjectAssetsFiltersReset(state, reset, phase);
+}
+
 function projectAssetsNsfwForm(region) {
   return region?.querySelector?.(PROJECT_ASSETS_NSFW_FORM_SELECTOR) || null;
 }
@@ -2131,10 +2195,53 @@ function updateInheritedProjectAssetsFilterDefaults(form, event) {
 }
 
 function omitInheritedProjectAssetsFiltersForCategory(params, form) {
+  const inherited = inheritedProjectAssetsFilterDefaults(form);
+  // WP7: Select all is checked whenever no value is, including while an
+  // inherited Tag/Extension default is suspended. Until the user chooses for
+  // that key, its explicit-neutral `all` must not override the marker.
+  inherited.forEach((key) => {
+    const values = params.getAll(key);
+    if (!values.includes('all')) return;
+    params.delete(key);
+    values.filter((value) => value !== 'all').forEach((value) => params.append(key, value));
+  });
   const category = params.get('category');
   if (!/^[1-9]\d*$/.test(category || '')) return;
 
-  inheritedProjectAssetsFilterDefaults(form).forEach((key) => params.delete(key));
+  inherited.forEach((key) => params.delete(key));
+}
+
+// WP7: View and Assets per page live in the Filters & Defaults Miscellaneous
+// section, outside #asset-filters, and join it with form="asset-filters". A
+// change there schedules the form's own load; a response reconciles them as it
+// reconciles the form's children.
+const PROJECT_ASSETS_LIVE_MISC_SELECTOR = '[data-project-assets-live-misc]';
+
+function bindProjectAssetsAssociatedFilterControls(state) {
+  const document = state.document;
+  if (!document || isEnhancementBound(document, 'projectAssetsAssociatedFiltersBound')) return;
+  markEnhancementBound(document, 'projectAssetsAssociatedFiltersBound');
+  document.addEventListener?.('change', (event) => {
+    const control = event.target;
+    const form = control?.form;
+    if (!form || form.id !== 'asset-filters' || form.contains?.(control)) return;
+    if (!control.name && !control.getAttribute?.('name')) return;
+    projectAssetsLiveEngine.schedule(state, form);
+  });
+}
+
+function reconcileProjectAssetsAssociatedFilterControls(state, parsed) {
+  let replaced = false;
+  state.document?.querySelectorAll?.(PROJECT_ASSETS_LIVE_MISC_SELECTOR).forEach((current) => {
+    const key = current.getAttribute?.('data-project-assets-live-misc');
+    const next = parsed?.querySelector?.(`[data-project-assets-live-misc="${key}"]`);
+    if (!next || current.isEqualNode?.(next)) return;
+    const captured = liveRegionCaptureState(current, state.document);
+    current.replaceChildren?.(...Array.from(next.childNodes || []));
+    liveRegionRestoreState(current, state.document, captured);
+    replaced = true;
+  });
+  if (replaced) enhanceDropdowns(state.document);
 }
 
 // The Manual scan form sits in the page heading, outside the live region, and
@@ -2343,6 +2450,65 @@ function reconcileProjectAssetsDependents(state, parsed) {
   adoptProjectAssetsRemoveMissingDialog(document, parsed);
 }
 
+// Correction D (F6): the region's rendered size defaults are the fallback the
+// Grid and List size controls use while no browser size is stored. A defaults
+// reset changes what the server renders there but must not change what is
+// displayed, so the fallback in use is carried onto each later region for as
+// long as the server keeps rendering the post-reset default. Nothing is
+// stored: a stored browser size still wins, and a later Save or scope change
+// (a different rendered default) retires the carried value.
+const PROJECT_ASSETS_SIZE_FALLBACKS = Object.freeze([
+  { key: 'gridSize', attribute: 'data-project-assets-grid-size-default', config: ASSET_GRID_SIZE_CONFIG },
+  { key: 'listSize', attribute: 'data-project-assets-list-size-default', config: ASSET_LIST_SIZE_CONFIG },
+]);
+
+function projectAssetsRenderedSizeFallback(region, attribute, config) {
+  const value = region?.getAttribute?.(attribute);
+  return gridSizeIsValid(value, config) ? value : config.defaultSize;
+}
+
+// Correction E (F6): every live load invalidates before it starts, so each
+// request owns one generation, and only the current generation's response is
+// parsed. A response whose generation is the one that was in flight when the
+// reset was acknowledged was rendered against the defaults the reset removed:
+// its size defaults are no evidence of a newer Save or scope change, so it
+// carries the retained values without retiring them. Any later load owns a
+// newer generation, so the marker only ever applies to that one response.
+function carryProjectAssetsSizeFallbacks(state, nextRegion) {
+  const carried = state.projectAssetsCarriedSizeFallbacks;
+  const predatesRetention = state.projectAssetsSizeRetentionPredates !== null
+    && state.projectAssetsSizeRetentionPredates === state.generation;
+  state.projectAssetsSizeRetentionPredates = null;
+  PROJECT_ASSETS_SIZE_FALLBACKS.forEach(({ key, attribute, config }) => {
+    const entry = carried?.[key];
+    if (!entry) return;
+    if (!predatesRetention
+      && projectAssetsRenderedSizeFallback(nextRegion, attribute, config) !== entry.rendered) {
+      delete carried[key];
+      return;
+    }
+    nextRegion?.setAttribute?.(attribute, entry.displayed);
+  });
+}
+
+// Correction D (F7): from an acknowledged defaults reset until a region
+// rendered after it installs, the region's page and view links still resolve
+// their omitted values through the deleted defaults. They lose their
+// destination (no href: no pointer, keyboard, middle-click or new-tab
+// activation) and are marked unavailable; any installed region replaces them
+// with links rendered against the defaults now persisted.
+const PROJECT_ASSETS_STALE_LINK_SELECTOR = 'nav.view-switcher a[href], .pagination a[href]';
+export const PROJECT_ASSETS_STALE_LINK_ATTRIBUTE = 'data-project-assets-stale-link';
+
+function disableProjectAssetsStaleLinks(region) {
+  region?.querySelectorAll?.(PROJECT_ASSETS_STALE_LINK_SELECTOR).forEach((link) => {
+    link.removeAttribute?.('href');
+    link.setAttribute?.('role', 'link');
+    link.setAttribute?.('aria-disabled', 'true');
+    link.setAttribute?.(PROJECT_ASSETS_STALE_LINK_ATTRIBUTE, '');
+  });
+}
+
 function settleProjectAssetsRefresh(state, status, details = {}) {
   const waiter = state.projectAssetsRefreshWaiter;
   if (!waiter) return;
@@ -2351,6 +2517,13 @@ function settleProjectAssetsRefresh(state, status, details = {}) {
 }
 
 const PROJECT_ASSETS_DEFAULTS_REFRESH_ERROR_MESSAGE = 'Defaults were saved, but Project Assets could not refresh. Refresh the page to see the saved defaults.';
+// WP6: a committed scope activation saved no values, so its refresh failure
+// says what actually changed.
+const PROJECT_ASSETS_DEFAULTS_ACTIVATION_REFRESH_ERROR_MESSAGE = 'Defaults scope changed, but Project Assets could not refresh. Refresh the page to see the loaded defaults.';
+const PROJECT_ASSETS_DEFAULTS_REFRESH_ERROR_MESSAGES = new Set([
+  PROJECT_ASSETS_DEFAULTS_REFRESH_ERROR_MESSAGE,
+  PROJECT_ASSETS_DEFAULTS_ACTIVATION_REFRESH_ERROR_MESSAGE,
+]);
 
 // An in-place restyle reconciles the presentation, so a Defaults-refresh error
 // it supersedes is obsolete. Any other status (NSFW or filter failures) and any
@@ -2358,7 +2531,7 @@ const PROJECT_ASSETS_DEFAULTS_REFRESH_ERROR_MESSAGE = 'Defaults were saved, but 
 function clearResolvedProjectAssetsDefaultsRefreshError(state, region) {
   const statusElement = region.querySelector?.(PROJECT_ASSETS_LIVE_STATUS_SELECTOR);
   if (region.getAttribute?.(PROJECT_ASSETS_LIVE_STATE_ATTRIBUTE) !== 'error'
-    || statusElement?.textContent !== PROJECT_ASSETS_DEFAULTS_REFRESH_ERROR_MESSAGE) return;
+    || !PROJECT_ASSETS_DEFAULTS_REFRESH_ERROR_MESSAGES.has(statusElement?.textContent)) return;
   if (state.assetNsfwSubmitting || state.assetNsfwNeedsRefresh || state.assetNsfwRefreshGeneration !== null
     || state.projectAssetCategoriesNeedSync) return;
   projectAssetsLiveEngine.status(region, '', null);
@@ -2482,8 +2655,9 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
     syncProjectAssetsInlineCategory(state.document);
   },
   transformParams: omitInheritedProjectAssetsFiltersForCategory,
-  onResponseParsed(state, parsed) {
+  onResponseParsed(state, parsed, nextRegion) {
     const region = projectAssetsLiveEngine.getRegion(state.document);
+    carryProjectAssetsSizeFallbacks(state, nextRegion);
     retainProjectAssetsOrderDraft(state, region);
     if (state.projectAssetsRefreshOwed) {
       state.projectAssetsSnapshot = captureProjectAssetsTransientState(state, region);
@@ -2493,7 +2667,13 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
       clearRetainedAssetSelection(state.document);
     }
     if (state.projectAssetCategoriesNeedSync) state.projectAssetCategoriesPage = parsed;
+    const reset = state.projectAssetsFiltersReset;
+    if (reset && reset.generation === state.generation) {
+      reset.phase = 'prepared';
+      announceProjectAssetsFiltersReset(state, reset, 'prepared', { parsed });
+    }
     reconcileExternalFilterForm(state, parsed, '#asset-filters');
+    reconcileProjectAssetsAssociatedFilterControls(state, parsed);
     reconcileProjectAssetsManualScanContext(state, parsed);
     if (state.projectAssetsRefreshOwed) reconcileProjectAssetsDependents(state, parsed);
 
@@ -2512,7 +2692,7 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
     const currentDefaultsReturn = state.document.querySelector?.('#project-assets-defaults-form input[name="returnTo"]');
     if (nextDefaultsReturn && currentDefaultsReturn) {
       currentDefaultsReturn.value = nextDefaultsReturn.value || '';
-      const dialog = state.document.getElementById?.('project-assets-defaults-dialog');
+      const dialog = currentDefaultsReturn.closest?.('[data-app-dialog]');
       const dialogState = dialog?.__creatorCrateAppDialogState;
       if (dialogState?.savedValues) dialogState.savedValues.returnTo = currentDefaultsReturn.value;
     }
@@ -2521,6 +2701,7 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
     state.projectAssetsDefaultsRefreshGeneration = null;
     state.projectAssetsDefaultsRefreshError = null;
     state.projectAssetsDefaultsRefreshComplete = null;
+    state.projectAssetsDefaultsRefreshFailureMessage = null;
     state.assetNsfwController = null;
     state.assetNsfwGeneration = 0;
     state.assetNsfwSubmitting = false;
@@ -2535,12 +2716,19 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
     state.projectAssetsSnapshot = null;
     state.projectAssetsReconciliation = null;
     state.projectAssetsOrderDrafts = new Map();
+    state.projectAssetsCarriedSizeFallbacks = {};
+    state.projectAssetsSizeRetentionPredates = null;
+    state.projectAssetsFiltersReset = null;
+    state.projectAssetsFiltersResetId = 0;
     enhanceDropdowns(state.document);
+    bindProjectAssetsAssociatedFilterControls(state);
   },
   onBindRegion(state, region) {
     bindProjectAssetsNsfwForm(state, region);
   },
   onInvalidate(state) {
+    // A Reset not yet installed loses to the newer load about to start.
+    settleProjectAssetsFiltersReset(state, 'superseded');
     // The caller learns its GET lost. projectAssetsRefreshOwed stays set, so
     // the next install (rendered after the mutation) reconciles and clears it.
     settleProjectAssetsRefresh(state, 'superseded');
@@ -2548,6 +2736,7 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
       state.projectAssetsDefaultsRefreshGeneration = null;
       state.projectAssetsDefaultsRefreshError = null;
       state.projectAssetsDefaultsRefreshComplete = null;
+      state.projectAssetsDefaultsRefreshFailureMessage = null;
     }
     if (state.assetNsfwPostPending) {
       state.assetNsfwGeneration += 1;
@@ -2566,7 +2755,8 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
       state.assetNsfwRefreshGeneration = null;
     }
   },
-  onLoadStart(state, generation) {
+  onLoadStart(state, generation, url) {
+    if (isProjectAssetsFiltersResetUrl(url)) beginProjectAssetsFiltersReset(state, generation, url);
     const refreshesNsfw = state.assetNsfwNeedsRefresh && !state.assetNsfwPostPending;
     if (refreshesNsfw) state.assetNsfwNeedsRefresh = false;
     if (refreshesNsfw) state.assetNsfwRefreshGeneration = generation;
@@ -2620,8 +2810,10 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
       state.projectAssetsDefaultsRefreshGeneration = null;
       state.projectAssetsDefaultsRefreshError = null;
       state.projectAssetsDefaultsRefreshComplete = null;
+      state.projectAssetsDefaultsRefreshFailureMessage = null;
       notifyRefreshComplete?.();
     }
+    settleProjectAssetsFiltersReset(state, 'installed', generation);
     if (state.assetNsfwRefreshGeneration !== generation) return;
     state.assetNsfwRefreshGeneration = null;
     state.assetNsfwSubmitting = false;
@@ -2630,17 +2822,21 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
     updateProjectAssetsNsfwControls(region, state.assetNsfwEnabled);
   },
   onLoadError(state, generation, error) {
+    settleProjectAssetsFiltersReset(state, 'failed', generation);
     if (state.projectAssetsRefreshWaiter?.generation === generation) {
       settleProjectAssetsRefresh(state, 'failed', { error: error?.message || 'Project Assets refresh failed.' });
     }
     if (state.projectAssetsDefaultsRefreshGeneration === generation) {
       const notifyRefreshError = state.projectAssetsDefaultsRefreshError;
+      const failureMessage = state.projectAssetsDefaultsRefreshFailureMessage
+        || PROJECT_ASSETS_DEFAULTS_REFRESH_ERROR_MESSAGE;
       state.projectAssetsDefaultsRefreshGeneration = null;
       state.projectAssetsDefaultsRefreshError = null;
       state.projectAssetsDefaultsRefreshComplete = null;
+      state.projectAssetsDefaultsRefreshFailureMessage = null;
       const region = projectAssetsLiveEngine.getRegion(state.document);
       region?.removeAttribute?.('aria-busy');
-      projectAssetsLiveEngine.status(region, PROJECT_ASSETS_DEFAULTS_REFRESH_ERROR_MESSAGE, 'error');
+      projectAssetsLiveEngine.status(region, failureMessage, 'error');
       notifyRefreshError?.();
       // An owed mutation refresh keeps the shared GET-only Retry.
       return !state.projectAssetsRefreshOwed;
@@ -2677,10 +2873,12 @@ export function enhanceProjectAssetsLiveFiltering(scope = globalThis.document) {
   return enhanced;
 }
 
-function startProjectAssetsMutationRefresh(scope, onRecovered = null) {
+function startProjectAssetsMutationRefresh(scope, onRecovered = null, staleNavigation = false) {
   const document = liveRegionDocument(scope);
   const region = projectAssetsLiveEngine.getRegion(document);
   if (!document || !region) return null;
+  // Even when no refresh can start, the old links stay unsafe to follow.
+  if (staleNavigation) disableProjectAssetsStaleLinks(region);
 
   projectAssetsLiveEngine.enhance(document);
   const state = document.__creatorCrateProjectAssetsLiveFiltering;
@@ -2743,10 +2941,84 @@ export function refreshProjectAssetsLiveRegion(scope = globalThis.document) {
  * - 'unavailable': no refresh could start on this page.
  * onRecovered(reconciliation) runs if a later Retry or newer load satisfies a
  * refresh that had reported 'failed' or 'superseded'.
+ * staleNavigation: the mutation made the region's rendered page and view links
+ * obsolete, so they are unavailable until a newer region installs (F7).
  */
-export function refreshProjectAssetsAfterMutation(scope = globalThis.document, { onRecovered = null } = {}) {
-  return startProjectAssetsMutationRefresh(scope, onRecovered)
+export function refreshProjectAssetsAfterMutation(
+  scope = globalThis.document,
+  { onRecovered = null, staleNavigation = false } = {},
+) {
+  return startProjectAssetsMutationRefresh(scope, onRecovered, staleNavigation === true)
     || Promise.resolve({ status: 'unavailable', url: null });
+}
+
+/**
+ * Correction D (F6): after an acknowledged defaults reset whose effective
+ * size defaults are now nextDefaults.gridSize / nextDefaults.listSize, keeps
+ * the size fallbacks this page displays for every later region install. It
+ * never writes browser storage. Returns whether the page could retain them.
+ */
+export function retainProjectAssetsDisplayedSizes(scope = globalThis.document, nextDefaults = {}) {
+  const document = liveRegionDocument(scope);
+  const region = projectAssetsLiveEngine.getRegion(document);
+  if (!document || !region) return false;
+  projectAssetsLiveEngine.enhance(document);
+  const state = document.__creatorCrateProjectAssetsLiveFiltering;
+  if (!state?.projectAssetsCarriedSizeFallbacks) return false;
+  PROJECT_ASSETS_SIZE_FALLBACKS.forEach(({ key, attribute, config }) => {
+    const rendered = nextDefaults?.[key];
+    if (!gridSizeIsValid(rendered, config)) return;
+    const displayed = projectAssetsRenderedSizeFallback(region, attribute, config);
+    if (displayed === rendered) delete state.projectAssetsCarriedSizeFallbacks[key];
+    else state.projectAssetsCarriedSizeFallbacks[key] = { displayed, rendered };
+  });
+  // Correction E (F6): a load in flight now was requested before the reset.
+  state.projectAssetsSizeRetentionPredates = state.controller ? state.generation : null;
+  return true;
+}
+
+/**
+ * Correction E (F6): an acknowledged Save or scope activation is a newer
+ * authority for the sizes it carries than any reset before it, even when its
+ * size equals the post-reset default (which rendered defaults cannot tell
+ * apart), so it ends their retention. The acknowledged sizes themselves are
+ * applied by syncProjectAssetsSizePreferences, as before.
+ */
+export function releaseProjectAssetsRetainedSizes(scope = globalThis.document, acknowledged = {}) {
+  const state = liveRegionDocument(scope)?.__creatorCrateProjectAssetsLiveFiltering;
+  const carried = state?.projectAssetsCarriedSizeFallbacks;
+  if (!carried) return false;
+  PROJECT_ASSETS_SIZE_FALLBACKS.forEach(({ key, config }) => {
+    if (gridSizeIsValid(acknowledged?.[key], config)) delete carried[key];
+  });
+  if (!carried.gridSize && !carried.listSize) state.projectAssetsSizeRetentionPredates = null;
+  return true;
+}
+
+/**
+ * Package B: the Reset filters load that owns the live region now, or null.
+ * { id, generation, url, phase: 'pending' | 'prepared' }. While it is set the
+ * live controls still show the pre-Reset state, so nothing may capture them
+ * as the restored defaults (Save) or start a competing defaults operation.
+ */
+export function projectAssetsFiltersResetPending(scope = globalThis.document) {
+  const reset = liveRegionDocument(scope)?.__creatorCrateProjectAssetsLiveFiltering?.projectAssetsFiltersReset;
+  return reset ? { ...reset } : null;
+}
+
+/**
+ * F12: whether the shared GET-only Retry on screen now repeats a failed Reset
+ * filters GET. Any newer load or filter change supersedes that Retry (the
+ * engine clears its load failure), so a failed Reset's ownership ends with it.
+ */
+export function projectAssetsFiltersResetRetryAvailable(scope = globalThis.document) {
+  const state = liveRegionDocument(scope)?.__creatorCrateProjectAssetsLiveFiltering;
+  if (!state || state.projectAssetsFiltersReset) return false;
+  try {
+    return isProjectAssetsFiltersResetUrl(state.loadFailure?.url);
+  } catch {
+    return false;
+  }
 }
 
 export function isProjectAssetsLoadInFlight(scope = globalThis.document) {
@@ -2768,11 +3040,41 @@ export function beginProjectAssetsDefaultsLiveRefresh(scope = globalThis.documen
   return state.generation;
 }
 
+function projectAssetsGridStyleIsValid(gridStyle) {
+  return gridStyle === 'uncropped' || gridStyle === 'cropped';
+}
+
+// The one in-place restyle of the rendered Project Assets grid. List view has
+// no grid, so there is nothing to restyle until a Grid render installs.
+function setProjectAssetsGridStyle(region, gridStyle) {
+  const grid = region?.querySelector?.('.asset-grid');
+  if (!grid || !projectAssetsGridStyleIsValid(gridStyle)) return false;
+  grid.setAttribute?.('data-grid-style', gridStyle);
+  return true;
+}
+
+/** The Grid style the rendered Project Assets grid shows now, or null. */
+export function projectAssetsRenderedGridStyle(scope = globalThis.document) {
+  const region = liveRegionDocument(scope)?.querySelector?.(PROJECT_ASSETS_LIVE_REGION_SELECTOR);
+  const gridStyle = region?.querySelector?.('.asset-grid')?.getAttribute?.('data-grid-style');
+  return projectAssetsGridStyleIsValid(gridStyle) ? gridStyle : null;
+}
+
+/**
+ * Applies a current Grid style choice to the rendered grid in place. It is
+ * presentation only: no load, no navigation and no write, so it is safe while
+ * a load is pending (the caller applies it again once that load installs).
+ */
+export function restyleProjectAssetsGrid(scope = globalThis.document, gridStyle) {
+  const region = liveRegionDocument(scope)?.querySelector?.(PROJECT_ASSETS_LIVE_REGION_SELECTOR);
+  return setProjectAssetsGridStyle(region, gridStyle);
+}
+
 export function refreshProjectAssetsDefaultsLiveRegion(
   scope = globalThis.document,
   destination,
   authorityGeneration,
-  { onComplete = null, onError = null, gridStyle = null } = {},
+  { onComplete = null, onError = null, gridStyle = null, failureMessage = null } = {},
 ) {
   const document = liveRegionDocument(scope);
   const region = projectAssetsLiveEngine.getRegion(document);
@@ -2783,8 +3085,8 @@ export function refreshProjectAssetsDefaultsLiveRegion(
   // A save that changed only the acknowledged grid style restyles the rendered
   // grid in place so selection, pending reorder, and card state survive. An
   // in-flight load may predate the save, so it still takes the full refresh.
-  if ((gridStyle === 'uncropped' || gridStyle === 'cropped') && !state.controller) {
-    region.querySelector?.('.asset-grid')?.setAttribute?.('data-grid-style', gridStyle);
+  if (projectAssetsGridStyleIsValid(gridStyle) && !state.controller) {
+    setProjectAssetsGridStyle(region, gridStyle);
     clearResolvedProjectAssetsDefaultsRefreshError(state, region);
     return 'applied';
   }
@@ -2806,6 +3108,7 @@ export function refreshProjectAssetsDefaultsLiveRegion(
   // Fires only once this refresh's region is installed; failure or a newer
   // load clears it, so 'started' never implies the content was rendered.
   state.projectAssetsDefaultsRefreshComplete = typeof onComplete === 'function' ? onComplete : null;
+  state.projectAssetsDefaultsRefreshFailureMessage = typeof failureMessage === 'string' ? failureMessage : null;
   projectAssetsLiveEngine.load(
     state,
     url,
@@ -2813,6 +3116,155 @@ export function refreshProjectAssetsDefaultsLiveRegion(
     projectAssetsLiveEngine.getForm(projectAssetsLiveEngine.getRegion(document)),
   );
   return 'started';
+}
+
+const PROJECT_ASSETS_PRESENTATION_DEFAULT_KEYS = Object.freeze(['view', 'sort', 'order', 'pageSize']);
+const PROJECT_ASSETS_FILTER_DEFAULT_KEYS = Object.freeze(['tag', 'extension']);
+
+function projectAssetsFilterDefaultMembers(value) {
+  const members = Array.isArray(value) ? value : [value];
+  return members.map((member) => String(member ?? '')).filter((member) => member !== '' && member !== 'all');
+}
+
+// WP6: applies an activated scope's resolved defaults to the intended view
+// with the server's own provenance rules (buildAssetDefaultsRedirectUrl and
+// materializeSuspendedInheritedFilterDefaults): Category, Search, Show,
+// Usage and page stay as they are; presentation keys take the loaded values;
+// a restricting Tag/Extension default is marked inherited, and under a
+// concrete Category it stays suspended (marked, not applied) so it returns
+// when All Categories is chosen. An unrestricted default carries no marker.
+function applyProjectAssetsDefaultsToParams(params, values, { filterDefaults = true } = {}) {
+  PROJECT_ASSETS_PRESENTATION_DEFAULT_KEYS.forEach((key) => {
+    if (typeof values?.[key] === 'string' && values[key] !== '') params.set(key, values[key]);
+  });
+  params.delete('notice');
+  // WP7: a combined-dialog Save persisted the Tag/Extension already shown, so
+  // the current filter (explicit or inherited) stays exactly as it is.
+  if (!filterDefaults) return;
+  const concreteCategory = /^[1-9]\d*$/.test(params.get('category') || '');
+  const inherited = [];
+  PROJECT_ASSETS_FILTER_DEFAULT_KEYS.forEach((key) => {
+    params.delete(key);
+    const members = projectAssetsFilterDefaultMembers(values?.[key]);
+    if (members.length === 0) return;
+    inherited.push(key);
+    if (!concreteCategory) members.forEach((member) => params.append(key, member));
+  });
+  params.delete('inheritedFilterDefaults');
+  if (inherited.length > 0) params.set('inheritedFilterDefaults', inherited.join(','));
+  params.delete('notice');
+}
+
+function projectAssetsParamsKey(url) {
+  return [...url.searchParams.entries()]
+    .filter(([key]) => key !== 'notice')
+    .map(([key, value]) => `${key}=${value}`)
+    .sort()
+    .join('&');
+}
+
+export const PROJECT_ASSETS_DEFAULTS_SAVE_REFRESH_ERROR_MESSAGE = PROJECT_ASSETS_DEFAULTS_REFRESH_ERROR_MESSAGE;
+
+// WP7: a combined-dialog Save persisted the values the page already shows, so
+// the view itself does not change; only server-rendered presentation (Grid
+// style, size fallbacks, and links built against the saved defaults) does. It
+// re-reads the latest intended view through the post-mutation refresh, which
+// keeps selection, category-order drafts, focus and scroll. That refresh puts
+// back the old Grid style, so the saved one is applied once it installs.
+function refreshProjectAssetsAfterCombinedSave(document, values, { onComplete = null, onError = null } = {}) {
+  const installed = () => {
+    setProjectAssetsGridStyle(projectAssetsLiveEngine.getRegion(document), values?.gridStyle);
+    onComplete?.();
+  };
+  // A newer load (or a Retry) that satisfies a superseded or failed refresh
+  // was rendered after the Save too, so it completes the Save the same way.
+  const pending = startProjectAssetsMutationRefresh(document, installed);
+  if (!pending) return 'unavailable';
+  pending.then((result) => {
+    if (result?.status === 'installed') {
+      installed();
+    } else if (result?.status === 'failed') {
+      onError?.();
+    }
+  });
+  return 'started';
+}
+
+/**
+ * WP6: reloads Project Assets for acknowledged loaded defaults (a scope
+ * activation, or an explicit Save's acknowledged effective values).
+ * The base view is the latest intended one, as for a post-mutation refresh: a
+ * debounced filter's form state, an in-flight or failed load's requested URL,
+ * or the idle form with its current page. Only the eligible defaults are
+ * replaced (applyProjectAssetsDefaultsToParams). Ownership is the same as a
+ * Defaults save refresh: a newer load since authorityGeneration wins
+ * ('superseded'), except for a combined-dialog Save (filterDefaults false),
+ * which always reconciles the current view. When the view would not change, nothing is fetched: an
+ * unchanged presentation reports 'applied', and a Grid style-only change
+ * restyles in place. Returns refreshProjectAssetsDefaultsLiveRegion's outcomes.
+ * failureMessage defaults to the activation wording; a Save passes its own.
+ */
+export function refreshProjectAssetsWithLoadedDefaults(
+  scope = globalThis.document,
+  authorityGeneration,
+  values,
+  {
+    onComplete = null,
+    onError = null,
+    presentationUnchanged = false,
+    gridStyle = null,
+    failureMessage = PROJECT_ASSETS_DEFAULTS_ACTIVATION_REFRESH_ERROR_MESSAGE,
+    filterDefaults = true,
+  } = {},
+) {
+  const document = liveRegionDocument(scope);
+  const region = projectAssetsLiveEngine.getRegion(document);
+  const state = document?.__creatorCrateProjectAssetsLiveFiltering;
+  const form = projectAssetsLiveEngine.getForm(region);
+  if (!document || !region || !state || !form || !projectAssetsLiveEngine.capabilities(state.window)) return 'unavailable';
+  if (!filterDefaults) {
+    // Correction B (F3): a combined-dialog Save is an acknowledged mutation,
+    // not a result to install. A filter change made while the POST was pending
+    // (a newer generation) stays the current view, but its links were rendered
+    // against the defaults as they were, so that view is still re-read against
+    // the saved ones. The post-mutation refresh owns the base view (a debounced
+    // form, an in-flight or failed request, or the idle form), never the
+    // submitted snapshot, and stale responses still lose to its generation.
+    // A Grid style-only Save still restyles in place, with no GET at all.
+    if (gridStyle && !state.timer && !state.controller && !state.loadFailure) {
+      return refreshProjectAssetsDefaultsLiveRegion(document, state.window.location?.href, state.generation, { gridStyle });
+    }
+    return refreshProjectAssetsAfterCombinedSave(document, values, { onComplete, onError });
+  }
+  if (state.generation !== authorityGeneration) return 'superseded';
+
+  let base;
+  try {
+    if (state.timer) {
+      base = projectAssetsLiveEngine.url(form, state.window);
+    } else if ((state.controller || state.loadFailure) && state.requestedUrl) {
+      base = new URL(state.requestedUrl.href, state.window.location?.href || state.requestedUrl.href);
+    } else {
+      base = projectAssetsLiveEngine.url(form, state.window, { preservePage: true });
+    }
+  } catch {
+    return 'unavailable';
+  }
+  const target = new URL(base.href);
+  applyProjectAssetsDefaultsToParams(target.searchParams, values, { filterDefaults });
+
+  const idle = !state.timer && !state.controller && !state.loadFailure;
+  if (idle && projectAssetsParamsKey(base) === projectAssetsParamsKey(target)) {
+    if (presentationUnchanged) return 'applied';
+    if (gridStyle) {
+      return refreshProjectAssetsDefaultsLiveRegion(document, target.href, authorityGeneration, { gridStyle });
+    }
+  }
+  return refreshProjectAssetsDefaultsLiveRegion(document, target.href, authorityGeneration, {
+    onComplete,
+    onError,
+    failureMessage,
+  });
 }
 
 export function enhanceProjectsLiveFiltering(scope = globalThis.document) {

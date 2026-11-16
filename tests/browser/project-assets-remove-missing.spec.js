@@ -774,13 +774,15 @@ test('B4 (WP10B-F1): category, search, zero matches, List/Grid, crop style and r
   // removal); refreshes from here on must keep this one.
   await select(page, keep);
   // Crop style through Project Assets defaults (its own POST, then a GET).
-  await page.getByRole('link', { name: 'Project Assets defaults', exact: true }).click();
-  await expect(page.locator('#project-assets-defaults-dialog')).toBeVisible();
+  // WP7: Filters & Defaults applies Grid style with Save new defaults.
+  await page.getByRole('link', { name: 'Filters & Defaults', exact: true }).click();
+  await expect(page.locator('#project-assets-filter-dialog')).toBeVisible();
   const saved = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname.endsWith('/assets/defaults'));
   await page.locator('#projectAssets-default-gridStyle').selectOption('cropped', { force: true });
+  await page.locator('#project-assets-filter-dialog').getByRole('button', { name: 'Save new defaults', exact: true }).click();
   await saved;
   await expect(region(page)).not.toHaveAttribute('aria-busy', 'true');
-  await page.locator('#project-assets-defaults-dialog').getByRole('button', { name: 'Close Project Assets defaults' }).click();
+  await page.locator('#project-assets-filter-dialog').getByRole('button', { name: 'Close Filters & Defaults' }).click();
   await expect(page.locator('.asset-grid')).toHaveAttribute('data-grid-style', 'cropped');
   await expectUnresolvedNotice(page);
   // Another feature's mutation refresh (category sync) and a Check again.

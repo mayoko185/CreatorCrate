@@ -3990,6 +3990,22 @@
         font-weight: 600;
         font-variant-numeric: tabular-nums;
       }
+      /* Project Assets page and view links held unavailable after a defaults
+         reset until a newer region installs (live-regions.js F7). Scoped to
+         the region so they also outrank the refined pagination hover. */
+      [data-project-assets-live-region] .pagination-prev[data-project-assets-stale-link],
+      [data-project-assets-live-region] .pagination-next[data-project-assets-stale-link],
+      [data-project-assets-live-region] .view-switcher-option[data-project-assets-stale-link]:not([aria-current="page"]) {
+        opacity: 0.6;
+        background: var(--surface-card);
+        border-color: var(--border);
+        color: var(--muted);
+        cursor: not-allowed;
+      }
+      [data-project-assets-live-region] .view-switcher-option[aria-current="page"][data-project-assets-stale-link] {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
 
       /* ── Page-size form ── */
       .page-size-form {
@@ -10544,6 +10560,7 @@
 .app-dialog--processing .processing-watermark-choice-control input[type='checkbox'],
 .app-dialog--processing .processing-watermark-choice-control input[type='radio'],
 .app-dialog--processing :is(.processing-scope-option, .processing-checkbox-label) input:is([type='checkbox'], [type='radio']),
+.app-dialog--filters-defaults .filters-defaults-scope-option input[type='radio'],
 .release-notification-channel-choice input[type='checkbox'],
 .release-no-set-date-field input[type='checkbox'],
 .settings-social-prep-content .checkbox-label input[type='checkbox'],
@@ -10559,6 +10576,7 @@
 }
 .app-dialog--processing .processing-watermark-choice-control input:is([type='checkbox'], [type='radio']):checked,
 .app-dialog--processing :is(.processing-scope-option, .processing-checkbox-label) input:is([type='checkbox'], [type='radio']):checked,
+.app-dialog--filters-defaults .filters-defaults-scope-option input[type='radio']:checked,
 .release-notification-channel-choice input[type='checkbox']:checked,
 .release-no-set-date-field input[type='checkbox']:checked,
 .settings-social-prep-content .checkbox-label input[type='checkbox']:checked,
@@ -17465,4 +17483,259 @@ html:has(.unified-viewer-dialog > .app-dialog-card:fullscreen) {
   border-color: var(--text);
   background: var(--surface-hover);
   color: var(--text);
+}
+
+/* ── Filters & Defaults dialog (Filters & Defaults M2 WP5) ──
+   Layout hooks for the combined Filters & Defaults dialog that WP7 renders.
+   Nothing here applies until a dialog opts in with .app-dialog--filters-defaults
+   (alongside .app-dialog--utility); other dialogs are unaffected.
+     .filters-defaults-dialog-body   the scrolling .app-dialog-body; dropdowns.js
+                                     opens its panels as fixed overlays
+     .filters-defaults-status-row    saved-default indicator + scope radios
+     .filters-defaults-saved-indicator
+     .filters-defaults-scope         fieldset of inline radios (legend first)
+     .filters-defaults-scope-option  one label + radio
+     .filters-defaults-section       one boxed section (h3 + grid), stacked
+     .filters-defaults-grid          up to three fields per row
+     .filters-defaults-footer        the .app-dialog-footer actions row
+   The header, close button, fields, dropdowns and buttons keep the shared
+   dialog styles. */
+.app-dialog.app-dialog--filters-defaults {
+  width: min(60rem, calc(100vw - 2rem));
+}
+.app-dialog--filters-defaults .filters-defaults-dialog-body {
+  gap: var(--space-md);
+  scrollbar-gutter: stable;
+}
+.app-dialog--filters-defaults .filters-defaults-status-row {
+  /* Package A U1: two fixed columns, not wrapping flex. The saved-default
+     status wraps inside its own flexible column; the content-sized scope
+     choices stay anchored top-right however long the status becomes. */
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--space-xs) var(--space-lg);
+  min-width: 0;
+}
+.app-dialog--filters-defaults .filters-defaults-saved-indicator {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.app-dialog--filters-defaults .filters-defaults-scope {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: end;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-xs) var(--space-md);
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  line-height: 1.45;
+}
+/* A floated legend joins the row instead of sitting on the fieldset edge. */
+.app-dialog--filters-defaults .filters-defaults-scope > legend {
+  float: left;
+  margin: 0;
+  padding: 0;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  white-space: nowrap;
+}
+.app-dialog--filters-defaults .filters-defaults-scope > .field-error-message {
+  flex: 1 0 100%;
+  text-align: end;
+}
+.app-dialog--filters-defaults .filters-defaults-scope:has(> .field-error-message) {
+  flex-wrap: wrap;
+}
+.app-dialog--filters-defaults .filters-defaults-scope-option {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin: 0;
+  font-size: 0.875rem;
+  white-space: nowrap;
+  cursor: pointer;
+}
+/* Package A U2: the processing dialogs' compact themed radio (base and
+   :checked surfaces come from the shared choice-control rules above). */
+.app-dialog--filters-defaults .filters-defaults-scope-option input[type='radio'] {
+  border-color: var(--border-strong);
+  border-radius: 50%;
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+.app-dialog--filters-defaults .filters-defaults-scope-option:hover input[type='radio']:not(:checked):not(:disabled) {
+  border-color: var(--muted);
+}
+.app-dialog--filters-defaults .filters-defaults-scope-option input[type='radio']:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.app-dialog--filters-defaults .filters-defaults-scope-option:has(input[type='radio']:disabled) {
+  cursor: default;
+}
+.app-dialog--filters-defaults .filters-defaults-scope-option input[type='radio']:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.app-dialog--filters-defaults .filters-defaults-scope[aria-busy='true'] .filters-defaults-scope-option {
+  cursor: progress;
+}
+@media (max-width: 540px) {
+  /* Narrow dialogs stack predictably: scope choices on the first row, the
+     saved-default status below. */
+  .app-dialog--filters-defaults .filters-defaults-status-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .app-dialog--filters-defaults .filters-defaults-scope {
+    grid-column: 1;
+    grid-row: 1;
+    justify-self: start;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+  .app-dialog--filters-defaults .filters-defaults-scope > .field-error-message {
+    text-align: start;
+  }
+  .app-dialog--filters-defaults .filters-defaults-saved-indicator {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  .app-dialog--filters-defaults .filters-defaults-saved-indicator:empty {
+    display: none;
+  }
+}
+/* Boxed sections share the refined dialogs' section-card surface and heading. */
+.app-dialog--filters-defaults .filters-defaults-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-md) var(--space-lg) var(--space-lg);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+.app-dialog--filters-defaults .filters-defaults-section > h3 {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin: 0;
+  color: var(--text);
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.app-dialog--filters-defaults .filters-defaults-section > h3::before {
+  flex: none;
+  width: 0.1875rem;
+  height: 0.875rem;
+  border-radius: 999px;
+  background: var(--accent-gradient);
+  content: '';
+}
+.app-dialog--filters-defaults .filters-defaults-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-md);
+  min-width: 0;
+}
+/* Fields and dropdown triggers fill their cell so rows align. */
+.app-dialog--filters-defaults .filters-defaults-grid > .field {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+}
+.app-dialog--filters-defaults .filters-defaults-grid .asset-filter-multiselect--sized,
+.app-dialog--filters-defaults .filters-defaults-grid .asset-filter-multiselect--sized summary {
+  width: 100%;
+}
+.app-dialog--filters-defaults .asset-filter-multiselect-panel[data-cc-dropdown-overlay] {
+  position: fixed;
+  min-width: 0;
+}
+/* Exactly the dialog's actions, grouped at the end; they wrap rather than clip. */
+.app-dialog--filters-defaults .filters-defaults-footer {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+@media (max-width: 860px) {
+  .app-dialog--filters-defaults .filters-defaults-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 540px) {
+  .app-dialog.app-dialog--filters-defaults {
+    width: calc(100vw - 1rem);
+  }
+  .app-dialog--filters-defaults .filters-defaults-section {
+    padding: var(--space-md);
+  }
+  .app-dialog--filters-defaults .filters-defaults-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .app-dialog--filters-defaults .filters-defaults-footer > .button {
+    flex: 1 1 auto;
+  }
+}
+
+/* ── Filters & Defaults integration (Filters & Defaults M2 WP7) ──
+   The dialog header's subtitle (dialog.njk's optional slot), the defaults form that
+   carries the status row, and the footer's Reset filters form, which joins the
+   footer row so all three actions group at the end. */
+.app-dialog--filters-defaults .app-dialog-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  min-width: 0;
+}
+.app-dialog--filters-defaults .app-dialog-subtitle {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  line-height: 1.3;
+}
+.app-dialog--filters-defaults .filters-defaults-defaults-form,
+.app-dialog--filters-defaults .filters-defaults-filters {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  min-width: 0;
+}
+.app-dialog--filters-defaults .filters-defaults-status {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+.app-dialog--filters-defaults .filters-defaults-status:empty {
+  display: none;
+}
+.app-dialog--filters-defaults .filters-defaults-defaults-form[data-settings-fetch-save-state='error'] .filters-defaults-status,
+.app-dialog--filters-defaults .filters-defaults-defaults-form[data-settings-fetch-save-state='saved-refresh-error'] .filters-defaults-status {
+  color: var(--danger, var(--text));
+}
+.app-dialog--filters-defaults .app-dialog-error:not([hidden]) {
+  margin: 0;
+}
+.app-dialog--filters-defaults .filters-defaults-reset-form {
+  display: contents;
+}
+@media (max-width: 540px) {
+  .app-dialog--filters-defaults .filters-defaults-footer .button {
+    flex: 1 1 auto;
+  }
 }

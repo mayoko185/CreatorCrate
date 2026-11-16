@@ -911,20 +911,25 @@ describe('asset browser HTTP workflow', () => {
     expect(assetRepo.findById(asset.id)).toBeDefined();
   });
 
-  it('renders Project Assets defaults as a corner utility with a custom tooltip', async () => {
+  it('opens Project Assets Filters & Defaults from the filter icon only (WP7)', async () => {
     const res = await createProject('Defaults Presentation Test');
     const id = res.headers.location.replace('/projects/', '');
     const response = await agent.get(`/projects/${id}/assets`).expect(200);
-    const defaultsLink = response.text.match(/<a class="[^"]*\basset-viewer-defaults-link\b[^"]*"[\s\S]*?<\/a>/)?.[0];
+    const filterLink = response.text.match(/<a class="[^"]*project-filter-control[^"]*"\s+href="#project-assets-filter-dialog"[\s\S]*?<\/a>/)?.[0];
 
-    expect(defaultsLink).toBeDefined();
-    expect(defaultsLink).toContain(`href="/projects/${id}/assets?defaults=1"`);
-    expect(defaultsLink).toContain('aria-label="Project Assets defaults"');
-    expect(defaultsLink).toContain('asset-tooltip');
-    expect(defaultsLink).toContain('asset-tooltip--left');
-    expect(defaultsLink).toContain('data-tooltip="Project Assets defaults"');
-    expect(defaultsLink).not.toContain('title=');
+    expect(response.text).not.toContain('asset-viewer-defaults-link');
+    expect(response.text).not.toContain('data-dialog-open="project-assets-defaults-dialog"');
+    expect(response.text).not.toContain('id="project-assets-defaults-dialog"');
+    expect(filterLink).toBeDefined();
+    expect(filterLink).toContain('aria-label="Filters & Defaults"');
+    expect(filterLink).toContain('data-tooltip="Filters & Defaults"');
+    expect(filterLink).toContain('asset-tooltip--left');
+    expect(filterLink).not.toContain('title=');
+    expect((response.text.match(/data-dialog-open="project-assets-filter-dialog"/g) || [])).toHaveLength(1);
 
+    // ?defaults=1 still deep-links to the defaults, now the combined dialog.
+    const opened = await agent.get(`/projects/${id}/assets?defaults=1`).expect(200);
+    expect(opened.text).toMatch(/<dialog id="project-assets-filter-dialog"[^>]*data-app-dialog open/);
   });
 
   it('renders assigned tags with the correct Project Asset in list view', async () => {
@@ -1056,7 +1061,8 @@ describe('asset browser HTTP workflow', () => {
     const defaultFilter = assetTagFilterHtml(defaultPage.text);
     expect(defaultFilter).toContain('data-cc-dropdown data-cc-dropdown-mode="multiple"');
     expect(defaultFilter).toContain('aria-label="Tag filter: All tags"');
-    expect(defaultFilter).not.toMatch(/name="tag"[^>]*checked/);
+    expect(defaultFilter).not.toMatch(/name="tag" type="checkbox" value="(?!all")[^"]*"[^>]*checked/);
+    expect(defaultFilter).toMatch(/name="tag" type="checkbox" value="all" data-cc-dropdown-select-all checked/);
     expect((defaultPage.text.match(/<li class="asset-list-item/g) || [])).toHaveLength(4);
 
     const pageOne = await agent
@@ -1092,9 +1098,11 @@ describe('asset browser HTTP workflow', () => {
     expect(tagOptions.indexOf('Project Only Filter')).toBeLessThan(tagOptions.indexOf('Shared Filter'));
     expect(tagOptions.indexOf('Shared Filter')).toBeLessThan(tagOptions.indexOf('Zebra Filter'));
     expect(filter).not.toContain('normalized_name');
-    expect(pageSizeForm).toContain(`<input type="hidden" name="tag" value="${shared.id}">`);
-    const filterForm = pageOne.text.match(/<form id="asset-filters" class="app-dialog-form project-form" method="get" action="\/projects\/\d+\/assets">[\s\S]*?<\/form>/)?.[0] || '';
-    expect(filterForm).toContain('<input type="hidden" name="view" value="list">');
+    expect(pageSizeForm).toBe('');
+    expect(filter).toMatch(new RegExp(`name="tag"[^>]+type="checkbox"[^>]+value="${shared.id}"[^>]*checked`));
+    const filterForm = pageOne.text.match(/<form id="asset-filters" class="filters-defaults-filters" method="get" action="\/projects\/\d+\/assets">[\s\S]*?<\/form>/)?.[0] || '';
+    expect(filterForm).not.toBe('');
+    expect(pageOne.text).toMatch(/<select id="asset-view-filter" name="view"[^>]*form="asset-filters"[^>]*>[\s\S]*?<option value="list" selected>List<\/option>/);
     expect(filterForm).not.toContain('name="page"');
     const ids = [...pageOne.text.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1]);
     const duplicateIds = ids.filter((id, index) => ids.indexOf(id) !== index);
@@ -1123,7 +1131,7 @@ describe('asset browser HTTP workflow', () => {
     const multipleNextMatch = multiple.text.match(/<a href="([^"]+)" class="pagination-next">Next/);
     const multipleNextUrl = new URL(decodeHtmlHref(multipleNextMatch[1]), 'http://localhost');
     const multiplePageSizeForm = multiple.text.match(/<form class="page-size-form"[\s\S]*?<\/form>/)?.[0] || '';
-    const resetForm = multiple.text.match(/<form class="projects-filter-reset app-dialog-footer"[^>]*>/)?.[0] || '';
+    const resetForm = multiple.text.match(/<form class="projects-filter-reset filters-defaults-reset-form"[^>]*>/)?.[0] || '';
     const resetHref = resetForm.match(/\baction="([^"]+)"/)?.[1];
 
     expect((multiple.text.match(/<li class="asset-list-item/g) || [])).toHaveLength(2);
@@ -1138,7 +1146,7 @@ describe('asset browser HTTP workflow', () => {
       expect(multipleFilter).toMatch(new RegExp(`name="tag"[^>]+type="checkbox"[^>]+value="${tagId}"[^>]*checked`));
     }
     expect(multipleFilter).toMatch(new RegExp(`name="tag"[^>]+type="checkbox"[^>]+value="${alpha.id}"(?![^>]*checked)`));
-    expect(multiplePageSizeForm.match(/<input type="hidden" name="tag"/g) || []).toHaveLength(2);
+    expect(multiplePageSizeForm).toBe('');
     expect(resetHref).toBeDefined();
     expect(new URL(decodeHtmlHref(resetHref), 'http://localhost').searchParams.has('tag')).toBe(false);
     expect(multipleNextUrl.searchParams.getAll('tag').sort()).toEqual(
@@ -1263,7 +1271,7 @@ describe('asset browser HTTP workflow', () => {
       const filter = assetTagFilterHtml(response.text);
       expectNoAssetResultsCount(response.text);
       expect(filter).toContain('aria-label="Tag filter: All tags"');
-      expect(filter).not.toMatch(/name="tag"[^>]*checked/);
+      expect(filter).not.toMatch(/name="tag" type="checkbox" value="(?!all")[^"]*"[^>]*checked/);
     }
 
     app.locals.tagService.deleteTag(tag.id);
@@ -1321,7 +1329,7 @@ describe('asset browser HTTP workflow', () => {
   });
 
   describe('WP2 Reset intent', () => {
-    it.each(['grid', 'list'])('restores request-time scoped defaults while preserving %s', async (view) => {
+    it.each(['grid', 'list'])('restores scoped saved/default View, not the request-time %s', async (view) => {
       const title = `WP2 ${view}`;
       const created = await createProject(title);
       const id = Number(created.headers.location.replace('/projects/', ''));
@@ -1333,11 +1341,11 @@ describe('asset browser HTTP workflow', () => {
       const filteredEmptyReset = rendered.text.match(/<a\b[^>]*>\s*Reset Filters\s*<\/a>/)?.[0];
       expect(filteredEmptyReset).toBeDefined();
       const filteredEmptyResetHref = filteredEmptyReset.match(/\bhref="([^"]+)"/)?.[1];
-      expect(decodeHtmlHref(filteredEmptyResetHref)).toBe(`/projects/${id}/assets?resetFilters=1&view=${view}`);
+      expect(decodeHtmlHref(filteredEmptyResetHref)).toBe(`/projects/${id}/assets?resetFilters=1`);
       expect(filteredEmptyReset).toContain('data-project-assets-reset');
       const links = [...rendered.text.matchAll(/(?:href|action)="([^"]+)"/g)]
         .map((match) => decodeHtmlHref(match[1])).filter((href) => href.includes('resetFilters='));
-      expect(links).toEqual(Array(2).fill(`/projects/${id}/assets?resetFilters=1&view=${view}`));
+      expect(links).toEqual(Array(2).fill(`/projects/${id}/assets?resetFilters=1`));
       // Change defaults after rendering: the old link must not carry saved state.
       writeStoredAssetDefault('sort', 'size');
       writeStoredAssetDefault('order', 'desc');
@@ -1350,20 +1358,23 @@ describe('asset browser HTTP workflow', () => {
           app.locals.pageDefaultsService.saveProjectDefault('projectAssets', 'pageSize', '10', undefined, { projectId: id });
           app.locals.pageDefaultsService.setPageDefaultScope('projectAssets', 'project', { projectId: id });
         }
-        const reset = await agent.get(links[0] + '&search=discard&category=bad&tag=all&extension=jpg&sort=filename&order=asc&pageSize=25&page=9&notice=asset-renamed&defaults=1&manage_categories=1&inheritedFilterDefaults=bogus').expect(302);
+        // A legacy scalar View is accepted on a Reset URL but never chooses the destination.
+        const reset = await agent.get(links[0] + `&view=${view}&search=discard&category=bad&tag=all&extension=jpg&sort=filename&order=asc&pageSize=25&page=9&notice=asset-renamed&defaults=1&manage_categories=1&inheritedFilterDefaults=bogus`).expect(302);
         expect(reset.headers['cache-control']).toBe('no-store');
         const url = new URL(reset.headers.location, 'http://localhost');
         expect(url.searchParams.get('sort')).toBe(projectOverride ? 'modified' : 'size');
         expect(url.searchParams.get('order')).toBe('desc');
         expect(url.searchParams.get('pageSize')).toBe(projectOverride ? '10' : '50');
-        expect(url.searchParams.get('view') || 'grid').toBe(view);
+        // Project-only scope saved no View, so the Global View is inherited.
+        expect(url.searchParams.get('view') || 'grid').toBe(otherView);
         expect(url.searchParams.getAll('tag')).toEqual([String(tag.id)]);
         expect(url.searchParams.getAll('extension')).toEqual(['png']);
         expect(url.searchParams.get('inheritedFilterDefaults')).toBe('tag,extension');
         for (const key of ['resetFilters', 'search', 'page', 'notice', 'defaults', 'manage_categories']) expect(url.searchParams.has(key)).toBe(false);
         const canonical = await agent.get(reset.headers.location).expect(200);
         expect(canonical.headers.location).toBeUndefined();
-        expect(canonical.text).toContain(`resetFilters=1&amp;view=${view}`);
+        expect(canonical.text).toContain(`<input type="hidden" name="view" value="${otherView}">`);
+        expect(canonical.text).toContain(`action="/projects/${id}/assets?resetFilters=1"`);
       }
       // Ordinary explicit view and explicit All must not activate saved filters/category.
       for (const query of ['view=grid', 'view=list', 'category=all&tag=all&extension=all']) {
@@ -1394,12 +1405,14 @@ describe('asset browser HTTP workflow', () => {
       const reset = await agent.get(`/projects/${id}/assets?resetFilters=1&view=grid&category=all&tag=all&inheritedFilterDefaults=extension&page=8`).expect(302);
       const url = new URL(reset.headers.location, 'http://localhost');
       expect(url.searchParams.get('category')).toBe(String(category.id));
-      expect(url.searchParams.get('view')).toBe('grid');
+      // The saved List View wins over the legacy request-time Grid.
+      expect(url.searchParams.get('view') || 'list').toBe('list');
       expect(url.searchParams.get('inheritedFilterDefaults')).toBe('tag,extension');
       expect(url.searchParams.has('tag')).toBe(false);
       expect(url.searchParams.has('extension')).toBe(false);
       expect(url.searchParams.has('resetFilters')).toBe(false);
       const canonical = await agent.get(reset.headers.location).expect(200);
+      expect(canonical.text).toContain('<input type="hidden" name="view" value="list">');
       expect(canonical.text).toContain('data-auto-rename-surface');
       expect(canonical.text.match(/data-auto-rename-asset\s/g)).toHaveLength(12);
       expect(canonical.text).not.toContain('class="pagination-next"');
@@ -1423,7 +1436,7 @@ describe('asset browser HTTP workflow', () => {
     it.each([
       'resetFilters=', 'resetFilters=0', 'resetFilters=1&resetFilters=1',
       'resetFilters[]=1', 'resetFilters[x]=1', 'resetFilters=1&resetFilters[]=1',
-      'resetFilters=1', 'resetFilters=1&view=', 'resetFilters=1&view=other',
+      'resetFilters=1&view=', 'resetFilters=1&view=other',
       'resetFilters=1&view=grid&view=list', 'resetFilters=1&view[]=grid',
       'resetFilters=1&view[x]=grid', 'resetFilters=1&view=grid&view[]=list',
     ])('rejects malformed Reset before resolving defaults: %s', async (query) => {
@@ -1432,6 +1445,70 @@ describe('asset browser HTTP workflow', () => {
       const resolve = vi.spyOn(app.locals.assetBrowserPreferenceService, 'resolveEffectiveCategory');
       await agent.get(`/projects/${id}/assets?${query}`).expect(400);
       expect(resolve).not.toHaveBeenCalled();
+    });
+
+    it.each(['resetFilters=1', 'resetFilters=1&view=grid', 'resetFilters=1&view=list'])(
+      'accepts Reset intent with or without a legacy View: %s',
+      async (query) => {
+        const created = await createProject('Package B accepted Reset');
+        const id = created.headers.location.replace('/projects/', '');
+        const reset = await agent.get(`/projects/${id}/assets?${query}`).expect(302);
+        expect(reset.headers['cache-control']).toBe('no-store');
+        expect(reset.headers.location).not.toContain('resetFilters');
+        // No saved View: the application fallback (Grid) and page 1, 25 per page.
+        const canonical = await agent.get(reset.headers.location).expect(200);
+        expect(canonical.text).toContain('<input type="hidden" name="view" value="grid">');
+        expect(canonical.text).toContain('<input type="hidden" name="pageSize" value="25">');
+      },
+    );
+
+    it('resolves the Reset View from the active scope and never changes saved defaults or scope', async () => {
+      const title = 'Package B scoped View';
+      const id = Number((await createProject(title)).headers.location.replace('/projects/', ''));
+      writeIndexedAsset(id, getProjectDir(title), 'one.png', 'png');
+      saveAssetDefault('view', 'list');
+      saveAssetDefault('pageSize', '100');
+      app.locals.pageDefaultsService.saveProjectDefault('projectAssets', 'view', 'grid', undefined, { projectId: id });
+      const before = () => ({
+        scope: app.locals.pageDefaultsService.getPageDefaultScope('projectAssets', { projectId: id }),
+        global: app.locals.pageDefaultsService.resolveGlobalPageDefaults('projectAssets'),
+        project: app.locals.projectPageDefaultRepository.getPageOptions(id, 'projectAssets'),
+      });
+      const resetTo = async (legacyView) => {
+        const reset = await agent.get(`/projects/${id}/assets?resetFilters=1&view=${legacyView}`).expect(302);
+        const page = await agent.get(reset.headers.location).expect(200);
+        return { url: new URL(reset.headers.location, 'http://localhost'), text: page.text };
+      };
+
+      // Global active: the saved Global View, even with a Project-only override stored.
+      app.locals.pageDefaultsService.setPageDefaultScope('projectAssets', 'global', { projectId: id });
+      const globalSnapshot = before();
+      const globalReset = await resetTo('grid');
+      expect(globalReset.text).toContain('<input type="hidden" name="view" value="list">');
+      expect(globalReset.text).toContain('<input type="hidden" name="pageSize" value="100">');
+      expect(globalReset.text).toContain('asset-list asset-list--project');
+      expect(before()).toEqual(globalSnapshot);
+
+      // Project-only active: its View override wins; its missing page size inherits Global.
+      app.locals.pageDefaultsService.setPageDefaultScope('projectAssets', 'project', { projectId: id });
+      const projectSnapshot = before();
+      const projectReset = await resetTo('list');
+      expect(projectReset.url.searchParams.get('view') || 'grid').toBe('grid');
+      expect(projectReset.text).toContain('<input type="hidden" name="view" value="grid">');
+      expect(projectReset.text).toContain('<input type="hidden" name="pageSize" value="100">');
+      expect(projectReset.text).not.toContain('asset-list asset-list--project');
+      expect(before()).toEqual(projectSnapshot);
+      expect(app.locals.projectPageDefaultRepository.getPageOptions(id, 'projectAssets').pageSize).toBeUndefined();
+    });
+
+    it('is GET-only: a POST with Reset intent neither resets nor writes defaults', async () => {
+      const id = Number((await createProject('Package B GET-only')).headers.location.replace('/projects/', ''));
+      saveAssetDefault('view', 'list');
+      const snapshot = app.locals.pageDefaultsService.resolveGlobalPageDefaults('projectAssets');
+      const response = await agent.post(`/projects/${id}/assets?resetFilters=1`).type('form').send({ _csrf: csrfToken });
+      expect(response.status).toBeGreaterThanOrEqual(400);
+      expect(response.headers.location || '').not.toContain('/assets');
+      expect(app.locals.pageDefaultsService.resolveGlobalPageDefaults('projectAssets')).toEqual(snapshot);
     });
   });
 
@@ -1572,7 +1649,7 @@ describe('asset browser HTTP workflow', () => {
       expect(url.searchParams.get('sort')).toBe('modified');
     });
 
-    it('resets to scoped defaults while retaining only the request-time View', async () => {
+    it('resets to scoped defaults including the saved View, ignoring the request-time View', async () => {
       const project = await createProject('Reset Scoped Project Assets Defaults');
       const id = Number(project.headers.location.replace('/projects/', ''));
       const tag = app.locals.tagService.createTag({ name: 'Reset scoped default tag' });
@@ -1591,10 +1668,12 @@ describe('asset browser HTTP workflow', () => {
       ).expect(302);
       const url = new URL(reset.headers.location, 'http://localhost');
 
-      expect(url.searchParams.get('view')).toBe('grid');
+      expect(url.searchParams.get('view') || 'list').toBe('list');
       expect(url.searchParams.get('sort')).toBe('size');
       expect(url.searchParams.get('order')).toBe('desc');
       expect(url.searchParams.get('pageSize')).toBe('50');
+      const restored = await agent.get(reset.headers.location).expect(200);
+      expect(restored.text).toContain('<input type="hidden" name="view" value="list">');
       expect(url.searchParams.getAll('tag')).toEqual([String(tag.id)]);
       expect(url.searchParams.getAll('extension')).toEqual(['png']);
       expect(url.searchParams.get('inheritedFilterDefaults')).toBe('tag,extension');
@@ -1653,7 +1732,7 @@ describe('asset browser HTTP workflow', () => {
       expect(app.locals.pageDefaultsService.getPageDefaultScope('projectAssets', { projectId: id })).toBe('project');
 
       const rendered = await agent.get('/projects/' + id + '/assets?defaults=1').expect(200);
-      const dialog = rendered.text.match(/<dialog id="project-assets-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+      const dialog = rendered.text.match(/<dialog id="project-assets-filter-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
       const values = JSON.parse(
         dialog.match(/<script type="application\/json" data-project-assets-default-values>([\s\S]*?)<\/script>/)?.[1] || '{}',
       );
@@ -2345,8 +2424,7 @@ describe('asset browser HTTP workflow', () => {
     const scanForm = response.text.match(/<form method="post" action="\/projects\/\d+\/scan\/manual"[^>]*>[\s\S]*?<\/form>/)?.[0];
     expect(scanForm).toContain('<input type="hidden" name="category" value="all">');
 
-    const pageSizeForm = response.text.match(/<form class="page-size-form"[^>]*>[\s\S]*?<\/form>/)?.[0];
-    expect(pageSizeForm).toContain('<input type="hidden" name="category" value="all">');
+    expect(response.text).not.toContain('class="page-size-form"');
 
     expect(response.text).toMatch(/<input id="asset-category-option-all"[\s\S]*?checked>/);
   });
@@ -2954,11 +3032,12 @@ describe('asset browser HTTP workflow', () => {
     const asset = writeIndexedAsset(id, projectDir, 'only.png', 'png');
 
     const all = await agent.get(`/projects/${id}/assets?pageSize=all`).expect(200);
-    const allForm = all.text.match(/<form class="page-size-form"[\s\S]*?<\/form>/)?.[0] || '';
-    const noScriptFallback = allForm.match(/<noscript>([\s\S]*?)<\/noscript>/)?.[1] || '';
-    expect(allForm).toContain(`<form class="page-size-form" method="get" action="/projects/${id}/assets">`);
-    expect(allForm).toContain('<option value="all" selected>View All</option>');
-    expect(noScriptFallback).toMatch(/<button\b(?=[^>]*\btype="submit")[^>]*>\s*Apply\s*<\/button>/);
+    // WP7: Assets per page is in Filters & Defaults and joins #asset-filters.
+    const allField = all.text.match(/data-project-assets-live-misc="pageSize"[\s\S]*?<\/fieldset>/)?.[0] || '';
+    expect(all.text).not.toContain('class="page-size-form"');
+    expect(allField).toContain('id="pageSize" name="pageSize"');
+    expect(allField).toContain('form="asset-filters"');
+    expect(allField).toContain('<option value="all" selected>View All</option>');
     expect(all.text).toContain(`/projects/${id}/assets/${asset.id}?pageSize=all`);
 
     const listHref = all.text.match(/<a class="[^"]*view-switcher-option[^"]*" href="([^"]+)"[\s\S]*?aria-label="List view"/)?.[1];
@@ -2980,7 +3059,7 @@ describe('asset browser HTTP workflow', () => {
       returnTo: `/projects/${id}/assets`, _csrf: csrfToken,
     }).expect(422);
 
-    const dialog = response.text.match(/<dialog id="project-assets-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+    const dialog = response.text.match(/<dialog id="project-assets-filter-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
     const extensionSelect = dialog.match(/<select id="projectAssets-default-extension"[\s\S]*?<\/select>/)?.[0] || '';
     const tagSelect = dialog.match(/<select id="projectAssets-default-tag"[\s\S]*?<\/select>/)?.[0] || '';
 
@@ -3017,164 +3096,62 @@ describe('asset browser HTTP workflow', () => {
     expect(response.text).toContain('data-project-assets-list-size-default="compact"');
     const selectTags = [...response.text.matchAll(/<select\b[^>]*>/g)].map(([tag]) => tag);
     expect(selectTags.length).toBeGreaterThan(0);
-    expect(selectTags.every((tag) => tag.includes('data-cc-dropdown-native-select'))).toBe(true);
+    // WP7: the defaults form's hidden mirrors are plumbing, not choice selectors.
+    expect(selectTags
+      .filter((tag) => !tag.includes('data-project-assets-defaults-mirror'))
+      .every((tag) => tag.includes('data-cc-dropdown-native-select'))).toBe(true);
 
-    const pageSizeForm = response.text.match(/<form class="page-size-form"[\s\S]*?<\/form>/)?.[0] || '';
-    expect(pageSizeForm).toContain('id="pageSize" name="pageSize"');
-    expect(pageSizeForm).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
-    expect(pageSizeForm).toContain('data-cc-dropdown-dispatch-native-change');
-    expect(pageSizeForm).toContain('value="10"');
-    expect(pageSizeForm).toContain('value="25" selected');
-    expect(pageSizeForm).toContain('value="50"');
-    expect(pageSizeForm).toContain('value="100"');
-    expect(pageSizeForm).toContain('value="150"');
-    expect(pageSizeForm).toContain('value="200"');
-    expect(pageSizeForm).toContain('value="all"');
-    expect(pageSizeForm).toContain('>View All</option>');
+    // WP7: Assets per page moved into the Filters & Defaults Miscellaneous
+    // section and joins #asset-filters; the bottom page-size form is gone.
+    expect(response.text).not.toContain('class="page-size-form"');
+    const dialog = response.text.match(/<dialog id="project-assets-filter-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+    expect(dialog).toContain('data-app-dialog');
+    const misc = dialog.match(/<section class="filters-defaults-section" aria-labelledby="project-assets-misc-heading">[\s\S]*?<\/section>/)?.[0] || '';
+    const pageSizeField = misc.match(/data-project-assets-live-misc="pageSize"[\s\S]*?<\/fieldset>/)?.[0] || '';
+    expect(pageSizeField).toContain('id="pageSize" name="pageSize"');
+    expect(pageSizeField).toContain('form="asset-filters"');
+    expect(pageSizeField).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
+    expect(pageSizeField).toContain('data-cc-dropdown-dispatch-native-change');
+    for (const value of ['10', '50', '100', '150', '200']) expect(pageSizeField).toContain(`value="${value}"`);
+    expect(pageSizeField).toContain('value="25" selected');
+    expect(pageSizeField).toContain('>View All</option>');
+    const viewField = misc.match(/data-project-assets-live-misc="view"[\s\S]*?<\/fieldset>/)?.[0] || '';
+    expect(viewField).toContain('name="view"');
+    expect(viewField).toContain('form="asset-filters"');
+    expect(viewField).toContain('<option value="list" selected>List</option>');
 
-    const defaultsDialog = response.text.match(/<dialog id="project-assets-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
-    expect(defaultsDialog).toContain('data-app-dialog');
-    const defaultsGridMatch = defaultsDialog.match(
-      /<div class="page-defaults-grid">([\s\S]*?)<\/div>\s*<\/div>\s*<div class="app-dialog-status"/,
-    );
-    expect(defaultsGridMatch).not.toBeNull();
-    const defaultsGrid = defaultsGridMatch?.[1] || '';
-    const gridStart = defaultsGridMatch?.index ?? -1;
-    const statusIndex = defaultsDialog.indexOf('<div class="app-dialog-status"', gridStart);
-    expect((defaultsGrid.match(/data-dialog-field="/g) || [])).toHaveLength(9);
-    expect(defaultsDialog.indexOf('data-dialog-error')).toBeLessThan(gridStart);
-    expect(defaultsDialog.indexOf('name="_csrf"')).toBeLessThan(gridStart);
-    expect(statusIndex).toBeGreaterThan(gridStart);
-    expect(defaultsDialog.indexOf('<footer class="app-dialog-footer">')).toBe(-1);
-    expect(defaultsGrid).not.toContain('data-dialog-error');
-    expect(defaultsGrid).not.toContain('data-dialog-status');
-    expect(defaultsGrid).not.toContain('app-dialog-footer');
-    expect(defaultsGrid).not.toContain('name="_csrf"');
-    const defaultFields = [
-      {
-        name: 'view',
-        label: 'View',
-        id: 'projectAssets-default-view',
-        selected: 'list',
-        options: [['grid', 'Grid'], ['list', 'List']],
-      },
-      {
-        name: 'gridStyle',
-        label: 'Grid style',
-        id: 'projectAssets-default-gridStyle',
-        selected: 'cropped',
-        options: [['uncropped', 'Uncropped'], ['cropped', 'Cropped']],
-      },
-      {
-        name: 'gridSize',
-        label: 'Grid size',
-        id: 'projectAssets-default-gridSize',
-        selected: 'large',
-        options: [['compact', 'Compact'], ['default', 'Default'], ['large', 'Large']],
-      },
-      {
-        name: 'listSize',
-        label: 'List size',
-        id: 'projectAssets-default-listSize',
-        selected: 'compact',
-        options: [['compact', 'Compact'], ['large', 'Large']],
-      },
-      {
-        name: 'sort',
-        label: 'Sort',
-        id: 'projectAssets-default-sort',
-        selected: 'category',
-        options: [
-          ['filename', 'Filename'],
-          ['modified', 'Modified date'],
-          ['size', 'File size'],
-          ['category', 'Category &amp; location'],
-        ],
-      },
-      {
-        name: 'order',
-        label: 'Order',
-        id: 'projectAssets-default-order',
-        selected: 'desc',
-        options: [['asc', 'Ascending'], ['desc', 'Descending']],
-      },
-      {
-        name: 'pageSize',
-        label: 'Page Size',
-        id: 'projectAssets-default-pageSize',
-        selected: '25',
-        options: [
-          ['10', '10 assets'],
-          ['25', '25 assets'],
-          ['50', '50 assets'],
-          ['100', '100 assets'],
-          ['150', '150 assets'],
-          ['200', '200 assets'],
-          ['all', 'View All'],
-        ],
-      },
-      {
-        name: 'extension',
-        label: 'Extension',
-        id: 'projectAssets-default-extension',
-        multi: true,
-        selectedValues: [],
-        options: [['png', '.png']],
-      },
-      {
-        name: 'tag',
-        label: 'Tag',
-        id: 'projectAssets-default-tag',
-        multi: true,
-        selectedValues: [],
-        options: [],
-      },
-    ];
-    for (const field of defaultFields) {
-      expect(defaultsGrid).toMatch(new RegExp(`<select[^>]*name="${field.name}"[^>]*data-cc-dropdown-native-select`));
-      expect(defaultsGrid).toContain(`data-dialog-field="${field.name}"`);
-      expect(defaultsGrid).toContain(`<legend>${field.label}</legend>`);
-      const nativeSelect = defaultsGrid.match(new RegExp(`<select id="${field.id}"[\\s\\S]*?<\\/select>`))?.[0] || '';
-      expect(nativeSelect).not.toBe('');
+    // Grid style and the two size defaults are the defaults form's own visible
+    // fields; the six eligible values the live controls show are hidden mirrors.
+    const defaultsForm = dialog.match(/<form id="project-assets-defaults-form"[\s\S]*?<\/form>/)?.[0] || '';
+    expect(defaultsForm).toContain('data-defaults-explicit-save');
+    expect(defaultsForm).toContain('data-defaults-live-controls');
+    expect(defaultsForm).toContain('data-dialog-async="false"');
+    expect(defaultsForm).toContain('data-project-assets-defaults-autosave');
+    expect(defaultsForm).toContain('data-settings-fetch-save-status');
+    expect(defaultsForm).toContain('<input type="hidden" name="intent" value="save" data-autosubmit="fetch">');
+    expect((dialog.match(/data-autosubmit="fetch"/g) || [])).toHaveLength(1);
+    for (const field of [
+      { name: 'gridStyle', label: 'Grid style', id: 'projectAssets-default-gridStyle', selected: 'cropped', options: [['uncropped', 'Uncropped'], ['cropped', 'Cropped']] },
+      { name: 'gridSize', label: 'Grid size default', id: 'projectAssets-default-gridSize', selected: 'large', options: [['compact', 'Compact'], ['default', 'Default'], ['large', 'Large']] },
+      { name: 'listSize', label: 'List size default', id: 'projectAssets-default-listSize', selected: 'compact', options: [['compact', 'Compact'], ['large', 'Large']] },
+    ]) {
+      expect(misc).toContain(`data-dialog-field="${field.name}"`);
+      expect(misc).toContain(`<legend>${field.label}</legend>`);
+      const nativeSelect = misc.match(new RegExp(`<select id="${field.id}"[\\s\\S]*?<\\/select>`))?.[0] || '';
+      expect(nativeSelect).toContain('form="project-assets-defaults-form"');
+      expect(nativeSelect).toContain('data-cc-dropdown-native-select');
       for (const [value, label] of field.options) {
-        const selected = field.multi
-          ? field.selectedValues.includes(value)
-          : value === field.selected;
-        expect(nativeSelect).toContain(`<option value="${value}"${selected ? ' selected' : ''}>${label}</option>`);
+        expect(nativeSelect).toContain(`<option value="${value}"${value === field.selected ? ' selected' : ''}>${label}</option>`);
       }
-      expect(defaultsGrid).not.toMatch(new RegExp(`<input[^>]*name="${field.name}"`));
-      expect((defaultsGrid.match(new RegExp(`name="${field.name}"`, 'g')) || []).length).toBe(1);
-
-      if (field.multi) {
-        expect(nativeSelect).toContain(' multiple');
-        expect(nativeSelect).not.toContain('value="all"');
-        expect(nativeSelect).not.toMatch(/<option[^>]*\sselected(?:[\s>])/);
-        expect(defaultsGrid).toMatch(new RegExp(
-          `id="${field.id}-dropdown"[^>]*data-cc-dropdown data-cc-dropdown-mode="multiple"`,
-        ));
-        continue;
-      }
-
-      expect(defaultsGrid).toMatch(new RegExp(
-        `id="${field.id}-dropdown"[^>]*data-cc-dropdown data-cc-dropdown-mode="single"`,
-      ));
-      expect(defaultsGrid).toMatch(new RegExp(
-        `<input[^>]*type="radio" value="${field.selected}"[^>]*checked`,
-      ));
+      expect(defaultsForm).not.toContain(`data-dialog-field="${field.name}"`);
     }
-    for (let index = 1; index < defaultFields.length; index += 1) {
-      expect(defaultsGrid.indexOf(`data-dialog-field="${defaultFields[index - 1].name}"`))
-        .toBeLessThan(defaultsGrid.indexOf(`data-dialog-field="${defaultFields[index].name}"`));
+    const mirrors = defaultsForm.match(/<div class="filters-defaults-mirrors" data-project-assets-defaults-mirrors hidden>[\s\S]*?<\/form>/)?.[0] || '';
+    for (const name of ['view', 'sort', 'order', 'pageSize', 'extension', 'tag']) {
+      expect(mirrors).toContain(`data-dialog-field="${name}"`);
+      expect(mirrors).toMatch(new RegExp(`<select id="projectAssets-default-${name}" name="${name}" data-project-assets-defaults-mirror`));
+      expect(misc).not.toContain(`data-dialog-field="${name}"`);
     }
-    expect((defaultsGrid.match(/data-cc-dropdown data-cc-dropdown-mode="single"/g) || [])).toHaveLength(7);
-    expect((defaultsGrid.match(/data-cc-dropdown data-cc-dropdown-mode="multiple"/g) || [])).toHaveLength(2);
-    const defaultsFooter = defaultsDialog.match(/<footer class="app-dialog-footer">[\s\S]*?<\/footer>/)?.[0] || '';
-    expect(defaultsFooter).toBe('');
-    expect(defaultsDialog).not.toContain('>Save defaults</button>');
-    expect(defaultsDialog).toContain('data-dialog-async="false"');
-    expect(defaultsDialog).toContain('data-project-assets-defaults-autosave');
-    expect((defaultsGrid.match(/data-autosubmit="fetch"/g) || [])).toHaveLength(9);
-    expect(defaultsDialog).toContain('data-settings-fetch-save-status');
+    expect(dialog).not.toContain('>Save defaults</button>');
 
     const invalidDefaults = await agent
       .post(`/projects/${id}/assets/defaults`)
@@ -3197,11 +3174,12 @@ describe('asset browser HTTP workflow', () => {
       /<select id="projectAssets-default-listSize"[\s\S]*?<\/select>/,
     )?.[0] || '';
     const invalidDefaultsDialog = invalidDefaults.text.match(
-      /<dialog id="project-assets-defaults-dialog"[\s\S]*?<\/dialog>/,
+      /<dialog id="project-assets-filter-dialog"[\s\S]*?<\/dialog>/,
     )?.[0] || '';
     expect(invalidListSize).not.toContain('data-dialog-submitted-value');
     expect(invalidListSize).not.toContain('value="default"');
-    expect((invalidDefaultsDialog.match(/data-autosubmit="fetch"/g) || [])).toHaveLength(9);
+    expect(invalidDefaultsDialog).toMatch(/<dialog id="project-assets-filter-dialog"[^>]*\sopen/);
+    expect((invalidDefaultsDialog.match(/data-autosubmit="fetch"/g) || [])).toHaveLength(1);
     expect(invalidDefaultsDialog).not.toContain('>Save defaults</button>');
 
     // B5a: Project Assets' slideshow speed is the unified viewer's control.
@@ -3254,11 +3232,11 @@ describe('asset browser HTTP workflow', () => {
     expect(nextUrl.searchParams.get('pageSize')).toBe('10');
     expect(nextUrl.searchParams.get('view')).toBe('list');
 
-    const pageSizeForm = response.text.match(/<form class="page-size-form"[\s\S]*?<\/form>/)?.[0];
-    expect(pageSizeForm).toBeDefined();
-    expect(pageSizeForm).toContain('<input type="hidden" name="sort" value="category">');
-    expect(pageSizeForm).toContain('<input type="hidden" name="order" value="desc">');
-    expect(pageSizeForm).toContain('<input type="hidden" name="view" value="list">');
+    expect(response.text).not.toContain('class="page-size-form"');
+    expectCheckedAssetFilter(response.text, 'sort', 'category');
+    expectCheckedAssetFilter(response.text, 'order', 'desc');
+    expect(response.text).toMatch(/<select id="asset-view-filter" name="view"[^>]*form="asset-filters"[^>]*>[\s\S]*?<option value="list" selected>List<\/option>/);
+    expect(response.text).toMatch(/<select id="pageSize" name="pageSize"[^>]*form="asset-filters"[^>]*>[\s\S]*?<option value="10" selected>10<\/option>/);
 
     const gridHref = response.text.match(/<a class="[^"]*view-switcher-option[^"]*" href="([^"]+)"[\s\S]*?aria-label="Grid view"/)?.[1];
     expect(gridHref).toBeDefined();
@@ -3268,12 +3246,11 @@ describe('asset browser HTTP workflow', () => {
     expect(gridUrl.searchParams.get('order')).toBe('desc');
     expect(gridUrl.searchParams.get('pageSize')).toBe('10');
 
-    const resetForm = response.text.match(/<form class="projects-filter-reset app-dialog-footer"[^>]*>/)?.[0] || '';
+    const resetForm = response.text.match(/<form class="projects-filter-reset filters-defaults-reset-form"[^>]*>/)?.[0] || '';
     const resetHref = resetForm.match(/\baction="([^"]+)"/)?.[1];
     expect(resetHref).toBeDefined();
     const resetUrl = new URL(decodeHtmlHref(resetHref), 'http://localhost');
-    expect([...resetUrl.searchParams]).toEqual([['resetFilters', '1'], ['view', 'list']]);
-    expect(resetUrl.searchParams.get('view')).toBe('list');
+    expect([...resetUrl.searchParams]).toEqual([['resetFilters', '1']]);
     expect(resetUrl.searchParams.has('search')).toBe(false);
     expect(resetUrl.searchParams.has('extension')).toBe(false);
     expect(resetUrl.searchParams.has('presence')).toBe(false);
@@ -4100,7 +4077,7 @@ describe('asset browser HTTP workflow', () => {
       const actions = projectAssetsDisplayActions(res.text);
       const headingActions = extractPageHeadingActions(res.text);
       const openLocallyIndex = actions.indexOf('aria-label="Open locally"');
-      const filterIndex = actions.indexOf('aria-label="Filter assets"');
+      const filterIndex = actions.indexOf('aria-label="Filters & Defaults"');
       const defaultsIndex = actions.indexOf('aria-label="Project Assets defaults"');
       const nsfwIndex = actions.indexOf('id="project-assets-nsfw-toggle"');
       const scanIndex = headingActions.indexOf('aria-label="Manually scan project files"');
@@ -4119,11 +4096,10 @@ describe('asset browser HTTP workflow', () => {
         `href="creatorcrate-open://open?v=2&amp;path=${encodeURIComponent(`D:\\example\\${row.project_dir}`)}&amp;select=0"`
       );
       expect(filterIndex).toBeGreaterThanOrEqual(0);
-      expect(defaultsIndex).toBeGreaterThan(filterIndex);
-      expect(openLocallyIndex).toBeGreaterThan(defaultsIndex);
+      expect(defaultsIndex).toBe(-1);
+      expect(openLocallyIndex).toBeGreaterThan(filterIndex);
       expect(nsfwIndex).toBeGreaterThan(openLocallyIndex);
-      expect(actions).toMatch(/aria-label="Filter assets"[\s\S]*?<\/a>\s*<a class="asset-viewer-defaults-link/);
-      expect(actions).toMatch(/aria-label="Project Assets defaults"[\s\S]*?<\/a>\s*<a class="button button-small button-secondary project-filter-control[^"]*"\s*href="creatorcrate-open:/);
+      expect(actions).toMatch(/aria-label="Filters & Defaults"[\s\S]*?<\/a>\s*<a class="button button-small button-secondary project-filter-control[^"]*"\s*href="creatorcrate-open:/);
       expect(scanIndex).toBeGreaterThanOrEqual(0);
       expect(removeMissingIndex).toBeGreaterThan(scanIndex);
       expect(editIndex).toBeGreaterThan(removeMissingIndex);
@@ -5035,33 +5011,26 @@ describe('asset browser HTTP workflow', () => {
     const filterActions = res2.text.match(/<div class="project-filter-actions project-filter-actions--projects">[\s\S]*?<\/div>/)?.[0] || '';
     expect(filterActions).toContain('href="#project-assets-filter-dialog"');
     expect(filterActions).toContain('data-dialog-open="project-assets-filter-dialog"');
-    expect(filterActions).toContain('aria-label="Filter assets"');
+    expect(filterActions).toContain('aria-label="Filters & Defaults"');
     expect(filterActions).toContain('data-project-assets-slideshow-trigger');
     expect(filterActions).not.toContain('data-slideshow-trigger');
     expect(filterActions).not.toContain('data-project-assets-reset');
 
-    const defaultsLink = res2.text.match(/<a class="[^"]*\basset-viewer-defaults-link\b[^"]*"[\s\S]*?<\/a>/)?.[0];
-    expect(defaultsLink).toBeDefined();
-    expect(defaultsLink).toContain('asset-tooltip');
-    expect(defaultsLink).toContain('asset-tooltip--left');
-    expect(defaultsLink).toContain(`href="/projects/${id}/assets?defaults=1"`);
-    expect(defaultsLink).toContain('aria-label="Project Assets defaults"');
-    expect(defaultsLink).toContain('data-tooltip="Project Assets defaults"');
-    expect(defaultsLink).not.toContain('title=');
-    expect(defaultsLink).toContain('aria-hidden="true"');
+    expect(res2.text).not.toContain('asset-viewer-defaults-link');
 
     const filterDialog = res2.text.match(/<dialog id="project-assets-filter-dialog"[\s\S]*?<\/dialog>/)?.[0];
     expect(filterDialog).toBeDefined();
-    expect(filterDialog).toContain('<h2 id="project-assets-filter-dialog-title">Filter</h2>');
-    const filterForm = filterDialog.match(/<form id="asset-filters" class="app-dialog-form project-form" method="get" action="\/projects\/\d+\/assets">[\s\S]*?<\/form>/)?.[0];
+    expect(filterDialog).toContain('<h2 id="project-assets-filter-dialog-title">Filters &amp; Defaults</h2>');
+    expect(filterDialog).toContain('<p class="app-dialog-subtitle">Project Assets</p>');
+    const filterForm = filterDialog.match(/<form id="asset-filters" class="filters-defaults-filters" method="get" action="\/projects\/\d+\/assets">[\s\S]*?<\/form>/)?.[0];
     expect(filterForm).toBeDefined();
     expect(res2.text.slice(liveRegionStart, filterDialogStart)).not.toContain('id="asset-filters"');
     expect((res2.text.match(/id="project-assets-filter-dialog"/g) || [])).toHaveLength(1);
     expect((res2.text.match(/id="asset-filters"/g) || [])).toHaveLength(1);
     expect((res2.text.match(/id="search"/g) || [])).toHaveLength(1);
-    const resetForm = filterDialog.match(/<form class="projects-filter-reset app-dialog-footer" method="get" action="[^"]+">[\s\S]*?<\/form>/)?.[0];
+    const resetForm = filterDialog.match(/<form class="projects-filter-reset filters-defaults-reset-form" method="get" action="[^"]+">[\s\S]*?<\/form>/)?.[0];
     expect(resetForm).toBeDefined();
-    expect(resetForm).toContain(`action="/projects/${id}/assets?resetFilters=1&amp;view=grid"`);
+    expect(resetForm).toContain(`action="/projects/${id}/assets?resetFilters=1"`);
     expect(resetForm).toContain('<button class="button button-secondary" type="submit" data-project-assets-reset>Reset filters</button>');
     const categoryPosition = filterForm.indexOf('data-asset-category-filter');
     const searchPosition = filterForm.indexOf('<label for="search">Search</label>');
@@ -5093,11 +5062,11 @@ describe('asset browser HTTP workflow', () => {
 
     const convertedFilterControls = [
       {
-        label: 'Show', optionsId: 'asset-presence-filter-options', name: 'presence', summary: 'All assets',
+        label: 'Presence', optionsId: 'asset-presence-filter-options', name: 'presence', summary: 'All assets',
         options: [['all', 'All assets'], ['present', 'Present at last scan'], ['missing', 'Missing at last scan']],
       },
       {
-        label: 'Usage', optionsId: 'asset-usage-filter-options', name: 'usage', summary: 'All assets',
+        label: 'Release usage', optionsId: 'asset-usage-filter-options', name: 'usage', summary: 'All assets',
         options: [['all', 'All assets'], ['used', 'Used by a release'], ['unused', 'Not used by a release']],
       },
       {
@@ -5105,7 +5074,7 @@ describe('asset browser HTTP workflow', () => {
         options: [['filename', 'Filename'], ['modified', 'Modified date'], ['size', 'File size'], ['category', 'Category &amp; location']],
       },
       {
-        label: 'Order', optionsId: 'asset-order-filter-options', name: 'order', summary: 'Ascending',
+        label: 'Sort order', optionsId: 'asset-order-filter-options', name: 'order', summary: 'Ascending',
         options: [['asc', 'Ascending'], ['desc', 'Descending']],
       },
     ];
@@ -5954,7 +5923,7 @@ describe('asset browser HTTP workflow', () => {
     expectCheckedAssetFilter(response.text, 'sort', 'size');
     expectCheckedAssetFilter(response.text, 'order', 'desc');
     expect(assetFilterHtml(response.text, 'asset-sort-filter-options')).toContain('aria-label="Sort by filter: File size"');
-    expect(assetFilterHtml(response.text, 'asset-order-filter-options')).toContain('aria-label="Order filter: Descending"');
+    expect(assetFilterHtml(response.text, 'asset-order-filter-options')).toContain('aria-label="Sort order filter: Descending"');
     expect(response.text).toContain('larger-match');
     expect(response.text).not.toContain('other');
     expect(response.text).not.toContain('smaller-match');
@@ -5978,9 +5947,11 @@ describe('asset browser HTTP workflow', () => {
     expect(nextUrl.searchParams.get('pageSize')).toBe('1');
     expect(nextUrl.searchParams.get('view')).toBe('list');
 
-    const pageSizeForm = response.text.match(/<form class="page-size-form"[\s\S]*?<\/form>/)?.[0];
-    expect(pageSizeForm).toContain(`<input type="hidden" name="category" value="${category.id}">`);
-    expect(pageSizeForm).toContain('<input type="hidden" name="search" value="match">');
+    // WP7: Assets per page joins #asset-filters, whose Category and Search
+    // are the current context.
+    expect(response.text).not.toContain('class="page-size-form"');
+    expect(response.text).toMatch(new RegExp(`<input id="asset-category-option-${category.id}"[^>]*value="${category.id}"[^>]*checked`));
+    expect(response.text).toContain('<input id="search" name="search" type="search" value="match"');
 
     const modifiedResponse = await agent
       .get(`/projects/${id}/assets?category=${category.id}&sort=modified`)

@@ -236,7 +236,7 @@ test('Columns end at Modified without row Rename; live filtering and List size k
 
   // Live filtering replaces the rows and the new titles are bound.
   await page.evaluate(() => { window.__assetListMarker = true; });
-  await page.getByRole('link', { name: 'Filter assets', exact: true }).click();
+  await page.getByRole('link', { name: 'Filters & Defaults', exact: true }).click();
   await page.locator('#search').fill('gamma');
   await expect.poll(() => new URL(page.url()).searchParams.get('search')).toBe('gamma');
   await expect(page.locator('[data-project-assets-live-region]')).not.toHaveAttribute('aria-busy', 'true');

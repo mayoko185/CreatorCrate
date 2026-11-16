@@ -1732,29 +1732,106 @@ describe('slideshow scaffold — static UI', () => {
       emptyState: { kind: 'filtered', title: 'No matches' },
     });
     const filterDialog = html.match(/<dialog id="project-assets-filter-dialog"[\s\S]*?<\/dialog>/)?.[0] ?? '';
-    const resetForm = filterDialog.match(/<form class="projects-filter-reset app-dialog-footer"[^>]*>[\s\S]*?<\/form>/)?.[0] ?? '';
+    const resetForm = filterDialog.match(/<form class="projects-filter-reset filters-defaults-reset-form"[^>]*>[\s\S]*?<\/form>/)?.[0] ?? '';
 
     expect(resetForm).toContain(`method="get" action="/projects/1/assets?resetFilters=1&amp;view=${view}"`);
     expect(resetForm).toContain('type="submit" data-project-assets-reset>Reset filters</button>');
   });
 
-  it('project assets page: Filter dialog owns the persistent filters and Reset controls', () => {
+  it('project assets page: Filters & Defaults dialog owns the persistent filters and Reset controls', () => {
     const html = renderProjectAssetsPage();
     const filterControl = html.match(/<a[^>]*data-dialog-open="project-assets-filter-dialog"[^>]*>/)?.[0] ?? '';
     const filterDialog = html.match(/<dialog id="project-assets-filter-dialog"[\s\S]*?<\/dialog>/)?.[0] ?? '';
 
     expect(filterControl).toContain('href="#project-assets-filter-dialog"');
-    expect(filterControl).toContain('aria-label="Filter assets"');
-    expect(filterDialog).toContain('<form id="asset-filters" class="app-dialog-form project-form" method="get" action="/projects/1/assets">');
-    expect(filterDialog).toContain('<form class="projects-filter-reset app-dialog-footer" method="get" action="/projects/1/assets?resetFilters=1&amp;view=grid">');
+    expect(filterControl).toContain('aria-label="Filters & Defaults"');
+    expect(filterDialog).toContain('<form id="asset-filters" class="filters-defaults-filters" method="get" action="/projects/1/assets">');
+    expect(filterDialog).toContain('<form class="projects-filter-reset filters-defaults-reset-form" method="get" action="/projects/1/assets?resetFilters=1&amp;view=grid">');
     expect(filterDialog).toContain('type="submit" data-project-assets-reset>Reset filters</button>');
     expect(html.match(/id="project-assets-filter-dialog"/g)).toHaveLength(1);
     expect(html.match(/id="asset-filters"/g)).toHaveLength(1);
     expect(html.match(/data-project-assets-reset/g)).toHaveLength(1);
     expect(html).not.toContain('type="submit" form="asset-filters"');
     expect(html).not.toContain('>Reset</span>');
-    expect(html).toContain('href="/projects/1/assets?defaults=1"');
-    expect(html).toContain('data-dialog-open="project-assets-defaults-dialog"');
+    // WP7: the separate Defaults dialog and its cog are gone.
+    expect(html).not.toContain('href="/projects/1/assets?defaults=1"');
+    expect(html).not.toContain('project-assets-defaults-dialog');
+    expect(html.match(/data-dialog-open="project-assets-filter-dialog"/g)).toHaveLength(1);
+  });
+
+  it('project assets page: Filters & Defaults keeps the approved structure (WP7)', () => {
+    const field = (name, label, options, multi = false) => ({
+      name, label, id: `projectAssets-default-${name}`, multi,
+      options: options.map((value) => ({ value, label: value })),
+      selectedValue: multi ? undefined : options[0], selectedValues: multi ? [] : undefined,
+    });
+    const html = renderProjectAssetsPage({
+      projectAssetsDefaults: {
+        fields: [
+          field('view', 'View', ['grid', 'list']),
+          field('gridStyle', 'Grid style', ['uncropped', 'cropped']),
+          field('gridSize', 'Grid size', ['compact', 'default', 'large']),
+          field('listSize', 'List size', ['compact', 'large']),
+          field('sort', 'Sort', ['filename', 'modified']),
+          field('order', 'Order', ['asc', 'desc']),
+          field('pageSize', 'Page Size', ['25', 'all']),
+          field('extension', 'Extension', ['png'], true),
+          field('tag', 'Tag', [], true),
+        ],
+      },
+    });
+    const dialog = html.match(/<dialog id="project-assets-filter-dialog"[\s\S]*?<\/dialog>/)?.[0] ?? '';
+
+    expect(dialog).toMatch(/class="app-dialog app-dialog--utility app-dialog--filters-defaults"/);
+    expect(dialog).toContain('<h2 id="project-assets-filter-dialog-title">Filters &amp; Defaults</h2>');
+    expect(dialog).toContain('<p class="app-dialog-subtitle">Project Assets</p>');
+    expect(dialog).toContain('aria-label="Close Filters &amp; Defaults"');
+
+    // Status row: compact indicator and inline Global / Project only radios.
+    const statusRow = dialog.match(/<div class="filters-defaults-status-row">[\s\S]*?<\/fieldset>/)?.[0] ?? '';
+    expect(statusRow).toContain('data-project-assets-defaults-indicator');
+    expect(statusRow).toContain('<fieldset class="filters-defaults-scope" data-project-assets-defaults-scope>');
+    expect(statusRow).toMatch(/class="filters-defaults-scope-option"[\s\S]*?name="scope" value="global"[\s\S]*?Global/);
+    expect(statusRow).toMatch(/class="filters-defaults-scope-option"[\s\S]*?name="scope" value="project"[\s\S]*?Project only/);
+    expect(dialog).not.toContain('page-defaults-scope-options');
+    // Package A U3: the fieldset legend reads "Use default:" and still names the
+    // native radio group; the indicator comes first (left column), scope second.
+    expect(statusRow).toMatch(/<fieldset class="filters-defaults-scope" data-project-assets-defaults-scope>\s*<legend>Use default:<\/legend>/);
+    expect(dialog).not.toContain('Defaults scope:');
+    expect(statusRow.indexOf('data-project-assets-defaults-indicator')).toBeLessThan(statusRow.indexOf('<fieldset'));
+    const scopeRadios = [...statusRow.matchAll(/<label class="filters-defaults-scope-option" for="([^"]+)">\s*<input id="([^"]+)" type="radio" name="scope" value="(global|project)"/g)];
+    expect(scopeRadios.map((match) => match[3])).toEqual(['global', 'project']);
+    for (const match of scopeRadios) expect(match[1]).toBe(match[2]);
+
+    // Three boxed sections in order, with their controls in order.
+    const headings = [...dialog.matchAll(/<section class="filters-defaults-section"[^>]*>\s*<h3[^>]*>([^<]+)<\/h3>/g)].map((match) => match[1]);
+    expect(headings).toEqual(['Filters', 'Sort options', 'Miscellaneous']);
+    // User acceptance: the old section titles are gone from this dialog.
+    expect(dialog).not.toContain('Available filters');
+    expect(dialog).not.toContain('Available sort options');
+    const legendsIn = (heading) => {
+      const section = dialog.match(new RegExp(`<h3[^>]*>${heading}<\\/h3>[\\s\\S]*?<\\/section>`))?.[0] ?? '';
+      return [...section.matchAll(/<legend[^>]*>([^<]+)<\/legend>|<label for="search">(Search)<\/label>/g)]
+        .map((match) => match[1] || match[2]);
+    };
+    expect(legendsIn('Filters')).toEqual(['Category', 'Search', 'Tag', 'Extension', 'Presence', 'Release usage']);
+    expect(legendsIn('Sort options')).toEqual(['Sort by', 'Sort order']);
+    expect(legendsIn('Miscellaneous')).toEqual(['View', 'Grid style', 'Grid size default', 'List size default', 'Assets per page']);
+
+    // Exactly three footer actions, grouped; no Cancel, Apply, Done or Close.
+    const footer = dialog.match(/<footer class="app-dialog-footer filters-defaults-footer">[\s\S]*?<\/footer>/)?.[0] ?? '';
+    const actions = [...footer.matchAll(/<button[^>]*>([^<]+)<\/button>/g)].map((match) => match[1].trim());
+    expect(actions).toEqual(['Reset filters', 'Reset defaults', 'Save new defaults']);
+    expect(footer).toContain('type="submit" form="project-assets-defaults-form" data-project-assets-defaults-save>Save new defaults');
+    expect(footer).toContain('class="button button-primary"');
+    expect(dialog).not.toMatch(/>\s*(Cancel|Apply|Done)\s*</);
+    expect((dialog.match(/<footer/g) || [])).toHaveLength(1);
+
+    // Two owning forms, never nested; Extension and Tag lead with Select all.
+    expect(dialog).not.toMatch(/<form[^>]*>(?:(?!<\/form>)[\s\S])*<form/);
+    expect(dialog).toMatch(/id="asset-tag-filter"[^>]*data-cc-dropdown-select-all="all"/);
+    expect(dialog).toMatch(/id="asset-extension-filter"[^>]*data-cc-dropdown-select-all="all"/);
+    expect(dialog).not.toMatch(/id="asset-category-filter"[^>]*data-cc-dropdown-select-all/);
   });
 });
 

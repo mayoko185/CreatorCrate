@@ -158,7 +158,9 @@ async function chooseReader(page, menu, label) {
 }
 
 async function filterCbz(page, dialogId, region) {
-  await page.getByRole('link', { name: 'Filter assets', exact: true }).click();
+  // WP7: Project Assets combines Filters & Defaults behind the filter icon.
+  const linkName = dialogId === '#project-assets-filter-dialog' ? 'Filters & Defaults' : 'Filter assets';
+  await page.getByRole('link', { name: linkName, exact: true }).click();
   const dialog = page.locator(dialogId);
   await expect(dialog).toBeVisible();
   await dialog.locator('#asset-extension-filter summary').click();

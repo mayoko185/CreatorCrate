@@ -17,10 +17,12 @@ import {
   openAppDialogById,
   setAppDialogBaseline,
 } from '../src/static/creatorcrate.js';
-import { vetoAppDialogReturn } from '../src/static/client/app-dialogs.js';
+import { syncProjectAssetsSizePreferences, vetoAppDialogReturn } from '../src/static/client/app-dialogs.js';
+import { DEFAULTS_EXPLICIT_SAVE_ATTRIBUTE } from '../src/static/client/projects-defaults-fetch-save.js';
 import {
   markProjectAssetsDefaultsRendered,
   projectAssetsDefaultsGridStyleOnlyChange,
+  projectAssetsDefaultsSaveBlockedReason,
 } from '../src/static/client/project-assets-defaults-scope.js';
 
 function makeElement(tagName = 'div', attrs = {}) {
@@ -294,8 +296,11 @@ function changeProjectAssetsScope(page, scope) {
   page.scopeControls[scope].dispatch('change');
 }
 
-function projectAssetsDefaultsHtml(values, activeScope = 'global') {
-  return `<form id="project-assets-defaults-form"><input name="loadedScope" value="${activeScope}"><script type="application/json" data-project-assets-default-values>${JSON.stringify(values)}</script></form>`;
+function projectAssetsDefaultsHtml(values, activeScope = 'global', savedDefaults = null) {
+  const saved = savedDefaults
+    ? `<script type="application/json" data-project-assets-saved-defaults>${JSON.stringify(savedDefaults)}</script>`
+    : '';
+  return `<form id="project-assets-defaults-form"><input name="loadedScope" value="${activeScope}"><script type="application/json" data-project-assets-default-values>${JSON.stringify(values)}</script>${saved}</form>`;
 }
 
 function installProjectAssetsResponseParser(page) {
@@ -311,10 +316,15 @@ function installProjectAssetsResponseParser(page) {
         }), { textContent: match[1] })
         : null;
       const scope = String(html).match(/<input name="loadedScope" value="([^"]*)">/);
+      const savedMatch = String(html).match(
+        /<script type="application\/json" data-project-assets-saved-defaults>([\s\S]*?)<\/script>/,
+      );
+      const savedScript = savedMatch ? { textContent: savedMatch[1] } : null;
       const form = {
         querySelector: (selector) => {
           if (selector === 'input[name="loadedScope"]') return scope ? { value: scope[1] } : null;
           if (selector === 'script[type="application/json"][data-project-assets-default-values]') return script;
+          if (selector === 'script[type="application/json"][data-project-assets-saved-defaults]') return savedScript;
           return null;
         },
       };
@@ -351,7 +361,7 @@ function makeDialogPage({
   document.createElement = (tagName) => makeElement(tagName);
 
   const region = makeElement('div', { 'data-projects-live-region': '' });
-  const dialogId = projectAssetsDefaults ? 'project-assets-defaults-dialog' : 'projects-defaults-dialog';
+  const dialogId = projectAssetsDefaults ? 'project-assets-filter-dialog' : 'projects-defaults-dialog';
   const formId = projectAssetsDefaults ? 'project-assets-defaults-form' : 'projects-defaults-form';
   const formAction = projectAssetsDefaults ? '/projects/1/assets/defaults' : '/projects/defaults';
   const trigger = makeElement('a', {
@@ -3363,6 +3373,2469 @@ describe('Projects defaults autosave enhancement', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  describe('WP4 explicit save transport', () => {
+    function makeExplicitProjectAssetsPage({ explicit = true } = {}) {
+      // Editing selects keep `data-autosubmit="fetch"` to prove explicit mode
+      // binds only the save control, not every fetch-marked control.
+      const page = makeDialogPage({
+        standardDropdowns: true,
+        projectAssetsDefaults: true,
+        projectAssetsScope: true,
+        projectAssetsDefaultsAutosave: true,
+      });
+      if (explicit) page.form.setAttribute(DEFAULTS_EXPLICIT_SAVE_ATTRIBUTE, '');
+      const intent = makeElement('input', {
+        type: 'hidden', name: 'intent', value: 'save', 'data-autosubmit': 'fetch',
+      });
+      intent.form = page.form;
+      page.form.appendChild(intent);
+      return page;
+    }
+
+    function postBody(fetch, index) {
+      return Object.fromEntries(fetch.mock.calls[index][1].body.entries());
+    }
+
+    function deferred() {
+      let resolve;
+      const promise = new Promise((done) => { resolve = done; });
+      return { promise, resolve };
+    }
+
+    // WP6: a scope change in explicit mode is an activation (covered below), so
+    // this keeps proving that editing controls never writes.
+    it('posts nothing on control changes and sends one intent=save write per Save action', async () => {
+      const page = makeExplicitProjectAssetsPage();
+      const initial = JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent);
+      const pending = deferred();
+      const fetch = vi.fn().mockReturnValueOnce(pending.promise);
+      installFetchGlobals(page, fetch);
+
+      try {
+        expect(enhanceProjectAssetsAutosavePage(page)).toBe(1);
+        expect(enhanceProjectAssetsDefaultsFetchSave(page.document, page.projectAssetsDefaultsRefreshOptions)).toBe(0);
+        page.document.dispatch('click', { target: page.trigger });
+        await flush();
+
+        page.fields.sort.value = 'modified';
+        page.fields.sort.dispatch('change');
+        page.fields.sort.value = 'size';
+        page.fields.sort.dispatch('change');
+        await flush();
+        expect(fetch).not.toHaveBeenCalled();
+        expect(page.projectAssetsDefaultsRefreshOptions.beginRefresh).not.toHaveBeenCalled();
+
+        const first = page.form.dispatch('submit');
+        const repeat = page.form.dispatch('submit');
+        await flush();
+
+        expect(first.defaultPrevented).toBe(true);
+        expect(repeat.defaultPrevented).toBe(true);
+        expect(fetch).toHaveBeenCalledOnce();
+        expect(fetch.mock.calls[0][0]).toBe(page.form.action);
+        expect(String(fetch.mock.calls[0][0])).not.toMatch(/\/reset$/);
+        expect(postBody(fetch, 0)).toEqual({
+          _csrf: 'csrf-token',
+          scope: 'global',
+          loadedScope: 'global',
+          ...initial.global,
+          sort: 'size',
+          intent: 'save',
+        });
+        expect(page.form.getAttribute('data-settings-fetch-save-state')).toBe('pending');
+
+        pending.resolve(response({
+          url: 'http://creatorcrate.test/projects/1/assets?sort=size&notice=project_assets_defaults_saved',
+          html: projectAssetsDefaultsHtml({ global: { ...initial.global, sort: 'size' }, project: initial.project }),
+        }));
+        await flush();
+
+        expect(fetch).toHaveBeenCalledOnce();
+        expect(page.projectAssetsDefaultsRefreshOptions.refresh).toHaveBeenCalledOnce();
+        expect(page.form.getAttribute('data-settings-fetch-save-state')).toBe('saved');
+        expect(page.dialog.open).toBe(true);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('keeps values through validation and network failures without claiming success or retrying', async () => {
+      const page = makeExplicitProjectAssetsPage();
+      const initial = JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent);
+      const fetch = vi.fn()
+        .mockResolvedValueOnce(response({ ok: false, redirected: false, html: '<p>Invalid sort.</p>' }))
+        .mockRejectedValueOnce(new Error('offline'))
+        .mockResolvedValueOnce(response({
+          url: 'http://creatorcrate.test/projects/1/assets?notice=project_assets_defaults_saved',
+          html: projectAssetsDefaultsHtml({ global: { ...initial.global, sort: 'modified' }, project: initial.project }),
+        }));
+      installFetchGlobals(page, fetch);
+
+      try {
+        enhanceProjectAssetsAutosavePage(page);
+        page.document.dispatch('click', { target: page.trigger });
+        await flush();
+        page.fields.sort.value = 'modified';
+        page.fields.sort.dispatch('change');
+
+        page.form.dispatch('submit');
+        await flush();
+        expect(fetch).toHaveBeenCalledTimes(1);
+        expect(page.fields.sort.value).toBe('modified');
+        expect(page.form.getAttribute('data-settings-fetch-save-state')).toBe('error');
+        expect(page.status.textContent).toBe('Could not save settings. Your current changes were kept.');
+        expect(page.projectAssetsDefaultsRefreshOptions.refresh).not.toHaveBeenCalled();
+
+        page.form.dispatch('submit');
+        await flush();
+        expect(fetch).toHaveBeenCalledTimes(2);
+        expect(page.fields.sort.value).toBe('modified');
+        expect(page.form.getAttribute('data-settings-fetch-save-state')).toBe('error');
+        expect(page.projectAssetsDefaultsRefreshOptions.refresh).not.toHaveBeenCalled();
+
+        page.form.dispatch('submit');
+        await flush();
+        expect(fetch).toHaveBeenCalledTimes(3);
+        expect(postBody(fetch, 2)).toMatchObject({ intent: 'save', sort: 'modified' });
+        expect(page.form.getAttribute('data-settings-fetch-save-state')).toBe('saved');
+        expect(page.projectAssetsDefaultsRefreshOptions.refresh).toHaveBeenCalledOnce();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('sends a newer Save after the older one acknowledges without overwriting newer controls', async () => {
+      const page = makeExplicitProjectAssetsPage();
+      const initial = JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent);
+      const older = deferred();
+      const newer = deferred();
+      const fetch = vi.fn().mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+      installFetchGlobals(page, fetch);
+
+      try {
+        enhanceProjectAssetsAutosavePage(page);
+        page.document.dispatch('click', { target: page.trigger });
+        await flush();
+        page.fields.sort.value = 'modified';
+        page.form.dispatch('submit');
+        await flush();
+        page.fields.sort.value = 'size';
+        page.fields.sort.dispatch('change');
+        page.form.dispatch('submit');
+        await flush();
+        expect(fetch).toHaveBeenCalledTimes(1);
+
+        older.resolve(response({
+          url: 'http://creatorcrate.test/projects/1/assets?sort=modified&notice=project_assets_defaults_saved',
+          html: projectAssetsDefaultsHtml({ global: { ...initial.global, sort: 'modified' }, project: initial.project }),
+        }));
+        await flush();
+        expect(page.fields.sort.value).toBe('size');
+        expect(fetch).toHaveBeenCalledTimes(2);
+        expect(postBody(fetch, 1)).toMatchObject({ intent: 'save', sort: 'size' });
+        expect(page.projectAssetsDefaultsRefreshOptions.refresh).not.toHaveBeenCalled();
+
+        newer.resolve(response({
+          url: 'http://creatorcrate.test/projects/1/assets?sort=size&notice=project_assets_defaults_saved',
+          html: projectAssetsDefaultsHtml({ global: { ...initial.global, sort: 'size' }, project: initial.project }),
+        }));
+        await flush();
+        expect(page.fields.sort.value).toBe('size');
+        expect(page.projectAssetsDefaultsRefreshOptions.refresh).toHaveBeenCalledOnce();
+        expect(page.projectAssetsDefaultsRefreshOptions.refresh.mock.calls[0][1]).toContain('sort=size');
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('drops a duplicate button or keyboard Save while pending without a native POST or false success', async () => {
+      const page = makeExplicitProjectAssetsPage();
+      const initial = JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent);
+      const pending = deferred();
+      const fetch = vi.fn().mockReturnValueOnce(pending.promise);
+      installFetchGlobals(page, fetch);
+
+      try {
+        enhanceProjectAssetsAutosavePage(page);
+        page.document.dispatch('click', { target: page.trigger });
+        await flush();
+        page.fields.sort.value = 'modified';
+
+        const first = page.form.dispatch('submit', { submitter: page.save });
+        await flush();
+        // A repeat click and an Enter-key implicit submission (no submitter)
+        // carry the identical in-flight payload.
+        const repeatClick = page.form.dispatch('submit', { submitter: page.save });
+        const repeatKeyboard = page.form.dispatch('submit', { submitter: null });
+        await flush();
+
+        expect([first, repeatClick, repeatKeyboard].map((event) => event.defaultPrevented))
+          .toEqual([true, true, true]);
+        expect(fetch).toHaveBeenCalledOnce();
+        expect(page.form.getAttribute('data-settings-fetch-save-state')).toBe('pending');
+        expect(page.form.getAttribute('aria-busy')).toBe('true');
+        expect(page.projectAssetsDefaultsRefreshOptions.refresh).not.toHaveBeenCalled();
+        expect(page.dialog.open).toBe(true);
+
+        pending.resolve(response({
+          url: 'http://creatorcrate.test/projects/1/assets?sort=modified&notice=project_assets_defaults_saved',
+          html: projectAssetsDefaultsHtml({ global: { ...initial.global, sort: 'modified' }, project: initial.project }),
+        }));
+        await flush();
+        expect(fetch).toHaveBeenCalledOnce();
+        expect(page.form.getAttribute('data-settings-fetch-save-state')).toBe('saved');
+        expect(page.projectAssetsDefaultsRefreshOptions.refresh).toHaveBeenCalledOnce();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it.each([
+      ['the save control is missing', (page) => page.form.querySelector('input[name="intent"]').remove()],
+      ['fetch is unavailable so the save control never binds', () => vi.stubGlobal('fetch', undefined)],
+    ])('blocks the native POST and reports an error when %s', async (_label, breakBinding) => {
+      const page = makeExplicitProjectAssetsPage();
+      const fetch = vi.fn();
+      installFetchGlobals(page, fetch);
+
+      try {
+        breakBinding(page);
+        enhanceProjectAssetsAutosavePage(page);
+        page.document.dispatch('click', { target: page.trigger });
+        await flush();
+
+        const click = page.form.dispatch('submit', { submitter: page.save });
+        const keyboard = page.form.dispatch('submit', { submitter: null });
+        await flush();
+
+        expect(click.defaultPrevented).toBe(true);
+        expect(keyboard.defaultPrevented).toBe(true);
+        expect(fetch).not.toHaveBeenCalled();
+        expect(page.form.getAttribute('data-settings-fetch-save-state')).toBe('error');
+        expect(page.status.textContent).toBe('Could not save settings. Your current changes were kept.');
+        expect(page.projectAssetsDefaultsRefreshOptions.refresh).not.toHaveBeenCalled();
+        expect(page.dialog.open).toBe(true);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('leaves a form without the opt-in on change autosave and its submit unintercepted', async () => {
+      const page = makeExplicitProjectAssetsPage({ explicit: false });
+      page.form.querySelector('input[name="intent"]').remove();
+      const fetch = vi.fn().mockResolvedValue(response({
+        url: 'http://creatorcrate.test/projects/1/assets?notice=project_assets_defaults_saved',
+      }));
+      installFetchGlobals(page, fetch);
+
+      try {
+        expect(enhanceProjectAssetsAutosavePage(page)).toBe(9);
+        page.document.dispatch('click', { target: page.trigger });
+        await flush();
+        expect(page.form.dispatch('submit').defaultPrevented).toBe(false);
+        await flush();
+        expect(fetch).not.toHaveBeenCalled();
+
+        page.fields.sort.value = 'modified';
+        page.fields.sort.dispatch('change');
+        await flush();
+        expect(fetch).toHaveBeenCalledOnce();
+        expect(postBody(fetch, 0)).not.toHaveProperty('intent');
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+  });
+
+  describe('WP6 explicit-save scope activation', () => {
+    const GLOBAL = { view: 'grid', gridStyle: 'uncropped', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' };
+    const PROJECT = { view: 'list', gridStyle: 'cropped', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: 'png', tag: '2' };
+    const RETURN_TO = '/projects/1/assets?category=7&search=needle&presence=present&usage=used&page=3';
+
+    function makeActivationPage({ loadedScope = 'global' } = {}) {
+      const page = makeDialogPage({
+        standardDropdowns: true,
+        projectAssetsDefaults: true,
+        projectAssetsScope: true,
+        projectAssetsDefaultsAutosave: true,
+        projectAssetsScopeValues: { global: GLOBAL, project: PROJECT },
+        loadedScope,
+      });
+      page.form.setAttribute(DEFAULTS_EXPLICIT_SAVE_ATTRIBUTE, '');
+      const intent = makeElement('input', { type: 'hidden', name: 'intent', value: 'save', 'data-autosubmit': 'fetch' });
+      intent.form = page.form;
+      page.form.appendChild(intent);
+      page.form.appendChild(makeElement('input', { type: 'hidden', name: 'returnTo', value: RETURN_TO }));
+      if (loadedScope === 'project') setProjectAssetsDefaultValues(page.fields, PROJECT);
+      return page;
+    }
+
+    function enhance(page) {
+      page.region.appendChild(page.trigger);
+      installProjectAssetsResponseParser(page);
+      enhanceDropdowns(page.document);
+      page.beginActivationRefresh = vi.fn(() => 31);
+      page.refreshActivation = vi.fn(() => 'started');
+      enhanceProjectAssetsDefaultsScope(page.document, {
+        beginRefresh: page.beginActivationRefresh,
+        refreshActivation: page.refreshActivation,
+      });
+      enhanceAppDialogs(page.document);
+      page.saveRefresh = vi.fn(() => 'started');
+      enhanceProjectAssetsDefaultsFetchSave(page.document, { beginRefresh: vi.fn(() => 17), refresh: page.saveRefresh });
+      page.document.dispatch('click', { target: page.trigger });
+    }
+
+    function stubStorage() {
+      const storage = new Map();
+      vi.stubGlobal('localStorage', {
+        getItem: (key) => storage.get(key) ?? null,
+        setItem: (key, value) => storage.set(key, String(value)),
+      });
+      return storage;
+    }
+
+    function json(payload, { ok = true, status = 200 } = {}) {
+      return { ok, status, json: async () => payload };
+    }
+
+    function acknowledgement(activeScope, values) {
+      return json({
+        status: 'success',
+        activation: { activeScope, previousScope: activeScope === 'project' ? 'global' : 'project', changed: true },
+        savedDefaults: {},
+        defaults: { scope: activeScope, ...values, effective: values[activeScope] },
+      });
+    }
+
+    function html(values, activeScope) {
+      return { ok: true, status: 200, text: async () => projectAssetsDefaultsHtml(values, activeScope) };
+    }
+
+    const body = (fetch, index) => Object.fromEntries(fetch.mock.calls[index][1].body.entries());
+    const posts = (fetch) => fetch.mock.calls.filter(([, init]) => init?.method === 'POST');
+    const loadedScope = (page) => page.form.querySelector('input[name="loadedScope"]').value;
+    const storedValues = (page) => JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent);
+
+    function deferredResult() {
+      let resolve;
+      const promise = new Promise((done) => { resolve = done; });
+      return { promise, resolve };
+    }
+
+    it('activates Project only without saving: pending stays unacknowledged, the acknowledgement loads inherited values once', async () => {
+      const page = makeActivationPage();
+      const pending = deferredResult();
+      const fetch = vi.fn().mockReturnValueOnce(pending.promise);
+      const storage = stubStorage();
+      installFetchGlobals(page, fetch);
+
+      try {
+        enhance(page);
+        // An unsaved eligible edit made before switching is replaced, not saved.
+        page.fields.sort.value = 'size';
+        page.fields.sort.dispatch('change');
+        const nativeEvents = vi.fn();
+        Object.values(page.fields).forEach((select) => {
+          select.addEventListener('change', nativeEvents);
+          select.addEventListener('input', nativeEvents);
+        });
+
+        changeProjectAssetsScope(page, 'project');
+        await flush();
+
+        expect(fetch).toHaveBeenCalledOnce();
+        expect(fetch.mock.calls[0][0]).toBe('/projects/1/assets/defaults');
+        expect(fetch.mock.calls[0][1]).toMatchObject({ method: 'POST', headers: { Accept: 'application/json' } });
+        expect(body(fetch, 0)).toEqual({
+          _csrf: 'csrf-token', returnTo: RETURN_TO, intent: 'activate-scope', scope: 'project',
+        });
+        expect(loadedScope(page)).toBe('global');
+        expect(page.scopeControls.global.disabled).toBe(true);
+        expect(page.scopeControls.project.disabled).toBe(true);
+        expect(page.scopeControls.scope.getAttribute('aria-busy')).toBe('true');
+        expect(page.status.textContent).toBe('Loading Project-only defaults.');
+        expect(storage.size).toBe(0);
+        expect(page.beginActivationRefresh).toHaveBeenCalledOnce();
+        expect(page.refreshActivation).not.toHaveBeenCalled();
+
+        // A Save while switching is refused visibly, never sent.
+        expect(page.form.dispatch('submit').defaultPrevented).toBe(true);
+        await flush();
+        expect(fetch).toHaveBeenCalledOnce();
+        expect(page.status.textContent).toBe('Wait for the defaults scope to finish changing before saving.');
+        expect(page.form.getAttribute('data-settings-fetch-save-state')).toBe('error');
+
+        // Missing Project-only overrides come back resolved from Global.
+        const project = { ...GLOBAL, view: 'list', sort: 'modified', gridSize: 'large' };
+        pending.resolve(acknowledgement('project', { global: GLOBAL, project }));
+        await flush();
+
+        expect(loadedScope(page)).toBe('project');
+        expect(page.scopeControls.project.checked).toBe(true);
+        expect(page.scopeControls.project.disabled).toBe(false);
+        expect(page.scopeControls.scope.getAttribute('aria-busy')).toBeNull();
+        expect(projectAssetsDefaultValues(page.fields)).toEqual(project);
+        expect(storedValues(page)).toEqual({ global: GLOBAL, project });
+        expect(storage.get('creatorcrate-asset-grid-size')).toBe('large');
+        expect(storage.get('creatorcrate-asset-list-size')).toBe(GLOBAL.listSize);
+        // Native and visible dropdown state agree, with no synthetic change.
+        expect(nativeEvents).not.toHaveBeenCalled();
+        const sortChoice = page.dropdowns.sort.panel.querySelectorAll('input').find((input) => input.checked);
+        expect(sortChoice.value).toBe('modified');
+        expect(page.refreshActivation).toHaveBeenCalledOnce();
+        expect(page.refreshActivation).toHaveBeenCalledWith(
+          page.document, 31, project, expect.objectContaining({ presentationUnchanged: false }),
+        );
+        expect(page.status.textContent).toBe('Project-only defaults loaded.');
+        expect(posts(fetch)).toHaveLength(1);
+        expect(page.saveRefresh).not.toHaveBeenCalled();
+        expect(projectAssetsDefaultsSaveBlockedReason(page.form)).toBeNull();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('activates Global with dormant Project-only overrides intact and the next Save targets the acknowledged scope', async () => {
+      const page = makeActivationPage({ loadedScope: 'project' });
+      const fetch = vi.fn()
+        .mockResolvedValueOnce(acknowledgement('global', { global: GLOBAL, project: PROJECT }))
+        .mockResolvedValueOnce(response({
+          url: 'http://creatorcrate.test/projects/1/assets?sort=size&notice=project_assets_defaults_saved',
+          html: projectAssetsDefaultsHtml({ global: { ...GLOBAL, sort: 'size' }, project: PROJECT }, 'global'),
+        }));
+      stubStorage();
+      installFetchGlobals(page, fetch);
+
+      try {
+        enhance(page);
+        changeProjectAssetsScope(page, 'global');
+        await flush();
+
+        expect(body(fetch, 0)).toEqual({ _csrf: 'csrf-token', returnTo: RETURN_TO, intent: 'activate-scope', scope: 'global' });
+        expect(loadedScope(page)).toBe('global');
+        expect(projectAssetsDefaultValues(page.fields)).toEqual(GLOBAL);
+        expect(storedValues(page).project).toEqual(PROJECT);
+
+        page.fields.sort.value = 'size';
+        page.fields.sort.dispatch('change');
+        page.form.dispatch('submit');
+        await flush();
+
+        expect(body(fetch, 1)).toEqual({
+          _csrf: 'csrf-token', returnTo: RETURN_TO, scope: 'global', loadedScope: 'global',
+          ...GLOBAL, sort: 'size', intent: 'save',
+        });
+        expect(page.saveRefresh).toHaveBeenCalledOnce();
+        expect(loadedScope(page)).toBe('global');
+        expect(storedValues(page)).toEqual({ global: { ...GLOBAL, sort: 'size' }, project: PROJECT });
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it.each([
+      ['a 422 refusal', () => json({ status: 'error', errors: { scope: 'Choose a scope.' } }, { ok: false, status: 422 })],
+      ['a 500 that made no change', () => json({ status: 'error', message: 'No changes were made.' }, { ok: false, status: 500 })],
+    ])('keeps the acknowledged scope and current controls after %s', async (_label, failure) => {
+      const page = makeActivationPage();
+      const fetch = vi.fn().mockResolvedValueOnce(failure());
+      const storage = stubStorage();
+      installFetchGlobals(page, fetch);
+
+      try {
+        enhance(page);
+        page.fields.sort.value = 'size';
+        page.fields.sort.dispatch('change');
+        changeProjectAssetsScope(page, 'project');
+        await flush();
+
+        expect(fetch).toHaveBeenCalledOnce();
+        expect(loadedScope(page)).toBe('global');
+        expect(page.scopeControls.global.checked).toBe(true);
+        expect(page.scopeControls.project.checked).toBe(false);
+        expect(page.scopeControls.project.disabled).toBe(false);
+        expect(page.fields.sort.value).toBe('size');
+        expect(storedValues(page)).toEqual({ global: GLOBAL, project: PROJECT });
+        expect(storage.size).toBe(0);
+        expect(page.refreshActivation).not.toHaveBeenCalled();
+        const message = 'Defaults scope could not be changed. The previous scope is still active.';
+        expect(page.status.textContent).toBe(message);
+        expect(page.form.querySelector('[data-dialog-error-text]').textContent).toBe(message);
+        expect(projectAssetsDefaultsSaveBlockedReason(page.form)).toBeNull();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('reconciles a committed activation whose read-back failed through a GET, never a second POST', async () => {
+      const page = makeActivationPage();
+      const fetch = vi.fn()
+        .mockResolvedValueOnce(json({ status: 'error', activation: { activeScope: 'project' } }, { ok: false, status: 500 }))
+        .mockResolvedValueOnce(html({ global: GLOBAL, project: PROJECT }, 'project'));
+      const storage = stubStorage();
+      installFetchGlobals(page, fetch);
+
+      try {
+        enhance(page);
+        changeProjectAssetsScope(page, 'project');
+        await flush();
+        await flush();
+
+        expect(fetch).toHaveBeenCalledTimes(2);
+        expect(fetch.mock.calls[1][0]).toBe(RETURN_TO);
+        expect(fetch.mock.calls[1][1].method).toBe('GET');
+        expect(posts(fetch)).toHaveLength(1);
+        expect(loadedScope(page)).toBe('project');
+        expect(projectAssetsDefaultValues(page.fields)).toEqual(PROJECT);
+        expect(storage.get('creatorcrate-asset-grid-size')).toBe(PROJECT.gridSize);
+        expect(page.refreshActivation).toHaveBeenCalledOnce();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('blocks Save after an unconfirmable outcome until a read-only check settles the active scope', async () => {
+      const page = makeActivationPage();
+      const fetch = vi.fn()
+        .mockRejectedValueOnce(new Error('offline'))
+        .mockRejectedValueOnce(new Error('offline'))
+        .mockResolvedValueOnce(html({ global: GLOBAL, project: PROJECT }, 'global'));
+      const storage = stubStorage();
+      installFetchGlobals(page, fetch);
+
+      try {
+        enhance(page);
+        changeProjectAssetsScope(page, 'project');
+        await flush();
+        await flush();
+
+        expect(fetch).toHaveBeenCalledTimes(2);
+        expect(loadedScope(page)).toBe('global');
+        expect(page.scopeControls.global.checked).toBe(true);
+        expect(page.scopeControls.project.disabled).toBe(false);
+        expect(page.status.textContent).toBe(
+          'Could not confirm whether the defaults scope changed. Choose a scope to check again, or reload the page.',
+        );
+        page.form.dispatch('submit');
+        await flush();
+        expect(fetch).toHaveBeenCalledTimes(2);
+        expect(page.status.textContent).toBe(
+          'The active defaults scope could not be confirmed. Choose a scope to check it before saving.',
+        );
+
+        // Choosing a scope again only reads; it never repeats the POST.
+        changeProjectAssetsScope(page, 'project');
+        expect(page.scopeControls.global.checked).toBe(true);
+        await flush();
+        await flush();
+
+        expect(fetch).toHaveBeenCalledTimes(3);
+        expect(fetch.mock.calls[2][1].method).toBe('GET');
+        expect(posts(fetch)).toHaveLength(1);
+        expect(loadedScope(page)).toBe('global');
+        expect(page.status.textContent).toBe('Global defaults are active.');
+        expect(storage.size).toBe(0);
+        expect(page.refreshActivation).not.toHaveBeenCalled();
+        expect(projectAssetsDefaultsSaveBlockedReason(page.form)).toBeNull();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('keeps newer edits made while an activation was pending and still commits the acknowledged scope', async () => {
+      const page = makeActivationPage();
+      const pending = deferredResult();
+      const fetch = vi.fn().mockReturnValueOnce(pending.promise);
+      stubStorage();
+      installFetchGlobals(page, fetch);
+
+      try {
+        enhance(page);
+        changeProjectAssetsScope(page, 'project');
+        await flush();
+        page.fields.sort.value = 'size';
+        page.fields.sort.dispatch('change');
+        pending.resolve(acknowledgement('project', { global: GLOBAL, project: PROJECT }));
+        await flush();
+
+        expect(loadedScope(page)).toBe('project');
+        expect(page.fields.sort.value).toBe('size');
+        expect(page.fields.view.value).toBe(GLOBAL.view);
+        expect(storedValues(page)).toEqual({ global: GLOBAL, project: PROJECT });
+        expect(page.status.textContent).toBe(
+          'Project-only defaults are active. Your newer changes were kept and are not saved.',
+        );
+        expect(posts(fetch)).toHaveLength(1);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('refuses an activation while a Save is pending so neither can write against a stale scope', async () => {
+      const page = makeActivationPage();
+      const save = deferredResult();
+      const fetch = vi.fn()
+        .mockReturnValueOnce(save.promise)
+        .mockResolvedValueOnce(acknowledgement('project', { global: { ...GLOBAL, sort: 'size' }, project: PROJECT }));
+      stubStorage();
+      installFetchGlobals(page, fetch);
+
+      try {
+        enhance(page);
+        page.fields.sort.value = 'size';
+        page.form.dispatch('submit');
+        await flush();
+        expect(body(fetch, 0)).toMatchObject({ intent: 'save', scope: 'global', loadedScope: 'global' });
+
+        changeProjectAssetsScope(page, 'project');
+        await flush();
+        expect(fetch).toHaveBeenCalledOnce();
+        expect(page.scopeControls.global.checked).toBe(true);
+        expect(loadedScope(page)).toBe('global');
+        expect(page.status.textContent).toBe('Wait for the current save to finish before changing the defaults scope.');
+
+        save.resolve(response({
+          url: 'http://creatorcrate.test/projects/1/assets?sort=size&notice=project_assets_defaults_saved',
+          html: projectAssetsDefaultsHtml({ global: { ...GLOBAL, sort: 'size' }, project: PROJECT }, 'global'),
+        }));
+        await flush();
+        expect(loadedScope(page)).toBe('global');
+
+        changeProjectAssetsScope(page, 'project');
+        await flush();
+        expect(body(fetch, 1)).toEqual({ _csrf: 'csrf-token', returnTo: RETURN_TO, intent: 'activate-scope', scope: 'project' });
+        expect(loadedScope(page)).toBe('project');
+        expect(projectAssetsDefaultValues(page.fields)).toEqual(PROJECT);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    // Milestone 2 Correction A. The combined Filters & Defaults dialog: the
+    // defaults form opts in to the live controls and sits beside the rendered grid.
+    function makeLivePage(options = {}) {
+      const page = makeActivationPage(options);
+      page.form.setAttribute('data-defaults-live-controls', '');
+      page.liveRegion = makeElement('div', { 'data-project-assets-live-region': '' });
+      page.grid = makeElement('ul', {
+        class: 'asset-grid',
+        'data-grid-style': options.loadedScope === 'project' ? PROJECT.gridStyle : GLOBAL.gridStyle,
+      });
+      page.liveRegion.appendChild(page.grid);
+      page.document.body.appendChild(page.liveRegion);
+      page.reset = makeElement('button', { type: 'button', 'data-project-assets-defaults-reset': '' });
+      page.dialog.appendChild(page.reset);
+      return page;
+    }
+
+    function enhanceLive(page) {
+      page.region.appendChild(page.trigger);
+      installProjectAssetsResponseParser(page);
+      enhanceDropdowns(page.document);
+      page.beginActivationRefresh = vi.fn(() => 31);
+      page.refreshActivation = vi.fn(() => 'applied');
+      enhanceProjectAssetsDefaultsScope(page.document, {
+        beginRefresh: page.beginActivationRefresh,
+        refreshActivation: page.refreshActivation,
+        confirm: vi.fn(async () => true),
+      });
+      enhanceAppDialogs(page.document);
+      page.document.dispatch('click', { target: page.trigger });
+    }
+
+    function chooseDefault(page, name, value) {
+      page.fields[name].value = value;
+      page.fields[name].dispatch('change');
+    }
+
+    const SIZE_KEYS = ['creatorcrate-asset-grid-size', 'creatorcrate-asset-list-size'];
+    const storedSizes = (storage) => SIZE_KEYS.map((key) => storage.get(key));
+
+    describe('Correction A F1 — browser size synchronization', () => {
+      it('recognizes the combined Filters & Defaults dialog and no other dialog', () => {
+        const storage = stubStorage();
+        try {
+          ['project-assets-defaults-dialog', 'projects-defaults-dialog', 'releases-defaults-dialog', 'asset-library-filter-dialog']
+            .forEach((id) => syncProjectAssetsSizePreferences({ id }, { gridSize: 'compact', listSize: 'compact' }));
+          expect(storage.size).toBe(0);
+
+          syncProjectAssetsSizePreferences({ id: 'project-assets-filter-dialog' }, { gridSize: 'compact', listSize: 'bogus' });
+          expect(storedSizes(storage)).toEqual(['compact', undefined]);
+          syncProjectAssetsSizePreferences({ id: 'project-assets-filter-dialog' }, { gridSize: 'large', listSize: 'compact' });
+          expect(storedSizes(storage)).toEqual(['large', 'compact']);
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      it('writes the saved sizes only when a Save is acknowledged, never for a draft, a failure or a pending Save', async () => {
+        const page = makeActivationPage();
+        const save = deferredResult();
+        const fetch = vi.fn()
+          .mockResolvedValueOnce(response({ ok: false, redirected: false, html: '<p>Invalid size.</p>' }))
+          .mockReturnValueOnce(save.promise);
+        const storage = stubStorage();
+        SIZE_KEYS.forEach((key) => storage.set(key, 'large'));
+        installFetchGlobals(page, fetch);
+
+        try {
+          enhance(page);
+          chooseDefault(page, 'gridSize', 'compact');
+          chooseDefault(page, 'listSize', 'compact');
+          await flush();
+          // The size defaults are drafts: no write of any kind before Save.
+          expect(fetch).not.toHaveBeenCalled();
+          expect(storedSizes(storage)).toEqual(['large', 'large']);
+
+          page.form.dispatch('submit');
+          await flush();
+          expect(fetch).toHaveBeenCalledTimes(1);
+          expect(page.form.getAttribute('data-settings-fetch-save-state')).toBe('error');
+          expect(storedSizes(storage)).toEqual(['large', 'large']);
+
+          page.form.dispatch('submit');
+          await flush();
+          expect(fetch).toHaveBeenCalledTimes(2);
+          expect(body(fetch, 1)).toMatchObject({ intent: 'save', gridSize: 'compact', listSize: 'compact' });
+          expect(storedSizes(storage)).toEqual(['large', 'large']);
+
+          save.resolve(response({
+            url: 'http://creatorcrate.test/projects/1/assets?notice=project_assets_defaults_saved',
+            html: projectAssetsDefaultsHtml(
+              { global: { ...GLOBAL, gridSize: 'compact', listSize: 'compact' }, project: PROJECT },
+              'global',
+            ),
+          }));
+          await flush();
+          expect(page.form.getAttribute('data-settings-fetch-save-state')).toBe('saved');
+          expect(storedSizes(storage)).toEqual(['compact', 'compact']);
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      it('loads each acknowledged scope\'s own sizes: Project-only, then Global', async () => {
+        const page = makeLivePage();
+        const fetch = vi.fn()
+          .mockResolvedValueOnce(acknowledgement('project', { global: GLOBAL, project: PROJECT }))
+          .mockResolvedValueOnce(acknowledgement('global', { global: GLOBAL, project: PROJECT }));
+        const storage = stubStorage();
+        installFetchGlobals(page, fetch);
+
+        try {
+          enhanceLive(page);
+          changeProjectAssetsScope(page, 'project');
+          await flush();
+          expect(loadedScope(page)).toBe('project');
+          expect(storedSizes(storage)).toEqual([PROJECT.gridSize, PROJECT.listSize]);
+
+          changeProjectAssetsScope(page, 'global');
+          await flush();
+          expect(loadedScope(page)).toBe('global');
+          expect(storedSizes(storage)).toEqual([GLOBAL.gridSize, GLOBAL.listSize]);
+          expect(page.refreshActivation).toHaveBeenCalledTimes(2);
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      it('leaves the browser sizes alone when defaults are reset', async () => {
+        const page = makeLivePage();
+        const fetch = vi.fn().mockResolvedValueOnce(json({
+          status: 'success',
+          reset: { scope: 'global', changed: true },
+          defaults: { scope: 'global', global: GLOBAL, project: GLOBAL },
+        }));
+        const storage = stubStorage();
+        SIZE_KEYS.forEach((key) => storage.set(key, 'compact'));
+        installFetchGlobals(page, fetch);
+
+        try {
+          enhanceLive(page);
+          page.reset.dispatch('click');
+          await flush();
+          await flush();
+
+          expect(fetch).toHaveBeenCalledOnce();
+          expect(fetch.mock.calls[0][0]).toBe('/projects/1/assets/defaults/reset');
+          expect(page.status.textContent).toBe('Global defaults reset. Project-only defaults were kept.');
+          expect(storedSizes(storage)).toEqual(['compact', 'compact']);
+          expect(storage.size).toBe(2);
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+    });
+
+    // Milestone 2 Correction C (F5): an acknowledged reset that changes the
+    // defaults navigation is built against re-reads the current view, once,
+    // through the post-mutation refresh; nothing else does.
+    // Package B: Reset filters is a live GET whose restored controls are not
+    // on screen until it installs, so it and the defaults operations exclude
+    // each other, and nothing it does saves, activates or writes storage.
+    describe('Package B — Reset filters operation ownership', () => {
+      const RESET_EVENT = 'project-assets-filters-reset';
+      const pendingReset = (page, reset) => {
+        page.document.__creatorCrateProjectAssetsLiveFiltering = { projectAssetsFiltersReset: reset };
+      };
+      const announce = (page, id, phase) => page.document.dispatch(RESET_EVENT, {
+        detail: { id, phase, generation: 4, url: 'http://creatorcrate.test/projects/1/assets?resetFilters=1' },
+      });
+      function addFiltersReset(page) {
+        const button = makeElement('button', { type: 'submit', 'data-project-assets-reset': '' });
+        page.dialog.appendChild(button);
+        return button;
+      }
+
+      it('refuses Save, scope activation and Reset defaults while Reset filters owns the live region', async () => {
+        const page = makeLivePage();
+        const fetch = vi.fn();
+        const storage = stubStorage();
+        installFetchGlobals(page, fetch);
+        try {
+          enhanceLive(page);
+          pendingReset(page, { id: 1, generation: 4, phase: 'pending' });
+          announce(page, 1, 'started');
+
+          // The explicit-save transport refuses a Save with this reason (WP6).
+          expect(projectAssetsDefaultsSaveBlockedReason(page.form)).toBe('Wait for Reset filters to finish before saving.');
+
+          changeProjectAssetsScope(page, 'project');
+          await flush();
+          expect(fetch).not.toHaveBeenCalled();
+          expect(loadedScope(page)).toBe('global');
+          expect(page.scopeControls.global.checked).toBe(true);
+          expect(page.beginActivationRefresh).not.toHaveBeenCalled();
+          expect(page.status.textContent).toBe('Wait for Reset filters to finish before changing the defaults scope.');
+
+          page.reset.dispatch('click');
+          await flush();
+          expect(fetch).not.toHaveBeenCalled();
+          expect(page.status.textContent).toBe('Wait for Reset filters to finish before resetting defaults.');
+
+          // Installed: every operation is available again; nothing was written.
+          page.document.dispatch(RESET_EVENT, { detail: {
+            id: 1, phase: 'prepared', generation: 4, url: 'http://creatorcrate.test/projects/1/assets?resetFilters=1',
+            parsed: new page.windowObject.DOMParser().parseFromString(projectAssetsDefaultsHtml({ global: GLOBAL, project: PROJECT })),
+          } });
+          pendingReset(page, null);
+          announce(page, 1, 'installed');
+          expect(projectAssetsDefaultsSaveBlockedReason(page.form)).toBeNull();
+          expect(storage.size).toBe(0);
+          expect(fetch).not.toHaveBeenCalled();
+
+          fetch.mockResolvedValueOnce(acknowledgement('project', { global: GLOBAL, project: PROJECT }));
+          changeProjectAssetsScope(page, 'project');
+          await flush();
+          expect(fetch).toHaveBeenCalledOnce();
+          expect(body(fetch, 0)).toMatchObject({ intent: 'activate-scope', scope: 'project' });
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      it('a failed or superseded Reset releases the guards without a defaults POST', async () => {
+        const page = makeLivePage();
+        const fetch = vi.fn();
+        installFetchGlobals(page, fetch);
+        try {
+          enhanceLive(page);
+          for (const [id, phase] of [[1, 'failed'], [2, 'superseded']]) {
+            pendingReset(page, { id, generation: 4, phase: 'pending' });
+            announce(page, id, 'started');
+            expect(projectAssetsDefaultsSaveBlockedReason(page.form)).not.toBeNull();
+            pendingReset(page, null);
+            announce(page, id, phase);
+            expect(projectAssetsDefaultsSaveBlockedReason(page.form)).toBeNull();
+          }
+          expect(fetch).not.toHaveBeenCalled();
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      it('refuses Reset filters before the live engine sees it while a defaults operation is pending', async () => {
+        const page = makeLivePage();
+        const pending = deferredResult();
+        const fetch = vi.fn().mockReturnValueOnce(pending.promise);
+        installFetchGlobals(page, fetch);
+        try {
+          enhanceLive(page);
+          const filtersReset = addFiltersReset(page);
+          const engineClick = vi.fn();
+          filtersReset.addEventListener('click', engineClick);
+
+          // Idle: the click is left to the live engine.
+          const idle = page.document.dispatch('click', { target: filtersReset });
+          expect(idle.defaultPrevented).toBe(false);
+
+          changeProjectAssetsScope(page, 'project');
+          await flush();
+          expect(fetch).toHaveBeenCalledOnce();
+          const busy = page.document.dispatch('click', { target: filtersReset });
+          expect(busy.defaultPrevented).toBe(true);
+          expect(page.status.textContent).toBe('Wait for the current defaults operation to finish before resetting filters.');
+          expect(fetch).toHaveBeenCalledOnce();
+
+          pending.resolve(acknowledgement('project', { global: GLOBAL, project: PROJECT }));
+          await flush();
+          expect(page.document.dispatch('click', { target: filtersReset }).defaultPrevented).toBe(false);
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+    });
+
+    // Package C: an installed Reset filters also restores Grid style and the
+    // Grid/List size defaults to the active scope's resolved saved/default
+    // values, each unless the user chose it after the Reset began. Nothing is
+    // saved, activated or written to browser storage.
+    describe('Package C — Reset filters restores Grid style and sizes', () => {
+      const RESET_EVENT = 'project-assets-filters-reset';
+      const SAVED = { ...GLOBAL, gridStyle: 'cropped', gridSize: 'compact', listSize: 'compact' };
+      function enhancePresentation(page) {
+        page.previews = { gridSize: [], listSize: [] };
+        page.region.appendChild(page.trigger);
+        installProjectAssetsResponseParser(page);
+        enhanceDropdowns(page.document);
+        enhanceProjectAssetsDefaultsScope(page.document, {
+          beginRefresh: vi.fn(() => 31),
+          refreshActivation: vi.fn(() => 'applied'),
+          confirm: vi.fn(async () => true),
+          previewGridSize: (scope, size) => page.previews.gridSize.push(size),
+          previewListSize: (scope, size) => page.previews.listSize.push(size),
+          resolveSizes: () => ({ gridSize: 'large', listSize: 'large' }),
+        });
+        enhanceAppDialogs(page.document);
+        page.document.dispatch('click', { target: page.trigger });
+      }
+      const parsedPage = (page, values, scope) => new page.windowObject.DOMParser()
+        .parseFromString(projectAssetsDefaultsHtml(values, scope));
+      const setPending = (page, reset) => {
+        page.document.__creatorCrateProjectAssetsLiveFiltering = { projectAssetsFiltersReset: reset };
+      };
+      const announce = (page, id, phase, extra = {}) => page.document.dispatch(RESET_EVENT, {
+        detail: { id, phase, generation: 4, url: 'http://creatorcrate.test/projects/1/assets?resetFilters=1', ...extra },
+      });
+      const start = (page, id) => {
+        setPending(page, { id, generation: 4, phase: 'pending' });
+        announce(page, id, 'started');
+      };
+      const install = (page, id, values, scope = 'global') => {
+        announce(page, id, 'prepared', { parsed: parsedPage(page, values, scope) });
+        setPending(page, null);
+        page.document.dispatch('project-assets-region-loaded');
+        announce(page, id, 'installed');
+      };
+      const presentation = (page) => ({
+        gridStyle: page.fields.gridStyle.value,
+        gridSize: page.fields.gridSize.value,
+        listSize: page.fields.listSize.value,
+        rendered: page.grid.getAttribute('data-grid-style'),
+        gridPreview: page.previews.gridSize.at(-1),
+        listPreview: page.previews.listSize.at(-1),
+      });
+      const checkedOption = (page, key) => page.dropdowns[key].panel.querySelectorAll('input')
+        .find((input) => input.checked)?.value;
+
+      it('restores saved Global style and sizes over older unsaved previews, without writing anything', async () => {
+        const page = makeLivePage();
+        const fetch = vi.fn();
+        const storage = stubStorage();
+        storage.set('creatorcrate-asset-grid-size', 'large');
+        storage.set('creatorcrate-asset-list-size', 'large');
+        installFetchGlobals(page, fetch);
+        try {
+          enhancePresentation(page);
+          chooseDefault(page, 'gridStyle', 'uncropped');
+          chooseDefault(page, 'gridSize', 'large');
+          chooseDefault(page, 'listSize', 'large');
+          expect(presentation(page)).toMatchObject({ rendered: 'uncropped', gridPreview: 'large', listPreview: 'large' });
+
+          start(page, 1);
+          install(page, 1, { global: SAVED, project: PROJECT });
+
+          expect(presentation(page)).toEqual({
+            gridStyle: 'cropped', gridSize: 'compact', listSize: 'compact',
+            rendered: 'cropped', gridPreview: 'compact', listPreview: 'compact',
+          });
+          ['gridStyle', 'gridSize', 'listSize'].forEach((key) => {
+            expect(checkedOption(page, key)).toBe(SAVED[key]);
+          });
+          expect(storedSizes(storage)).toEqual(['large', 'large']);
+          expect(storage.size).toBe(2);
+          expect(fetch).not.toHaveBeenCalled();
+          expect(storedValues(page).global).toEqual(GLOBAL);
+
+          // A later region keeps the restored presentation; reopening shows it.
+          const replacement = makeElement('ul', { class: 'asset-grid', 'data-grid-style': 'uncropped' });
+          page.grid.replaceWith(replacement);
+          page.grid = replacement;
+          page.document.dispatch('project-assets-region-loaded');
+          expect(presentation(page)).toMatchObject({ rendered: 'cropped', gridPreview: 'compact', listPreview: 'compact' });
+          closeAppDialogById(page.document, page.dialog.id);
+          page.document.dispatch('click', { target: page.trigger });
+          expect(presentation(page)).toMatchObject({ gridStyle: 'cropped', gridSize: 'compact', listSize: 'compact' });
+          expect(storedSizes(storage)).toEqual(['large', 'large']);
+          expect(fetch).not.toHaveBeenCalled();
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      it('resolves each setting from the active Project-only snapshot, including inherited Global values', () => {
+        const page = makeLivePage({ loadedScope: 'project' });
+        stubStorage();
+        installFetchGlobals(page, vi.fn());
+        try {
+          enhancePresentation(page);
+          chooseDefault(page, 'gridStyle', 'uncropped');
+          chooseDefault(page, 'gridSize', 'default');
+          chooseDefault(page, 'listSize', 'large');
+          start(page, 1);
+          // Project only overrides Grid style; its sizes inherit Global's.
+          const global = { ...GLOBAL, gridStyle: 'uncropped', gridSize: 'compact', listSize: 'compact' };
+          const project = { ...global, gridStyle: 'cropped' };
+          install(page, 1, { global, project }, 'project');
+          expect(presentation(page)).toMatchObject({
+            gridStyle: 'cropped', gridSize: 'compact', listSize: 'compact', rendered: 'cropped',
+          });
+          expect(loadedScope(page)).toBe('project');
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      it('shows the application fallbacks as Reset previews, even where they equal a stored size', () => {
+        const page = makeLivePage();
+        const storage = stubStorage();
+        storage.set('creatorcrate-asset-list-size', 'large');
+        installFetchGlobals(page, vi.fn());
+        try {
+          enhancePresentation(page);
+          chooseDefault(page, 'gridStyle', 'cropped');
+          chooseDefault(page, 'gridSize', 'compact');
+          chooseDefault(page, 'listSize', 'compact');
+          start(page, 1);
+          install(page, 1, { global: GLOBAL, project: GLOBAL });
+          expect(presentation(page)).toEqual({
+            gridStyle: 'uncropped', gridSize: 'default', listSize: 'large',
+            rendered: 'uncropped', gridPreview: 'default', listPreview: 'large',
+          });
+          expect(storage.get('creatorcrate-asset-list-size')).toBe('large');
+          expect(storage.size).toBe(1);
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      it('keeps only the settings chosen after the Reset began; other edits protect nothing', () => {
+        const page = makeLivePage();
+        stubStorage();
+        installFetchGlobals(page, vi.fn());
+        try {
+          enhancePresentation(page);
+          chooseDefault(page, 'gridStyle', 'uncropped');
+          chooseDefault(page, 'listSize', 'large');
+          start(page, 1);
+          // Newer: a Grid size choice and a Sort change while Reset is pending.
+          chooseDefault(page, 'gridSize', 'large');
+          chooseDefault(page, 'sort', 'category');
+          install(page, 1, { global: SAVED, project: PROJECT });
+          expect(presentation(page)).toMatchObject({
+            gridStyle: 'cropped', gridSize: 'large', listSize: 'compact',
+            rendered: 'cropped', gridPreview: 'large', listPreview: 'compact',
+          });
+
+          // A newer style choice stands while both sizes are restored.
+          chooseDefault(page, 'gridSize', 'default');
+          chooseDefault(page, 'listSize', 'large');
+          start(page, 2);
+          chooseDefault(page, 'gridStyle', 'uncropped');
+          install(page, 2, { global: SAVED, project: PROJECT });
+          expect(presentation(page)).toMatchObject({
+            gridStyle: 'uncropped', gridSize: 'compact', listSize: 'compact',
+            rendered: 'uncropped', gridPreview: 'compact', listPreview: 'compact',
+          });
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      it('installs nothing from a failed or superseded Reset, and its Retry keeps the original boundary', () => {
+        const page = makeLivePage();
+        const fetch = vi.fn();
+        const storage = stubStorage();
+        installFetchGlobals(page, fetch);
+        try {
+          enhancePresentation(page);
+          chooseDefault(page, 'gridStyle', 'uncropped');
+          chooseDefault(page, 'gridSize', 'large');
+          chooseDefault(page, 'listSize', 'compact');
+          const before = presentation(page);
+
+          start(page, 1);
+          setPending(page, null);
+          announce(page, 1, 'superseded');
+          expect(presentation(page)).toEqual(before);
+
+          start(page, 2);
+          // A List size chosen while the original Reset was pending.
+          chooseDefault(page, 'listSize', 'large');
+          announce(page, 2, 'prepared', { parsed: parsedPage(page, { global: SAVED, project: PROJECT }, 'global') });
+          setPending(page, null);
+          announce(page, 2, 'failed');
+          expect(presentation(page)).toMatchObject({ gridStyle: 'uncropped', gridSize: 'large', rendered: 'uncropped' });
+
+          // Retry is the same Reset: the List size chosen during it stands.
+          start(page, 3);
+          install(page, 3, { global: SAVED, project: PROJECT });
+          expect(presentation(page)).toMatchObject({
+            gridStyle: 'cropped', gridSize: 'compact', listSize: 'large', rendered: 'cropped',
+            gridPreview: 'compact', listPreview: 'large',
+          });
+
+          // A new Reset filters click after a failure is a new Reset.
+          start(page, 4);
+          chooseDefault(page, 'gridSize', 'large');
+          setPending(page, null);
+          announce(page, 4, 'failed');
+          const filtersReset = makeElement('button', { type: 'submit', 'data-project-assets-reset': '' });
+          page.dialog.appendChild(filtersReset);
+          page.document.dispatch('click', { target: filtersReset });
+          start(page, 5);
+          install(page, 5, { global: SAVED, project: PROJECT });
+          expect(presentation(page)).toMatchObject({
+            gridSize: 'compact', listSize: 'compact', gridPreview: 'compact', listPreview: 'compact',
+          });
+          expect(storage.size).toBe(0);
+          expect(fetch).not.toHaveBeenCalled();
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      it('lets an acknowledged scope activation replace the Reset previews with its own sizes', async () => {
+        const page = makeLivePage();
+        const fetch = vi.fn().mockResolvedValueOnce(acknowledgement('project', { global: SAVED, project: PROJECT }));
+        stubStorage();
+        installFetchGlobals(page, fetch);
+        try {
+          enhancePresentation(page);
+          chooseDefault(page, 'gridSize', 'large');
+          start(page, 1);
+          install(page, 1, { global: SAVED, project: PROJECT });
+          expect(page.fields.gridSize.value).toBe('compact');
+          changeProjectAssetsScope(page, 'project');
+          await flush();
+          expect(loadedScope(page)).toBe('project');
+          expect(presentation(page)).toMatchObject({
+            gridStyle: PROJECT.gridStyle, gridSize: PROJECT.gridSize, listSize: PROJECT.listSize,
+          });
+          expect(posts(fetch)).toHaveLength(1);
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      // F11/F12: re-choosing the shown Grid style or size while a Reset is
+      // pending, or between a failed Reset and its GET-only Retry, is a choice
+      // newer than that Reset, made by pointer or by Space.
+      const RESET_URL = 'http://creatorcrate.test/projects/1/assets?resetFilters=1';
+      const radioFor = (page, name, value = page.fields[name].value) => page.dropdowns[name].panel
+        .querySelectorAll('input').find((input) => input.value === value);
+      const wrapperFor = (page, name) => page.fields[name].closest('[data-dialog-field]');
+      // As the real dropdown does after a choice: its radios follow the field.
+      const syncRadios = (page, name) => page.dropdowns[name].panel.querySelectorAll('input').forEach((input) => {
+        input.checked = input.value === page.fields[name].value;
+      });
+      const clickShown = (page, name) => {
+        syncRadios(page, name);
+        wrapperFor(page, name).dispatch('click', { target: radioFor(page, name), detail: 1 });
+      };
+      const pressSpace = (page, name, target = radioFor(page, name), { repeats = 0, click = false, ...keys } = {}) => {
+        syncRadios(page, name);
+        const wrapper = wrapperFor(page, name);
+        wrapper.dispatch('keydown', { key: ' ', target, repeat: false, ...keys });
+        for (let i = 0; i < repeats; i += 1) wrapper.dispatch('keydown', { key: ' ', target, repeat: true, ...keys });
+        wrapper.dispatch('keyup', { key: ' ', target, ...keys });
+        if (click) wrapper.dispatch('click', { target, detail: 0 });
+      };
+      // A failed Reset whose GET-only Retry is (or, after newer navigation, is
+      // no longer) the one the live engine shows.
+      const failReset = (page, id, { retry = true } = {}) => {
+        page.document.__creatorCrateProjectAssetsLiveFiltering = {
+          projectAssetsFiltersReset: null,
+          loadFailure: retry ? { url: new URL(RESET_URL) } : null,
+        };
+        announce(page, id, 'failed');
+      };
+      const supersedeRetry = (page) => {
+        page.document.__creatorCrateProjectAssetsLiveFiltering = { projectAssetsFiltersReset: null, loadFailure: null };
+      };
+
+      it('F11: a pointer or Space re-choice of the shown Grid style survives a held Reset', () => {
+        const page = makeLivePage();
+        const fetch = vi.fn();
+        const storage = stubStorage();
+        installFetchGlobals(page, fetch);
+        try {
+          enhancePresentation(page);
+          chooseDefault(page, 'gridStyle', 'uncropped');
+          const changes = [];
+          page.fields.gridStyle.addEventListener('change', () => changes.push('change'));
+
+          // F11-A: pointer.
+          start(page, 1);
+          clickShown(page, 'gridStyle');
+          install(page, 1, { global: SAVED, project: PROJECT });
+          expect(presentation(page)).toMatchObject({
+            gridStyle: 'uncropped', rendered: 'uncropped', gridSize: 'compact', listSize: 'compact',
+          });
+          expect(checkedOption(page, 'gridStyle')).toBe('uncropped');
+
+          // F11-B: Space with held-key repeats and a trailing keyboard click: one choice.
+          chooseDefault(page, 'gridSize', 'large');
+          start(page, 2);
+          pressSpace(page, 'gridStyle', radioFor(page, 'gridStyle'), { repeats: 4, click: true });
+          install(page, 2, { global: SAVED, project: PROJECT });
+          expect(presentation(page)).toMatchObject({ gridStyle: 'uncropped', rendered: 'uncropped', gridSize: 'compact' });
+
+          // Outside a Reset the same re-choice is not an edit, so the next Reset restores.
+          clickShown(page, 'gridStyle');
+          pressSpace(page, 'gridStyle');
+          start(page, 3);
+          install(page, 3, { global: SAVED, project: PROJECT });
+          expect(presentation(page)).toMatchObject({ gridStyle: 'cropped', rendered: 'cropped' });
+
+          // F11-C: a different style takes the ordinary change path (once).
+          start(page, 4);
+          const before = changes.length;
+          chooseDefault(page, 'gridStyle', 'uncropped');
+          expect(changes.length).toBe(before + 1);
+          install(page, 4, { global: SAVED, project: PROJECT });
+          expect(presentation(page)).toMatchObject({ gridStyle: 'uncropped', rendered: 'uncropped' });
+          expect(storage.size).toBe(0);
+          expect(fetch).not.toHaveBeenCalled();
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      it('F12: a shown size re-chosen after a failed Reset survives repeated failed Retries', () => {
+        const page = makeLivePage();
+        const fetch = vi.fn();
+        const storage = stubStorage();
+        installFetchGlobals(page, fetch);
+        try {
+          enhancePresentation(page);
+          chooseDefault(page, 'gridStyle', 'uncropped');
+          chooseDefault(page, 'gridSize', 'large');
+          chooseDefault(page, 'listSize', 'large');
+
+          // F12-A: List by pointer, between failed attempts.
+          start(page, 1);
+          failReset(page, 1);
+          clickShown(page, 'listSize');
+          start(page, 2);
+          failReset(page, 2);
+          start(page, 3);
+          failReset(page, 3);
+          start(page, 4);
+          install(page, 4, { global: SAVED, project: PROJECT });
+          expect(presentation(page)).toMatchObject({
+            gridStyle: 'cropped', gridSize: 'compact', listSize: 'large',
+            rendered: 'cropped', gridPreview: 'compact', listPreview: 'large',
+          });
+          expect(checkedOption(page, 'listSize')).toBe('large');
+
+          // F12-B: Grid by Space (with repeats), between failed attempts.
+          chooseDefault(page, 'gridSize', 'large');
+          start(page, 5);
+          failReset(page, 5);
+          pressSpace(page, 'gridSize', radioFor(page, 'gridSize'), { repeats: 3 });
+          start(page, 6);
+          failReset(page, 6);
+          start(page, 7);
+          install(page, 7, { global: SAVED, project: PROJECT });
+          expect(presentation(page)).toMatchObject({ gridSize: 'large', listSize: 'compact', gridPreview: 'large' });
+          expect(storage.size).toBe(0);
+          expect(fetch).not.toHaveBeenCalled();
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      it('F12: a new Reset takes a fresh boundary, and superseded Retry ownership retires', () => {
+        const page = makeLivePage();
+        const fetch = vi.fn();
+        const storage = stubStorage();
+        installFetchGlobals(page, fetch);
+        const filtersReset = makeElement('button', { type: 'submit', 'data-project-assets-reset': '' });
+        try {
+          enhancePresentation(page);
+          page.dialog.appendChild(filtersReset);
+          chooseDefault(page, 'listSize', 'large');
+          chooseDefault(page, 'gridSize', 'large');
+
+          // F12-C: a re-choice under a failed Reset does not outlive a new Reset click.
+          start(page, 1);
+          failReset(page, 1);
+          clickShown(page, 'listSize');
+          page.document.dispatch('click', { target: filtersReset });
+          start(page, 2);
+          install(page, 2, { global: SAVED, project: PROJECT });
+          expect(presentation(page)).toMatchObject({ gridSize: 'compact', listSize: 'compact' });
+
+          // F12-D: navigation that supersedes the failed Reset's Retry ends its
+          // ownership, before or after that navigation installs.
+          chooseDefault(page, 'listSize', 'large');
+          start(page, 3);
+          failReset(page, 3);
+          supersedeRetry(page);
+          clickShown(page, 'listSize');
+          pressSpace(page, 'listSize');
+          page.document.dispatch('click', { target: filtersReset });
+          start(page, 4);
+          install(page, 4, { global: SAVED, project: PROJECT });
+          expect(presentation(page)).toMatchObject({ listSize: 'compact', listPreview: 'compact' });
+
+          chooseDefault(page, 'listSize', 'large');
+          start(page, 5);
+          failReset(page, 5);
+          // Another load installs; any Reset Retry on screen afterward is not this one's.
+          page.document.dispatch('project-assets-region-loaded');
+          page.document.__creatorCrateProjectAssetsLiveFiltering.loadFailure = { url: new URL(RESET_URL) };
+          clickShown(page, 'listSize');
+          start(page, 6);
+          install(page, 6, { global: SAVED, project: PROJECT });
+          expect(presentation(page)).toMatchObject({ listSize: 'compact' });
+
+          // F12-E: modifiers, unmatched keyup, repeats alone, Enter and other
+          // options are not choices of the shown size.
+          chooseDefault(page, 'listSize', 'large');
+          start(page, 7);
+          failReset(page, 7);
+          const shown = radioFor(page, 'listSize');
+          const wrapper = wrapperFor(page, 'listSize');
+          pressSpace(page, 'listSize', shown, { ctrlKey: true });
+          pressSpace(page, 'listSize', shown, { altKey: true });
+          wrapper.dispatch('keyup', { key: ' ', target: shown });
+          wrapper.dispatch('keydown', { key: ' ', target: shown, repeat: true });
+          wrapper.dispatch('keyup', { key: ' ', target: shown });
+          wrapper.dispatch('keydown', { key: 'Enter', target: shown });
+          wrapper.dispatch('keyup', { key: 'Enter', target: shown });
+          pressSpace(page, 'listSize', radioFor(page, 'listSize', 'compact'));
+          start(page, 8);
+          install(page, 8, { global: SAVED, project: PROJECT });
+          expect(presentation(page)).toMatchObject({ listSize: 'compact' });
+          expect(storage.size).toBe(0);
+          expect(fetch).not.toHaveBeenCalled();
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      // F13: another tab changed the active scope while this Reset was pending.
+      const savedMeta = (activeScope) => ({
+        activeScope,
+        hasSavedDefaults: true,
+        global: { saved: true },
+        project: { saved: true, inheritance: 'full' },
+      });
+      const parsedWith = (page, values, scope, meta) => new page.windowObject.DOMParser()
+        .parseFromString(projectAssetsDefaultsHtml(values, scope, meta));
+
+      it('F13: adopts the response scope before install, so the next Save targets it', () => {
+        const page = makeLivePage();
+        const fetch = vi.fn();
+        const storage = stubStorage();
+        installFetchGlobals(page, fetch);
+        try {
+          enhancePresentation(page);
+          chooseDefault(page, 'gridStyle', 'uncropped');
+          start(page, 1);
+          const projectOnly = { ...SAVED, view: 'list', gridStyle: 'cropped', gridSize: 'large', listSize: 'compact' };
+          announce(page, 1, 'prepared', {
+            parsed: parsedWith(page, { global: SAVED, project: projectOnly }, 'project', savedMeta('project')),
+          });
+          // Adopted at the prepared boundary, before the region installs.
+          expect(loadedScope(page)).toBe('project');
+          expect(page.scopeControls.project.checked).toBe(true);
+          expect(page.scopeControls.global.checked).toBe(false);
+          expect(projectAssetsDefaultsSaveBlockedReason(page.form)).toBe('Wait for Reset filters to finish before saving.');
+          setPending(page, null);
+          page.document.dispatch('project-assets-region-loaded');
+          announce(page, 1, 'installed');
+
+          expect(presentation(page)).toMatchObject({
+            gridStyle: 'cropped', gridSize: 'large', listSize: 'compact', rendered: 'cropped',
+          });
+          expect(storedValues(page)).toEqual({ global: SAVED, project: projectOnly });
+          expect(page.status.textContent).toBe('Project-only defaults are active.');
+          expect(projectAssetsDefaultsSaveBlockedReason(page.form)).toBeNull();
+          expect(storage.size).toBe(0);
+          expect(fetch).not.toHaveBeenCalled();
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      it('F13: fails closed when the response cannot establish its scope, and ignores stale Resets', () => {
+        const page = makeLivePage();
+        const fetch = vi.fn();
+        const storage = stubStorage();
+        installFetchGlobals(page, fetch);
+        const unresolved = 'The active defaults scope could not be confirmed. Choose a scope to check it before saving.';
+        try {
+          enhancePresentation(page);
+          chooseDefault(page, 'gridStyle', 'uncropped');
+          chooseDefault(page, 'gridSize', 'large');
+
+          // A stale Reset's late prepared/installed does nothing.
+          start(page, 1);
+          start(page, 2);
+          announce(page, 1, 'prepared', {
+            parsed: parsedWith(page, { global: SAVED, project: PROJECT }, 'project', savedMeta('project')),
+          });
+          announce(page, 1, 'installed');
+          expect(loadedScope(page)).toBe('global');
+
+          // Another scope without its saved-state metadata: not accepted, no cached fallback.
+          announce(page, 2, 'prepared', { parsed: parsedWith(page, { global: SAVED, project: PROJECT }, 'project') });
+          setPending(page, null);
+          page.document.dispatch('project-assets-region-loaded');
+          announce(page, 2, 'installed');
+          expect(loadedScope(page)).toBe('global');
+          expect(presentation(page)).toMatchObject({ gridStyle: 'uncropped', gridSize: 'large', rendered: 'uncropped' });
+          expect(projectAssetsDefaultsSaveBlockedReason(page.form)).toBe(unresolved);
+
+          // A malformed response is likewise not accepted.
+          start(page, 3);
+          announce(page, 3, 'prepared', { parsed: { querySelector: () => null } });
+          setPending(page, null);
+          announce(page, 3, 'installed');
+          expect(projectAssetsDefaultsSaveBlockedReason(page.form)).toBe(unresolved);
+          expect(storedValues(page).global).toEqual(GLOBAL);
+          expect(storage.size).toBe(0);
+          expect(fetch).not.toHaveBeenCalled();
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      // F14: a Reset adopted another tab's scope when prepared, but its region
+      // never installed: the controls still show the previous scope.
+      const INCOMPLETE = 'Reset filters did not finish loading the active defaults. Retry it, or use Reset filters again, before saving.';
+      const PROJECT_ONLY = { ...SAVED, view: 'grid', gridStyle: 'uncropped', gridSize: 'large', listSize: 'large' };
+      const adoptAndFail = (page, id) => {
+        start(page, id);
+        announce(page, id, 'prepared', {
+          parsed: parsedWith(page, { global: SAVED, project: PROJECT_ONLY }, 'project', savedMeta('project')),
+        });
+        expect(loadedScope(page)).toBe('project');
+        failReset(page, id);
+      };
+      const enhanceWithSave = (page) => {
+        enhancePresentation(page);
+        enhanceProjectAssetsDefaultsFetchSave(page.document, { beginRefresh: vi.fn(() => 17), refresh: vi.fn(() => 'started') });
+      };
+      const attemptSave = async (page) => {
+        page.form.dispatch('submit', { submitter: page.save });
+        page.form.dispatch('submit', { submitter: null });
+        await flush();
+      };
+
+      it('F14: Save stays refused after a prepared Reset adopts a scope but fails to install, through failed Retries', async () => {
+        const page = makeLivePage();
+        const fetch = vi.fn();
+        const storage = stubStorage();
+        installFetchGlobals(page, fetch);
+        try {
+          enhanceWithSave(page);
+          chooseDefault(page, 'gridStyle', 'cropped');
+          chooseDefault(page, 'gridSize', 'compact');
+          chooseDefault(page, 'listSize', 'compact');
+
+          // 1–2. Prepared (scope adopted), install failed: Save refused, no POST.
+          adoptAndFail(page, 1);
+          expect(presentation(page)).toMatchObject({ gridStyle: 'cropped', gridSize: 'compact', listSize: 'compact' });
+          expect(projectAssetsDefaultsSaveBlockedReason(page.form)).toBe(INCOMPLETE);
+          expect(page.status.textContent).toBe(INCOMPLETE);
+          await attemptSave(page);
+          expect(fetch).not.toHaveBeenCalled();
+          expect(page.status.textContent).toBe(INCOMPLETE);
+
+          // 3–4. A Retry failing before its response, and one failing after
+          // preparing (the scope already matches): still refused.
+          start(page, 2);
+          failReset(page, 2);
+          expect(projectAssetsDefaultsSaveBlockedReason(page.form)).toBe(INCOMPLETE);
+          start(page, 3);
+          announce(page, 3, 'prepared', { parsed: parsedPage(page, { global: SAVED, project: PROJECT_ONLY }, 'project') });
+          failReset(page, 3);
+          await attemptSave(page);
+          expect(projectAssetsDefaultsSaveBlockedReason(page.form)).toBe(INCOMPLETE);
+          expect(fetch).not.toHaveBeenCalled();
+
+          // 5–6. The owning Retry installs the Project-only state: Save allowed.
+          start(page, 4);
+          install(page, 4, { global: SAVED, project: PROJECT_ONLY }, 'project');
+          expect(presentation(page)).toMatchObject({
+            gridStyle: 'uncropped', gridSize: 'large', listSize: 'large',
+            rendered: 'uncropped', gridPreview: 'large', listPreview: 'large',
+          });
+          expect(checkedOption(page, 'gridStyle')).toBe('uncropped');
+          expect(loadedScope(page)).toBe('project');
+          expect(storedValues(page)).toEqual({ global: SAVED, project: PROJECT_ONLY });
+          expect(projectAssetsDefaultsSaveBlockedReason(page.form)).toBeNull();
+          expect(page.status.textContent).toBe('Project-only defaults are active.');
+          expect(storage.size).toBe(0);
+          expect(fetch).not.toHaveBeenCalled();
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      it('F14: superseded, stale and ordinary loads keep Save refused; only an installed Reset ends it', () => {
+        const page = makeLivePage();
+        const fetch = vi.fn();
+        const storage = stubStorage();
+        installFetchGlobals(page, fetch);
+        try {
+          enhanceWithSave(page);
+          chooseDefault(page, 'gridStyle', 'cropped');
+
+          // A superseded prepared Reset keeps the refusal, and its late
+          // callbacks (the engine never sends them, but a stale id) do nothing.
+          start(page, 1);
+          announce(page, 1, 'prepared', {
+            parsed: parsedWith(page, { global: SAVED, project: PROJECT_ONLY }, 'project', savedMeta('project')),
+          });
+          setPending(page, null);
+          announce(page, 1, 'superseded');
+          expect(projectAssetsDefaultsSaveBlockedReason(page.form)).toBe(INCOMPLETE);
+          announce(page, 1, 'installed');
+          expect(projectAssetsDefaultsSaveBlockedReason(page.form)).toBe(INCOMPLETE);
+
+          // Unrelated navigation installs a region: not a restored presentation.
+          page.document.dispatch('project-assets-region-loaded');
+          expect(projectAssetsDefaultsSaveBlockedReason(page.form)).toBe(INCOMPLETE);
+
+          // A newer Reset superseded by a later one: the stale one's install
+          // cannot clear the refusal.
+          start(page, 2);
+          start(page, 3);
+          announce(page, 2, 'prepared', { parsed: parsedPage(page, { global: SAVED, project: PROJECT_ONLY }, 'project') });
+          announce(page, 2, 'installed');
+          expect(projectAssetsDefaultsSaveBlockedReason(page.form)).toBe('Wait for Reset filters to finish before saving.');
+
+          // A malformed response installs without confirming anything: refused.
+          announce(page, 3, 'prepared', { parsed: { querySelector: () => null } });
+          setPending(page, null);
+          announce(page, 3, 'installed');
+          expect(projectAssetsDefaultsSaveBlockedReason(page.form)).toBe(INCOMPLETE);
+          expect(presentation(page).gridStyle).not.toBe('uncropped');
+
+          // A new owning Reset that installs ends it.
+          start(page, 4);
+          install(page, 4, { global: SAVED, project: PROJECT_ONLY }, 'project');
+          expect(projectAssetsDefaultsSaveBlockedReason(page.form)).not.toBe(INCOMPLETE);
+          expect(presentation(page)).toMatchObject({ gridStyle: 'uncropped', gridSize: 'large', listSize: 'large' });
+          expect(storage.size).toBe(0);
+          expect(fetch).not.toHaveBeenCalled();
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      it('F14: a Reset that prepared the scope already active and failed leaves Save available', () => {
+        const page = makeLivePage();
+        const fetch = vi.fn();
+        installFetchGlobals(page, fetch);
+        try {
+          enhanceWithSave(page);
+          start(page, 1);
+          announce(page, 1, 'prepared', { parsed: parsedPage(page, { global: SAVED, project: PROJECT }, 'global') });
+          failReset(page, 1);
+          expect(loadedScope(page)).toBe('global');
+          expect(projectAssetsDefaultsSaveBlockedReason(page.form)).toBeNull();
+          expect(fetch).not.toHaveBeenCalled();
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+    });
+
+    describe('Correction C F5 — reset navigation reconciliation', () => {
+      function enhanceResetLive(page, refreshAfterMutation) {
+        page.region.appendChild(page.trigger);
+        installProjectAssetsResponseParser(page);
+        enhanceDropdowns(page.document);
+        enhanceProjectAssetsDefaultsScope(page.document, {
+          beginRefresh: vi.fn(() => 31),
+          refreshActivation: vi.fn(() => 'applied'),
+          refreshAfterMutation,
+          confirm: vi.fn(async () => true),
+        });
+        enhanceAppDialogs(page.document);
+        page.document.dispatch('click', { target: page.trigger });
+      }
+      const resetJson = (scope, changed, defaults) => json({
+        status: 'success', reset: { scope, changed }, defaults,
+      });
+      const PROJECT_RESET = 'Project-only defaults reset. This project now uses Global defaults.';
+      const REFRESH_FAILED = 'Defaults were reset, but Project Assets could not refresh, so its page and view links are unavailable. Retry, or reload the page.';
+
+      it('re-reads the current view once after a reset that changes the navigation defaults', async () => {
+        const page = makeLivePage({ loadedScope: 'project' });
+        const refreshAfterMutation = vi.fn(async () => ({ status: 'installed' }));
+        const fetch = vi.fn().mockResolvedValueOnce(
+          resetJson('project', true, { scope: 'global', global: GLOBAL, project: GLOBAL }),
+        );
+        installFetchGlobals(page, fetch);
+        try {
+          enhanceResetLive(page, refreshAfterMutation);
+          page.reset.dispatch('click');
+          await flush();
+          await flush();
+          expect(fetch).toHaveBeenCalledOnce();
+          expect(refreshAfterMutation).toHaveBeenCalledOnce();
+          expect(refreshAfterMutation.mock.calls[0][0]).toBe(page.document);
+          expect(typeof refreshAfterMutation.mock.calls[0][1].onRecovered).toBe('function');
+          expect(loadedScope(page)).toBe('global');
+          expect(page.status.textContent).toBe(PROJECT_RESET);
+          expect(page.form.getAttribute('data-settings-fetch-save-state')).toBe('saved');
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      it('re-reads nothing for a no-op reset, an unchanged navigation default or a failed reset', async () => {
+        const page = makeLivePage({ loadedScope: 'project' });
+        const refreshAfterMutation = vi.fn(async () => ({ status: 'installed' }));
+        const fetch = vi.fn()
+          .mockResolvedValueOnce(resetJson('project', false, { scope: 'project', global: GLOBAL, project: PROJECT }))
+          // Only the Grid style and sizes differ: no link depends on them.
+          .mockResolvedValueOnce(resetJson('project', true, {
+            scope: 'project',
+            global: GLOBAL,
+            project: { ...PROJECT, gridStyle: 'uncropped', gridSize: 'default', listSize: 'large' },
+          }))
+          .mockResolvedValueOnce(json({ status: 'error' }, { ok: false, status: 422 }));
+        installFetchGlobals(page, fetch);
+        try {
+          enhanceResetLive(page, refreshAfterMutation);
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            page.reset.dispatch('click');
+            await flush();
+            await flush();
+          }
+          expect(fetch).toHaveBeenCalledTimes(3);
+          expect(page.status.textContent).toBe('Defaults could not be reset. No changes were made.');
+          expect(refreshAfterMutation).not.toHaveBeenCalled();
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      it('keeps a reset committed when its re-read fails, never re-sends it, and clears the failure on recovery', async () => {
+        const page = makeLivePage({ loadedScope: 'project' });
+        let recovered;
+        const refreshAfterMutation = vi.fn(async (_document, { onRecovered }) => {
+          recovered = onRecovered;
+          return { status: 'failed' };
+        });
+        const fetch = vi.fn().mockResolvedValueOnce(
+          resetJson('project', true, { scope: 'global', global: GLOBAL, project: GLOBAL }),
+        );
+        installFetchGlobals(page, fetch);
+        try {
+          enhanceResetLive(page, refreshAfterMutation);
+          page.reset.dispatch('click');
+          await flush();
+          await flush();
+          expect(fetch).toHaveBeenCalledOnce();
+          expect(loadedScope(page)).toBe('global');
+          expect(page.status.textContent).toBe(REFRESH_FAILED);
+          expect(page.form.getAttribute('data-settings-fetch-save-state')).toBe('saved-refresh-error');
+
+          recovered({});
+          expect(page.status.textContent).toBe(PROJECT_RESET);
+          expect(page.form.getAttribute('data-settings-fetch-save-state')).toBe('saved');
+          expect(fetch).toHaveBeenCalledOnce();
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+    });
+
+    // Milestone 2 Correction D. F6: an acknowledged reset keeps the displayed
+    // sizes through the page's size fallbacks, never browser storage. F7: its
+    // re-read marks the rendered page and view links obsolete.
+    describe('Correction D F6/F7 — reset presentation and stale links', () => {
+      function enhanceResetLive(page, refreshAfterMutation, retainDisplayedSizes) {
+        page.region.appendChild(page.trigger);
+        installProjectAssetsResponseParser(page);
+        enhanceDropdowns(page.document);
+        enhanceProjectAssetsDefaultsScope(page.document, {
+          beginRefresh: vi.fn(() => 31),
+          refreshActivation: vi.fn(() => 'applied'),
+          refreshAfterMutation,
+          retainDisplayedSizes,
+          confirm: vi.fn(async () => true),
+        });
+        enhanceAppDialogs(page.document);
+        page.document.dispatch('click', { target: page.trigger });
+      }
+      const resetJson = (scope, changed, defaults) => json({
+        status: 'success', reset: { scope, changed }, defaults,
+      });
+
+      it('retains the displayed sizes and marks links stale for a committed reset, writing no storage', async () => {
+        const page = makeLivePage({ loadedScope: 'project' });
+        const refreshAfterMutation = vi.fn(async () => ({ status: 'failed' }));
+        const retainDisplayedSizes = vi.fn(() => true);
+        const storage = stubStorage();
+        const fetch = vi.fn().mockResolvedValueOnce(
+          resetJson('project', true, { scope: 'global', global: GLOBAL, project: GLOBAL }),
+        );
+        installFetchGlobals(page, fetch);
+        try {
+          enhanceResetLive(page, refreshAfterMutation, retainDisplayedSizes);
+          page.reset.dispatch('click');
+          await flush();
+          await flush();
+          expect(fetch).toHaveBeenCalledOnce();
+          expect(retainDisplayedSizes).toHaveBeenCalledOnce();
+          expect(retainDisplayedSizes.mock.calls[0][0]).toBe(page.document);
+          expect(retainDisplayedSizes.mock.calls[0][1]).toMatchObject({
+            gridSize: GLOBAL.gridSize, listSize: GLOBAL.listSize,
+          });
+          expect(refreshAfterMutation).toHaveBeenCalledOnce();
+          expect(refreshAfterMutation.mock.calls[0][1].staleNavigation).toBe(true);
+          expect(storage.size).toBe(0);
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      it('retains sizes even when no link depends on the reset, and does nothing for a no-op or failed reset', async () => {
+        const page = makeLivePage({ loadedScope: 'project' });
+        const refreshAfterMutation = vi.fn(async () => ({ status: 'installed' }));
+        const retainDisplayedSizes = vi.fn(() => true);
+        const storage = stubStorage();
+        const fetch = vi.fn()
+          .mockResolvedValueOnce(resetJson('project', false, { scope: 'project', global: GLOBAL, project: PROJECT }))
+          .mockResolvedValueOnce(json({ status: 'error' }, { ok: false, status: 422 }))
+          // Only the Grid style and sizes differ: no link depends on them.
+          .mockResolvedValueOnce(resetJson('project', true, {
+            scope: 'project',
+            global: GLOBAL,
+            project: { ...PROJECT, gridStyle: 'uncropped', gridSize: 'default', listSize: 'large' },
+          }));
+        installFetchGlobals(page, fetch);
+        try {
+          enhanceResetLive(page, refreshAfterMutation, retainDisplayedSizes);
+          for (let attempt = 0; attempt < 2; attempt += 1) {
+            page.reset.dispatch('click');
+            await flush();
+            await flush();
+          }
+          // No-op and failed resets: nothing retained, no stale links.
+          expect(retainDisplayedSizes).not.toHaveBeenCalled();
+          expect(refreshAfterMutation).not.toHaveBeenCalled();
+
+          page.reset.dispatch('click');
+          await flush();
+          await flush();
+          expect(fetch).toHaveBeenCalledTimes(3);
+          expect(retainDisplayedSizes).toHaveBeenCalledOnce();
+          expect(retainDisplayedSizes.mock.calls[0][1]).toMatchObject({ gridSize: 'default', listSize: 'large' });
+          expect(refreshAfterMutation).not.toHaveBeenCalled();
+          expect(storage.size).toBe(0);
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+    });
+
+    describe('Correction A F2 — live Grid style', () => {
+      it('restyles the grid at once in both directions without any request or stored preference', async () => {
+        const page = makeLivePage();
+        const fetch = vi.fn();
+        const storage = stubStorage();
+        installFetchGlobals(page, fetch);
+
+        try {
+          enhanceLive(page);
+          expect(page.grid.getAttribute('data-grid-style')).toBe('uncropped');
+
+          chooseDefault(page, 'gridStyle', 'cropped');
+          expect(page.grid.getAttribute('data-grid-style')).toBe('cropped');
+          chooseDefault(page, 'gridStyle', 'uncropped');
+          expect(page.grid.getAttribute('data-grid-style')).toBe('uncropped');
+          await flush();
+
+          expect(fetch).not.toHaveBeenCalled();
+          expect(storage.size).toBe(0);
+          expect(storedValues(page)).toEqual({ global: GLOBAL, project: PROJECT });
+          expect(page.refreshActivation).not.toHaveBeenCalled();
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      // User acceptance correction: the size defaults preview live.
+      it('previews the size defaults at once: no stored preference, no request, no saved value', async () => {
+        const page = makeLivePage();
+        const fetch = vi.fn();
+        const storage = stubStorage();
+        installFetchGlobals(page, fetch);
+
+        try {
+          enhanceLive(page);
+          chooseDefault(page, 'gridSize', 'large');
+          expect(page.grid.getAttribute('data-grid-size')).toBe('large');
+          expect(page.grid.style.getPropertyValue?.('--asset-card-min') ?? '20rem').toBe('20rem');
+          chooseDefault(page, 'gridSize', 'compact');
+          expect(page.grid.getAttribute('data-grid-size')).toBe('compact');
+          // List is not shown: its preview is held for when it renders.
+          chooseDefault(page, 'listSize', 'compact');
+          await flush();
+
+          expect(fetch).not.toHaveBeenCalled();
+          expect(storage.size).toBe(0);
+          expect(storedValues(page)).toEqual({ global: GLOBAL, project: PROJECT });
+          expect(page.grid.getAttribute('data-grid-style')).toBe('uncropped');
+
+          // Switching to List installs a list region resolved from storage
+          // and its saved fallback; the held List preview is put back.
+          const list = makeElement('ul', { class: 'asset-list', 'data-list-size': 'large' });
+          page.grid.replaceWith(list);
+          page.document.dispatch('project-assets-region-loaded');
+          expect(list.getAttribute('data-list-size')).toBe('compact');
+
+          // Back to Grid: a region rendered with the saved Grid size gets the preview.
+          const grid = makeElement('ul', { class: 'asset-grid', 'data-grid-style': 'uncropped' });
+          list.replaceWith(grid);
+          page.document.dispatch('project-assets-region-loaded');
+          expect(grid.getAttribute('data-grid-size')).toBe('compact');
+          expect(storage.size).toBe(0);
+          expect(fetch).not.toHaveBeenCalled();
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      it('reopens showing the sizes in use: a preview, else the stored size, else the saved fallback', () => {
+        const page = makeLivePage();
+        const storage = stubStorage();
+        installFetchGlobals(page, vi.fn());
+
+        try {
+          page.liveRegion.setAttribute('data-project-assets-grid-size-default', 'default');
+          page.liveRegion.setAttribute('data-project-assets-list-size-default', 'large');
+          storage.set('creatorcrate-asset-grid-size', 'compact');
+          enhanceLive(page);
+          // Opening shows what is displayed, not the saved default.
+          expect(page.fields.gridSize.value).toBe('compact');
+          expect(page.fields.listSize.value).toBe('large');
+
+          chooseDefault(page, 'listSize', 'compact');
+          chooseDefault(page, 'gridSize', 'large');
+          closeAppDialogById(page.document, page.dialog.id);
+          page.document.dispatch('click', { target: page.trigger });
+          expect(page.fields.gridSize.value).toBe('large');
+          expect(page.fields.listSize.value).toBe('compact');
+          expect(page.grid.getAttribute('data-grid-size')).toBe('large');
+          // Closing and reopening wrote nothing.
+          expect(storage.get('creatorcrate-asset-grid-size')).toBe('compact');
+          expect(storage.has('creatorcrate-asset-list-size')).toBe(false);
+          expect(storedValues(page).global).toMatchObject({ gridSize: 'default', listSize: 'large' });
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      it('lets an acknowledged activation replace a size preview, but keeps one chosen while it was pending', async () => {
+        const page = makeLivePage();
+        let release;
+        const fetch = vi.fn()
+          .mockResolvedValueOnce(acknowledgement('project', { global: GLOBAL, project: PROJECT }))
+          .mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+        const storage = stubStorage();
+        installFetchGlobals(page, fetch);
+
+        try {
+          // The page's own Grid size control, through which acknowledged sizes apply.
+          page.liveRegion.appendChild(makeElement('div', { 'data-asset-grid-size-controls': '' }));
+          enhanceLive(page);
+          chooseDefault(page, 'gridSize', 'compact');
+          expect(page.grid.getAttribute('data-grid-size')).toBe('compact');
+          changeProjectAssetsScope(page, 'project');
+          await flush();
+          expect(loadedScope(page)).toBe('project');
+          expect(page.fields.gridSize.value).toBe(PROJECT.gridSize);
+          expect(storage.get('creatorcrate-asset-grid-size')).toBe(PROJECT.gridSize);
+          expect(page.grid.getAttribute('data-grid-size')).toBe(PROJECT.gridSize);
+          // The replaced preview is not put back by a later install.
+          page.document.dispatch('project-assets-region-loaded');
+          expect(page.grid.getAttribute('data-grid-size')).toBe(PROJECT.gridSize);
+
+          changeProjectAssetsScope(page, 'global');
+          await flush();
+          chooseDefault(page, 'gridSize', 'compact');
+          release(acknowledgement('global', { global: GLOBAL, project: PROJECT }));
+          await flush();
+          expect(loadedScope(page)).toBe('global');
+          // The newer choice stands, in the control and on screen; storage got the acknowledged size.
+          expect(page.fields.gridSize.value).toBe('compact');
+          expect(storage.get('creatorcrate-asset-grid-size')).toBe(GLOBAL.gridSize);
+          expect(page.grid.getAttribute('data-grid-size')).toBe('compact');
+          page.document.dispatch('project-assets-region-loaded');
+          expect(page.grid.getAttribute('data-grid-size')).toBe('compact');
+          expect(posts(fetch)).toHaveLength(2);
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      // Correction F (F8): a newer edit kept through an activation leaves the
+      // untouched size fields on the activated scope's sizes in use.
+      it('synchronizes untouched size fields after an activation that kept a newer edit', async () => {
+        const page = makeLivePage();
+        let releaseProject;
+        let releaseGlobal;
+        const fetch = vi.fn()
+          .mockImplementationOnce(() => new Promise((resolve) => { releaseProject = resolve; }))
+          .mockImplementationOnce(() => new Promise((resolve) => { releaseGlobal = resolve; }));
+        const storage = stubStorage();
+        installFetchGlobals(page, fetch);
+
+        try {
+          page.liveRegion.appendChild(makeElement('div', { 'data-asset-grid-size-controls': '' }));
+          enhanceLive(page);
+          // An older Grid preview, made before the activation starts.
+          chooseDefault(page, 'gridSize', 'compact');
+          const events = [];
+          ['gridSize', 'listSize'].forEach((name) => {
+            ['input', 'change'].forEach((type) => page.fields[name].addEventListener(type, () => events.push(`${name}:${type}`)));
+          });
+
+          // The reviewer's case: only Sort changes while Project only is pending.
+          changeProjectAssetsScope(page, 'project');
+          await flush();
+          page.fields.sort.value = 'size';
+          page.fields.sort.dispatch('change');
+          releaseProject(acknowledgement('project', { global: GLOBAL, project: PROJECT }));
+          await flush();
+          expect(loadedScope(page)).toBe('project');
+          expect(page.status.textContent).toBe(
+            'Project-only defaults are active. Your newer changes were kept and are not saved.',
+          );
+          expect(page.fields.sort.value).toBe('size');
+          // Both size fields follow the activated scope's sizes in use.
+          expect(storedSizes(storage)).toEqual([PROJECT.gridSize, PROJECT.listSize]);
+          expect(page.fields.gridSize.value).toBe(PROJECT.gridSize);
+          expect(page.fields.listSize.value).toBe(PROJECT.listSize);
+          expect(page.grid.getAttribute('data-grid-size')).toBe(PROJECT.gridSize);
+          // The older preview is not put back by a later install.
+          page.document.dispatch('project-assets-region-loaded');
+          expect(page.grid.getAttribute('data-grid-size')).toBe(PROJECT.gridSize);
+          expect(page.fields.gridSize.value).toBe(PROJECT.gridSize);
+
+          // A List preview made while Global is pending stands; Grid follows Global.
+          changeProjectAssetsScope(page, 'global');
+          await flush();
+          chooseDefault(page, 'listSize', 'large');
+          events.length = 0;
+          releaseGlobal(acknowledgement('global', { global: GLOBAL, project: PROJECT }));
+          await flush();
+          expect(loadedScope(page)).toBe('global');
+          expect(storedSizes(storage)).toEqual([GLOBAL.gridSize, GLOBAL.listSize]);
+          expect(page.fields.gridSize.value).toBe(GLOBAL.gridSize);
+          expect(page.fields.listSize.value).toBe('large');
+          // Global's Default grid size is shown without a size attribute.
+          expect(page.grid.getAttribute('data-grid-size')).toBeNull();
+          // Synchronizing sent no synthetic events and wrote nothing.
+          expect(events).toEqual([]);
+          expect(posts(fetch)).toHaveLength(2);
+          expect(storedValues(page)).toEqual({ global: GLOBAL, project: PROJECT });
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      // Correction G (F9): a check made after a failed recovery read is still
+      // the original activation's recovery, so edits made since it began stay.
+      describe('Correction G F9 — failed scope recovery ownership', () => {
+        const unreadable = () => ({ ok: true, status: 200, json: async () => { throw new Error('unreadable'); } });
+        const gets = (fetch) => fetch.mock.calls.filter(([, init]) => init?.method === 'GET');
+
+        it('keeps edits made during the activation through repeated failed reads and a GET-only check', async () => {
+          const page = makeLivePage();
+          let releasePost;
+          const fetch = vi.fn()
+            .mockImplementationOnce(() => new Promise((resolve) => { releasePost = resolve; }))
+            .mockRejectedValueOnce(new Error('offline'))
+            .mockRejectedValueOnce(new Error('offline'))
+            .mockResolvedValueOnce(html({ global: GLOBAL, project: PROJECT }, 'project'));
+          const storage = stubStorage();
+          installFetchGlobals(page, fetch);
+
+          try {
+            page.liveRegion.appendChild(makeElement('div', { 'data-asset-grid-size-controls': '' }));
+            enhanceLive(page);
+            // An older List preview, made before the activation begins.
+            chooseDefault(page, 'listSize', 'large');
+            changeProjectAssetsScope(page, 'project');
+            await flush();
+            // Newer edits while the activation is unresolved.
+            chooseDefault(page, 'gridSize', 'compact');
+            page.fields.sort.value = 'size';
+            page.fields.sort.dispatch('change');
+            const events = [];
+            ['gridSize', 'listSize'].forEach((name) => {
+              ['input', 'change'].forEach((type) => page.fields[name].addEventListener(type, () => events.push(`${name}:${type}`)));
+            });
+
+            // Unreadable POST, then the automatic recovery read fails.
+            releasePost(unreadable());
+            await flush();
+            await flush();
+            expect(page.status.textContent).toBe(
+              'Could not confirm whether the defaults scope changed. Choose a scope to check again, or reload the page.',
+            );
+            expect(loadedScope(page)).toBe('global');
+            expect(page.fields.gridSize.value).toBe('compact');
+            expect(page.grid.getAttribute('data-grid-size')).toBe('compact');
+            expect(projectAssetsDefaultsSaveBlockedReason(page.form)).toBe(
+              'The active defaults scope could not be confirmed. Choose a scope to check it before saving.',
+            );
+
+            // A check that fails again keeps the original boundary.
+            changeProjectAssetsScope(page, 'project');
+            await flush();
+            await flush();
+            expect(page.status.textContent).toMatch(/Could not confirm/);
+            expect(page.fields.gridSize.value).toBe('compact');
+
+            // The successful GET-only check resolves Project only.
+            changeProjectAssetsScope(page, 'project');
+            await flush();
+            await flush();
+            expect(posts(fetch)).toHaveLength(1);
+            expect(gets(fetch)).toHaveLength(3);
+            expect(gets(fetch).every(([url]) => url === RETURN_TO)).toBe(true);
+            expect(loadedScope(page)).toBe('project');
+            expect(page.scopeControls.project.checked).toBe(true);
+            expect(page.status.textContent).toBe(
+              'Project-only defaults are active. Your newer changes were kept and are not saved.',
+            );
+            // The newer Grid size and Sort stand; the older List preview follows Project only.
+            expect(page.fields.gridSize.value).toBe('compact');
+            expect(page.fields.listSize.value).toBe(PROJECT.listSize);
+            expect(page.fields.sort.value).toBe('size');
+            expect(page.grid.getAttribute('data-grid-size')).toBe('compact');
+            expect(page.dropdowns.gridSize.panel.querySelectorAll('input').find((input) => input.checked).value)
+              .toBe('compact');
+            expect(page.dropdowns.listSize.panel.querySelectorAll('input').find((input) => input.checked).value)
+              .toBe(PROJECT.listSize);
+            expect(storedSizes(storage)).toEqual([PROJECT.gridSize, PROJECT.listSize]);
+            // A later install keeps the newer preview.
+            page.document.dispatch('project-assets-region-loaded');
+            expect(page.grid.getAttribute('data-grid-size')).toBe('compact');
+            expect(events).toEqual([]);
+            expect(storedValues(page)).toEqual({ global: GLOBAL, project: PROJECT });
+            expect(projectAssetsDefaultsSaveBlockedReason(page.form)).toBeNull();
+          } finally {
+            vi.unstubAllGlobals();
+          }
+        });
+
+        it('records choosing the size already shown during an unresolved activation, for that size only', async () => {
+          const page = makeLivePage();
+          let releasePost;
+          const fetch = vi.fn()
+            .mockResolvedValueOnce(acknowledgement('project', { global: GLOBAL, project: PROJECT }))
+            .mockImplementationOnce(() => new Promise((resolve) => { releasePost = resolve; }))
+            .mockRejectedValueOnce(new Error('offline'))
+            .mockResolvedValueOnce(html({ global: GLOBAL, project: PROJECT }, 'global'));
+          const storage = stubStorage();
+          installFetchGlobals(page, fetch);
+          const chooseShown = (name) => {
+            const radio = page.dropdowns[name].panel.querySelectorAll('input')
+              .find((input) => input.value === page.fields[name].value);
+            expect(radio).toBeTruthy();
+            page.fields[name].closest('[data-dialog-field]').dispatch('click', { target: radio });
+          };
+
+          try {
+            page.liveRegion.appendChild(makeElement('div', { 'data-asset-grid-size-controls': '' }));
+            enhanceLive(page);
+            // Outside a scope operation, re-choosing the shown size is not an edit.
+            chooseShown('listSize');
+            changeProjectAssetsScope(page, 'project');
+            await flush();
+            expect(page.status.textContent).toBe('Project-only defaults loaded.');
+            expect(page.fields.listSize.value).toBe(PROJECT.listSize);
+
+            // While Global is unresolved, re-choosing the shown Grid size counts.
+            changeProjectAssetsScope(page, 'global');
+            await flush();
+            chooseShown('gridSize');
+            releasePost(unreadable());
+            await flush();
+            await flush();
+            expect(page.status.textContent).toMatch(/Could not confirm/);
+            changeProjectAssetsScope(page, 'global');
+            await flush();
+            await flush();
+            expect(loadedScope(page)).toBe('global');
+            expect(page.status.textContent).toBe(
+              'Global defaults are active. Your newer changes were kept and are not saved.',
+            );
+            expect(page.fields.gridSize.value).toBe(PROJECT.gridSize);
+            expect(page.grid.getAttribute('data-grid-size')).toBe(PROJECT.gridSize);
+            // The untouched List size follows Global.
+            expect(page.fields.listSize.value).toBe(GLOBAL.listSize);
+            expect(storedSizes(storage)).toEqual([GLOBAL.gridSize, GLOBAL.listSize]);
+            expect(posts(fetch)).toHaveLength(2);
+          } finally {
+            vi.unstubAllGlobals();
+          }
+        });
+
+        it('keeps newer edits when the automatic recovery read succeeds at once', async () => {
+          const page = makeLivePage();
+          let releasePost;
+          const fetch = vi.fn()
+            .mockImplementationOnce(() => new Promise((resolve) => { releasePost = resolve; }))
+            .mockResolvedValueOnce(html({ global: GLOBAL, project: PROJECT }, 'project'));
+          stubStorage();
+          installFetchGlobals(page, fetch);
+
+          try {
+            enhanceLive(page);
+            changeProjectAssetsScope(page, 'project');
+            await flush();
+            chooseDefault(page, 'listSize', 'large');
+            releasePost(unreadable());
+            await flush();
+            await flush();
+            expect(posts(fetch)).toHaveLength(1);
+            expect(gets(fetch)).toHaveLength(1);
+            expect(loadedScope(page)).toBe('project');
+            expect(page.fields.listSize.value).toBe('large');
+            expect(page.fields.gridSize.value).toBe(PROJECT.gridSize);
+          } finally {
+            vi.unstubAllGlobals();
+          }
+        });
+
+        it('gives a later fresh activation its own boundary instead of the settled recovery ownership', async () => {
+          const page = makeLivePage();
+          let releasePost;
+          const fetch = vi.fn()
+            .mockImplementationOnce(() => new Promise((resolve) => { releasePost = resolve; }))
+            .mockRejectedValueOnce(new Error('offline'))
+            .mockResolvedValueOnce(html({ global: GLOBAL, project: PROJECT }, 'project'))
+            // The fresh activation: unreadable, read fails, then a check.
+            .mockResolvedValueOnce(unreadable())
+            .mockRejectedValueOnce(new Error('offline'))
+            .mockResolvedValueOnce(html({ global: GLOBAL, project: PROJECT }, 'global'));
+          stubStorage();
+          installFetchGlobals(page, fetch);
+
+          try {
+            enhanceLive(page);
+            changeProjectAssetsScope(page, 'project');
+            await flush();
+            chooseDefault(page, 'gridSize', 'compact');
+            releasePost(unreadable());
+            await flush();
+            await flush();
+            changeProjectAssetsScope(page, 'project');
+            await flush();
+            await flush();
+            expect(loadedScope(page)).toBe('project');
+            expect(page.fields.gridSize.value).toBe('compact');
+
+            // No edit during this activation: the loaded scope replaces everything.
+            changeProjectAssetsScope(page, 'global');
+            await flush();
+            await flush();
+            expect(page.status.textContent).toMatch(/Could not confirm/);
+            changeProjectAssetsScope(page, 'global');
+            await flush();
+            await flush();
+            expect(posts(fetch)).toHaveLength(2);
+            expect(gets(fetch)).toHaveLength(4);
+            expect(loadedScope(page)).toBe('global');
+            expect(page.status.textContent).toBe('Global defaults loaded.');
+            expect(projectAssetsDefaultValues(page.fields)).toEqual(GLOBAL);
+          } finally {
+            vi.unstubAllGlobals();
+          }
+        });
+      });
+
+      // Correction H (F10): Space on the checked size radio sends no click or
+      // change in Chromium; while a scope operation is unresolved it is still an
+      // explicit choice of that size.
+      describe('Correction H F10 — keyboard choice of the shown size', () => {
+        const unreadable = () => ({ ok: true, status: 200, json: async () => { throw new Error('unreadable'); } });
+        const gets = (fetch) => fetch.mock.calls.filter(([, init]) => init?.method === 'GET');
+        const radioFor = (page, name, value = page.fields[name].value) => page.dropdowns[name].panel
+          .querySelectorAll('input').find((input) => input.value === value);
+        // A Space press as the browser reports it: keydown (plus held-key
+        // repeats), keyup, and optionally the keyboard click some browsers add.
+        const pressSpace = (page, name, target, { repeats = 0, click = false, ...keys } = {}) => {
+          const wrapper = page.fields[name].closest('[data-dialog-field]');
+          wrapper.dispatch('keydown', { key: ' ', target, repeat: false, ...keys });
+          for (let i = 0; i < repeats; i += 1) wrapper.dispatch('keydown', { key: ' ', target, repeat: true, ...keys });
+          wrapper.dispatch('keyup', { key: ' ', target, ...keys });
+          if (click) wrapper.dispatch('click', { target, detail: 0 });
+        };
+
+        it('keeps a Space-chosen Grid size through a failed recovery read and a GET-only check', async () => {
+          const page = makeLivePage();
+          let releasePost;
+          const fetch = vi.fn()
+            .mockImplementationOnce(() => new Promise((resolve) => { releasePost = resolve; }))
+            .mockRejectedValueOnce(new Error('offline'))
+            .mockResolvedValueOnce(html({ global: GLOBAL, project: PROJECT }, 'project'));
+          const storage = stubStorage();
+          installFetchGlobals(page, fetch);
+
+          try {
+            page.liveRegion.appendChild(makeElement('div', { 'data-asset-grid-size-controls': '' }));
+            enhanceLive(page);
+            changeProjectAssetsScope(page, 'project');
+            await flush();
+            releasePost(unreadable());
+            await flush();
+            await flush();
+            expect(page.status.textContent).toMatch(/Could not confirm/);
+            const events = [];
+            ['gridSize', 'listSize'].forEach((name) => {
+              ['input', 'change'].forEach((type) => page.fields[name].addEventListener(type, () => events.push(`${name}:${type}`)));
+            });
+
+            // Space on the checked Grid radio while the activation is unresolved.
+            const shown = radioFor(page, 'gridSize');
+            expect(shown.checked).toBe(true);
+            pressSpace(page, 'gridSize', shown);
+            changeProjectAssetsScope(page, 'project');
+            await flush();
+            await flush();
+
+            expect(posts(fetch)).toHaveLength(1);
+            expect(gets(fetch)).toHaveLength(2);
+            expect(gets(fetch).every(([url]) => url === RETURN_TO)).toBe(true);
+            expect(loadedScope(page)).toBe('project');
+            expect(page.status.textContent).toBe(
+              'Project-only defaults are active. Your newer changes were kept and are not saved.',
+            );
+            // The chosen Grid size stands; the untouched List size follows Project only.
+            expect(page.fields.gridSize.value).toBe(GLOBAL.gridSize);
+            expect(radioFor(page, 'gridSize').checked).toBe(true);
+            expect(page.fields.listSize.value).toBe(PROJECT.listSize);
+            expect(storedSizes(storage)).toEqual([PROJECT.gridSize, PROJECT.listSize]);
+            expect(events).toEqual([]);
+            expect(storedValues(page)).toEqual({ global: GLOBAL, project: PROJECT });
+          } finally {
+            vi.unstubAllGlobals();
+          }
+        });
+
+        it('keeps a Space-chosen List size when the automatic recovery read succeeds at once', async () => {
+          const page = makeLivePage();
+          let releasePost;
+          const fetch = vi.fn()
+            .mockImplementationOnce(() => new Promise((resolve) => { releasePost = resolve; }))
+            .mockResolvedValueOnce(html({ global: GLOBAL, project: PROJECT }, 'project'));
+          stubStorage();
+          installFetchGlobals(page, fetch);
+
+          try {
+            enhanceLive(page);
+            changeProjectAssetsScope(page, 'project');
+            await flush();
+            pressSpace(page, 'listSize', radioFor(page, 'listSize'));
+            releasePost(unreadable());
+            await flush();
+            await flush();
+            expect(posts(fetch)).toHaveLength(1);
+            expect(gets(fetch)).toHaveLength(1);
+            expect(loadedScope(page)).toBe('project');
+            expect(page.fields.listSize.value).toBe(GLOBAL.listSize);
+            expect(page.fields.gridSize.value).toBe(PROJECT.gridSize);
+          } finally {
+            vi.unstubAllGlobals();
+          }
+        });
+
+        it('records one press once and ignores repeats, other keys, other targets and settled scopes', async () => {
+          const page = makeLivePage();
+          let releasePost;
+          const fetch = vi.fn()
+            .mockResolvedValueOnce(acknowledgement('project', { global: GLOBAL, project: PROJECT }))
+            .mockImplementationOnce(() => new Promise((resolve) => { releasePost = resolve; }));
+          stubStorage();
+          installFetchGlobals(page, fetch);
+          const previews = [];
+          const previewListSize = (scope, size) => previews.push(size);
+
+          try {
+            page.region.appendChild(page.trigger);
+            installProjectAssetsResponseParser(page);
+            enhanceDropdowns(page.document);
+            enhanceProjectAssetsDefaultsScope(page.document, {
+              beginRefresh: vi.fn(() => 31),
+              refreshActivation: vi.fn(() => 'applied'),
+              confirm: vi.fn(async () => true),
+              previewListSize,
+            });
+            enhanceAppDialogs(page.document);
+            page.document.dispatch('click', { target: page.trigger });
+
+            // Outside a scope operation, Space on the shown size is not an edit.
+            pressSpace(page, 'listSize', radioFor(page, 'listSize'));
+            expect(previews).toEqual([]);
+            changeProjectAssetsScope(page, 'project');
+            await flush();
+            expect(page.status.textContent).toBe('Project-only defaults loaded.');
+            expect(page.fields.listSize.value).toBe(PROJECT.listSize);
+
+            // Global is pending from here on.
+            changeProjectAssetsScope(page, 'global');
+            await flush();
+            const shown = radioFor(page, 'listSize');
+            const other = radioFor(page, 'listSize', GLOBAL.listSize);
+            const summary = page.dropdowns.listSize.summary || page.dropdowns.listSize.querySelector?.('summary');
+            // Space on the dropdown's summary, on an unchecked option, with a
+            // modifier, or a keyup with no matching keydown: no size intent.
+            if (summary) pressSpace(page, 'listSize', summary);
+            pressSpace(page, 'listSize', other);
+            pressSpace(page, 'listSize', shown, { ctrlKey: true });
+            page.fields.listSize.closest('[data-dialog-field]').dispatch('keyup', { key: ' ', target: shown });
+            // Held-key repeats alone are not a press.
+            page.fields.listSize.closest('[data-dialog-field]').dispatch('keydown', { key: ' ', target: shown, repeat: true });
+            page.fields.listSize.closest('[data-dialog-field]').dispatch('keyup', { key: ' ', target: shown });
+            // Enter is not the radio's activation key.
+            const wrapper = page.fields.listSize.closest('[data-dialog-field]');
+            wrapper.dispatch('keydown', { key: 'Enter', target: shown });
+            wrapper.dispatch('keyup', { key: 'Enter', target: shown });
+            expect(previews).toEqual([]);
+
+            // One held press with repeats and the keyboard click some browsers add: once.
+            pressSpace(page, 'listSize', shown, { repeats: 5, click: true });
+            expect(previews).toEqual([PROJECT.listSize]);
+            // A later pointer choice of the same size is its own choice.
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            page.fields.listSize.closest('[data-dialog-field]').dispatch('click', { target: shown, detail: 1 });
+            expect(previews).toEqual([PROJECT.listSize, PROJECT.listSize]);
+            expect(posts(fetch)).toHaveLength(2);
+            releasePost(acknowledgement('global', { global: GLOBAL, project: PROJECT }));
+            await flush();
+            await flush();
+            expect(loadedScope(page)).toBe('global');
+            // The keyboard choice stands; the untouched Grid size follows Global.
+            expect(page.fields.listSize.value).toBe(PROJECT.listSize);
+            expect(page.fields.gridSize.value).toBe(GLOBAL.gridSize);
+            expect(posts(fetch)).toHaveLength(2);
+          } finally {
+            vi.unstubAllGlobals();
+          }
+        });
+      });
+
+      it('puts the current style back on a newly installed region and shows it when the dialog reopens', async () => {
+        const page = makeLivePage();
+        const fetch = vi.fn();
+        stubStorage();
+        installFetchGlobals(page, fetch);
+
+        try {
+          enhanceLive(page);
+          chooseDefault(page, 'gridStyle', 'cropped');
+
+          // A filter load installs a region rendered with the saved style.
+          const replacement = makeElement('ul', { class: 'asset-grid', 'data-grid-style': 'uncropped' });
+          page.grid.replaceWith(replacement);
+          page.document.dispatch('project-assets-region-loaded');
+          expect(replacement.getAttribute('data-grid-style')).toBe('cropped');
+
+          closeAppDialogById(page.document, page.dialog.id);
+          page.document.dispatch('click', { target: page.trigger });
+          expect(page.fields.gridStyle.value).toBe('cropped');
+          expect(page.dropdowns.gridStyle.panel.querySelectorAll('input').find((input) => input.checked).value)
+            .toBe('cropped');
+          expect(replacement.getAttribute('data-grid-style')).toBe('cropped');
+          // The unsaved style is still not a saved default.
+          expect(storedValues(page).global.gridStyle).toBe('uncropped');
+          expect(fetch).not.toHaveBeenCalled();
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      it('applies an activated scope\'s acknowledged style and keeps the current one when activation fails', async () => {
+        const page = makeLivePage();
+        const fetch = vi.fn()
+          .mockResolvedValueOnce(json({ status: 'error', message: 'No changes were made.' }, { ok: false, status: 500 }))
+          .mockResolvedValueOnce(acknowledgement('project', { global: GLOBAL, project: PROJECT }))
+          .mockResolvedValueOnce(acknowledgement('global', { global: GLOBAL, project: PROJECT }));
+        stubStorage();
+        installFetchGlobals(page, fetch);
+
+        try {
+          enhanceLive(page);
+          changeProjectAssetsScope(page, 'project');
+          await flush();
+          expect(loadedScope(page)).toBe('global');
+          expect(page.grid.getAttribute('data-grid-style')).toBe('uncropped');
+          expect(page.fields.gridStyle.value).toBe('uncropped');
+
+          // The mocked refresh reports nothing to reload, so the restyle is
+          // the scope module's own doing.
+          changeProjectAssetsScope(page, 'project');
+          await flush();
+          expect(loadedScope(page)).toBe('project');
+          expect(page.fields.gridStyle.value).toBe(PROJECT.gridStyle);
+          expect(page.grid.getAttribute('data-grid-style')).toBe('cropped');
+
+          changeProjectAssetsScope(page, 'global');
+          await flush();
+          expect(loadedScope(page)).toBe('global');
+          expect(page.fields.gridStyle.value).toBe(GLOBAL.gridStyle);
+          expect(page.grid.getAttribute('data-grid-style')).toBe('uncropped');
+          expect(posts(fetch).every(([, init]) => init.body.get('intent') === 'activate-scope')).toBe(true);
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      it('leaves a form without the live-controls opt-in on its acknowledged-save restyle only', () => {
+        const page = makeLivePage();
+        page.form.removeAttribute('data-defaults-live-controls');
+        stubStorage();
+        installFetchGlobals(page, vi.fn());
+
+        try {
+          enhanceLive(page);
+          chooseDefault(page, 'gridStyle', 'cropped');
+          expect(page.grid.getAttribute('data-grid-style')).toBe('uncropped');
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+    });
   });
 
 });

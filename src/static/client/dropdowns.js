@@ -24,6 +24,8 @@ const CC_DROPDOWN_NATIVE_SELECT_SELECTOR = '[data-cc-dropdown-native-select]';
 const CC_DROPDOWN_SUMMARY_WIDTH_SELECTOR = '.asset-filter-multiselect-summary-width';
 const SCROLLABLE_CATEGORY_DIALOG_BODY_CLASS = 'project-asset-category-management-dialog-body';
 const PROJECT_EDIT_DIALOG_BODY_CLASS = 'project-edit-dialog-body';
+// Filters & Defaults (WP7 hook): its body scrolls, so open panels use the fixed overlay.
+const FILTERS_DEFAULTS_DIALOG_BODY_CLASS = 'filters-defaults-dialog-body';
 const CC_DROPDOWN_PANEL_SELECTOR = '.asset-filter-multiselect-panel';
 const CC_DROPDOWN_OVERLAY_ATTRIBUTE = 'data-cc-dropdown-overlay';
 const CC_DROPDOWN_OVERLAY_STATE = '__creatorCrateDropdownOverlayState';
@@ -34,6 +36,7 @@ function isScrollableDialogBody(dialogBody) {
   return Boolean(
     dialogBody?.classList?.contains?.(SCROLLABLE_CATEGORY_DIALOG_BODY_CLASS)
       || dialogBody?.classList?.contains?.(PROJECT_EDIT_DIALOG_BODY_CLASS)
+      || dialogBody?.classList?.contains?.(FILTERS_DEFAULTS_DIALOG_BODY_CLASS)
       || dialogBody?.classList?.contains?.('processing-dialog-body')
       || dialogBody?.classList?.contains?.('processing-manage-body'),
   );
@@ -440,6 +443,59 @@ function creatorCrateDropdownInputs(dropdown, mode) {
   return Array.from(dropdown?.querySelectorAll?.(`input[type="${type}"]`) || []);
 }
 
+// Opt-in "Select all" (filter multi-selects only): the leading checkbox stands for the
+// unrestricted filter, so it is checked exactly when no individual value is. It is a state,
+// not an enumeration of today's options, so values added later stay included.
+const CC_DROPDOWN_SELECT_ALL_ATTRIBUTE = 'data-cc-dropdown-select-all';
+
+function creatorCrateDropdownSelectAllValue(dropdown) {
+  if (creatorCrateDropdownMode(dropdown) !== 'multiple') return null;
+  const value = dropdown?.dataset?.ccDropdownSelectAll
+    ?? dropdown?.getAttribute?.(CC_DROPDOWN_SELECT_ALL_ATTRIBUTE)
+    ?? null;
+  return value === null ? null : String(value);
+}
+
+function isCreatorCrateDropdownSelectAllInput(input) {
+  return input?.dataset?.ccDropdownSelectAll !== undefined
+    || input?.hasAttribute?.(CC_DROPDOWN_SELECT_ALL_ATTRIBUTE) === true;
+}
+
+function creatorCrateDropdownSelectAllInput(dropdown) {
+  if (creatorCrateDropdownSelectAllValue(dropdown) === null) return null;
+  return creatorCrateDropdownInputs(dropdown, 'multiple').find(isCreatorCrateDropdownSelectAllInput) || null;
+}
+
+function creatorCrateDropdownIndividualInputs(dropdown, mode) {
+  return creatorCrateDropdownInputs(dropdown, mode)
+    .filter((input) => !isCreatorCrateDropdownSelectAllInput(input));
+}
+
+// Reconciles the Select all row with the individual rows. `changed` is the row the user
+// just toggled (if any): choosing Select all clears individual values, choosing a value
+// leaves All, and clearing the last value (or unchecking Select all) returns to All.
+function reconcileCreatorCrateDropdownSelectAll(dropdown, changed = null) {
+  const selectAll = creatorCrateDropdownSelectAllInput(dropdown);
+  if (!selectAll) return;
+  const individual = creatorCrateDropdownIndividualInputs(dropdown, 'multiple');
+  if (changed === selectAll && selectAll.checked) {
+    individual.forEach((input) => { input.checked = false; });
+    return;
+  }
+  selectAll.checked = !individual.some((input) => input.checked);
+}
+
+function preventCreatorCrateDropdownSelectAllDeselect(dropdown, event) {
+  const target = event?.target;
+  if (!isCreatorCrateDropdownSelectAllInput(target) || target.checked) return;
+  if (creatorCrateDropdownSelectAllInput(dropdown) !== target) return;
+  // Unrestricted stays unrestricted until a value is chosen; cancelling the click
+  // restores the box without a change event, so filters are not refreshed for nothing.
+  if (!creatorCrateDropdownIndividualInputs(dropdown, 'multiple').some((input) => input.checked)) {
+    event.preventDefault?.();
+  }
+}
+
 function creatorCrateDropdownNativeOptions(nativeSelect) {
   return Array.from(nativeSelect?.options || nativeSelect?.querySelectorAll?.('option') || []);
 }
@@ -543,6 +599,7 @@ function syncCreatorCrateDropdownOptionsFromNative(dropdown) {
   syncCreatorCrateDropdownSummaryWidthFromNative(dropdown, nativeOptions);
   const nativeValues = new Set(nativeOptions.map(creatorCrateDropdownNativeValue));
   creatorCrateDropdownInputs(dropdown, mode)
+    .filter((input) => !isCreatorCrateDropdownSelectAllInput(input))
     .filter((input) => !nativeValues.has(String(input.value ?? '')))
     .forEach((input) => input.closest?.('.asset-filter-multiselect-option')?.remove?.());
 
@@ -604,6 +661,13 @@ function syncCreatorCrateDropdownInputsFromNative(dropdown) {
       .filter((option) => option.selected)
       .map((option) => String(option.value)))
     : new Set([String(nativeSelect.value ?? '')]);
+  if (creatorCrateDropdownSelectAllInput(dropdown)) {
+    creatorCrateDropdownIndividualInputs(dropdown, mode).forEach((input) => {
+      input.checked = selectedValues.has(String(input.value ?? ''));
+    });
+    reconcileCreatorCrateDropdownSelectAll(dropdown);
+    return;
+  }
   creatorCrateDropdownInputs(dropdown, mode).forEach((input) => {
     input.checked = selectedValues.has(String(input.value ?? ''));
   });
@@ -645,9 +709,14 @@ function syncCreatorCrateDropdownNativeFromInputs(dropdown) {
     return;
   }
 
-  const selectedValues = new Set(
-    inputs.filter((input) => input.checked).map((input) => String(input.value ?? '')),
-  );
+  const selectAll = creatorCrateDropdownSelectAllInput(dropdown);
+  // Unrestricted selects only the native neutral option, when the catalogue has one;
+  // otherwise it leaves the native select empty, the existing unrestricted value.
+  const selectedValues = selectAll?.checked
+    ? new Set([creatorCrateDropdownSelectAllValue(dropdown)])
+    : new Set(inputs
+      .filter((input) => input.checked && input !== selectAll)
+      .map((input) => String(input.value ?? '')));
   creatorCrateDropdownNativeOptions(nativeSelect).forEach((option) => {
     option.selected = selectedValues.has(String(option.value ?? ''));
   });
@@ -689,10 +758,11 @@ function updateCreatorCrateDropdownSummary(dropdown) {
     summaryText = assetViewerFilterSingleSelectLabel(selectedInput);
     if (!selectedInput || summaryText === '') return;
   } else if (mode === 'multiple') {
-    const selectedInputs = creatorCrateDropdownInputs(dropdown, mode).filter((input) => input.checked);
-    const emptySummary = dropdown.dataset?.ccDropdownEmptySummary
+    const selectedInputs = creatorCrateDropdownIndividualInputs(dropdown, mode).filter((input) => input.checked);
+    const selectAllEnabled = creatorCrateDropdownSelectAllValue(dropdown) !== null;
+    const emptySummary = (dropdown.dataset?.ccDropdownEmptySummary
       ?? dropdown.getAttribute?.('data-cc-dropdown-empty-summary')
-      ?? 'None selected';
+      ?? (selectAllEnabled ? '' : 'None selected')) || (selectAllEnabled ? 'All' : '');
     const countLabel = dropdown.dataset?.ccDropdownCountLabel
       ?? dropdown.getAttribute?.('data-cc-dropdown-count-label')
       ?? 'items';
@@ -729,6 +799,8 @@ export function initializeCreatorCrateDropdown(dropdown) {
     nativeSelect.setAttribute?.('hidden', '');
     syncCreatorCrateDropdownOptionsFromNative(dropdown);
     syncCreatorCrateDropdownInputsFromNative(dropdown);
+  } else {
+    reconcileCreatorCrateDropdownSelectAll(dropdown);
   }
   syncCreatorCrateDropdownDisabledState(dropdown);
   updateAssetViewerFilterDisclosureState(dropdown);
@@ -766,6 +838,9 @@ function handleCreatorCrateDropdownChange(dropdown, event) {
     dropdown.querySelector?.('summary')?.focus?.({ preventScroll: true });
     restoreDialogBodyScroll(dropdown);
   } else if (mode === 'multiple' && event.target?.type === 'checkbox') {
+    // Runs in the capture phase, so form-level filter listeners see the reconciled state
+    // from this one change event; the rows cleared here change without events.
+    reconcileCreatorCrateDropdownSelectAll(dropdown, event.target);
     syncCreatorCrateDropdownNativeFromInputs(dropdown);
     if (creatorCrateDropdownDispatchesNativeChange(dropdown)) {
       dispatchCreatorCrateDropdownNativeChange(nativeSelect);
@@ -798,6 +873,7 @@ function enhanceAssetDisclosures(scope, {
   boundKey,
   initialize,
   onChange,
+  onClick,
 } = {}) {
   if (!scope || typeof scope.querySelectorAll !== 'function') return 0;
 
@@ -818,6 +894,7 @@ function enhanceAssetDisclosures(scope, {
         updateAssetViewerFilterDisclosureState(current);
         return;
       }
+      if (current) onClick?.(current, event);
       closeAssetDisclosures(currentDisclosures, current);
     });
 
@@ -912,6 +989,7 @@ export function enhanceDropdowns(scope = globalThis.document) {
     boundKey: 'creatorCrateDropdownsBound',
     initialize: initializeCreatorCrateDropdown,
     onChange: handleCreatorCrateDropdownChange,
+    onClick: preventCreatorCrateDropdownSelectAllDeselect,
   });
 }
 

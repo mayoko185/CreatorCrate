@@ -68,7 +68,7 @@ test('manual scan submits the current live-filter context instead of the initial
   const filterDialog = page.locator('#project-assets-filter-dialog');
   const openFilters = async () => {
     if (!(await filterDialog.isVisible())) {
-      await page.getByRole('link', { name: 'Filter assets', exact: true }).click();
+      await page.getByRole('link', { name: 'Filters & Defaults', exact: true }).click();
     }
     await expect(filterDialog).toBeVisible();
   };

@@ -97,6 +97,16 @@ function buildProjectAssetsDefaultValuesJson(globalDefaults, projectDefaults) {
   return JSON.stringify(values).replace(/</g, '\\u003c');
 }
 
+function buildProjectAssetsSavedDefaultsJson(pageDefaultsService, optionCatalogues, context) {
+  if (typeof pageDefaultsService?.describeSavedDefaults !== 'function') return 'null';
+  const described = pageDefaultsService.describeSavedDefaults(
+    ASSET_PAGE_DEFAULTS_PAGE,
+    optionCatalogues,
+    context,
+  );
+  return JSON.stringify(described ?? null).replace(/</g, '\\u003c');
+}
+
 function normalizeProjectAssetsDefaultsScope(scope) {
   return scope === 'project' ? 'project' : 'global';
 }
@@ -219,7 +229,7 @@ export async function renderProjectAssetsPage(req, res, {
   projectId = null,
   status = 200,
   rawQuery = null,
-  resetView,
+  resetFilters = false,
   projectAssetsDefaultsDialogOpen = req.query?.defaults === '1',
   removeMissingAssetsDialogOpen = req.query?.remove_missing === '1',
   projectAssetsDefaultsSubmittedValues = null,
@@ -251,7 +261,9 @@ export async function renderProjectAssetsPage(req, res, {
   const projectAssetsDefaultOptionCatalogues = buildProjectAssetsDefaultOptionCatalogues(
     workflowQueryService,
   );
-  const query = resetView ? { view: resetView } : rawQuery && typeof rawQuery === 'object'
+  // Package B: a validated Reset discards every request-time filter, sort,
+  // View and page value; the saved/default resolution below decides them all.
+  const query = resetFilters ? {} : rawQuery && typeof rawQuery === 'object'
     ? rawQuery
     : (req.query && typeof req.query === 'object' ? req.query : {});
   const projectPageDefaultContext = { projectId: id };
@@ -272,9 +284,9 @@ export async function renderProjectAssetsPage(req, res, {
     projectPageDefaultContext,
   );
 
-  // Validated Reset intent reuses bare-navigation defaults with a request-local view.
-  // Other non-bare requests remain authoritative GETs.
-  if (allowSavedDefaultsRedirect && (resetView || isBareAssetBrowserRequest(query))) {
+  // Validated Reset intent reuses bare-navigation defaults, including the
+  // effective saved/default View. Other non-bare requests remain authoritative GETs.
+  if (allowSavedDefaultsRedirect && (resetFilters || isBareAssetBrowserRequest(query))) {
     const resolution = assetBrowserPreferenceService.resolveEffectiveCategory(id);
     const effective = resolution && resolution.effective;
     if (!effective || (effective.kind !== 'all' && effective.kind !== 'category')) {
@@ -291,12 +303,11 @@ export async function renderProjectAssetsPage(req, res, {
         presentation,
         pageDefaultsService,
         filterDefaults,
-        resetView,
       ));
     }
 
     if (
-      resetView
+      resetFilters
       || hasNonFallbackAssetPresentation(presentation, pageDefaultsService)
       || hasNonNeutralProjectAssetsFilterDefaults(filterDefaults)
     ) {
@@ -306,7 +317,6 @@ export async function renderProjectAssetsPage(req, res, {
         presentation,
         pageDefaultsService,
         filterDefaults,
-        resetView,
       ));
     }
   }
@@ -614,7 +624,6 @@ function buildAssetDefaultsRedirectUrl(
   presentation,
   pageDefaultsService,
   filterDefaults,
-  activeView,
 ) {
   const inheritedFilterDefaults = [];
   const tag = categoryId === null && filterDefaults.tag !== 'all'
@@ -637,7 +646,7 @@ function buildAssetDefaultsRedirectUrl(
     order: presentation.saved.order,
     page: 1,
     pageSize: presentation.saved.pageSize,
-    view: activeView ?? presentation.saved.view,
+    view: presentation.saved.view,
   };
   const query = buildCanonicalAssetBrowserQuery(context, 1);
   if (inheritedFilterDefaults.length > 0) {
@@ -784,7 +793,7 @@ export function buildBrowserRenderModel(
     pageSize: data.pageSize,
     pageCount: data.pageCount,
     filters: data.filters,
-    resetFiltersUrl: `/projects/${project.id}/assets?resetFilters=1&view=${data.filters.view}`,
+    resetFiltersUrl: `/projects/${project.id}/assets?resetFilters=1`,
     extensionChoices: data.extensionChoices,
     tagOptions: data.tagOptions || [],
     categoryNavigation: data.categoryNavigation,
@@ -869,6 +878,13 @@ export function buildBrowserRenderModel(
       projectAssetsScopedDefaults.project,
     ),
     projectAssetsEffectiveDefaults: projectAssetsScopedDefaults.effective,
+    // WP7: authoritative saved-state metadata (key/row presence, never a
+    // comparison with fallbacks) for the Filters & Defaults status line.
+    projectAssetsSavedDefaultsJson: buildProjectAssetsSavedDefaultsJson(
+      pageDefaultsService,
+      projectAssetsDefaultOptionCatalogues,
+      { projectId: project.id },
+    ),
     projectAssetsGridSizeDefault,
     projectAssetsListSizeDefault,
     gridStyle: projectAssetsScopedDefaults.effective.gridStyle,

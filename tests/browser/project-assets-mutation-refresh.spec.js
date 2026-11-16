@@ -564,7 +564,7 @@ test('E: races never install stale results or falsely resolve the owed refresh',
   await select(page, a);
 
   // Older filter GET still pending; the refresh takes over its URL and history.
-  await page.getByRole('link', { name: 'Filter assets', exact: true }).click();
+  await page.getByRole('link', { name: 'Filters & Defaults', exact: true }).click();
   const search = page.locator('#search');
   control.mode = 'hold';
   await search.fill('draft');

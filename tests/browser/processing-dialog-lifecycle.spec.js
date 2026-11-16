@@ -509,8 +509,7 @@ test('Project Assets action cards and Rename dialog remain contained across desk
         (nodes) => nodes.map((node) => node.getAttribute('aria-label')),
       );
       expect(toolbarLabels).toEqual([
-        'Filter assets',
-        'Project Assets defaults',
+        'Filters & Defaults',
         'Open locally',
         expect.stringMatching(/^(Enable|Disable) NSFW filter$/),
         'Start slideshow',

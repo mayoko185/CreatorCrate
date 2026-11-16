@@ -1,21 +1,41 @@
-import { enhanceSettingsFetchSave, queueSettingsFetchSave } from './settings-fetch-save.js';
+import {
+  enhanceSettingsFetchSave,
+  queueSettingsFetchSave,
+  setFetchSaveStatus,
+} from './settings-fetch-save.js';
 import {
   beginProjectAssetsDefaultsLiveRefresh,
   beginProjectsDefaultsLiveRefresh,
   beginReleasesDefaultsLiveRefresh,
+  PROJECT_ASSETS_DEFAULTS_SAVE_REFRESH_ERROR_MESSAGE,
   refreshProjectAssetsDefaultsLiveRegion,
+  refreshProjectAssetsWithLoadedDefaults,
   refreshProjectsLiveRegion,
   refreshReleasesLiveRegion,
 } from './live-regions.js';
 import {
+  applyProjectAssetsCurrentGridStyle,
   beginProjectAssetsDefaultsAcknowledgement,
   markProjectAssetsDefaultsRendered,
   projectAssetsDefaultsEffectiveSnapshot,
   projectAssetsDefaultsGridStyleOnlyChange,
+  prepareProjectAssetsDefaultsSave,
+  projectAssetsDefaultsSaveBlockedReason,
   reconcileProjectAssetsDefaultsAcknowledgement,
 } from './project-assets-defaults-scope.js';
 
 const PROJECT_ASSETS_DEFAULTS_FORM_SELECTOR = '#project-assets-defaults-form';
+// WP4 explicit save: a form opts in with this attribute. Only the page's submit
+// control is bound to the fetch transport, so editing controls never autosave.
+export const DEFAULTS_EXPLICIT_SAVE_ATTRIBUTE = 'data-defaults-explicit-save';
+// Project Assets explicit saves always carry the Milestone 1 `intent=save`
+// operation; a hidden input never fires `change`, so it cannot autosave.
+export const PROJECT_ASSETS_DEFAULTS_EXPLICIT_SAVE_CONTROL_SELECTOR = (
+  'input[type="hidden"][name="intent"][value="save"][data-autosubmit="fetch"]'
+);
+// WP7: the Project Assets combined dialog, whose eligible values are the live
+// filter controls (project-assets-defaults-scope.js).
+const DEFAULTS_LIVE_CONTROLS_ATTRIBUTE = 'data-defaults-live-controls';
 const PROJECTS_DEFAULTS_FORM_SELECTOR = '#projects-defaults-form';
 const RELEASES_DEFAULTS_FORM_SELECTOR = '#releases-defaults-form';
 const refreshSessions = new WeakMap();
@@ -72,13 +92,24 @@ export function enhancePageDefaultsFetchSave(scope = globalThis.document, option
     onAcknowledged,
     onStart,
     submitControlSelector,
+    explicitSaveControlSelector,
+    saveBlockedReason,
+    prepareSave,
   } = options;
   if (!formSelector || !markerAttribute || typeof beginRefresh !== 'function'
     || typeof refresh !== 'function' || !refreshFailureMessage) return 0;
 
   return defaultsForms(scope, formSelector, markerAttribute).reduce(
     (bound, form) => {
-      const enhanced = enhanceSettingsFetchSave(form, {
+      const explicitSave = Boolean(explicitSaveControlSelector)
+        && form.hasAttribute?.(DEFAULTS_EXPLICIT_SAVE_ATTRIBUTE);
+      // Explicit mode binds the save control alone (the reviewed pattern used
+      // by Settings reorder/mutations); autosave forms keep binding every
+      // `[data-autosubmit="fetch"]` control exactly as before.
+      const bindingScope = explicitSave
+        ? { querySelectorAll: () => [form.querySelector?.(explicitSaveControlSelector)].filter(Boolean) }
+        : form;
+      const enhanced = enhanceSettingsFetchSave(bindingScope, {
         onStart: ({ form: currentForm, payload }) => {
           onStart?.(currentForm, payload);
           clearDefaultsValidation(currentForm);
@@ -131,6 +162,28 @@ export function enhancePageDefaultsFetchSave(scope = globalThis.document, option
           queueSettingsFetchSave(form.querySelector(submitControlSelector));
         });
       }
+      if (explicitSave && !form.dataset?.defaultsExplicitSaveBound) {
+        form.dataset.defaultsExplicitSaveBound = 'true';
+        form.addEventListener('submit', (event) => {
+          // One Save action is one queued request: the transport drops a repeat
+          // of the in-flight payload and keeps only the newest different one.
+          // Explicit-save forms never fall back to a native POST: a missing or
+          // unbound save control reports an error instead of navigating.
+          event.preventDefault();
+          // WP6: a page may refuse a Save it cannot target safely (Project
+          // Assets while a defaults scope is changing); the refusal is shown.
+          const blocked = (typeof saveBlockedReason === 'function' ? saveBlockedReason(form) : null)
+            // WP7: the page brings the payload up to date with what it shows.
+            || (typeof prepareSave === 'function' ? prepareSave(form) : null);
+          if (blocked) {
+            setFetchSaveStatus(form, blocked, 'error');
+            return;
+          }
+          if (!queueSettingsFetchSave(form.querySelector(explicitSaveControlSelector))) {
+            setFetchSaveStatus(form, 'Could not save settings. Your current changes were kept.', 'error');
+          }
+        });
+      }
       return bound + enhanced;
     },
     0,
@@ -140,10 +193,37 @@ export function enhancePageDefaultsFetchSave(scope = globalThis.document, option
 // Only a successfully reconciled acknowledgement may restyle the grid in place.
 // The rendered baseline advances only once the region shows the acknowledged
 // values: immediately for an in-place restyle, or when a full refresh installs.
+// WP6: an explicit-save form applies the acknowledged effective values to the
+// latest intended view (keeping Category, Search, Show, Usage, page and
+// suspended Tag/Extension provenance) instead of the success URL, which was
+// built from a returnTo that a pending filter change may have outdated.
 function refreshProjectAssetsDefaults(document, destination, authorityGeneration, options = {}) {
   const { form, acknowledgementFailed = false } = options;
   const gridStyle = acknowledgementFailed ? null : projectAssetsDefaultsGridStyleOnlyChange(form);
   const acknowledged = acknowledgementFailed ? null : projectAssetsDefaultsEffectiveSnapshot(form);
+  if (acknowledged && form?.hasAttribute?.(DEFAULTS_EXPLICIT_SAVE_ATTRIBUTE)) {
+    const outcome = refreshProjectAssetsWithLoadedDefaults(document, authorityGeneration, acknowledged, {
+      onError: options.onError,
+      gridStyle,
+      onComplete: () => {
+        markProjectAssetsDefaultsRendered(form, acknowledged);
+        // Correction A (F2): a Grid style chosen while this refresh was
+        // pending is the current one; the installed saved style yields to it.
+        applyProjectAssetsCurrentGridStyle(form);
+      },
+      failureMessage: PROJECT_ASSETS_DEFAULTS_SAVE_REFRESH_ERROR_MESSAGE,
+      // WP7: the combined dialog saved the Tag/Extension it shows, so the
+      // current filter (explicit or inherited) is kept exactly as it is.
+      filterDefaults: !form.hasAttribute?.(DEFAULTS_LIVE_CONTROLS_ATTRIBUTE),
+    });
+    if (outcome === 'applied') {
+      markProjectAssetsDefaultsRendered(form, acknowledged);
+      // The in-place restyle shows the saved style; a newer current choice
+      // (the control) stays the one in use, as after an installed refresh.
+      applyProjectAssetsCurrentGridStyle(form);
+    }
+    return outcome;
+  }
   const outcome = refreshProjectAssetsDefaultsLiveRegion(
     document,
     destination,
@@ -162,6 +242,10 @@ export function enhanceProjectAssetsDefaultsFetchSave(scope = globalThis.documen
   return enhancePageDefaultsFetchSave(scope, {
     formSelector: PROJECT_ASSETS_DEFAULTS_FORM_SELECTOR,
     markerAttribute: 'data-project-assets-defaults-autosave',
+    // Inert unless the form opts in with DEFAULTS_EXPLICIT_SAVE_ATTRIBUTE.
+    explicitSaveControlSelector: PROJECT_ASSETS_DEFAULTS_EXPLICIT_SAVE_CONTROL_SELECTOR,
+    saveBlockedReason: projectAssetsDefaultsSaveBlockedReason,
+    prepareSave: prepareProjectAssetsDefaultsSave,
     onStart: beginProjectAssetsDefaultsAcknowledgement,
     beginRefresh: options.beginRefresh || beginProjectAssetsDefaultsLiveRefresh,
     refresh: options.refresh || refreshProjectAssetsDefaults,

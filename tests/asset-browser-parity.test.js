@@ -170,9 +170,10 @@ describe('intentional asset-browser parity: releases vs projects', () => {
   });
 
   it('keeps the shared browser shell and display controls on both surfaces', () => {
-    for (const [html, dialogId] of [
-      [pages.projectGrid, 'project-assets-filter-dialog'],
-      [pages.releaseGrid, 'release-assets-filter-dialog'],
+    // WP7: Project Assets combines Filters & Defaults behind the same icon.
+    for (const [html, dialogId, label, dialogClass] of [
+      [pages.projectGrid, 'project-assets-filter-dialog', 'Filters & Defaults', 'app-dialog app-dialog--utility app-dialog--filters-defaults'],
+      [pages.releaseGrid, 'release-assets-filter-dialog', 'Filter assets', 'app-dialog app-dialog--utility'],
     ]) {
       const positions = markerOrder(html, [
         'class="asset-browser-layout"',
@@ -183,8 +184,8 @@ describe('intentional asset-browser parity: releases vs projects', () => {
       ]);
       expect(positions.every((position) => position >= 0)).toBe(true);
       expect(positions).toEqual([...positions].sort((a, b) => a - b));
-      expect(html).toContain(`href="#${dialogId}" aria-label="Filter assets"`);
-      expect(extractDialog(html, dialogId)).toContain('class="app-dialog app-dialog--utility" data-app-dialog');
+      expect(html).toContain(`href="#${dialogId}" aria-label="${label}"`);
+      expect(extractDialog(html, dialogId)).toContain(`class="${dialogClass}" data-app-dialog`);
     }
   });
 

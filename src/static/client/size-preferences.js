@@ -231,6 +231,41 @@ export function enhanceAssetListSize(scope = globalThis.document, fallbackSize) 
   return enhanceGridSize(scope, ASSET_LIST_SIZE_CONFIG, fallback);
 }
 
+// Project Assets Filters & Defaults: the size defaults preview live. A preview
+// is applied through the same presentation path as the size controls but is
+// never stored, so the browser size and the saved fallbacks stay as they are.
+function projectAssetsRegion(scope) {
+  return scope?.matches?.(PROJECT_ASSETS_LIVE_REGION_SELECTOR)
+    ? scope
+    : liveRegionDocument(scope)?.querySelector?.(PROJECT_ASSETS_LIVE_REGION_SELECTOR);
+}
+
+function previewProjectAssetsSize(scope, size, config) {
+  const region = projectAssetsRegion(scope);
+  if (!region || !gridSizeIsValid(size, config)) return false;
+  applyGridSize(region, size, config, getGridSizeControls(region, config));
+  return true;
+}
+
+export function previewProjectAssetsGridSize(scope = globalThis.document, size) {
+  return previewProjectAssetsSize(scope, size, ASSET_GRID_SIZE_CONFIG);
+}
+
+export function previewProjectAssetsListSize(scope = globalThis.document, size) {
+  return previewProjectAssetsSize(scope, size, ASSET_LIST_SIZE_CONFIG);
+}
+
+/** The size Project Assets resolves without a preview: stored, else the region's fallback. */
+export function resolvedProjectAssetsSizes(scope = globalThis.document) {
+  const region = projectAssetsRegion(scope);
+  return {
+    gridSize: readGridSize(ASSET_GRID_SIZE_CONFIG.storageKey, ASSET_GRID_SIZE_CONFIG,
+      projectAssetsSizeFallback(region, 'data-project-assets-grid-size-default', ASSET_GRID_SIZE_CONFIG)),
+    listSize: readGridSize(ASSET_LIST_SIZE_CONFIG.storageKey, ASSET_LIST_SIZE_CONFIG,
+      projectAssetsSizeFallback(region, 'data-project-assets-list-size-default', ASSET_LIST_SIZE_CONFIG)),
+  };
+}
+
 export function enhanceProjectGridSize(scope = globalThis.document) {
   return enhanceGridSize(scope, PROJECT_GRID_SIZE_CONFIG);
 }

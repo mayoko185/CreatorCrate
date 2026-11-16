@@ -10,6 +10,12 @@ import {
   refreshProjectAssetsLiveRegion,
 } from '../src/static/creatorcrate.js';
 import { retainedAssetSelectionIds } from '../src/static/client/asset-ordering.js';
+import {
+  PROJECT_ASSETS_FILTERS_RESET_EVENT,
+  projectAssetsFiltersResetPending,
+  refreshProjectAssetsWithLoadedDefaults,
+  retainProjectAssetsDisplayedSizes,
+} from '../src/static/client/live-regions.js';
 
 function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } = {}) {
   const attributes = new Map();
@@ -187,7 +193,7 @@ function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } =
       return event;
     },
     dispatchEvent(event) {
-      this.dispatch(event.type);
+      this.dispatch(event.type, event.detail === undefined ? {} : { detail: event.detail });
       return true;
     },
     querySelectorAll(selector) {
@@ -243,7 +249,7 @@ function makePage({
   withPageSizeForm = false,
   paginationUrl = null,
   viewUrl = null,
-  resetUrl = '/projects/1/assets?resetFilters=1&view=list',
+  resetUrl = '/projects/1/assets?resetFilters=1',
   projectsResetUrl = null,
   filteredEmptyResetUrl = null,
   withInlineCategory = false,
@@ -1123,7 +1129,7 @@ describe('Project Assets live filtering enhancement', () => {
   });
 
   it('Reset fetches its action, restores canonical filters and view, and keeps the persistent dialog open', async () => {
-    const href = '/projects/1/assets?resetFilters=1&view=list';
+    const href = '/projects/1/assets?resetFilters=1';
     const initial = makePage({
       searchValue: 'needle',
       presence: 'missing',
@@ -1176,9 +1182,206 @@ describe('Project Assets live filtering enhancement', () => {
     expect(initial.reset.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
   });
 
+  describe('Package B Reset filters lifecycle', () => {
+    const RESET_PATH = '/projects/1/assets?resetFilters=1';
+    const requestPath = (call) => {
+      const url = new URL(call[0]);
+      return url.pathname + url.search;
+    };
+    function recordResetPhases(document) {
+      const phases = [];
+      document.addEventListener(PROJECT_ASSETS_FILTERS_RESET_EVENT, (event) => {
+        phases.push(event.detail.phase);
+      });
+      return phases;
+    }
+    function changeView(page, value) {
+      const input = page.form.querySelector('input[name="view"]');
+      input.value = value;
+      input.dispatch('change');
+    }
+
+    it.each([
+      ['grid', 'list', 'grid'],
+      ['list', 'grid', 'list'],
+      ['grid', 'list', 'list'],
+      ['list', 'grid', 'grid'],
+    ])('rendered %s, pending %s: Reset requests no View and installs the saved/default %s', async (rendered, pendingView, savedView) => {
+      const initial = makePage({ view: rendered, searchValue: 'needle', presence: 'missing', sort: 'size', order: 'desc' });
+      const pendingPage = makePage({ view: pendingView, searchValue: 'needle', presence: 'missing' });
+      const resetPage = makePage({ view: savedView, page: '1', sort: 'modified', order: 'desc', pageSize: '50' });
+      const pendingRequest = deferred();
+      const resetRequest = deferred();
+      let pendingSignal;
+      const { windowObject } = makeWindow(initial.document, new Map([
+        ['pending', pendingPage.document],
+        ['reset', resetPage.document],
+      ]));
+      windowObject.fetch
+        .mockImplementationOnce((_url, options) => {
+          pendingSignal = options.signal;
+          return pendingRequest.promise;
+        })
+        .mockImplementationOnce(() => resetRequest.promise);
+      enhanceProjectAssetsLiveFiltering(initial.document);
+      const phases = recordResetPhases(initial.document);
+
+      changeView(initial, pendingView);
+      expect(new URL(windowObject.fetch.mock.calls[0][0]).searchParams.get('view')).toBe(pendingView);
+      initial.reset.dispatch('click', { target: initial.reset, button: 0 });
+
+      // The Reset carries no request-time View and owns the newest generation.
+      expect(requestPath(windowObject.fetch.mock.calls[1])).toBe(RESET_PATH);
+      expect(windowObject.fetch.mock.calls[1][1].method).toBe('GET');
+      expect(pendingSignal.aborted).toBe(true);
+      expect(phases).toEqual(['started']);
+      expect(projectAssetsFiltersResetPending(initial.document)).toMatchObject({ phase: 'pending' });
+
+      const canonical = `http://creatorcrate.test/projects/1/assets?view=${savedView}&sort=modified&order=desc&pageSize=50`;
+      resetRequest.resolve(htmlResponse('reset', canonical));
+      await flush();
+      // The earlier View load resolves late and cannot undo the Reset.
+      pendingRequest.resolve(htmlResponse('pending', `http://creatorcrate.test/projects/1/assets?view=${pendingView}`));
+      await flush();
+
+      expect(phases).toEqual(['started', 'prepared', 'installed']);
+      expect(projectAssetsFiltersResetPending(initial.document)).toBeNull();
+      expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(resetPage.region);
+      expect(resetPage.region.getAttribute('data-project-assets-test-view')).toBe(savedView);
+      const form = initial.document.querySelector('#asset-filters');
+      expect(form.querySelector('input[name="view"]').value).toBe(savedView);
+      expect(form.querySelector('input[name="sort"]').value).toBe('modified');
+      expect(form.querySelector('input[name="pageSize"]').value).toBe('50');
+      expect(form.querySelector('input[name="page"]').value).toBe('1');
+      expect(form.querySelector('#search').value).toBe('');
+      expect(form.querySelector('input[name="presence"]:checked').value).toBe('all');
+      expect(windowObject.history.pushes.map(({ url }) => url)).toEqual([canonical]);
+      expect(windowObject.location.href).toBe(canonical);
+      expect(windowObject.fetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('cancels a pending Search debounce and an in-flight Sort load so neither restores stale values', async () => {
+      vi.useFakeTimers();
+      try {
+        const initial = makePage({ sort: 'size' });
+        const resetPage = makePage({ page: '1', sort: 'filename', order: 'asc' });
+        const sortRequest = deferred();
+        let sortSignal;
+        const { windowObject } = makeWindow(initial.document, new Map([['reset', resetPage.document]]));
+        windowObject.fetch
+          .mockImplementationOnce((_url, options) => {
+            sortSignal = options.signal;
+            return sortRequest.promise;
+          })
+          .mockResolvedValueOnce(htmlResponse('reset', 'http://creatorcrate.test/projects/1/assets?view=list'));
+        enhanceProjectAssetsLiveFiltering(initial.document);
+
+        const sort = initial.form.querySelector('input[name="sort"]');
+        sort.value = 'modified';
+        sort.dispatch('change');
+        initial.search.value = 'stale';
+        initial.search.dispatch('input');
+        initial.reset.dispatch('click', { target: initial.reset, button: 0 });
+        await flush();
+        vi.advanceTimersByTime(1000);
+        sortRequest.resolve(htmlResponse('reset', 'http://creatorcrate.test/projects/1/assets?sort=modified'));
+        await flush();
+
+        expect(sortSignal.aborted).toBe(true);
+        expect(windowObject.fetch).toHaveBeenCalledTimes(2);
+        expect(requestPath(windowObject.fetch.mock.calls[1])).toBe(RESET_PATH);
+        expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(resetPage.region);
+        expect(initial.form.querySelector('#search').value).toBe('');
+        expect(initial.form.querySelector('input[name="sort"]').value).toBe('filename');
+        expect(windowObject.history.pushes).toHaveLength(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('a newer filter change supersedes a pending Reset whose late response never installs', async () => {
+      const initial = makePage({ searchValue: 'needle' });
+      const resetPage = makePage({ page: '1' });
+      const newer = makePage({ searchValue: 'needle', presence: 'missing' });
+      const resetRequest = deferred();
+      let resetSignal;
+      const { windowObject } = makeWindow(initial.document, new Map([
+        ['reset', resetPage.document],
+        ['newer', newer.document],
+      ]));
+      windowObject.fetch
+        .mockImplementationOnce((_url, options) => {
+          resetSignal = options.signal;
+          return resetRequest.promise;
+        })
+        .mockResolvedValueOnce(htmlResponse('newer', 'http://creatorcrate.test/projects/1/assets?search=needle&presence=missing'));
+      enhanceProjectAssetsLiveFiltering(initial.document);
+      const phases = recordResetPhases(initial.document);
+
+      initial.reset.dispatch('click', { target: initial.reset, button: 0 });
+      initial.presenceAll.checked = false;
+      initial.presenceMissing.checked = true;
+      initial.presenceMissing.dispatch('change');
+      await flush();
+      resetRequest.resolve(htmlResponse('reset', 'http://creatorcrate.test/projects/1/assets'));
+      await flush();
+
+      expect(resetSignal.aborted).toBe(true);
+      expect(phases).toEqual(['started', 'superseded']);
+      expect(projectAssetsFiltersResetPending(initial.document)).toBeNull();
+      expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(newer.region);
+      expect(initial.form.querySelector('#search').value).toBe('needle');
+      expect(windowObject.location.href).toBe('http://creatorcrate.test/projects/1/assets?search=needle&presence=missing');
+    });
+
+    it('a failed Reset keeps the installed state, never claims success, and retries the same GET', async () => {
+      const initial = makePage({ searchValue: 'needle', presence: 'missing' });
+      const resetPage = makePage({ page: '1' });
+      const { windowObject } = makeWindow(initial.document, new Map([['reset', resetPage.document]]));
+      windowObject.fetch
+        .mockRejectedValueOnce(new Error('offline'))
+        .mockResolvedValueOnce(htmlResponse('reset', 'http://creatorcrate.test/projects/1/assets'));
+      enhanceProjectAssetsLiveFiltering(initial.document);
+      const phases = recordResetPhases(initial.document);
+
+      initial.reset.dispatch('click', { target: initial.reset, button: 0 });
+      await flush();
+      expect(phases).toEqual(['started', 'failed']);
+      expect(projectAssetsFiltersResetPending(initial.document)).toBeNull();
+      expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(initial.region);
+      expect(initial.form.querySelector('#search').value).toBe('needle');
+      expect(initial.presenceMissing.checked).toBe(true);
+      expect(windowObject.history.pushes).toHaveLength(0);
+      expect(liveFailureRetries(initial.document)).toHaveLength(1);
+
+      liveFailureRetries(initial.document)[0].dispatch('click');
+      await flush();
+      expect(phases).toEqual(['started', 'failed', 'started', 'prepared', 'installed']);
+      expect(windowObject.fetch.mock.calls.map(([, init]) => init.method)).toEqual(['GET', 'GET']);
+      expect(requestPath(windowObject.fetch.mock.calls[1])).toBe(RESET_PATH);
+      expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(resetPage.region);
+      expect(windowObject.history.pushes.map(({ url }) => url)).toEqual(['http://creatorcrate.test/projects/1/assets']);
+    });
+
+    it('ordinary filter loads never start the Reset lifecycle', async () => {
+      const initial = makePage();
+      const next = makePage({ presence: 'missing' });
+      const { windowObject } = makeWindow(initial.document, new Map([['next', next.document]]));
+      windowObject.fetch.mockResolvedValueOnce(htmlResponse('next', 'http://creatorcrate.test/projects/1/assets?presence=missing'));
+      enhanceProjectAssetsLiveFiltering(initial.document);
+      const phases = recordResetPhases(initial.document);
+      initial.presenceAll.checked = false;
+      initial.presenceMissing.checked = true;
+      initial.presenceMissing.dispatch('change');
+      await flush();
+      expect(phases).toEqual([]);
+      expect(projectAssetsFiltersResetPending(initial.document)).toBeNull();
+    });
+  });
+
   it('loads filtered-empty Reset through the delegated live path and replaces it with canonical results', async () => {
     vi.useFakeTimers();
-    const resetHref = '/projects/1/assets?resetFilters=1&view=list';
+    const resetHref = '/projects/1/assets?resetFilters=1';
     const initial = makePage({ searchValue: 'initial', presence: 'missing', view: 'list' });
     const filteredEmpty = makePage({
       searchValue: 'no-match',
@@ -2180,6 +2383,161 @@ describe('Project Assets post-mutation refresh contract', () => {
     windowObject.fetch.mockReturnValueOnce(deferred().promise);
     expect(refreshProjectAssetsLiveRegion(initial.document)).toBe(true);
   });
+
+  // Milestone 2 Correction D.
+  describe('after a defaults reset', () => {
+    const NEXT_URL = '/projects/1/assets?page=3';
+    const VIEW_URL = '/projects/1/assets?view=list';
+
+    // The real template renders the page and view links inside the region.
+    function linkedPage(options = {}) {
+      const page = makePage({ paginationUrl: NEXT_URL, viewUrl: VIEW_URL, ...options });
+      page.region.appendChild(page.paginationLink.parentNode);
+      page.region.appendChild(page.viewLink.parentNode);
+      return page;
+    }
+
+    function withStorage(entries = []) {
+      const storage = new Map(entries);
+      const setItem = vi.fn((key, value) => storage.set(key, value));
+      const previous = globalThis.localStorage;
+      globalThis.localStorage = { getItem: (key) => storage.get(key) ?? null, setItem };
+      return {
+        storage,
+        setItem,
+        restore() {
+          if (previous === undefined) delete globalThis.localStorage;
+          else globalThis.localStorage = previous;
+        },
+      };
+    }
+
+    // F7: links rendered against the deleted defaults cannot be followed
+    // while the reconciliation is pending or after it fails.
+    it('makes the stale page and view links unavailable until a newer region installs', async () => {
+      const initial = linkedPage();
+      const next = linkedPage();
+      const { windowObject } = makeWindow(initial.document, new Map([['next', next.document]]));
+      windowObject.fetch = vi.fn().mockRejectedValueOnce(new Error('offline'));
+      const storage = withStorage();
+      try {
+        enhanceProjectAssetsLiveFiltering(initial.document);
+        const result = await refreshProjectAssetsAfterMutation(initial.document, { staleNavigation: true });
+        expect(result.status).toBe('failed');
+        [initial.paginationLink, initial.viewLink].forEach((link) => {
+          expect(link.getAttribute('href')).toBeNull();
+          expect(link.getAttribute('aria-disabled')).toBe('true');
+          expect(link.getAttribute('role')).toBe('link');
+          expect(link.getAttribute('data-project-assets-stale-link')).toBe('');
+        });
+        // Activation goes nowhere: no load, no native navigation.
+        const click = { button: 0, defaultPrevented: false, preventDefault: vi.fn() };
+        initial.paginationLink.dispatch('click', click);
+        initial.viewLink.dispatch('click', click);
+        await flush();
+        expect(windowObject.fetch).toHaveBeenCalledOnce();
+        expect(windowObject.location.href).toBe('http://creatorcrate.test/projects/1/assets?page=2');
+        expect(liveFailureRetries(initial.document)).toHaveLength(1);
+
+        // The GET-only Retry installs links rendered after the reset.
+        windowObject.fetch.mockResolvedValueOnce(htmlResponse('next', 'http://creatorcrate.test/projects/1/assets?page=2'));
+        liveFailureRetries(initial.document)[0].dispatch('click');
+        await flush();
+        expect(windowObject.fetch.mock.calls.map(([, options]) => options.method)).toEqual(['GET', 'GET']);
+        expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(next.region);
+        expect(next.paginationLink.getAttribute('href')).toBe(NEXT_URL);
+        expect(next.paginationLink.hasAttribute('aria-disabled')).toBe(false);
+        expect(next.viewLink.getAttribute('href')).toBe(VIEW_URL);
+        expect(storage.setItem).not.toHaveBeenCalled();
+      } finally {
+        storage.restore();
+      }
+    });
+
+    it('leaves the links of an ordinary mutation refresh usable', async () => {
+      const initial = linkedPage();
+      const { windowObject } = makeWindow(initial.document);
+      windowObject.fetch = vi.fn().mockRejectedValueOnce(new Error('offline'));
+      enhanceProjectAssetsLiveFiltering(initial.document);
+      expect((await refreshProjectAssetsAfterMutation(initial.document)).status).toBe('failed');
+      expect(initial.paginationLink.getAttribute('href')).toBe(NEXT_URL);
+      expect(initial.paginationLink.hasAttribute('aria-disabled')).toBe(false);
+      expect(initial.viewLink.getAttribute('href')).toBe(VIEW_URL);
+    });
+
+    // F6: with no stored browser size, the region's size defaults are what
+    // the page displays; a reset must not change them or write storage.
+    it('keeps the displayed Grid and List sizes on later installs without writing storage', async () => {
+      const initial = linkedPage({ gridSizeDefault: 'large', listSizeDefault: 'compact' });
+      // Rendered after the reset: the newly inherited defaults.
+      const next = linkedPage({ gridSizeDefault: 'default', listSizeDefault: 'large' });
+      const later = linkedPage({ gridSizeDefault: 'default', listSizeDefault: 'large' });
+      // Rendered after a newer Save changed the Grid size default.
+      const saved = linkedPage({ gridSizeDefault: 'compact', listSizeDefault: 'large' });
+      const { windowObject } = makeWindow(initial.document, new Map([
+        ['next', next.document], ['later', later.document], ['saved', saved.document],
+      ]));
+      const storage = withStorage();
+      try {
+        enhanceProjectAssetsLiveFiltering(initial.document);
+        expect(initial.grid.getAttribute('data-grid-size')).toBe('large');
+        expect(initial.list.getAttribute('data-list-size')).toBe('compact');
+
+        expect(retainProjectAssetsDisplayedSizes(initial.document, { gridSize: 'default', listSize: 'large' })).toBe(true);
+        windowObject.fetch = vi.fn()
+          .mockResolvedValueOnce(htmlResponse('next', 'http://creatorcrate.test/projects/1/assets?page=2'))
+          .mockResolvedValueOnce(htmlResponse('later', 'http://creatorcrate.test/projects/1/assets?view=list'))
+          .mockResolvedValueOnce(htmlResponse('saved', 'http://creatorcrate.test/projects/1/assets?view=grid'));
+        expect((await refreshProjectAssetsAfterMutation(initial.document, { staleNavigation: true })).status)
+          .toBe('installed');
+        expect(next.grid.getAttribute('data-grid-size')).toBe('large');
+        expect(next.list.getAttribute('data-list-size')).toBe('compact');
+        expect(next.region.getAttribute('data-project-assets-grid-size-default')).toBe('large');
+        expect(next.region.getAttribute('data-project-assets-list-size-default')).toBe('compact');
+
+        // A later mode switch keeps both sizes.
+        next.viewLink.dispatch('click', { button: 0, defaultPrevented: false, preventDefault: vi.fn() });
+        await flush();
+        expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(later.region);
+        expect(later.grid.getAttribute('data-grid-size')).toBe('large');
+        expect(later.list.getAttribute('data-list-size')).toBe('compact');
+
+        // A region rendered with a different default (a newer Save or scope
+        // change) retires the carried Grid size; List is still carried.
+        later.viewLink.dispatch('click', { button: 0, defaultPrevented: false, preventDefault: vi.fn() });
+        await flush();
+        expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(saved.region);
+        expect(saved.grid.getAttribute('data-grid-size')).toBe('compact');
+        expect(saved.list.getAttribute('data-list-size')).toBe('compact');
+        expect(storage.setItem).not.toHaveBeenCalled();
+        expect(storage.storage.size).toBe(0);
+      } finally {
+        storage.restore();
+      }
+    });
+
+    it('lets a stored browser size win over the retained fallback and never rewrites it', async () => {
+      const initial = linkedPage({ gridSizeDefault: 'large', listSizeDefault: 'compact' });
+      const next = linkedPage({ gridSizeDefault: 'default', listSizeDefault: 'large' });
+      const { windowObject } = makeWindow(initial.document, new Map([['next', next.document]]));
+      const storage = withStorage([
+        ['creatorcrate-asset-grid-size', 'compact'],
+        ['creatorcrate-asset-list-size', 'large'],
+      ]);
+      try {
+        enhanceProjectAssetsLiveFiltering(initial.document);
+        retainProjectAssetsDisplayedSizes(initial.document, { gridSize: 'default', listSize: 'large' });
+        windowObject.fetch = vi.fn().mockResolvedValueOnce(htmlResponse('next', 'http://creatorcrate.test/projects/1/assets?page=2'));
+        expect((await refreshProjectAssetsAfterMutation(initial.document)).status).toBe('installed');
+        expect(next.grid.getAttribute('data-grid-size')).toBe('compact');
+        expect(next.list.getAttribute('data-list-size')).toBe('large');
+        expect(storage.setItem).not.toHaveBeenCalled();
+        expect([...storage.storage.values()]).toEqual(['compact', 'large']);
+      } finally {
+        storage.restore();
+      }
+    });
+  });
 });
 
 describe('Project Assets results Category dropdown', () => {
@@ -2331,5 +2689,107 @@ describe('Project Assets results Category dropdown', () => {
     expect(windowObject.fetch).toHaveBeenCalledTimes(2);
     expect(windowObject.fetch.mock.calls[1][0]).toBe(windowObject.fetch.mock.calls[0][0]);
     expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(next.region);
+  });
+});
+
+describe('WP6 Project Assets refresh with loaded defaults', () => {
+  const LOADED = {
+    view: 'grid', gridStyle: 'cropped', gridSize: 'large', listSize: 'compact',
+    sort: 'size', order: 'desc', pageSize: '50', extension: ['jpg'], tag: 'all',
+  };
+
+  function setup(options = {}, { concreteCategory = false } = {}) {
+    const page = makePage(options);
+    if (concreteCategory) {
+      page.categoryAll.checked = false;
+      page.categoryMissing.checked = false;
+      page.categoryRenders.checked = true;
+    }
+    const next = makePage();
+    const { windowObject } = makeWindow(page.document, new Map([['loaded', next.document]]));
+    windowObject.fetch.mockResolvedValue(htmlResponse('loaded', 'http://creatorcrate.test/projects/1/assets'));
+    enhanceProjectAssetsLiveFiltering(page.document);
+    return { page, next, windowObject };
+  }
+
+  it('keeps Category, Search, Show, Usage and page, loads presentation, and suspends a restricting default under a concrete Category', async () => {
+    const { page, windowObject } = setup({
+      searchValue: 'needle', presence: 'present', usage: 'used', page: '3',
+      tag: '8', extension: 'png', inheritedFilterDefaults: 'tag,extension',
+    }, { concreteCategory: true });
+    const generation = beginProjectAssetsDefaultsLiveRefresh(page.document);
+
+    expect(refreshProjectAssetsWithLoadedDefaults(page.document, generation, LOADED)).toBe('started');
+    await flush();
+
+    const requested = new URL(windowObject.fetch.mock.calls[0][0]);
+    expect(requested.searchParams.get('category')).toBe('7');
+    expect(requested.searchParams.get('search')).toBe('needle');
+    expect(requested.searchParams.get('presence')).toBe('present');
+    expect(requested.searchParams.get('usage')).toBe('used');
+    expect(requested.searchParams.get('page')).toBe('3');
+    expect(requested.searchParams.get('view')).toBe('grid');
+    expect(requested.searchParams.get('sort')).toBe('size');
+    expect(requested.searchParams.get('order')).toBe('desc');
+    expect(requested.searchParams.get('pageSize')).toBe('50');
+    // The saved Extension restriction is suspended (marked, not applied); the
+    // saved Tag default is unrestricted, so it carries no marker at all.
+    expect(requested.searchParams.getAll('extension')).toEqual([]);
+    expect(requested.searchParams.getAll('tag')).toEqual([]);
+    expect(requested.searchParams.get('inheritedFilterDefaults')).toBe('extension');
+  });
+
+  it('applies restricting defaults as inherited under All Categories and replaces an explicit filter', async () => {
+    const { page, windowObject } = setup({ tag: '9', extension: 'webp' });
+    const generation = beginProjectAssetsDefaultsLiveRefresh(page.document);
+
+    refreshProjectAssetsWithLoadedDefaults(page.document, generation, { ...LOADED, tag: ['8', '3'] });
+    await flush();
+
+    const requested = new URL(windowObject.fetch.mock.calls[0][0]);
+    expect(requested.searchParams.get('category')).toBe('all');
+    expect(requested.searchParams.getAll('tag')).toEqual(['8', '3']);
+    expect(requested.searchParams.getAll('extension')).toEqual(['jpg']);
+    expect(requested.searchParams.get('inheritedFilterDefaults')).toBe('tag,extension');
+  });
+
+  it('lets a newer filter load win, and fetches nothing when the view would not change', async () => {
+    const { page, windowObject } = setup({ searchValue: 'needle' });
+    const stale = beginProjectAssetsDefaultsLiveRefresh(page.document);
+    page.usageUsed.checked = true;
+    page.usageAll.checked = false;
+    page.usageUsed.dispatch('change');
+    await flush();
+    expect(windowObject.fetch).toHaveBeenCalledOnce();
+
+    expect(refreshProjectAssetsWithLoadedDefaults(page.document, stale, LOADED)).toBe('superseded');
+    expect(windowObject.fetch).toHaveBeenCalledOnce();
+
+    const current = makePage({ view: 'grid', sort: 'size', order: 'desc', pageSize: '50', extension: 'jpg', inheritedFilterDefaults: 'extension' });
+    const idle = makeWindow(current.document, new Map());
+    enhanceProjectAssetsLiveFiltering(current.document);
+    const generation = beginProjectAssetsDefaultsLiveRefresh(current.document);
+    expect(refreshProjectAssetsWithLoadedDefaults(current.document, generation, LOADED, { presentationUnchanged: true }))
+      .toBe('applied');
+    expect(idle.windowObject.fetch).not.toHaveBeenCalled();
+  });
+
+  it('reports a failed load with the activation wording, handled like a Defaults save refresh failure', async () => {
+    const { page, windowObject } = setup();
+    windowObject.fetch.mockReset();
+    windowObject.fetch.mockRejectedValueOnce(new Error('offline'));
+    const onError = vi.fn();
+    const generation = beginProjectAssetsDefaultsLiveRefresh(page.document);
+
+    expect(refreshProjectAssetsWithLoadedDefaults(page.document, generation, LOADED, { onError })).toBe('started');
+    await flush();
+
+    expect(onError).toHaveBeenCalledOnce();
+    expect(page.status.textContent).toBe(
+      'Defaults scope changed, but Project Assets could not refresh. Refresh the page to see the loaded defaults.',
+    );
+    expect(page.region.getAttribute('data-project-assets-live-state')).toBe('error');
+    // As for a failed Defaults save refresh, no owed mutation means no GET Retry.
+    expect(liveFailureRetries(page.document)).toHaveLength(0);
   });
 });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import nunjucks from 'nunjucks';
 import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
 
 const VIEWS_DIR = fileURLToPath(new URL('../src/views', import.meta.url));
 const env = nunjucks.configure(VIEWS_DIR, { autoescape: true, noCache: true });
@@ -368,5 +369,145 @@ describe('optional dropdown thumbnails', () => {
       expect(html).not.toContain('cc-dropdown-option-thumbnail');
       expect(html).not.toContain('data-preview');
     }
+  });
+});
+
+describe('opt-in Select all filter dropdowns (Filters & Defaults M2 WP5)', () => {
+  const extensionConfig = (overrides = {}) => ({
+    id: 'asset-extension-filter',
+    name: 'extension',
+    label: 'Extension',
+    options: [
+      { value: 'jpg', label: 'jpg' },
+      { value: 'png', label: 'png' },
+    ],
+    optionPrefix: '.',
+    emptySummary: 'All extensions',
+    countLabel: 'extensions',
+    selectAll: true,
+    ...overrides,
+  });
+  const summaryOf = (html) => html.match(/data-cc-dropdown-summary-current[^>]*>([^<]*)</)[1];
+  const rowValues = (html) => [...html.matchAll(/<input id="[^"]*" (?:name="[^"]*" )?type="checkbox" value="([^"]*)"/g)]
+    .map((match) => match[1]);
+
+  it('leads with an unrestricted Select all row that submits the existing neutral value', () => {
+    const html = renderDropdown('multiSelect', extensionConfig({ selectedValues: [] }));
+
+    expect(html).toContain('data-cc-dropdown-select-all="all"');
+    expect(html).toMatch(/<input id="asset-extension-filter-option-select-all" name="extension" type="checkbox" value="all" data-cc-dropdown-select-all checked>/);
+    expect(html).toContain('<span>Select all</span>');
+    expect(html).not.toContain('value="select-all"');
+    expect(rowValues(html)).toEqual(['all', 'jpg', 'png']);
+    expect(summaryOf(html)).toBe('All extensions');
+    expect(html).toContain('aria-label="Extension filter: All extensions"');
+    expect(html).not.toMatch(/value="(jpg|png)" checked/);
+  });
+
+  it('renders individual selections without Select all checked', () => {
+    const html = renderDropdown('multiSelect', extensionConfig({ selectedValues: ['jpg'] }));
+
+    expect(html).toMatch(/value="all" data-cc-dropdown-select-all>/);
+    expect(html).toContain('type="checkbox" value="jpg" checked');
+    expect(summaryOf(html)).toBe('.jpg');
+  });
+
+  it('uses one Select all row for a native catalogue that already has the neutral option', () => {
+    const html = renderDropdown('multiSelect', extensionConfig({
+      id: 'defaults-extension-dropdown',
+      options: [
+        { value: 'all', label: 'All extensions' },
+        { value: 'jpg', label: '.jpg' },
+      ],
+      optionPrefix: undefined,
+      selectedValues: ['all'],
+      nativeSelect: { id: 'defaults-extension' },
+    }));
+
+    expect(rowValues(html)).toEqual(['all', 'jpg']);
+    expect(html).toContain('id="defaults-extension-dropdown-option-select-all" type="checkbox" value="all" data-cc-dropdown-select-all checked');
+    expect(html).toMatch(/<option value="all"[^>]*selected[^>]*>All extensions<\/option>/);
+    expect(html).not.toMatch(/data-cc-dropdown-select-all[^>]*name=/);
+    expect(summaryOf(html)).toBe('All extensions');
+  });
+
+  it('supports a configured neutral value, a default summary and an empty catalogue', () => {
+    const html = renderDropdown('multiSelect', extensionConfig({
+      options: [],
+      emptySummary: undefined,
+      selectAll: { value: '' },
+      emptyOptionText: 'No extensions available',
+    }));
+
+    expect(html).toContain('data-cc-dropdown-select-all=""');
+    expect(html).toContain('type="checkbox" value="" data-cc-dropdown-select-all checked');
+    expect(html).toContain('No extensions available');
+    expect(summaryOf(html)).toBe('All');
+    expect(html).toContain('data-cc-dropdown-empty-summary="All"');
+  });
+
+  it('is opt-in: plain multi-selects and single-selects are unchanged', () => {
+    const multi = renderDropdown('multiSelect', extensionConfig({ selectAll: undefined, selectedValues: [] }));
+    expect(multi).not.toContain('data-cc-dropdown-select-all');
+    expect(multi).not.toContain('Select all');
+    expect(rowValues(multi)).toEqual(['jpg', 'png']);
+
+    const single = renderDropdown('singleSelect', {
+      id: 'format', name: 'format', label: 'Format', selectAll: true,
+      options: [{ value: 'png', label: 'PNG' }], selected: 'png',
+    });
+    expect(single).not.toContain('data-cc-dropdown-select-all');
+    expect(single).not.toContain('Select all');
+  });
+});
+
+describe('Filters & Defaults dialog styles (Filters & Defaults M2 WP5)', () => {
+  const css = readFileSync(fileURLToPath(new URL('../src/static/creatorcrate.css', import.meta.url)), 'utf8')
+    .replace(/\r\n/g, '\n');
+  const start = css.indexOf('/* ── Filters & Defaults dialog (Filters & Defaults M2 WP5) ──');
+  const block = css.slice(start);
+  const selectors = block
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/@media[^{]*\{/g, '')
+    .match(/[^{}]+(?=\{)/g)
+    .flatMap((selector) => selector.split(','))
+    .map((selector) => selector.trim())
+    .filter(Boolean);
+
+  it('scopes every rule to the opt-in dialog class', () => {
+    expect(start).toBeGreaterThan(0);
+    expect(selectors.length).toBeGreaterThan(10);
+    for (const selector of selectors) {
+      expect(selector).toMatch(/^\.app-dialog(\.app-dialog)?--filters-defaults\b|^\.app-dialog\.app-dialog--filters-defaults\b/);
+    }
+    expect(block).not.toContain('!important');
+  });
+
+  it('adds the documented layout hooks only in that block', () => {
+    for (const hook of ['filters-defaults-dialog-body', 'filters-defaults-status-row', 'filters-defaults-saved-indicator',
+      'filters-defaults-scope', 'filters-defaults-scope-option', 'filters-defaults-section', 'filters-defaults-grid',
+      'filters-defaults-footer']) {
+      expect(block).toContain(`.${hook}`);
+    }
+    // Outside the block, the only Filters & Defaults selectors are the scope
+    // radios joining the shared themed-radio rules (base and :checked) that
+    // the Processing dialog's scope options already use: exactly these two
+    // lines, scoped to this dialog's scope options, each inside such a rule.
+    const beforeBlock = css.slice(0, start);
+    const sharedThemedRadio = [
+      ".app-dialog--filters-defaults .filters-defaults-scope-option input[type='radio'],",
+      ".app-dialog--filters-defaults .filters-defaults-scope-option input[type='radio']:checked,",
+    ];
+    expect(beforeBlock.split('\n').filter((line) => line.includes('filters-defaults')).map((line) => line.trim()))
+      .toEqual(sharedThemedRadio);
+    for (const line of sharedThemedRadio) {
+      const at = beforeBlock.indexOf(line);
+      const ruleSelectors = beforeBlock.slice(beforeBlock.lastIndexOf('}', at) + 1, beforeBlock.indexOf('{', at));
+      expect(ruleSelectors).toMatch(/\.app-dialog--processing :is\(\.processing-scope-option, \.processing-checkbox-label\) input/);
+      expect(ruleSelectors).not.toMatch(/filters-defaults-(?!scope-option input\[type='radio'\])/);
+    }
+    expect(block).toMatch(/\.filters-defaults-grid \{[^}]*repeat\(3, minmax\(0, 1fr\)\)/);
+    expect(block).toMatch(/@media \(max-width: 860px\)[^@]*repeat\(2, minmax\(0, 1fr\)\)/);
+    expect(block).toMatch(/@media \(max-width: 540px\)[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
   });
 });

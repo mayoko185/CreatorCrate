@@ -23,6 +23,8 @@ import {
 import {
   ASSET_GRID_SIZE_CONFIG,
   ASSET_LIST_SIZE_CONFIG,
+  enhanceAssetGridSize,
+  enhanceAssetListSize,
   gridSizeIsValid,
   writeGridSize,
 } from './size-preferences.js';
@@ -125,7 +127,9 @@ const APP_DIALOG_FORM_SELECTOR = '[data-dialog-form]';
 const APP_DIALOG_RETURN_LOCATION_SELECTOR = '[data-dialog-return-location]';
 const APP_DIALOG_SECONDARY_ACTION_SELECTOR = '[data-dialog-secondary-action]';
 const APP_DIALOG_SECONDARY_ACTION_REFUSAL = 'Wait for the save to finish, then try again.';
-const PROJECT_ASSETS_DEFAULTS_DIALOG_ID = 'project-assets-defaults-dialog';
+// The Project Assets defaults form lives in the combined Filters & Defaults
+// dialog (WP7), which replaced the separate project-assets-defaults-dialog.
+const PROJECT_ASSETS_DEFAULTS_DIALOG_ID = 'project-assets-filter-dialog';
 const ASSET_BROWSER_DEFAULT_LIVE_FORM_SELECTOR = '[data-asset-browser-default-live]';
 const APP_DIALOG_FOCUSABLE_SELECTOR = 'a[href], button, input, select, textarea, summary, [tabindex]';
 const PROJECT_ASSET_CATEGORY_MANAGEMENT_DIALOG_ID = 'project-asset-category-management-dialog';
@@ -383,11 +387,18 @@ export function syncProjectAssetsSizePreferences(dialog, values) {
   const dialogId = dialog?.id || dialog?.getAttribute?.('id');
   if (dialogId !== PROJECT_ASSETS_DEFAULTS_DIALOG_ID) return;
 
+  // An acknowledgement that needs no region reload (same view, or a Grid
+  // style-only change) would otherwise leave the rendered size behind the
+  // stored one, so the stored size is applied through the size controls' own
+  // enhancement: it re-reads the preference and never rebinds a control.
+  const document = dialog.ownerDocument;
   if (gridSizeIsValid(values?.gridSize, ASSET_GRID_SIZE_CONFIG)) {
     writeGridSize(values.gridSize, ASSET_GRID_SIZE_CONFIG.storageKey);
+    if (document) enhanceAssetGridSize(document);
   }
   if (gridSizeIsValid(values?.listSize, ASSET_LIST_SIZE_CONFIG)) {
     writeGridSize(values.listSize, ASSET_LIST_SIZE_CONFIG.storageKey);
+    if (document) enhanceAssetListSize(document);
   }
 }
 
