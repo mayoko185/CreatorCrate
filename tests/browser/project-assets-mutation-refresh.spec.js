@@ -602,8 +602,12 @@ test('E: races never install stale results or falsely resolve the owed refresh',
   expect(new URL(page.url()).searchParams.get('search')).toBe('ref');
   await expect(notice(page)).toHaveCount(0);
   await expect(item(page, '02-ref.jpg')).toBeVisible();
-  // The asset is hidden by the newer filter, not deleted, so it stays selected.
-  await expect(page.locator('[data-selected-count]')).toContainText('(1 more not shown)');
+  // F7-R2a: the newer Search (and its Retry) keeps its own selection
+  // boundary: the refresh it superseded no longer carries the old selection.
+  await expect(page.locator('[data-selected-count]')).not.toContainText('more not shown');
+  expect(await page.evaluate(() => (document.__creatorCrateRetainedAssetSelection || []).length)).toBe(0);
+  expect(await page.evaluate(() => new FormData(document.getElementById('bulk-select-form'))
+    .getAll('selectedAssetIds'))).toEqual([]);
   expect(control.posts).toEqual([]);
   expect(errors).toEqual([]);
 });

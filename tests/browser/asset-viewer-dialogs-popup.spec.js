@@ -325,7 +325,8 @@ test('shared Asset Viewer and Projects info cards use cursor, top-layer, dialog,
     await expect(assetPreviewLink).toBeFocused();
     await expect(asset.info).toBeVisible();
 
-    await page.getByRole('link', { name: 'Filter assets' }).click();
+    // WP9b: the Asset Library's one Filters & Defaults entry.
+    await page.getByRole('link', { name: 'Filters & Defaults', exact: true }).click();
     const assetFilterDialog = page.locator('#asset-viewer-filter-dialog');
     await expect(assetFilterDialog).toBeVisible();
     await expect(asset.info).not.toBeVisible();
@@ -339,10 +340,11 @@ test('shared Asset Viewer and Projects info cards use cursor, top-layer, dialog,
     await expect(assetFilterDialog).toBeVisible();
     await expect.poll(async () => oldAssetRegion.evaluate((node) => node.isConnected)).toBe(false);
     await expect(page.locator('[data-asset-info-card]:popover-open')).toHaveCount(0);
-    await assetFilterDialog.getByRole('button', { name: 'Close Filter' }).click();
+    await assetFilterDialog.getByRole('button', { name: 'Close Filters & Defaults', exact: true }).click();
 
-    await page.getByRole('link', { name: 'Asset Viewer defaults' }).click();
-    await expect(page.locator('#asset-viewer-defaults-dialog')).toBeVisible();
+    // Reopening the combined dialog (which now also holds the defaults).
+    await page.getByRole('link', { name: 'Filters & Defaults', exact: true }).click();
+    await expect(assetFilterDialog).toBeVisible();
     await expect(page.locator('[data-asset-info-card]:popover-open')).toHaveCount(0);
     await page.keyboard.press('Escape');
 
@@ -352,10 +354,11 @@ test('shared Asset Viewer and Projects info cards use cursor, top-layer, dialog,
       '[data-project-grid-preview]',
       '[data-project-info-card]',
     );
-    await page.getByRole('link', { name: 'Filter projects' }).click();
+    // WP10b: the one Projects Filters & Defaults dialog.
+    await page.getByRole('link', { name: 'Filters & Defaults', exact: true }).click();
     await expect(page.locator('#projects-filter-dialog')).toBeVisible();
     await expect(project.info).not.toBeVisible();
-    await page.locator('#projects-filter-dialog').getByRole('button', { name: 'Close Filter' }).click();
+    await page.locator('#projects-filter-dialog').getByRole('button', { name: 'Close Filters & Defaults', exact: true }).click();
 
     await project.preview.evaluate((node) => {
       const rect = node.getBoundingClientRect();
@@ -365,8 +368,9 @@ test('shared Asset Viewer and Projects info cards use cursor, top-layer, dialog,
       }));
     });
     await expect(project.info).toBeVisible();
-    await page.getByRole('link', { name: 'Projects defaults' }).click();
-    await expect(page.locator('#projects-defaults-dialog')).toBeVisible();
+    // Reopening the combined dialog (which now also holds the defaults).
+    await page.getByRole('link', { name: 'Filters & Defaults', exact: true }).click();
+    await expect(page.locator('#projects-filter-dialog')).toBeVisible();
     await expect(project.info).not.toBeVisible();
   } finally {
     await fixture.close();

@@ -348,7 +348,9 @@ export function createProjectRepository(db) {
      * @param {string} [options.search]
      * @param {number} [options.tagId]
      * @param {number[]} [options.tagIds]
-     * @param {number} [options.projectId]
+     * @param {number} [options.projectId] - legacy single-Project alias
+     * @param {number[]} [options.projectIds] - OR-ed Project IDs; when
+     *   supplied it is the authority and `projectId` is ignored
      * @param {boolean} [options.includeArchived]
      * @param {string} [options.sortBy]
      * @param {string} [options.order]
@@ -370,6 +372,7 @@ export function createProjectRepository(db) {
         tagId,
         tagIds,
         projectId,
+        projectIds,
         includeArchived = false,
         sortBy = 'updated',
         order = 'desc',
@@ -382,13 +385,25 @@ export function createProjectRepository(db) {
       const selectedStatuses = normalizeStatusSelection(statuses === undefined ? status : statuses);
       const selectedProjectTypes = normalizeProjectTypeSelection(projectTypes === undefined ? projectType : projectTypes);
       const selectedTagIds = normalizeTagSelection(tagIds === undefined ? tagId : tagIds);
+      const requestedProjectIds = projectIds === undefined ? projectId : projectIds;
+      const selectedProjectIds = normalizeProjectIdSelection(requestedProjectIds);
+      // A supplied but entirely unusable selection fails closed rather than
+      // silently broadening to every Project.
+      const projectSelectionUnusable = selectedProjectIds.length === 0
+        && requestedProjectIds != null
+        && (!Array.isArray(requestedProjectIds) || requestedProjectIds.length > 0);
 
       const conditions = [];
       const params = [];
 
-      if (projectId != null) {
-        conditions.push('projects.id = ?');
-        params.push(projectId);
+      // Selected Projects are OR-ed with one bound placeholder per ID; the
+      // same WHERE clause and parameters feed both the count and the rows.
+      if (selectedProjectIds.length > 0) {
+        const placeholders = selectedProjectIds.map(() => '?').join(',');
+        conditions.push(`projects.id IN (${placeholders})`);
+        params.push(...selectedProjectIds);
+      } else if (projectSelectionUnusable) {
+        conditions.push('0 = 1');
       }
 
       if (!includeArchived) {
@@ -475,6 +490,13 @@ function normalizeProjectOptionSelection(value) {
       && candidate !== 'all'
       && PROJECT_OPTION_VALUE_PATTERN.test(candidate)
   )))];
+}
+
+function normalizeProjectIdSelection(value) {
+  if (value === undefined || value === null) return [];
+  const values = Array.isArray(value) ? value : [value];
+  return [...new Set(values.filter((id) => Number.isSafeInteger(id) && id > 0))]
+    .sort((left, right) => left - right);
 }
 
 function normalizeTagSelection(value) {

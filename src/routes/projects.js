@@ -24,6 +24,10 @@ import {
   buildPageDefaultsDialogModel,
   handlePageDefaultsPost,
 } from './page-defaults.js';
+import {
+  PAGE_DEFAULT_DEFINITIONS,
+  PageDefaultsGenerationConflictError,
+} from '../services/page-defaults-service.js';
 
 const SORT_OPTIONS = ['updated', 'created', 'title'];
 const VIEW_OPTIONS = ['grid', 'list'];
@@ -33,6 +37,32 @@ const NOTICES = {
   project_tags_updated: { variant: 'success', text: 'Project tags updated successfully.' },
   projects_defaults_saved: { variant: 'success', text: 'Projects defaults saved successfully.' },
 };
+
+const PROJECTS_PAGE_DEFAULTS = 'projects';
+// WP10b: the seven saveable Projects settings, in the page definition's
+// order. Search and the Project restriction are temporary and never saved.
+const PROJECTS_DEFAULT_FIELDS = Object.freeze(Object.keys(PAGE_DEFAULT_DEFINITIONS[PROJECTS_PAGE_DEFAULTS]));
+const PROJECTS_MULTI_FIELDS = Object.freeze(PROJECTS_DEFAULT_FIELDS
+  .filter((field) => PAGE_DEFAULT_DEFINITIONS[PROJECTS_PAGE_DEFAULTS][field].multi === true));
+// Reset filters: a bare /projects request resolves every default-backed
+// control from the saved defaults (then the application fallbacks) and
+// clears the temporary Search and Project restriction (read-only GET).
+const PROJECTS_RESET_FILTERS_URL = '/projects';
+
+// WP10b mutation protocol (the reviewed WP9a F6/F7 contract, on the Projects
+// page key). Every Save / Reset defaults request carries the defaults
+// generation it was prepared from and a client-chosen operation identity. The
+// handler fences the write on the generation inside the write transaction and
+// echoes the identity in each JSON answer it produces, so a late or duplicate
+// request can never overwrite a newer write and a client can tell this
+// handler's answer from an intermediary's.
+const PROJECTS_DEFAULTS_GENERATION_FIELD = 'defaultsGeneration';
+const PROJECTS_DEFAULTS_OPERATION_FIELD = 'defaultsOperation';
+const PROJECTS_DEFAULTS_OPERATION_PATTERN = /^[A-Za-z0-9_-]{1,100}$/;
+const PROJECTS_DEFAULTS_CONFLICT_CODE = 'DEFAULTS_GENERATION_CONFLICT';
+const PROJECTS_DEFAULTS_CONFLICT_MESSAGE = 'Projects defaults changed since this page was loaded. '
+  + 'No changes were made. Review the current defaults and try again.';
+const PROJECTS_DEFAULTS_RESET_MESSAGE = 'Projects defaults reset to the application defaults.';
 
 const PROJECTS_DEFAULT_LABELS = Object.freeze({
   fields: Object.freeze({
@@ -96,13 +126,109 @@ export function createProjectsRouter({ appName, db, projectService, workflowQuer
     }
   });
 
+  // WP10b read-only authority: the current saved-state metadata, for
+  // reopening Filters & Defaults or reconciling an uncertain Save / Reset
+  // defaults outcome. It never writes. A non-JSON request (a typed URL) opens
+  // Projects with the dialog instead.
+  router.get('/defaults', (req, res, next) => {
+    if (!isEnhancedProjectsNsfwRequest(req)) {
+      res.redirect('/projects?defaults=1');
+      return;
+    }
+    try {
+      const pageDefaultsService = getPageDefaultsService(req);
+      res.set('Cache-Control', 'no-store');
+      res.json({
+        status: 'success',
+        authority: buildProjectsDefaultsAuthority(
+          pageDefaultsService,
+          buildProjectsDefaultOptionCatalogues(pageDefaultsService, getProjectTagFilterOptions(workflowQueryService)),
+        ),
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // A stale or missing generation: nothing was written (the fence threw
+  // inside the write transaction, which rolled back). JSON clients get a
+  // correlated 409 with the current authority when it can be read; a native
+  // post re-renders Projects with the conflict, never a success redirect.
+  function respondProjectsDefaultsConflict(req, res, { kind, mutation, err, enhanced, optionCatalogues }) {
+    if (enhanced) {
+      let authority = null;
+      try {
+        authority = buildProjectsDefaultsAuthority(getPageDefaultsService(req), optionCatalogues);
+      } catch {
+        authority = null;
+      }
+      res.status(409).json({
+        ...projectsDefaultsOperationAcknowledgement(kind, mutation, {
+          result: 'conflict', generation: err.currentGeneration,
+        }),
+        status: 'error',
+        code: PROJECTS_DEFAULTS_CONFLICT_CODE,
+        message: PROJECTS_DEFAULTS_CONFLICT_MESSAGE,
+        ...(authority && authority.generation === err.currentGeneration ? { authority } : {}),
+      });
+      return;
+    }
+    renderProjectsPage(req, res, {
+      appName,
+      projectService,
+      workflowQueryService,
+      status: 409,
+      projectsDefaultsDialogOpen: true,
+      allowSavedDefaultsRedirect: false,
+      listQuery: readProjectsReturnQuery(req),
+      notice: { variant: 'error', text: PROJECTS_DEFAULTS_CONFLICT_MESSAGE },
+    });
+  }
+
   router.post('/defaults', (req, res, next) => {
+    const pageDefaultsService = getPageDefaultsService(req);
+    const optionCatalogues = buildProjectsDefaultOptionCatalogues(
+      pageDefaultsService,
+      getProjectTagFilterOptions(workflowQueryService),
+    );
+    const mutation = readProjectsDefaultsMutationRequest(req);
     handlePageDefaultsPost(req, res, next, {
       db,
-      pageDefaultsService: getPageDefaultsService(req),
-      page: 'projects',
+      pageDefaultsService,
+      page: PROJECTS_PAGE_DEFAULTS,
       successMessage: NOTICES.projects_defaults_saved.text,
       saveErrorMessage: 'Projects defaults could not be saved. No changes were made.',
+      validateSubmission: () => ({ generation: null }),
+      // The generation fence runs inside the same transaction as the seven
+      // writes; a stale generation throws before anything is written, and any
+      // later failure rolls the generation back with the writes.
+      saveValidatedValues: ({ validatedValues, submission }) => {
+        submission.generation = pageDefaultsService.advanceMutationGeneration(
+          PROJECTS_PAGE_DEFAULTS, mutation.expectedGeneration,
+        );
+        for (const option of PROJECTS_DEFAULT_FIELDS) {
+          const optionCatalogue = optionCatalogues?.[option];
+          if (optionCatalogue !== undefined) {
+            pageDefaultsService.saveDefault(PROJECTS_PAGE_DEFAULTS, option, validatedValues[option], optionCatalogue);
+          } else {
+            pageDefaultsService.saveDefault(PROJECTS_PAGE_DEFAULTS, option, validatedValues[option]);
+          }
+        }
+      },
+      enhancedOperationPayload: ({ outcome, submission }) => projectsDefaultsOperationAcknowledgement('save', mutation, {
+        result: outcome,
+        generation: outcome === 'committed' ? submission?.generation ?? null : null,
+      }),
+      handleSaveError: ({ err, enhanced }) => {
+        if (!(err instanceof PageDefaultsGenerationConflictError)) return false;
+        respondProjectsDefaultsConflict(req, res, { kind: 'save', mutation, err, enhanced, optionCatalogues });
+        return true;
+      },
+      // The JSON acknowledgement carries the post-commit authority so the
+      // client updates the saved-state indicator without a second request.
+      enhancedSuccessPayload: () => ({
+        authority: buildProjectsDefaultsAuthority(getPageDefaultsService(req), optionCatalogues),
+      }),
       onValidationError: ({ submittedValues, errors }) => {
         renderProjectsPage(req, res, {
           appName,
@@ -113,17 +239,96 @@ export function createProjectsRouter({ appName, db, projectService, workflowQuer
           projectsDefaultsSubmittedValues: submittedValues,
           projectsDefaultsErrors: errors,
           allowSavedDefaultsRedirect: false,
+          listQuery: readProjectsReturnQuery(req),
           notice: null,
         });
       },
-      optionCatalogues: buildProjectsDefaultOptionCatalogues(
-        getPageDefaultsService(req),
-        getProjectTagFilterOptions(workflowQueryService),
-      ),
+      optionCatalogues,
       onSuccess: ({ validatedValues }) => {
-        res.redirect(buildProjectsDefaultsSuccessUrl(validatedValues));
+        res.redirect(buildProjectsDefaultsSuccessUrl(validatedValues, readProjectsReturnQuery(req)));
       },
     });
+  });
+
+  // WP10b Reset defaults: deletes only the allowlisted Projects keys (the
+  // list comes from PAGE_DEFAULT_DEFINITIONS, never the request). Every other
+  // page's defaults, Project Assets scoped defaults and app settings stay.
+  // The refresh destination keeps the temporary context (repeated Projects,
+  // Search) and lets every default-backed control resolve to its application
+  // fallback, page 1.
+  router.post('/defaults/reset', (req, res, next) => {
+    const enhanced = isEnhancedProjectsNsfwRequest(req);
+    const pageDefaultsService = getPageDefaultsService(req);
+    const refreshUrl = buildProjectsTemporaryContextUrl(readProjectsReturnQuery(req));
+    const mutation = readProjectsDefaultsMutationRequest(req);
+    const optionCatalogues = () => buildProjectsDefaultOptionCatalogues(
+      pageDefaultsService,
+      getProjectTagFilterOptions(workflowQueryService),
+    );
+
+    let reset;
+    let generation = null;
+    try {
+      // Fence and deletion in one transaction. A no-op Reset (no saved keys)
+      // still advances the generation, so an older request prepared before
+      // it is rejected as stale.
+      reset = db.transaction(() => {
+        generation = pageDefaultsService.advanceMutationGeneration(
+          PROJECTS_PAGE_DEFAULTS, mutation.expectedGeneration,
+        );
+        return pageDefaultsService.resetGlobalPageDefaults(PROJECTS_PAGE_DEFAULTS);
+      })();
+    } catch (err) {
+      if (err instanceof PageDefaultsGenerationConflictError) {
+        let catalogues = {};
+        try {
+          catalogues = optionCatalogues();
+        } catch {
+          catalogues = {};
+        }
+        respondProjectsDefaultsConflict(req, res, {
+          kind: 'resetDefaults', mutation, err, enhanced, optionCatalogues: catalogues,
+        });
+        return;
+      }
+      if (enhanced) {
+        res.status(500).json({
+          ...projectsDefaultsOperationAcknowledgement('resetDefaults', mutation, { result: 'failed' }),
+          status: 'error',
+          message: 'Projects defaults could not be reset. No changes were made.',
+        });
+        return;
+      }
+      next(err);
+      return;
+    }
+
+    if (!enhanced) {
+      res.redirect(refreshUrl);
+      return;
+    }
+
+    try {
+      res.json({
+        ...projectsDefaultsOperationAcknowledgement('resetDefaults', mutation, { result: 'committed', generation }),
+        status: 'success',
+        message: PROJECTS_DEFAULTS_RESET_MESSAGE,
+        reset,
+        refreshUrl,
+        authority: buildProjectsDefaultsAuthority(pageDefaultsService, optionCatalogues()),
+      });
+    } catch {
+      // The deletion committed; only the follow-up read failed. Say so rather
+      // than claiming nothing changed, so the client never repeats it.
+      res.status(500).json({
+        ...projectsDefaultsOperationAcknowledgement('resetDefaults', mutation, { result: 'committed', generation }),
+        status: 'error',
+        committed: true,
+        message: 'Projects defaults were reset, but the updated defaults could not be read. Reload the page.',
+        reset,
+        refreshUrl,
+      });
+    }
   });
 
   router.post('/nsfw-filter', (req, res, next) => {
@@ -690,10 +895,33 @@ function renderProjectsPage(req, res, {
   const pageUrl = buildPageUrl(req, parsedQuery, currentPage, pageDefaultsService, listQuery);
   const filtersActive = Boolean(
     parsedQuery.search || parsedQuery.statuses.length > 0 || parsedQuery.projectTypes.length > 0
-      || parsedQuery.tagIds.length > 0 || parsedQuery.projectId != null,
+      || parsedQuery.tagIds.length > 0 || parsedQuery.projectIds.length > 0,
   );
   const projectOptions = workflowQueryService.getProjectsPageFilterOptions();
+  // Legacy single-select state: only a single selected active Project.
   const selectedProject = projectOptions.find((project) => project.id === parsedQuery.projectId) || null;
+  const projectFilter = buildProjectFilterModel(projectService, projectOptions, parsedQuery.projectIds);
+  const gridStyle = pageDefaultsService.resolve('projects', 'gridStyle');
+  // WP10b: the authority JSON of this rendered page (saved-key presence,
+  // generation, effective current values of the seven saveable settings).
+  // A read failure fails closed: the dialog cannot save without it.
+  let projectsDefaultsAuthority = null;
+  try {
+    projectsDefaultsAuthority = buildProjectsDefaultsAuthority(pageDefaultsService, projectsDefaultOptionCatalogues, {
+      current: {
+        view: parsedQuery.view,
+        gridStyle,
+        sort: parsedQuery.sortBy,
+        order: parsedQuery.order,
+        status: toProjectsDefaultsMultiValue(parsedQuery.statuses),
+        projectType: toProjectsDefaultsMultiValue(parsedQuery.projectTypes),
+        tag: toProjectsDefaultsMultiValue(parsedQuery.tagIds),
+      },
+      currentUrl: pageUrl({}),
+    });
+  } catch {
+    projectsDefaultsAuthority = null;
+  }
 
   return res.status(status).render('projects/index.njk', {
     appName,
@@ -716,12 +944,17 @@ function renderProjectsPage(req, res, {
       projectTypes: parsedQuery.projectTypes,
       tagIds: parsedQuery.tagIds.map(String),
       projectId: parsedQuery.projectId,
+      projectIds: parsedQuery.projectIds.map(String),
       sort: parsedQuery.sortBy,
       order: parsedQuery.order,
       view: parsedQuery.view,
     },
     view: parsedQuery.view,
-    gridStyle: pageDefaultsService.resolve('projects', 'gridStyle'),
+    gridStyle,
+    projectsDefaultsAuthority,
+    projectsDefaultsAuthorityJson: projectsDefaultsAuthority
+      ? serializeProjectsAuthorityJson(projectsDefaultsAuthority)
+      : '',
     statuses: projectsDefaultOptionCatalogues.status
       .map(({ value }) => value)
       .filter((value) => value !== 'all'),
@@ -734,6 +967,9 @@ function renderProjectsPage(req, res, {
     tagOptions,
     projectOptions,
     selectedProject,
+    projectFilterOptions: projectFilter.options,
+    projectFilterSelectedValues: projectFilter.selectedValues,
+    projectFilterUnavailableValues: projectFilter.unavailableValues,
     notice,
     nsfwFilterEnabled,
     projectsNsfwReturnUrl: pageUrl({}),
@@ -1049,6 +1285,114 @@ function readProjectsNsfwReturnUrl(req) {
   }
 }
 
+// The Projects list query a defaults post returns to (its `returnTo`), as a
+// parsed query object with repeated values kept as arrays.
+function readProjectsReturnQuery(req) {
+  const returnTo = readProjectsNsfwReturnUrl(req);
+  try {
+    return queryFromSearchParams(new URL(returnTo, 'http://creatorcrate.local').searchParams);
+  } catch {
+    return {};
+  }
+}
+
+// The temporary (never saved) context of a Projects query: the repeated
+// Project restriction and Search, in canonical form. Everything default-backed
+// is left to resolve from the defaults, page 1.
+function buildProjectsTemporaryContextUrl(rawQuery) {
+  const query = rawQuery && typeof rawQuery === 'object' ? rawQuery : {};
+  const params = new URLSearchParams();
+  parseProjectFilterIds(query.project).forEach((id) => params.append('project', String(id)));
+  const search = typeof query.search === 'string' ? query.search.trim() : '';
+  if (search) params.set('search', search);
+  const text = params.toString();
+  return text ? `/projects?${text}` : '/projects';
+}
+
+function readProjectsDefaultsMutationRequest(req) {
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const generation = body[PROJECTS_DEFAULTS_GENERATION_FIELD];
+  const operation = body[PROJECTS_DEFAULTS_OPERATION_FIELD];
+  const parsedGeneration = typeof generation === 'string' && /^(0|[1-9]\d*)$/.test(generation)
+    ? Number(generation)
+    : Number.NaN;
+  return {
+    // Missing or malformed: null, which never matches the stored generation.
+    expectedGeneration: Number.isSafeInteger(parsedGeneration) ? parsedGeneration : null,
+    operationId: typeof operation === 'string' && PROJECTS_DEFAULTS_OPERATION_PATTERN.test(operation)
+      ? operation
+      : null,
+  };
+}
+
+// The request-correlated acknowledgement. `generation` is the stored
+// generation this answer establishes: the new one after a commit, the current
+// one on a conflict, and null when the handler made no claim about it.
+function projectsDefaultsOperationAcknowledgement(kind, mutation, { result, generation = null }) {
+  return {
+    operation: {
+      id: mutation.operationId,
+      kind,
+      result,
+      committed: result === 'committed',
+      expectedGeneration: mutation.expectedGeneration,
+      generation,
+    },
+  };
+}
+
+function fingerprintText(text) {
+  // FNV-1a (32-bit): a compact revision token, not a security boundary.
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
+}
+
+function toProjectsDefaultsMultiValue(values) {
+  return Array.isArray(values) && values.length > 0 ? values.map(String) : 'all';
+}
+
+/**
+ * WP10b authoritative Projects defaults metadata. Saved status is stored key
+ * presence (describeSavedDefaults), never a comparison with the fallback, so
+ * an explicitly saved fallback-equal value still reports saved. Projects
+ * defaults are Global only: there is no Project scope here.
+ */
+function buildProjectsDefaultsAuthority(pageDefaultsService, optionCatalogues, extra = {}) {
+  const description = pageDefaultsService.describeSavedDefaults(PROJECTS_PAGE_DEFAULTS, optionCatalogues);
+  const defaults = pageDefaultsService.resolveGlobalPageDefaults(PROJECTS_PAGE_DEFAULTS, optionCatalogues);
+  const fallbacks = Object.fromEntries(PROJECTS_DEFAULT_FIELDS.map((field) => [
+    field,
+    pageDefaultsService.getFallback(PROJECTS_PAGE_DEFAULTS, field),
+  ]));
+  const saved = Object.fromEntries(PROJECTS_DEFAULT_FIELDS.map((field) => [field, {
+    stored: description.options[field].global.stored,
+    valid: description.options[field].global.valid,
+  }]));
+  const savedKeys = PROJECTS_DEFAULT_FIELDS.filter((field) => saved[field].stored);
+  return {
+    page: PROJECTS_PAGE_DEFAULTS,
+    fields: [...PROJECTS_DEFAULT_FIELDS],
+    multiFields: [...PROJECTS_MULTI_FIELDS],
+    fallbacks,
+    defaults,
+    saved,
+    savedKeys,
+    hasSavedDefaults: savedKeys.length > 0,
+    generation: pageDefaultsService.getMutationGeneration(PROJECTS_PAGE_DEFAULTS),
+    revision: fingerprintText(JSON.stringify({ defaults, saved })),
+    resetFiltersUrl: PROJECTS_RESET_FILTERS_URL,
+    ...extra,
+  };
+}
+
+function serializeProjectsAuthorityJson(authority) {
+  return JSON.stringify(authority).replace(/</g, '\\u003c');
+}
+
 function getOpenLocallySettingsService(req) {
   const service = req.app?.locals?.openLocallySettingsService;
   if (!service) {
@@ -1099,8 +1443,12 @@ function buildProjectsDefaultOptionCatalogues(pageDefaultsService, tagOptions) {
   };
 }
 
-function buildProjectsDefaultsSuccessUrl(validatedValues) {
+function buildProjectsDefaultsSuccessUrl(validatedValues, returnQuery = {}) {
   const params = new URLSearchParams();
+  // The temporary context of the page the Save came from is kept as it was
+  // (repeated Projects, Search) and is never persisted.
+  const temporary = new URL(buildProjectsTemporaryContextUrl(returnQuery), 'http://creatorcrate.local').searchParams;
+  for (const [key, value] of temporary) params.append(key, value);
   // Multivalue defaults: every saved selection becomes one repeated canonical
   // parameter (status=a&status=b), matching the filter form's own encoding.
   const appendSelection = (name, value) => {
@@ -1115,6 +1463,58 @@ function buildProjectsDefaultsSuccessUrl(validatedValues) {
   params.set('view', validatedValues.view);
   params.set('notice', 'projects_defaults_saved');
   return `/projects?${params.toString()}`;
+}
+
+// The multi-select Project choices: every active Project from the unpaged
+// option catalogue, plus each selected ID missing from it. A selected
+// archived Project keeps its title (archived Projects are viewable on this
+// page); an unknown or deleted ID stays a checked, ID-labelled unavailable
+// choice. Selection never depends on the current 25-row page.
+function buildProjectFilterModel(projectService, projectOptions, selectedProjectIds) {
+  const selectedValues = selectedProjectIds.map(String);
+  const activeValues = new Set(projectOptions.map((project) => String(project.id)));
+  const missingOptions = selectedProjectIds
+    .filter((id) => !activeValues.has(String(id)))
+    .map((id) => {
+      const project = projectService.findById(id);
+      if (project) {
+        const archived = isProjectArchived(project);
+        return {
+          value: String(id),
+          label: project.title,
+          selected: true,
+          archived,
+          // WP10b presentation only: the archived state reads beside the
+          // title; the summary and value keep the real title and ID.
+          ...(archived ? {
+            suffix: 'Archived',
+            classes: 'projects-project-option--archived',
+            attributes: [['data-projects-archived-project', true]],
+          } : {}),
+        };
+      }
+      return {
+        value: String(id),
+        label: `Unavailable project (ID ${id})`,
+        selected: true,
+        unavailable: true,
+        classes: 'projects-project-option--unavailable',
+        attributes: [['data-projects-unavailable-project', true]],
+      };
+    });
+  const options = [
+    ...missingOptions,
+    ...projectOptions.map((project) => ({
+      value: String(project.id),
+      label: project.title,
+      selected: selectedValues.includes(String(project.id)),
+    })),
+  ];
+  return {
+    options,
+    selectedValues,
+    unavailableValues: options.filter((option) => option.unavailable).map((option) => option.value),
+  };
 }
 
 function buildStatusFilterOptions(catalogue, selectedStatuses) {
@@ -1302,7 +1702,9 @@ function parseListQuery(raw, pageDefaultsService, tagOptions = [], optionCatalog
     useSavedFilterDefaults && resolvedFilters.tag !== 'all' ? resolvedFilters.tag : rawQuery.tag,
     tagOptions,
   );
-  const projectId = parseProjectFilterId(rawQuery.project);
+  // Temporary multi-Project restriction (never a saved default). Repeated
+  // `project` values are OR-ed; each value is validated on its own.
+  const projectIds = parseProjectFilterIds(rawQuery.project);
   const sortBy = resolvedPresentation.sort;
   const order = resolvedPresentation.order;
   const view = resolvedPresentation.view;
@@ -1322,7 +1724,10 @@ function parseListQuery(raw, pageDefaultsService, tagOptions = [], optionCatalog
     search,
     tagId: tagIds.length === 1 ? tagIds[0] : undefined,
     tagIds,
-    projectId,
+    // Legacy single-Project alias, set only when exactly one Project is
+    // selected; `projectIds` is the authority for filtering and URLs.
+    projectId: projectIds.length === 1 ? projectIds[0] : null,
+    projectIds,
     sortBy,
     order,
     view,
@@ -1365,14 +1770,24 @@ function parseTagFilterIds(value, tagOptions) {
   return [...selected].sort((left, right) => left - right);
 }
 
-function parseProjectFilterId(value) {
-  if (value === undefined || value === null || value === '') return null;
-
-  const candidate = String(value).trim();
-  if (!/^[1-9]\d*$/.test(candidate)) return null;
-
-  const id = Number(candidate);
-  return Number.isSafeInteger(id) && id > 0 ? id : null;
+// Repeated `project` parameters (project=7&project=12), plus the legacy
+// singleton form. Each value must be a strict positive safe integer string;
+// malformed values (including comma-joined lists, decimals, negatives and
+// unsafe integers) are discarded individually, matching the Tag filter and
+// the Asset Library Project filter. Valid IDs are de-duplicated and sorted
+// ascending. Unknown or archived IDs are kept: they still restrict the list.
+// `all` is the explicit unrestricted value and is not an ID.
+export function parseProjectFilterIds(value) {
+  const values = Array.isArray(value) ? value : [value];
+  const selected = new Set();
+  for (const raw of values) {
+    if (typeof raw !== 'string') continue;
+    const candidate = raw.trim();
+    if (!/^[1-9]\d*$/.test(candidate)) continue;
+    const id = Number(candidate);
+    if (Number.isSafeInteger(id)) selected.add(id);
+  }
+  return [...selected].sort((left, right) => left - right);
 }
 
 function hasPresentationQuery(raw) {
@@ -1486,7 +1901,8 @@ function buildCanonicalPageQuery(req, parsedQuery, currentPage, pageDefaultsServ
   else if (isExplicitAllFilterValue(rawQuery.type)) query.type = 'all';
   if (parsedQuery.tagIds.length > 0) query.tag = parsedQuery.tagIds.map(String);
   else if (isExplicitAllFilterValue(rawQuery.tag)) query.tag = 'all';
-  if (parsedQuery.projectId != null) query.project = String(parsedQuery.projectId);
+  if (parsedQuery.projectIds.length > 0) query.project = parsedQuery.projectIds.map(String);
+  else if (isExplicitAllFilterValue(rawQuery.project)) query.project = 'all';
 
   if (
     parsedQuery.sortBy !== fallbackSort

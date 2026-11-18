@@ -192,10 +192,23 @@ function startSave(state, request) {
 
   const action = form.action || form.getAttribute?.('action');
   const method = String(form.method || form.getAttribute?.('method') || 'POST').toUpperCase();
+  // Optional send-time adjustment of a copy of the body (for example a
+  // server-issued token that changed after a queued request was captured).
+  // The queued/acknowledged payload comparisons keep using request.body.
+  let body = request.body;
+  if (typeof state.options.prepareRequestBody === 'function') {
+    try {
+      body = state.options.prepareRequestBody({
+        form, body: new globalThis.URLSearchParams(request.body),
+      }) || request.body;
+    } catch {
+      body = request.body;
+    }
+  }
 
   Promise.resolve().then(() => globalThis.fetch(action, {
     method,
-    body: request.body,
+    body,
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
       ...(state.options.headers || {}),

@@ -133,6 +133,27 @@ export class PageDefaultValidationError extends Error {
   }
 }
 
+// WP9a F6: durable mutation generations, one per page that fences its
+// Save / Reset defaults writes. These protocol records live in app_meta beside
+// (never among) the page's saved default keys, so Reset defaults never deletes
+// its own generation and no generation is ever reported as a saved setting.
+const PAGE_DEFAULTS_GENERATION_KEYS = Object.freeze({
+  [ASSET_VIEWER]: 'page_defaults_generation.asset_viewer',
+  // WP10b: the Projects combined dialog uses the same fenced explicit Save /
+  // Reset defaults protocol.
+  [PROJECTS]: 'page_defaults_generation.projects',
+});
+
+export class PageDefaultsGenerationConflictError extends Error {
+  constructor({ page, expectedGeneration, currentGeneration }) {
+    super('Page defaults changed since the request was prepared.');
+    this.name = 'PageDefaultsGenerationConflictError';
+    this.page = page;
+    this.expectedGeneration = expectedGeneration;
+    this.currentGeneration = currentGeneration;
+  }
+}
+
 function invalid(errors) {
   throw new PageDefaultValidationError(errors);
 }
@@ -650,6 +671,40 @@ export function createPageDefaultsService({
     };
   }
 
+  function requireGenerationKey(page) {
+    requirePageDefinition(page);
+    const key = PAGE_DEFAULTS_GENERATION_KEYS[page];
+    if (!key) throw new Error(`Page "${page}" has no defaults mutation generation.`);
+    if (typeof repository.getCounter !== 'function' || typeof repository.compareAndIncrement !== 'function') {
+      throw new Error('createPageDefaultsService requires appMetaRepository counters for mutation generations.');
+    }
+    return key;
+  }
+
+  /** The page's current defaults mutation generation (0 before any write). */
+  function getMutationGeneration(page) {
+    return repository.getCounter(requireGenerationKey(page));
+  }
+
+  /**
+   * Fences one defaults mutation: advances the page's generation only when it
+   * still equals `expectedGeneration`, else throws
+   * PageDefaultsGenerationConflictError. Call it inside the same transaction
+   * as the mutation so a rollback also rolls the generation back.
+   */
+  function advanceMutationGeneration(page, expectedGeneration) {
+    const key = requireGenerationKey(page);
+    const outcome = repository.compareAndIncrement(key, expectedGeneration);
+    if (!outcome.advanced) {
+      throw new PageDefaultsGenerationConflictError({
+        page,
+        expectedGeneration: Number.isSafeInteger(expectedGeneration) ? expectedGeneration : null,
+        currentGeneration: outcome.current,
+      });
+    }
+    return outcome.current;
+  }
+
   function clearProjectPageDefaults(page, context) {
     requirePageDefinition(page);
     const projectId = requireProjectId(context);
@@ -676,5 +731,7 @@ export function createPageDefaultsService({
     describeSavedDefaults,
     resetGlobalPageDefaults,
     resetProjectPageDefaults,
+    getMutationGeneration,
+    advanceMutationGeneration,
   };
 }

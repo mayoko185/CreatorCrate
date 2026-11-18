@@ -525,8 +525,8 @@ test('Modified uses the server-formatted value under the 12h and 24h clock prefe
   }
 });
 
-// Grid style: Uncropped keeps intrinsic previews; Cropped (saved through the
-// Asset Viewer defaults autosave) squares each media viewport only in Grid,
+// Grid style: Uncropped keeps intrinsic previews; Cropped (saved through
+// Filters & Defaults' Save new defaults) squares each media viewport only in Grid,
 // and survives live pagination, grid sizes and Grid/List switching.
 test('Grid style Cropped squares Grid media viewports without touching List or information cards', async ({ page }) => {
   const pageErrors = [];
@@ -552,13 +552,21 @@ test('Grid style Cropped squares Grid media viewports without touching List or i
     const uncropped = await sizeOf(alphaLink);
     expect(uncropped.width).toBeGreaterThan(uncropped.height * 1.5);
 
-    await page.getByRole('link', { name: 'Asset Viewer defaults' }).click();
-    const fieldOrder = await page.locator('#asset-viewer-defaults-form [data-dialog-field]')
-      .evaluateAll((nodes) => nodes.map((node) => node.dataset.dialogField));
-    expect(fieldOrder.slice(0, 3)).toEqual(['view', 'gridStyle', 'sort']);
-    await page.locator('#assetViewer-default-gridStyle').selectOption('cropped', { force: true });
+    // WP9b: Grid style lives in Filters & Defaults → Miscellaneous. The
+    // session choice restyles the grid at once; Save new defaults persists
+    // it (from the bare page, so only Grid style differs from the fallbacks).
+    await page.goto(`${baseURL}/asset-viewer`);
+    await page.getByRole('link', { name: 'Filters & Defaults', exact: true }).click();
+    const filtersDialog = page.locator('#asset-viewer-filter-dialog');
+    await expect(filtersDialog.locator('.filters-defaults-section').nth(2).locator('legend'))
+      .toHaveText(['View', 'Grid style', 'Assets per page']);
+    await page.locator('#asset-library-grid-style').selectOption('cropped', { force: true });
     await expect(page.locator('.asset-grid')).toHaveAttribute('data-grid-style', 'cropped');
+    await filtersDialog.getByRole('button', { name: 'Save new defaults', exact: true }).click();
+    await expect(page.locator('#asset-viewer-defaults-form')).toHaveAttribute('data-settings-fetch-save-state', 'saved');
     await page.keyboard.press('Escape');
+    await page.goto(baseURL + GRID_ALL);
+    await expect(page.locator('.asset-grid')).toHaveAttribute('data-grid-style', 'cropped');
 
     // Image: square viewport, covering centered image, clipped by the link only.
     const alphaImage = gridCard('01-alpha.png').locator('[data-preview-image]');

@@ -313,6 +313,121 @@ describe('project repository', () => {
     expect(composed.rows[0].id).toBe(match.id);
   });
 
+  describe('WP10a multiple project ids', () => {
+    const ids = (result) => result.rows.map((project) => project.id);
+
+    it('ORs selected project ids with one bound placeholder each in both count and rows', () => {
+      const first = repository.create(sampleProject({ title: 'Multi A' }));
+      const second = repository.create(sampleProject({ title: 'Multi B' }));
+      const third = repository.create(sampleProject({ title: 'Multi C' }));
+      const prepareSpy = vi.spyOn(db, 'prepare');
+
+      const result = repository.list({
+        projectIds: [third.id, first.id, third.id], sortBy: 'title', order: 'asc', limit: 25, offset: 0,
+      });
+      const statements = prepareSpy.mock.calls.map(([sql]) => String(sql));
+      prepareSpy.mockRestore();
+
+      expect(result.total).toBe(2);
+      expect(ids(result)).toEqual([first.id, third.id]);
+      expect(ids(result)).not.toContain(second.id);
+      expect(statements).toHaveLength(2);
+      expect(statements.every((sql) => sql.includes('projects.id IN (?,?)'))).toBe(true);
+      expect(statements.some((sql) => /projects\.id IN \([^)]*\d/.test(sql))).toBe(false);
+    });
+
+    it('lets projectIds be the authority over the legacy projectId alias', () => {
+      const first = repository.create(sampleProject({ title: 'Alias A' }));
+      const second = repository.create(sampleProject({ title: 'Alias B' }));
+
+      expect(ids(repository.list({ projectId: first.id }))).toEqual([first.id]);
+      expect(ids(repository.list({ projectId: first.id, projectIds: [second.id] }))).toEqual([second.id]);
+      expect(repository.list({ projectId: first.id, projectIds: [] }).total).toBe(2);
+      expect(repository.list({ projectIds: [] }).total).toBe(2);
+      expect(repository.list({ projectId: null }).total).toBe(2);
+    });
+
+    it('fails closed for a supplied selection with no usable ids', () => {
+      repository.create(sampleProject({ title: 'Closed A' }));
+      for (const projectIds of [[0], [-1], [1.5], ['1'], [Number.MAX_SAFE_INTEGER + 2]]) {
+        expect(repository.list({ projectIds }).total).toBe(0);
+      }
+      expect(repository.list({ projectId: '1' }).total).toBe(0);
+    });
+
+    it('keeps unknown ids restrictive and composes archived ids with the archived-status rules', () => {
+      const active = repository.create(sampleProject({ title: 'Eligible Active', status: 'planned' }));
+      const archived = repository.create(sampleProject({ title: 'Eligible Archived', status: 'planned' }));
+      repository.create(sampleProject({ title: 'Eligible Other', status: 'planned' }));
+      repository.archive(archived.id);
+
+      expect(repository.list({ projectIds: [999999] }).total).toBe(0);
+      expect(ids(repository.list({ projectIds: [active.id, 999999] }))).toEqual([active.id]);
+      expect(repository.list({ projectIds: [archived.id] }).total).toBe(0);
+      expect(ids(repository.list({ projectIds: [active.id, archived.id] }))).toEqual([active.id]);
+      expect(ids(repository.list({
+        projectIds: [active.id, archived.id], statuses: ['archived'], includeArchived: true,
+      }))).toEqual([archived.id]);
+      expect(ids(repository.list({
+        projectIds: [active.id, archived.id], statuses: ['archived', 'planned'], includeArchived: true,
+        sortBy: 'title', order: 'asc',
+      }))).toEqual([active.id, archived.id]);
+    });
+
+    it('ANDs the project selection with Status, Project Type, Tag and Search without duplicate rows', () => {
+      const red = tagRepository.create({ displayName: 'Red', normalizedName: 'red' });
+      const blue = tagRepository.create({ displayName: 'Blue', normalizedName: 'blue' });
+      const comicReady = repository.create(sampleProject({
+        title: 'Comic Ready', status: 'ready', projectType: 'comic', description: 'needle',
+      }));
+      const comicPlanned = repository.create(sampleProject({ title: 'Comic Planned', status: 'planned', projectType: 'comic' }));
+      const imagesReady = repository.create(sampleProject({
+        title: 'Images Ready', status: 'ready', projectType: 'images', description: 'needle',
+      }));
+      const outside = repository.create(sampleProject({ title: 'Outside Comic Ready', status: 'ready', projectType: 'comic' }));
+      for (const project of [comicReady, comicPlanned, imagesReady, outside]) {
+        tagRepository.assignToProject(project.id, red.id);
+      }
+      tagRepository.assignToProject(comicReady.id, blue.id);
+      tagRepository.assignToProject(imagesReady.id, blue.id);
+      const projectIds = [comicReady.id, comicPlanned.id, imagesReady.id];
+      const list = (options) => ids(repository.list({ projectIds, sortBy: 'title', order: 'asc', ...options }));
+
+      expect(list({})).toEqual([comicPlanned.id, comicReady.id, imagesReady.id]);
+      expect(list({ statuses: ['ready'] })).toEqual([comicReady.id, imagesReady.id]);
+      expect(list({ projectTypes: ['comic'] })).toEqual([comicPlanned.id, comicReady.id]);
+      expect(list({ statuses: ['ready', 'planned'], projectTypes: ['comic'] })).toEqual([comicPlanned.id, comicReady.id]);
+      expect(list({ tagIds: [red.id, blue.id] })).toEqual([comicPlanned.id, comicReady.id, imagesReady.id]);
+      expect(repository.list({ projectIds, tagIds: [red.id, blue.id] }).total).toBe(3);
+      expect(list({ tagIds: [blue.id], projectTypes: ['comic'] })).toEqual([comicReady.id]);
+      expect(list({ search: 'needle' })).toEqual([comicReady.id, imagesReady.id]);
+      expect(list({ search: 'needle', statuses: ['ready'], projectTypes: ['images'], tagIds: [blue.id] }))
+        .toEqual([imagesReady.id]);
+      expect(list({ statuses: ['tbd'] })).toEqual([]);
+      expect(repository.list({ projectIds, statuses: ['tbd'] }).total).toBe(0);
+    });
+
+    it('counts and paginates a large selection in fixed pages with stable ordering', () => {
+      const created = [];
+      for (let i = 0; i < 30; i += 1) {
+        created.push(repository.create(sampleProject({ title: `Paged ${String(i).padStart(2, '0')}` })));
+      }
+      const selected = created.slice(0, 28).map((project) => project.id);
+      const options = { projectIds: [...selected].reverse(), sortBy: 'title', order: 'asc', tieBreakById: true };
+
+      const count = repository.list({ ...options, limit: 0 });
+      const page1 = repository.list({ ...options, limit: 25, offset: 0, knownTotal: count.total });
+      const page2 = repository.list({ ...options, limit: 25, offset: 25 });
+
+      expect(count.total).toBe(28);
+      expect(page2.total).toBe(28);
+      expect(ids(page1)).toEqual(selected.slice(0, 25));
+      expect(ids(page2)).toEqual(selected.slice(25));
+      expect(new Set([...ids(page1), ...ids(page2)]).size).toBe(28);
+      expect(ids(repository.list({ ...options, limit: 25, offset: 50 }))).toEqual([]);
+    });
+  });
+
   it('supports the retained Project sorts and falls back from obsolete date sort keys', () => {
     const older = repository.create(sampleProject({ title: 'Zulu' }));
     const newer = repository.create(sampleProject({ title: 'Alpha' }));

@@ -2072,7 +2072,11 @@ describe('Project Assets post-mutation refresh contract', () => {
     await flush();
     expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(next.region);
     expect(onRecovered).toHaveBeenCalledOnce();
-    expect(nextBoxes.get(1).checked).toBe(true);
+    // F7-R2a: the newer filter keeps its own selection boundary; the
+    // satisfied refresh reports the identities that boundary cleared.
+    expect(nextBoxes.get(1).checked).toBe(false);
+    expect(retainedAssetSelectionIds(initial.document)).toEqual([]);
+    expect(onRecovered.mock.calls[0][0]).toMatchObject({ selection: { restored: [], retained: [], removed: ['1'] } });
   });
 
   it('keeps the owed refresh when the newer load fails, with Retry for the newer request', async () => {
@@ -2097,7 +2101,9 @@ describe('Project Assets post-mutation refresh contract', () => {
     await flush();
     expect(windowObject.fetch.mock.calls[2][0]).toBe(requested);
     expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(next.region);
-    expect(nextBoxes.get(1).checked).toBe(true);
+    // F7-R2a: Retry repeats the newer filter, not the refresh's re-read.
+    expect(nextBoxes.get(1).checked).toBe(false);
+    expect(retainedAssetSelectionIds(initial.document)).toEqual([]);
   });
 
   describe('retained category order', () => {
@@ -2791,5 +2797,1848 @@ describe('WP6 Project Assets refresh with loaded defaults', () => {
     expect(page.region.getAttribute('data-project-assets-live-state')).toBe('error');
     // As for a failed Defaults save refresh, no owed mutation means no GET Retry.
     expect(liveFailureRetries(page.document)).toHaveLength(0);
+  });
+});
+
+describe('WP10b F5 toolbar View keeps the latest intended Project Assets filters', () => {
+  function heldFetch(windowObject) {
+    const requests = [];
+    windowObject.fetch.mockImplementation((url, options) => new Promise((resolve, reject) => {
+      requests.push({ url, options, resolve, reject });
+      options?.signal?.addEventListener?.('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+    }));
+    return requests;
+  }
+
+  const viewControl = (page) => page.form.querySelector('[name="view"]');
+  const methodOf = (request) => String(request.options?.method || 'GET').toUpperCase();
+
+  it('applies List to a still-pending Extension GET; the stale GET loses and history records only the View', async () => {
+    const initial = makePage({ view: 'grid', page: '1', viewUrl: '/projects/1/assets?view=list' });
+    const stale = makePage({ view: 'grid', extension: 'png' });
+    const listed = makePage({ view: 'list', extension: 'png' });
+    const { windowObject } = makeWindow(initial.document, new Map([['stale', stale.document], ['listed', listed.document]]));
+    windowObject.location.href = 'http://creatorcrate.test/projects/1/assets?view=grid';
+    const requests = heldFetch(windowObject);
+
+    enhanceProjectAssetsLiveFiltering(initial.document);
+    initial.extensionInput.value = 'png';
+    initial.form.dispatch('change', { target: initial.extensionInput });
+    expect(requests).toHaveLength(1);
+    expect(new URL(requests[0].url).searchParams.getAll('extension')).toEqual(['png']);
+
+    const click = initial.viewLink.dispatch('click', { button: 0 });
+    expect(click.defaultPrevented).toBe(true);
+    expect(requests).toHaveLength(2);
+    expect(requests[0].options.signal.aborted).toBe(true);
+    const viewUrl = new URL(requests[1].url);
+    expect(methodOf(requests[1])).toBe('GET');
+    expect(viewUrl.pathname).toBe('/projects/1/assets');
+    expect(viewUrl.searchParams.getAll('extension')).toEqual(['png']);
+    expect(viewUrl.searchParams.getAll('view')).toEqual(['list']);
+    expect(viewControl(initial).value).toBe('list');
+
+    requests[1].resolve(htmlResponse('listed', requests[1].url));
+    await flush();
+    requests[0].resolve(htmlResponse('stale', requests[0].url));
+    await flush();
+    expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(listed.region);
+    expect(windowObject.history.pushes.map((entry) => entry.url)).toEqual([requests[1].url]);
+    expect(windowObject.location.href).toBe(requests[1].url);
+    expect(requests.every((request) => methodOf(request) === 'GET')).toBe(true);
+  });
+
+  it('applies List to a debounced Search, sending only the latest Search once with the clicked View', async () => {
+    vi.useFakeTimers();
+    try {
+      const initial = makePage({ view: 'grid', page: '1', extension: 'png', viewUrl: '/projects/1/assets?extension=png&view=list' });
+      const listed = makePage({ view: 'list' });
+      const { windowObject } = makeWindow(initial.document, new Map([['listed', listed.document]]));
+      windowObject.location.href = 'http://creatorcrate.test/projects/1/assets?extension=png&view=grid';
+      const requests = heldFetch(windowObject);
+
+      enhanceProjectAssetsLiveFiltering(initial.document);
+      initial.search.value = 'alpha';
+      initial.search.dispatch('input');
+      initial.search.value = 'beta';
+      initial.search.dispatch('input');
+      expect(requests).toHaveLength(0);
+      initial.viewLink.dispatch('click', { button: 0 });
+      expect(requests).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(requests).toHaveLength(1);
+
+      const viewUrl = new URL(requests[0].url);
+      expect(viewUrl.searchParams.get('search')).toBe('beta');
+      expect(viewUrl.searchParams.getAll('extension')).toEqual(['png']);
+      expect(viewUrl.searchParams.getAll('view')).toEqual(['list']);
+      requests[0].resolve(htmlResponse('listed', requests[0].url));
+      await flush();
+      expect(windowObject.history.pushes.map((entry) => entry.url)).toEqual([requests[0].url]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps Category, Tag, Extension, Presence, Usage, Sort, Order and page size with the clicked View, without comma-joining', () => {
+    const initial = makePage({
+      view: 'grid',
+      tags: ['8', '9'],
+      extensions: ['png'],
+      sort: 'size',
+      order: 'desc',
+      pageSize: '50',
+      viewUrl: '/projects/1/assets?view=list',
+    });
+    addInput(initial.form, { name: 'extension', type: 'hidden' }, 'jpg');
+    const { windowObject } = makeWindow(initial.document, new Map());
+    const requests = heldFetch(windowObject);
+
+    enhanceProjectAssetsLiveFiltering(initial.document);
+    initial.categoryAll.checked = false;
+    initial.categoryRenders.checked = true;
+    initial.presenceAll.checked = false;
+    initial.presencePresent.checked = true;
+    initial.usageAll.checked = false;
+    initial.usageUnused.checked = true;
+    initial.form.dispatch('change', { target: initial.usageUnused });
+    expect(requests).toHaveLength(1);
+
+    initial.viewLink.dispatch('click', { button: 0 });
+    expect(requests).toHaveLength(2);
+    const viewUrl = new URL(requests[1].url);
+    expect(viewUrl.searchParams.get('category')).toBe('7');
+    expect(viewUrl.searchParams.getAll('tag')).toEqual(['8', '9']);
+    expect(viewUrl.searchParams.getAll('extension')).toEqual(['png', 'jpg']);
+    expect(viewUrl.searchParams.get('presence')).toBe('present');
+    expect(viewUrl.searchParams.get('usage')).toBe('unused');
+    expect(viewUrl.searchParams.get('sort')).toBe('size');
+    expect(viewUrl.searchParams.get('order')).toBe('desc');
+    expect(viewUrl.searchParams.get('pageSize')).toBe('50');
+    expect(viewUrl.searchParams.getAll('view')).toEqual(['list']);
+    expect(viewUrl.searchParams.has('page')).toBe(false);
+    expect(viewUrl.search).not.toMatch(/%2C|,/);
+  });
+
+  it('switches List to Grid over a pending Tag GET and keeps Grid after the stale List response', async () => {
+    const initial = makePage({ view: 'list', page: '1', viewUrl: '/projects/1/assets?view=grid' });
+    const stale = makePage({ view: 'list' });
+    const gridded = makePage({ view: 'grid' });
+    const { windowObject } = makeWindow(initial.document, new Map([['stale', stale.document], ['grid', gridded.document]]));
+    windowObject.location.href = 'http://creatorcrate.test/projects/1/assets?view=list';
+    const requests = heldFetch(windowObject);
+
+    enhanceProjectAssetsLiveFiltering(initial.document);
+    initial.tagInput.value = '8';
+    initial.form.dispatch('change', { target: initial.tagInput });
+    initial.viewLink.dispatch('click', { button: 0 });
+    const viewUrl = new URL(requests[1].url);
+    expect(viewUrl.searchParams.getAll('tag')).toEqual(['8']);
+    expect(viewUrl.searchParams.getAll('view')).toEqual(['grid']);
+    expect(viewControl(initial).value).toBe('grid');
+
+    requests[1].resolve(htmlResponse('grid', requests[1].url));
+    await flush();
+    requests[0].resolve(htmlResponse('stale', requests[0].url));
+    await flush();
+    expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(gridded.region);
+    expect(windowObject.location.href).toBe(requests[1].url);
+  });
+
+  it('keeps the intended filters of a failed GET and retries the View with GET only', async () => {
+    const initial = makePage({ view: 'grid', page: '1', viewUrl: '/projects/1/assets?view=list' });
+    const listed = makePage({ view: 'list' });
+    const { windowObject } = makeWindow(initial.document, new Map([['listed', listed.document]]));
+    windowObject.location.href = 'http://creatorcrate.test/projects/1/assets?view=grid';
+    const requests = heldFetch(windowObject);
+
+    enhanceProjectAssetsLiveFiltering(initial.document);
+    initial.extensionInput.value = 'png';
+    initial.form.dispatch('change', { target: initial.extensionInput });
+    requests[0].reject(new Error('network'));
+    await flush();
+    expect(liveFailureNotice(initial.document)).not.toBeNull();
+
+    initial.viewLink.dispatch('click', { button: 0 });
+    let viewUrl = new URL(requests[1].url);
+    expect(viewUrl.searchParams.getAll('extension')).toEqual(['png']);
+    expect(viewUrl.searchParams.getAll('view')).toEqual(['list']);
+    requests[1].reject(new Error('network'));
+    await flush();
+    expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(initial.region);
+    expect(windowObject.location.href).toBe('http://creatorcrate.test/projects/1/assets?view=grid');
+    expect(windowObject.history.pushes).toHaveLength(0);
+
+    liveFailureRetries(initial.document)[0].dispatch('click', { button: 0 });
+    expect(requests).toHaveLength(3);
+    viewUrl = new URL(requests[2].url);
+    expect(methodOf(requests[2])).toBe('GET');
+    expect(viewUrl.searchParams.getAll('extension')).toEqual(['png']);
+    expect(viewUrl.searchParams.getAll('view')).toEqual(['list']);
+    requests[2].resolve(htmlResponse('listed', requests[2].url));
+    await flush();
+    expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(listed.region);
+    expect(windowObject.history.pushes.map((entry) => entry.url)).toEqual([requests[2].url]);
+  });
+
+  it('follows the canonical link on an idle page and a filter edit made meanwhile keeps the clicked View', () => {
+    const initial = makePage({ view: 'grid', page: '1', extension: 'png', viewUrl: '/projects/1/assets?extension=png&view=list' });
+    const { windowObject } = makeWindow(initial.document, new Map());
+    windowObject.location.href = 'http://creatorcrate.test/projects/1/assets?extension=png&view=grid';
+    const requests = heldFetch(windowObject);
+
+    enhanceProjectAssetsLiveFiltering(initial.document);
+    initial.viewLink.dispatch('click', { button: 0 });
+    expect(new URL(requests[0].url).pathname + new URL(requests[0].url).search)
+      .toBe('/projects/1/assets?extension=png&view=list');
+    expect(viewControl(initial).value).toBe('list');
+    initial.presenceAll.checked = false;
+    initial.presenceMissing.checked = true;
+    initial.form.dispatch('change', { target: initial.presenceMissing });
+    const next = new URL(requests[1].url);
+    expect(next.searchParams.get('presence')).toBe('missing');
+    expect(next.searchParams.getAll('view')).toEqual(['list']);
+  });
+
+  it('leaves pagination and Reset on their own address during a pending filter GET', () => {
+    const initial = makePage({
+      view: 'grid',
+      paginationUrl: '/projects/1/assets?page=3&view=grid',
+      viewUrl: '/projects/1/assets?view=list',
+    });
+    const { windowObject } = makeWindow(initial.document, new Map());
+    const requests = heldFetch(windowObject);
+
+    enhanceProjectAssetsLiveFiltering(initial.document);
+    initial.extensionInput.value = 'png';
+    initial.form.dispatch('change', { target: initial.extensionInput });
+    initial.paginationLink.dispatch('click', { button: 0 });
+    expect(new URL(requests[1].url).pathname + new URL(requests[1].url).search).toBe('/projects/1/assets?page=3&view=grid');
+
+    initial.extensionInput.value = 'jpg';
+    initial.form.dispatch('change', { target: initial.extensionInput });
+    initial.reset.dispatch('click', { button: 0 });
+    expect(new URL(requests[3].url).pathname + new URL(requests[3].url).search).toBe('/projects/1/assets?resetFilters=1');
+    expect(viewControl(initial).value).toBe('grid');
+  });
+
+  it('keeps the filter destination an NSFW POST was carrying when View is clicked before it answers', () => {
+    const initial = makePage({ view: 'grid', page: '1', viewUrl: '/projects/1/assets?view=list' });
+    const { windowObject } = makeWindow(initial.document, new Map());
+    windowObject.location.href = 'http://creatorcrate.test/projects/1/assets?view=grid';
+    const requests = heldFetch(windowObject);
+
+    enhanceProjectAssetsLiveFiltering(initial.document);
+    initial.extensionInput.value = 'png';
+    initial.form.dispatch('change', { target: initial.extensionInput });
+    initial.nsfwForm.dispatch('submit');
+    expect(methodOf(requests[1])).toBe('POST');
+
+    initial.viewLink.dispatch('click', { button: 0 });
+    expect(requests[1].options.signal.aborted).toBe(true);
+    const viewUrl = new URL(requests[2].url);
+    expect(methodOf(requests[2])).toBe('GET');
+    expect(viewUrl.searchParams.getAll('extension')).toEqual(['png']);
+    expect(viewUrl.searchParams.getAll('view')).toEqual(['list']);
+  });
+});
+
+describe('F7 toolbar View during a pending Project Assets Reset filters', () => {
+  const ORIGIN = 'http://creatorcrate.test';
+  const RESET = '/projects/1/assets?resetFilters=1';
+  const TEMPORARY = '/projects/1/assets?extension=png&search=alpha&sort=filename&order=asc&pageSize=25';
+  // The address the server's Reset redirect restores from the saved defaults.
+  const RESTORED = `${ORIGIN}/projects/1/assets?extension=jpg&sort=size&order=desc&pageSize=10&inheritedFilterDefaults=extension`;
+
+  function heldFetch(windowObject) {
+    const requests = [];
+    windowObject.fetch.mockImplementation((url, options) => new Promise((resolve, reject) => {
+      requests.push({ url, options, resolve, reject });
+      options?.signal?.addEventListener?.('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+    }));
+    return requests;
+  }
+
+  const pathOf = (request) => {
+    const url = new URL(request.url);
+    return url.pathname + url.search;
+  };
+  const methodOf = (request) => String(request.options?.method || 'GET').toUpperCase();
+  const viewControl = (page) => page.form.querySelector('[name="view"]');
+  const installed = (page) => page.document.querySelector('[data-project-assets-live-region]');
+  const withView = (url, view) => {
+    const next = new URL(url);
+    next.searchParams.set('view', view);
+    return next.href;
+  };
+
+  function setup({ view = 'grid', viewUrl = `${TEMPORARY}&view=list`, pages = [] } = {}) {
+    const initial = makePage({
+      view, page: '1', extension: 'png', searchValue: 'alpha', viewUrl,
+    });
+    const { windowObject } = makeWindow(initial.document, new Map(pages.map((page) => [page.key, page.document])));
+    windowObject.location.href = `${ORIGIN}${TEMPORARY}&view=${view}`;
+    const requests = heldFetch(windowObject);
+    enhanceProjectAssetsLiveFiltering(initial.document);
+    const phases = [];
+    initial.document.addEventListener(PROJECT_ASSETS_FILTERS_RESET_EVENT, (event) => phases.push(event.detail.phase));
+    return { initial, windowObject, requests, phases };
+  }
+
+  function restoredPage(key, view) {
+    const page = makePage({ view, page: '1', extension: 'jpg', sort: 'size', order: 'desc', pageSize: '10' });
+    page.key = key;
+    return page;
+  }
+
+  it('keeps the pending Reset, then continues at its restored address with only the clicked View', async () => {
+    const listed = restoredPage('listed', 'list');
+    const { initial, windowObject, requests, phases } = setup({ pages: [listed] });
+
+    initial.reset.dispatch('click', { target: initial.reset, button: 0 });
+    expect(requests.map(pathOf)).toEqual([RESET]);
+    const click = initial.viewLink.dispatch('click', { button: 0 });
+    expect(click.defaultPrevented).toBe(true);
+    // The click is the Reset's View: nothing is superseded or sent.
+    expect(requests).toHaveLength(1);
+    expect(requests[0].options.signal.aborted).toBe(false);
+    expect(viewControl(initial).value).toBe('list');
+    expect(phases).toEqual(['started']);
+    expect(projectAssetsFiltersResetPending(initial.document)).toMatchObject({ phase: 'pending' });
+
+    const resetResponse = htmlResponse('not-installed', RESTORED);
+    requests[0].resolve(resetResponse);
+    await flush();
+    expect(resetResponse.text).not.toHaveBeenCalled();
+    expect(requests).toHaveLength(2);
+    expect(methodOf(requests[1])).toBe('GET');
+    expect(requests[1].url).toBe(withView(RESTORED, 'list'));
+    // Still the same Reset: nothing installed in between, no history yet.
+    expect(phases).toEqual(['started']);
+    expect(installed(initial)).toBe(initial.region);
+    expect(windowObject.history.pushes).toHaveLength(0);
+
+    requests[1].resolve(htmlResponse('listed', requests[1].url));
+    await flush();
+    expect(phases).toEqual(['started', 'prepared', 'installed']);
+    expect(installed(initial)).toBe(listed.region);
+    expect(viewControl(initial).value).toBe('list');
+    expect(initial.form.querySelector('#search').value).toBe('');
+    expect(initial.form.querySelector('input[name="sort"]').value).toBe('size');
+    expect(initial.form.querySelector('input[name="pageSize"]').value).toBe('10');
+    expect(windowObject.history.pushes.map(({ url }) => url)).toEqual([withView(RESTORED, 'list')]);
+    expect(windowObject.location.href).toBe(withView(RESTORED, 'list'));
+    expect(requests.every((request) => methodOf(request) === 'GET')).toBe(true);
+  });
+
+  it('lets the latest of several View clicks win, including one made while the continuation is in flight', async () => {
+    const gridded = restoredPage('gridded', 'grid');
+    const listed = restoredPage('listed', 'list');
+    const { initial, windowObject, requests, phases } = setup({ view: 'list', pages: [gridded, listed] });
+
+    initial.reset.dispatch('click', { target: initial.reset, button: 0 });
+    initial.viewLink.dispatch('click', { button: 0 });
+    // The Grid link leaves the default View implicit.
+    initial.viewLink.setAttribute('href', TEMPORARY);
+    initial.viewLink.dispatch('click', { button: 0 });
+    expect(viewControl(initial).value).toBe('grid');
+    expect(requests).toHaveLength(1);
+
+    requests[0].resolve(htmlResponse('not-installed', RESTORED));
+    await flush();
+    expect(requests[1].url).toBe(withView(RESTORED, 'grid'));
+    // List again while the continuation is in flight: it continues once more.
+    initial.viewLink.setAttribute('href', `${TEMPORARY}&view=list`);
+    initial.viewLink.dispatch('click', { button: 0 });
+    expect(requests).toHaveLength(2);
+    expect(requests[1].options.signal.aborted).toBe(false);
+    requests[1].resolve(htmlResponse('gridded', withView(RESTORED, 'grid')));
+    await flush();
+    expect(requests).toHaveLength(3);
+    expect(requests[2].url).toBe(withView(RESTORED, 'list'));
+
+    requests[2].resolve(htmlResponse('listed', requests[2].url));
+    await flush();
+    expect(installed(initial)).toBe(listed.region);
+    expect(phases).toEqual(['started', 'prepared', 'installed']);
+    expect(windowObject.history.pushes.map(({ url }) => url)).toEqual([withView(RESTORED, 'list')]);
+    expect(requests).toHaveLength(3);
+  });
+
+  it('installs the Reset response directly when it already shows the clicked View', async () => {
+    const listed = restoredPage('listed', 'list');
+    const { initial, windowObject, requests, phases } = setup({ pages: [listed] });
+
+    initial.reset.dispatch('click', { target: initial.reset, button: 0 });
+    initial.viewLink.dispatch('click', { button: 0 });
+    requests[0].resolve(htmlResponse('listed', withView(RESTORED, 'list')));
+    await flush();
+    expect(requests).toHaveLength(1);
+    expect(installed(initial)).toBe(listed.region);
+    expect(phases).toEqual(['started', 'prepared', 'installed']);
+    expect(windowObject.history.pushes.map(({ url }) => url)).toEqual([withView(RESTORED, 'list')]);
+  });
+
+  it('a failed Reset never claims success; its GET-only Retry restores the defaults with the chosen View', async () => {
+    const listed = restoredPage('listed', 'list');
+    const { initial, windowObject, requests, phases } = setup({ pages: [listed] });
+
+    initial.reset.dispatch('click', { target: initial.reset, button: 0 });
+    initial.viewLink.dispatch('click', { button: 0 });
+    requests[0].reject(new Error('offline'));
+    await flush();
+    expect(phases).toEqual(['started', 'failed']);
+    expect(installed(initial)).toBe(initial.region);
+    expect(initial.form.querySelector('#search').value).toBe('alpha');
+    expect(windowObject.history.pushes).toHaveLength(0);
+    expect(liveFailureNotice(initial.document)).not.toBeNull();
+    expect(requests).toHaveLength(1);
+
+    liveFailureRetries(initial.document)[0].dispatch('click', { button: 0 });
+    expect(requests.map(pathOf)).toEqual([RESET, RESET]);
+    requests[1].resolve(htmlResponse('not-installed', RESTORED));
+    await flush();
+    expect(requests[2].url).toBe(withView(RESTORED, 'list'));
+    requests[2].resolve(htmlResponse('listed', requests[2].url));
+    await flush();
+    expect(phases).toEqual(['started', 'failed', 'started', 'prepared', 'installed']);
+    expect(installed(initial)).toBe(listed.region);
+    expect(liveFailureNotice(initial.document)).toBeNull();
+    expect(windowObject.history.pushes.map(({ url }) => url)).toEqual([withView(RESTORED, 'list')]);
+    expect(requests.every((request) => methodOf(request) === 'GET')).toBe(true);
+  });
+
+  it('a View click on a failed Reset re-requests that Reset (GET) with the View', async () => {
+    const listed = restoredPage('listed', 'list');
+    const { initial, requests, phases } = setup({ pages: [listed] });
+
+    initial.reset.dispatch('click', { target: initial.reset, button: 0 });
+    requests[0].reject(new Error('offline'));
+    await flush();
+    initial.viewLink.dispatch('click', { button: 0 });
+    expect(requests.map(pathOf)).toEqual([RESET, RESET]);
+    requests[1].resolve(htmlResponse('not-installed', RESTORED));
+    await flush();
+    expect(requests[2].url).toBe(withView(RESTORED, 'list'));
+    requests[2].resolve(htmlResponse('listed', requests[2].url));
+    await flush();
+    expect(installed(initial)).toBe(listed.region);
+    expect(phases).toEqual(['started', 'failed', 'started', 'prepared', 'installed']);
+  });
+
+  it('a failed follow-up View GET keeps the installed page; Retry repeats the Reset and the View', async () => {
+    const listed = restoredPage('listed', 'list');
+    const { initial, windowObject, requests, phases } = setup({ pages: [listed] });
+
+    initial.reset.dispatch('click', { target: initial.reset, button: 0 });
+    initial.viewLink.dispatch('click', { button: 0 });
+    requests[0].resolve(htmlResponse('not-installed', RESTORED));
+    await flush();
+    requests[1].reject(new Error('offline'));
+    await flush();
+    expect(phases).toEqual(['started', 'failed']);
+    expect(installed(initial)).toBe(initial.region);
+    expect(windowObject.location.href).toBe(`${ORIGIN}${TEMPORARY}&view=grid`);
+    expect(windowObject.history.pushes).toHaveLength(0);
+
+    liveFailureRetries(initial.document)[0].dispatch('click', { button: 0 });
+    expect(pathOf(requests[2])).toBe(RESET);
+    requests[2].resolve(htmlResponse('not-installed', RESTORED));
+    await flush();
+    expect(requests[3].url).toBe(withView(RESTORED, 'list'));
+    requests[3].resolve(htmlResponse('listed', requests[3].url));
+    await flush();
+    expect(installed(initial)).toBe(listed.region);
+    expect(phases).toEqual(['started', 'failed', 'started', 'prepared', 'installed']);
+    expect(windowObject.history.pushes.map(({ url }) => url)).toEqual([withView(RESTORED, 'list')]);
+    expect(requests.every((request) => methodOf(request) === 'GET')).toBe(true);
+  });
+
+  it('a newer filter edit supersedes the Reset and its View; the late Reset response never installs or continues', async () => {
+    const newer = makePage({ view: 'list', presence: 'missing' });
+    newer.key = 'newer';
+    const { initial, windowObject, requests, phases } = setup({ pages: [newer] });
+
+    initial.reset.dispatch('click', { target: initial.reset, button: 0 });
+    initial.viewLink.dispatch('click', { button: 0 });
+    initial.presenceAll.checked = false;
+    initial.presenceMissing.checked = true;
+    initial.form.dispatch('change', { target: initial.presenceMissing });
+    expect(requests[0].options.signal.aborted).toBe(true);
+    expect(phases).toEqual(['started', 'superseded']);
+    const edit = new URL(requests[1].url);
+    expect(edit.searchParams.get('presence')).toBe('missing');
+    // The edit keeps the View the user chose.
+    expect(edit.searchParams.get('view')).toBe('list');
+
+    requests[1].resolve(htmlResponse('newer', requests[1].url));
+    await flush();
+    requests[0].resolve(htmlResponse('not-installed', RESTORED));
+    await flush();
+    expect(requests).toHaveLength(2);
+    expect(installed(initial)).toBe(newer.region);
+    expect(windowObject.location.href).toBe(requests[1].url);
+  });
+
+  it('Back during a pending Reset + View abandons both', async () => {
+    const previous = makePage({ view: 'grid' });
+    previous.key = 'previous';
+    const { initial, windowObject, requests, phases } = setup({ pages: [previous] });
+
+    initial.reset.dispatch('click', { target: initial.reset, button: 0 });
+    initial.viewLink.dispatch('click', { button: 0 });
+    windowObject.location.href = `${ORIGIN}/projects/1/assets?view=grid`;
+    windowObject.dispatch('popstate');
+    expect(phases).toEqual(['started', 'superseded']);
+    requests[0].resolve(htmlResponse('not-installed', RESTORED));
+    requests[1].resolve(htmlResponse('previous', requests[1].url));
+    await flush();
+    expect(requests).toHaveLength(2);
+    expect(installed(initial)).toBe(previous.region);
+    expect(windowObject.history.pushes).toHaveLength(0);
+  });
+
+  it('a new Reset click starts a new Reset without the earlier View', async () => {
+    const restored = restoredPage('restored', 'grid');
+    const { initial, requests, phases } = setup({ pages: [restored] });
+
+    initial.reset.dispatch('click', { target: initial.reset, button: 0 });
+    initial.viewLink.dispatch('click', { button: 0 });
+    initial.reset.dispatch('click', { target: initial.reset, button: 0 });
+    expect(requests.map(pathOf)).toEqual([RESET, RESET]);
+    requests[1].resolve(htmlResponse('restored', RESTORED));
+    await flush();
+    expect(requests).toHaveLength(2);
+    expect(installed(initial)).toBe(restored.region);
+    expect(phases).toEqual(['started', 'superseded', 'started', 'prepared', 'installed']);
+  });
+});
+
+describe('F10 pure Grid/List View keeps the Project Assets selection', () => {
+  const ORIGIN = 'http://creatorcrate.test';
+
+  function heldFetch(windowObject) {
+    const requests = [];
+    windowObject.fetch.mockImplementation((url, options) => new Promise((resolve, reject) => {
+      requests.push({ url, options, resolve, reject });
+      options?.signal?.addEventListener?.('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+    }));
+    return requests;
+  }
+
+  const installed = (page) => page.document.querySelector('[data-project-assets-live-region]');
+  const methodOf = (request) => String(request.options?.method || 'GET').toUpperCase();
+  const checkedIds = (page) => page.region.querySelectorAll('input[type="checkbox"][name="selectedAssetIds"]')
+    .filter((box) => box.checked)
+    .map((box) => box.value);
+
+  // A server-rendered page: its toolbar View links are the canonical address of
+  // the effective filter context it was rendered for, as in projects/assets.njk.
+  function viewPage({ key = null, view = 'grid', query = '', ids = [1, 2, 3], selected = [], membership = null } = {}) {
+    const page = makePage({ withAssetSelection: true, view, page: '1' });
+    page.key = key;
+    page.selectionCheckbox.remove();
+    const base = `/projects/1/assets${query ? `?${query}` : ''}`;
+    const nav = makeNode({ tagName: 'nav', attrs: { class: 'view-switcher' } });
+    page.gridLink = makeNode({ tagName: 'a', attrs: { class: 'view-switcher-option', href: base } });
+    page.listLink = makeNode({ tagName: 'a', attrs: { class: 'view-switcher-option', href: `${base}${query ? '&' : '?'}view=list` } });
+    nav.appendChild(page.gridLink);
+    nav.appendChild(page.listLink);
+    page.region.appendChild(nav);
+    page.boxes = new Map();
+    ids.forEach((id) => {
+      const card = makeNode({ tagName: 'article', attrs: { 'data-asset-id': String(id), 'data-asset-selectable-card': '' } });
+      const box = makeNode({ tagName: 'input', attrs: { type: 'checkbox', name: 'selectedAssetIds', value: String(id) } });
+      box.checked = selected.includes(id);
+      box.form = page.selectionForm;
+      card.appendChild(box);
+      (view === 'list' ? page.list : page.grid).appendChild(card);
+      page.boxes.set(id, box);
+    });
+    if (membership) {
+      const marker = makeNode({ tagName: 'script', attrs: { 'data-project-assets-membership': '' } });
+      marker.textContent = JSON.stringify(membership);
+      page.region.appendChild(marker);
+    }
+    return page;
+  }
+
+  function setup(initial, pages, location = `${ORIGIN}/projects/1/assets`) {
+    const { windowObject, setLocation } = makeWindow(initial.document, new Map(pages.map((page) => [page.key, page.document])));
+    windowObject.location.href = location;
+    const requests = heldFetch(windowObject);
+    enhanceProjectAssetsLiveFiltering(initial.document);
+    return { windowObject, setLocation, requests };
+  }
+
+  it('Grid -> List keeps the same selected identities, count and history, with GET only', async () => {
+    const initial = viewPage({ selected: [1, 3] });
+    const listed = viewPage({ key: 'listed', view: 'list' });
+    const { windowObject, requests } = setup(initial, [listed]);
+
+    initial.listLink.dispatch('click', { button: 0 });
+    expect(requests).toHaveLength(1);
+    requests[0].resolve(htmlResponse('listed', requests[0].url));
+    await flush();
+
+    expect(installed(initial)).toBe(listed.region);
+    expect(checkedIds(listed)).toEqual(['1', '3']);
+    expect(listed.selectedCount.textContent).toBe('2 of 1 selected');
+    expect(retainedAssetSelectionIds(initial.document)).toEqual([]);
+    expect(windowObject.history.pushes.map((entry) => entry.url)).toEqual([`${ORIGIN}/projects/1/assets?view=list`]);
+    expect(requests.every((request) => methodOf(request) === 'GET')).toBe(true);
+  });
+
+  it('List -> Grid keeps the same identities under a filtered context', async () => {
+    const query = 'extension=png&sort=size';
+    const initial = viewPage({ view: 'list', query, selected: [2] });
+    const gridded = viewPage({ key: 'gridded', view: 'grid', query });
+    const { requests } = setup(initial, [gridded], `${ORIGIN}/projects/1/assets?${query}&view=list`);
+
+    initial.gridLink.dispatch('click', { button: 0 });
+    requests[0].resolve(htmlResponse('gridded', requests[0].url));
+    await flush();
+
+    expect(installed(initial)).toBe(gridded.region);
+    expect(checkedIds(gridded)).toEqual(['2']);
+    expect(gridded.boxes.get(1).checked).toBe(false);
+  });
+
+  it('keeps a hidden retained selection hidden and unsubmitted across a pure View change', async () => {
+    const initial = viewPage({ ids: [1, 2], selected: [1, 2], membership: [1, 2] });
+    const refreshed = viewPage({ key: 'refreshed', ids: [1], membership: [1, 2] });
+    const listed = viewPage({ key: 'listed', view: 'list', ids: [1], membership: [1, 2] });
+    const { requests } = setup(initial, [refreshed, listed]);
+
+    const completion = refreshProjectAssetsAfterMutation(initial.document);
+    await flush();
+    requests[0].resolve(htmlResponse('refreshed', requests[0].url));
+    await completion;
+    expect(retainedAssetSelectionIds(initial.document)).toEqual(['2']);
+    expect(refreshed.selectedCount.textContent).toBe('1 of 1 selected (1 more not shown)');
+
+    refreshed.listLink.dispatch('click', { button: 0 });
+    requests[1].resolve(htmlResponse('listed', requests[1].url));
+    await flush();
+
+    expect(installed(initial)).toBe(listed.region);
+    // Only rendered checkboxes are submitted: 1 is, retained 2 is not rendered.
+    expect(checkedIds(listed)).toEqual(['1']);
+    expect(retainedAssetSelectionIds(initial.document)).toEqual(['2']);
+    expect(listed.selectedCount.textContent).toBe('1 of 1 selected (1 more not shown)');
+  });
+
+  it('a genuine Extension change still starts a new selection, retained ids included', async () => {
+    const initial = viewPage({ ids: [1, 2], selected: [1, 2], membership: [1, 2] });
+    const refreshed = viewPage({ key: 'refreshed', ids: [1], membership: [1, 2] });
+    const filtered = viewPage({ key: 'filtered', query: 'extension=png', ids: [1], membership: [1, 2] });
+    const { requests } = setup(initial, [refreshed, filtered]);
+
+    const completion = refreshProjectAssetsAfterMutation(initial.document);
+    await flush();
+    requests[0].resolve(htmlResponse('refreshed', requests[0].url));
+    await completion;
+    expect(retainedAssetSelectionIds(initial.document)).toEqual(['2']);
+
+    // The filter form is outside the region: it stays, with reconciled controls.
+    const extension = initial.form.querySelector('[name="extension"]');
+    extension.value = 'png';
+    initial.form.dispatch('change', { target: extension });
+    expect(new URL(requests[1].url).searchParams.getAll('extension')).toEqual(['png']);
+    requests[1].resolve(htmlResponse('filtered', requests[1].url));
+    await flush();
+
+    expect(installed(initial)).toBe(filtered.region);
+    expect(checkedIds(filtered)).toEqual([]);
+    expect(retainedAssetSelectionIds(initial.document)).toEqual([]);
+  });
+
+  it('a View click joined to a debounced Search is a filter change and clears', async () => {
+    vi.useFakeTimers();
+    try {
+      const initial = viewPage({ selected: [1] });
+      const searched = viewPage({ key: 'searched', view: 'list', query: 'search=beta' });
+      const { requests } = setup(initial, [searched]);
+
+      initial.search.value = 'beta';
+      initial.search.dispatch('input');
+      initial.listLink.dispatch('click', { button: 0 });
+      expect(requests).toHaveLength(1);
+      expect(new URL(requests[0].url).searchParams.get('search')).toBe('beta');
+      requests[0].resolve(htmlResponse('searched', requests[0].url));
+      await flush();
+
+      expect(installed(initial)).toBe(searched.region);
+      expect(checkedIds(searched)).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a failed View GET keeps the installed selection; GET-only Retry then keeps it', async () => {
+    const initial = viewPage({ selected: [2, 3] });
+    const listed = viewPage({ key: 'listed', view: 'list' });
+    const { requests } = setup(initial, [listed]);
+
+    initial.listLink.dispatch('click', { button: 0 });
+    requests[0].reject(new Error('offline'));
+    await flush();
+    expect(installed(initial)).toBe(initial.region);
+    expect(checkedIds(initial)).toEqual(['2', '3']);
+    expect(liveFailureRetries(initial.document)).toHaveLength(1);
+
+    liveFailureRetries(initial.document)[0].dispatch('click');
+    expect(requests).toHaveLength(2);
+    requests[1].resolve(htmlResponse('listed', requests[1].url));
+    await flush();
+    expect(installed(initial)).toBe(listed.region);
+    expect(checkedIds(listed)).toEqual(['2', '3']);
+    expect(requests.every((request) => methodOf(request) === 'GET')).toBe(true);
+  });
+
+  it('rapid Grid -> List -> Grid: the stale List response loses and the selection survives once', async () => {
+    const initial = viewPage({ selected: [1, 2] });
+    const listed = viewPage({ key: 'listed', view: 'list' });
+    const gridded = viewPage({ key: 'gridded', view: 'grid' });
+    const { requests } = setup(initial, [listed, gridded]);
+
+    initial.listLink.dispatch('click', { button: 0 });
+    initial.gridLink.dispatch('click', { button: 0 });
+    expect(requests).toHaveLength(2);
+    expect(requests[0].options.signal.aborted).toBe(true);
+    requests[1].resolve(htmlResponse('gridded', requests[1].url));
+    await flush();
+    requests[0].resolve(htmlResponse('listed', requests[0].url));
+    await flush();
+
+    expect(installed(initial)).toBe(gridded.region);
+    expect(checkedIds(gridded)).toEqual(['1', '2']);
+    expect(checkedIds(listed)).toEqual([]);
+    expect(retainedAssetSelectionIds(initial.document)).toEqual([]);
+  });
+
+  it('Back to the same filters in the other View keeps the selection; Back to other filters clears', async () => {
+    const initial = viewPage({ view: 'list', selected: [3] });
+    const gridded = viewPage({ key: 'gridded', view: 'grid' });
+    const other = viewPage({ key: 'other', view: 'grid', query: 'extension=png' });
+    const { requests, setLocation, windowObject } = setup(initial, [gridded, other], `${ORIGIN}/projects/1/assets?view=list`);
+
+    setLocation(`${ORIGIN}/projects/1/assets`);
+    windowObject.dispatch('popstate');
+    expect(requests).toHaveLength(1);
+    requests[0].resolve(htmlResponse('gridded', requests[0].url));
+    await flush();
+    expect(installed(initial)).toBe(gridded.region);
+    expect(checkedIds(gridded)).toEqual(['3']);
+
+    setLocation(`${ORIGIN}/projects/1/assets?extension=png`);
+    windowObject.dispatch('popstate');
+    requests[1].resolve(htmlResponse('other', requests[1].url));
+    await flush();
+    expect(installed(initial)).toBe(other.region);
+    expect(checkedIds(other)).toEqual([]);
+  });
+
+  it('a pagination change is not a pure View change and clears', async () => {
+    const initial = viewPage({ selected: [1] });
+    const paged = viewPage({ key: 'paged', query: 'page=2' });
+    const pagination = makeNode({ tagName: 'nav', attrs: { class: 'pagination' } });
+    const next = makeNode({ tagName: 'a', attrs: { href: '/projects/1/assets?page=2' } });
+    pagination.appendChild(next);
+    initial.region.appendChild(pagination);
+    const { requests } = setup(initial, [paged]);
+
+    next.dispatch('click', { button: 0 });
+    expect(requests).toHaveLength(1);
+    requests[0].resolve(htmlResponse('paged', requests[0].url));
+    await flush();
+    expect(installed(initial)).toBe(paged.region);
+    expect(checkedIds(paged)).toEqual([]);
+  });
+
+  it('Reset filters keeps its selection-clearing contract even when only the View differs', async () => {
+    const initial = viewPage({ selected: [1, 2] });
+    const restored = viewPage({ key: 'restored', view: 'list' });
+    const { requests } = setup(initial, [restored]);
+
+    initial.reset.dispatch('click', { target: initial.reset, button: 0 });
+    expect(new URL(requests[0].url).searchParams.get('resetFilters')).toBe('1');
+    requests[0].resolve(htmlResponse('restored', `${ORIGIN}/projects/1/assets?view=list`));
+    await flush();
+    expect(installed(initial)).toBe(restored.region);
+    expect(checkedIds(restored)).toEqual([]);
+  });
+
+  it('without a rendered View context (an older region) the established clearing stands', async () => {
+    const initial = viewPage({ selected: [1] });
+    const bare = makePage({ withAssetSelection: true, view: 'list', page: '1' });
+    bare.key = 'bare';
+    bare.selectionCheckbox.value = '1';
+    const { requests } = setup(initial, [bare]);
+
+    initial.listLink.dispatch('click', { button: 0 });
+    requests[0].resolve(htmlResponse('bare', requests[0].url));
+    await flush();
+    expect(installed(initial)).toBe(bare.region);
+    expect(bare.selectionCheckbox.checked).toBe(false);
+  });
+});
+
+describe('F7-R1 a mutation refresh during a pending Project Assets Reset filters', () => {
+  const ORIGIN = 'http://creatorcrate.test';
+  const RESET = '/projects/1/assets?resetFilters=1';
+  const RESTORED_QUERY = 'extension=jpg&sort=size&order=desc&pageSize=10';
+  const RESTORED = `${ORIGIN}/projects/1/assets?${RESTORED_QUERY}`;
+  const TEMPORARY = 'extension=png&search=alpha&sort=filename&order=asc&pageSize=25';
+
+  function heldFetch(windowObject) {
+    const requests = [];
+    windowObject.fetch.mockImplementation((url, options) => new Promise((resolve, reject) => {
+      requests.push({ url, options, resolve, reject });
+      options?.signal?.addEventListener?.('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+    }));
+    return requests;
+  }
+
+  const installed = (page) => page.document.querySelector('[data-project-assets-live-region]');
+  const methodOf = (request) => String(request.options?.method || 'GET').toUpperCase();
+  const pathOf = (request) => {
+    const url = new URL(request.url);
+    return url.pathname + url.search;
+  };
+  const withView = (url, view) => {
+    const next = new URL(url);
+    next.searchParams.set('view', view);
+    return next.href;
+  };
+  const checkedIds = (page) => page.region.querySelectorAll('input[type="checkbox"][name="selectedAssetIds"]')
+    .filter((box) => box.checked)
+    .map((box) => box.value);
+  const phases = (events) => events.map((event) => event.phase);
+
+  // A server-rendered page whose toolbar View links name its filter context.
+  function viewPage({ key = null, view = 'grid', query = '', ids = [1, 2, 3], selected = [], membership = null, gridStyle = null } = {}) {
+    const page = makePage({ withAssetSelection: true, view, page: '1' });
+    page.key = key;
+    page.selectionCheckbox.remove();
+    if (gridStyle) page.grid.setAttribute('data-grid-style', gridStyle);
+    const base = `/projects/1/assets${query ? `?${query}` : ''}`;
+    const nav = makeNode({ tagName: 'nav', attrs: { class: 'view-switcher' } });
+    page.gridLink = makeNode({ tagName: 'a', attrs: { class: 'view-switcher-option', href: base } });
+    page.listLink = makeNode({ tagName: 'a', attrs: { class: 'view-switcher-option', href: `${base}${query ? '&' : '?'}view=list` } });
+    nav.appendChild(page.gridLink);
+    nav.appendChild(page.listLink);
+    page.region.appendChild(nav);
+    page.boxes = new Map();
+    ids.forEach((id) => {
+      const card = makeNode({ tagName: 'article', attrs: { 'data-asset-id': String(id), 'data-asset-selectable-card': '' } });
+      const box = makeNode({ tagName: 'input', attrs: { type: 'checkbox', name: 'selectedAssetIds', value: String(id) } });
+      box.checked = selected.includes(id);
+      box.form = page.selectionForm;
+      card.appendChild(box);
+      (view === 'list' ? page.list : page.grid).appendChild(card);
+      page.boxes.set(id, box);
+    });
+    if (membership) {
+      const marker = makeNode({ tagName: 'script', attrs: { 'data-project-assets-membership': '' } });
+      marker.textContent = JSON.stringify(membership);
+      page.region.appendChild(marker);
+    }
+    return page;
+  }
+
+  // The restored (saved-defaults) page: JPG identities 5 and 6 only.
+  const restoredPage = (key, view) => viewPage({
+    key, view, query: RESTORED_QUERY, ids: [5, 6], membership: [1, 2, 5, 6], gridStyle: 'cropped',
+  });
+
+  // Temporary PNG page with visible 1 selected and 2 retained hidden by an
+  // ordinary acknowledged-mutation refresh (which preserves both identities).
+  async function setup(pages = []) {
+    const initial = viewPage({ query: TEMPORARY, ids: [1, 2], selected: [1, 2], membership: [1, 2, 5, 6], gridStyle: 'uncropped' });
+    const refreshed = viewPage({ key: 'refreshed', query: TEMPORARY, ids: [1], membership: [1, 2, 5, 6], gridStyle: 'cropped' });
+    const { windowObject, setLocation } = makeWindow(initial.document, new Map([refreshed, ...pages].map((page) => [page.key, page.document])));
+    windowObject.location.href = `${ORIGIN}/projects/1/assets?${TEMPORARY}`;
+    const requests = heldFetch(windowObject);
+    enhanceProjectAssetsLiveFiltering(initial.document);
+    const events = [];
+    initial.document.addEventListener(PROJECT_ASSETS_FILTERS_RESET_EVENT, (event) => events.push({ id: event.detail.id, phase: event.detail.phase }));
+
+    const ordinary = refreshProjectAssetsAfterMutation(initial.document);
+    await flush();
+    requests[0].resolve(htmlResponse('refreshed', requests[0].url));
+    expect(await ordinary).toMatchObject({ status: 'installed' });
+    // Control: an ordinary mutation refresh keeps the selection and Grid style.
+    expect(checkedIds(refreshed)).toEqual(['1']);
+    expect(retainedAssetSelectionIds(initial.document)).toEqual(['2']);
+    expect(refreshed.selectedCount.textContent).toBe('1 of 1 selected (1 more not shown)');
+    expect(refreshed.grid.getAttribute('data-grid-style')).toBe('uncropped');
+    requests.length = 0;
+    windowObject.history.pushes.length = 0;
+    return { initial, refreshed, windowObject, setLocation, requests, events };
+  }
+
+  function expectResetInstalled(page, initial) {
+    expect(installed(initial)).toBe(page.region);
+    expect(checkedIds(page)).toEqual([]);
+    expect(retainedAssetSelectionIds(initial.document)).toEqual([]);
+    // The server's restored Grid style stands; the pre-Reset one is not carried.
+    expect(page.grid.getAttribute('data-grid-style')).toBe('cropped');
+    expect(projectAssetsFiltersResetPending(initial.document)).toBeNull();
+  }
+
+  it('A: refresh during the held View continuation carries the Reset: one lifecycle, latest View, selection cleared', async () => {
+    const listed = restoredPage('listed', 'list');
+    const { initial, refreshed, windowObject, requests, events } = await setup([listed]);
+
+    initial.reset.dispatch('click', { target: initial.reset, button: 0 });
+    refreshed.listLink.dispatch('click', { button: 0 });
+    requests[0].resolve(htmlResponse('not-installed', RESTORED));
+    await flush();
+    expect(requests[1].url).toBe(withView(RESTORED, 'list'));
+    const resetId = events[0].id;
+
+    const refresh = refreshProjectAssetsAfterMutation(initial.document);
+    // The obsolete continuation is aborted; the refresh re-reads the Reset.
+    expect(requests[1].options.signal.aborted).toBe(true);
+    expect(pathOf(requests[2])).toBe(RESET);
+    expect(projectAssetsFiltersResetPending(initial.document)).toMatchObject({ id: resetId, phase: 'pending' });
+    requests[2].resolve(htmlResponse('not-installed', RESTORED));
+    await flush();
+    expect(requests[3].url).toBe(withView(RESTORED, 'list'));
+    requests[3].resolve(htmlResponse('listed', requests[3].url));
+    expect(await refresh).toMatchObject({ status: 'installed' });
+    // The obsolete continuation released last installs nothing.
+    requests[1].resolve(htmlResponse('refreshed', requests[1].url));
+    await flush();
+
+    expect(events).toEqual([
+      { id: resetId, phase: 'started' },
+      { id: resetId, phase: 'prepared' },
+      { id: resetId, phase: 'installed' },
+    ]);
+    expectResetInstalled(listed, initial);
+    expect(windowObject.history.pushes.map(({ url }) => url)).toEqual([withView(RESTORED, 'list')]);
+    expect(requests).toHaveLength(4);
+    expect(requests.every((request) => methodOf(request) === 'GET')).toBe(true);
+  });
+
+  it('B: the continuation answering before the refresh starts installs the Reset normally', async () => {
+    const listed = restoredPage('listed', 'list');
+    const relisted = restoredPage('relisted', 'list');
+    const { initial, refreshed, requests, events } = await setup([listed, relisted]);
+
+    initial.reset.dispatch('click', { target: initial.reset, button: 0 });
+    refreshed.listLink.dispatch('click', { button: 0 });
+    requests[0].resolve(htmlResponse('not-installed', RESTORED));
+    await flush();
+    requests[1].resolve(htmlResponse('listed', requests[1].url));
+    await flush();
+    expect(phases(events)).toEqual(['started', 'prepared', 'installed']);
+    expectResetInstalled(listed, initial);
+
+    // A later mutation refresh is ordinary: it re-reads the installed address.
+    const refresh = refreshProjectAssetsAfterMutation(initial.document);
+    expect(new URL(requests[2].url).searchParams.has('resetFilters')).toBe(false);
+    requests[2].resolve(htmlResponse('relisted', requests[2].url));
+    expect(await refresh).toMatchObject({ status: 'installed' });
+    expect(phases(events)).toEqual(['started', 'prepared', 'installed']);
+    expect(installed(initial)).toBe(relisted.region);
+  });
+
+  it('C: refresh during the Reset resolution stage keeps the Reset and its View', async () => {
+    const listed = restoredPage('listed', 'list');
+    const { initial, refreshed, requests, events } = await setup([listed]);
+
+    initial.reset.dispatch('click', { target: initial.reset, button: 0 });
+    refreshed.listLink.dispatch('click', { button: 0 });
+    const refresh = refreshProjectAssetsAfterMutation(initial.document);
+    expect(requests[0].options.signal.aborted).toBe(true);
+    expect(pathOf(requests[1])).toBe(RESET);
+    requests[1].resolve(htmlResponse('not-installed', RESTORED));
+    await flush();
+    expect(requests[2].url).toBe(withView(RESTORED, 'list'));
+    requests[2].resolve(htmlResponse('listed', requests[2].url));
+    expect(await refresh).toMatchObject({ status: 'installed' });
+    requests[0].resolve(htmlResponse('refreshed', RESTORED));
+    await flush();
+
+    expect(phases(events)).toEqual(['started', 'prepared', 'installed']);
+    expectResetInstalled(listed, initial);
+  });
+
+  it('D/E: overlapping refreshes and a View change while one is pending still install one Reset with the latest View', async () => {
+    const gridded = restoredPage('gridded', 'grid');
+    const { initial, refreshed, requests, events } = await setup([gridded]);
+    const recovered = vi.fn();
+
+    initial.reset.dispatch('click', { target: initial.reset, button: 0 });
+    refreshed.listLink.dispatch('click', { button: 0 });
+    requests[0].resolve(htmlResponse('not-installed', RESTORED));
+    await flush();
+    const first = refreshProjectAssetsAfterMutation(initial.document, { onRecovered: recovered });
+    const second = refreshProjectAssetsAfterMutation(initial.document);
+    expect(await first).toMatchObject({ status: 'superseded' });
+    expect(requests.slice(2).map(pathOf)).toEqual([RESET, RESET]);
+    // Grid while the second refresh's Reset is in flight is the newest View.
+    refreshed.gridLink.dispatch('click', { button: 0 });
+    expect(requests).toHaveLength(4);
+    requests[3].resolve(htmlResponse('not-installed', withView(RESTORED, 'list')));
+    await flush();
+    expect(requests[4].url).toBe(withView(RESTORED, 'grid'));
+    requests[4].resolve(htmlResponse('gridded', requests[4].url));
+    expect(await second).toMatchObject({ status: 'installed' });
+    requests[2].resolve(htmlResponse('refreshed', RESTORED));
+    await flush();
+
+    expect(phases(events)).toEqual(['started', 'prepared', 'installed']);
+    expect(recovered).toHaveBeenCalledTimes(1);
+    expectResetInstalled(gridded, initial);
+  });
+
+  it('F: a newer filter edit supersedes the carried Reset; the refresh is satisfied but the edit clears the selection', async () => {
+    const newer = viewPage({ key: 'newer', query: 'presence=missing', ids: [1], membership: [1, 2, 5, 6] });
+    const { initial, refreshed, requests, events } = await setup([newer]);
+
+    initial.reset.dispatch('click', { target: initial.reset, button: 0 });
+    refreshed.listLink.dispatch('click', { button: 0 });
+    requests[0].resolve(htmlResponse('not-installed', RESTORED));
+    await flush();
+    const refresh = refreshProjectAssetsAfterMutation(initial.document);
+    initial.presenceAll.checked = false;
+    initial.presenceMissing.checked = true;
+    initial.form.dispatch('change', { target: initial.presenceMissing });
+    expect(await refresh).toMatchObject({ status: 'superseded' });
+    expect(phases(events)).toEqual(['started', 'superseded']);
+    expect(new URL(requests[3].url).searchParams.has('resetFilters')).toBe(false);
+    requests[3].resolve(htmlResponse('newer', requests[3].url));
+    await flush();
+    requests[2].resolve(htmlResponse('not-installed', RESTORED));
+    await flush();
+
+    expect(requests).toHaveLength(4);
+    expect(installed(initial)).toBe(newer.region);
+    // F7-R2a: the owed refresh is satisfied by the newer install, but the
+    // newer filter edit keeps its own boundary: visible and hidden cleared.
+    expect(await refresh).toMatchObject({ status: 'superseded' });
+    expect(checkedIds(newer)).toEqual([]);
+    expect(retainedAssetSelectionIds(initial.document)).toEqual([]);
+    expect(phases(events)).toEqual(['started', 'superseded']);
+  });
+
+  it('G: Back during the carried Reset abandons it; no obsolete Reset is revived', async () => {
+    const previous = viewPage({ key: 'previous', query: TEMPORARY, ids: [1], membership: [1, 2, 5, 6] });
+    const { initial, refreshed, windowObject, setLocation, requests, events } = await setup([previous]);
+
+    initial.reset.dispatch('click', { target: initial.reset, button: 0 });
+    refreshed.listLink.dispatch('click', { button: 0 });
+    requests[0].resolve(htmlResponse('not-installed', RESTORED));
+    await flush();
+    void refreshProjectAssetsAfterMutation(initial.document);
+    setLocation(`${ORIGIN}/projects/1/assets?${TEMPORARY}`);
+    windowObject.dispatch('popstate');
+    expect(phases(events)).toEqual(['started', 'superseded']);
+    requests[3].resolve(htmlResponse('previous', requests[3].url));
+    await flush();
+    requests[2].resolve(htmlResponse('not-installed', RESTORED));
+    await flush();
+    expect(requests).toHaveLength(4);
+    expect(installed(initial)).toBe(previous.region);
+    expect(projectAssetsFiltersResetPending(initial.document)).toBeNull();
+    expect(windowObject.history.pushes).toHaveLength(0);
+  });
+
+  it('H: a new Reset click replaces the carried Reset', async () => {
+    const restored = restoredPage('restored', 'grid');
+    const { initial, refreshed, requests, events } = await setup([restored]);
+
+    initial.reset.dispatch('click', { target: initial.reset, button: 0 });
+    refreshed.listLink.dispatch('click', { button: 0 });
+    requests[0].resolve(htmlResponse('not-installed', RESTORED));
+    await flush();
+    void refreshProjectAssetsAfterMutation(initial.document);
+    initial.reset.dispatch('click', { target: initial.reset, button: 0 });
+    expect(pathOf(requests[3])).toBe(RESET);
+    requests[3].resolve(htmlResponse('restored', RESTORED));
+    await flush();
+    expect(requests).toHaveLength(4);
+    expect(phases(events)).toEqual(['started', 'superseded', 'started', 'prepared', 'installed']);
+    expect(events[2].id).toBeGreaterThan(events[0].id);
+    expectResetInstalled(restored, initial);
+  });
+
+  it('a failed refresh GET claims no Reset; GET-only Retry completes the Reset with its View and clears the selection', async () => {
+    const listed = restoredPage('listed', 'list');
+    const { initial, refreshed, windowObject, requests, events } = await setup([listed]);
+
+    initial.reset.dispatch('click', { target: initial.reset, button: 0 });
+    refreshed.listLink.dispatch('click', { button: 0 });
+    requests[0].resolve(htmlResponse('not-installed', RESTORED));
+    await flush();
+    const refresh = refreshProjectAssetsAfterMutation(initial.document);
+    requests[2].reject(new Error('offline'));
+    expect(await refresh).toMatchObject({ status: 'failed' });
+    expect(phases(events)).toEqual(['started', 'failed']);
+    expect(installed(initial)).toBe(refreshed.region);
+    // Nothing completed: the pre-Reset selection is still the page's.
+    expect(checkedIds(refreshed)).toEqual(['1']);
+    expect(retainedAssetSelectionIds(initial.document)).toEqual(['2']);
+    expect(windowObject.history.pushes).toHaveLength(0);
+
+    liveFailureRetries(initial.document)[0].dispatch('click', { button: 0 });
+    expect(pathOf(requests[3])).toBe(RESET);
+    requests[3].resolve(htmlResponse('not-installed', RESTORED));
+    await flush();
+    expect(requests[4].url).toBe(withView(RESTORED, 'list'));
+    requests[4].resolve(htmlResponse('listed', requests[4].url));
+    await flush();
+    // A late obsolete response loses.
+    requests[1].resolve(htmlResponse('refreshed', requests[1].url));
+    await flush();
+
+    expect(phases(events)).toEqual(['started', 'failed', 'started', 'prepared', 'installed']);
+    expectResetInstalled(listed, initial);
+    expect(liveFailureNotice(initial.document)).toBeNull();
+    expect(windowObject.history.pushes.map(({ url }) => url)).toEqual([withView(RESTORED, 'list')]);
+    expect(requests.every((request) => methodOf(request) === 'GET')).toBe(true);
+  });
+
+  it('a refresh after a failed View continuation re-reads the Reset, not the continuation address', async () => {
+    const listed = restoredPage('listed', 'list');
+    const { initial, refreshed, requests, events } = await setup([listed]);
+
+    initial.reset.dispatch('click', { target: initial.reset, button: 0 });
+    refreshed.listLink.dispatch('click', { button: 0 });
+    requests[0].resolve(htmlResponse('not-installed', RESTORED));
+    await flush();
+    requests[1].reject(new Error('offline'));
+    await flush();
+    expect(phases(events)).toEqual(['started', 'failed']);
+
+    const refresh = refreshProjectAssetsAfterMutation(initial.document);
+    expect(pathOf(requests[2])).toBe(RESET);
+    requests[2].resolve(htmlResponse('not-installed', RESTORED));
+    await flush();
+    expect(requests[3].url).toBe(withView(RESTORED, 'list'));
+    requests[3].resolve(htmlResponse('listed', requests[3].url));
+    expect(await refresh).toMatchObject({ status: 'installed' });
+    expect(phases(events)).toEqual(['started', 'failed', 'started', 'prepared', 'installed']);
+    expectResetInstalled(listed, initial);
+  });
+
+  describe('F7-R2 request ownership', () => {
+    const currentSearch = (page) => page.document.querySelector('[data-project-assets-live-region]')
+      && page.form.querySelector('[name="search"]');
+    const bulkPayload = (page) => page.region.querySelectorAll('input[type="checkbox"][name="selectedAssetIds"]')
+      .filter((box) => box.checked && box.form === page.selectionForm)
+      .map((box) => box.value);
+    // A response whose headers have arrived while its body is still pending.
+    function bodyHeld(url) {
+      const body = deferred();
+      return { response: { ok: true, url, text: vi.fn(() => body.promise) }, release: body.resolve };
+    }
+
+    async function searchDuringHeldRefresh(value) {
+      // Search cleared shows every PNG again, including hidden 2.
+      const searched = viewPage({ key: 'searched', query: value ? `extension=png&search=${value}` : 'extension=png', ids: [1, 2, 3], membership: [1, 2, 3, 5, 6] });
+      const ctx = await setup([searched]);
+      currentSearch(ctx.initial).value = 'alpha';
+      const recovered = vi.fn();
+      const refresh = refreshProjectAssetsAfterMutation(ctx.initial.document, { onRecovered: recovered });
+      expect(pathOf(ctx.requests[0])).toContain('search=alpha');
+      currentSearch(ctx.initial).value = value;
+      ctx.initial.form.dispatch('submit', { target: ctx.initial.form });
+      expect(await refresh).toMatchObject({ status: 'superseded' });
+      expect(ctx.requests[0].options.signal.aborted).toBe(true);
+      expect(new URL(ctx.requests[1].url).searchParams.get('search') ?? '').toBe(value);
+      ctx.requests[1].resolve(htmlResponse('searched', ctx.requests[1].url));
+      await flush();
+      // The obsolete refresh released last installs nothing.
+      ctx.requests[0].resolve(htmlResponse('refreshed', ctx.requests[0].url));
+      await flush();
+      expect(installed(ctx.initial)).toBe(searched.region);
+      expect(checkedIds(searched)).toEqual([]);
+      expect(retainedAssetSelectionIds(ctx.initial.document)).toEqual([]);
+      expect(bulkPayload(searched)).toEqual([]);
+      expect(recovered).toHaveBeenCalledTimes(1);
+      expect(recovered.mock.calls[0][0].selection.removed.sort()).toEqual(['1', '2']);
+      expect(ctx.requests).toHaveLength(2);
+      expect(ctx.requests.every((request) => methodOf(request) === 'GET')).toBe(true);
+    }
+
+    it('R2a-A: Search cleared during a held mutation refresh clears visible and hidden selections', async () => {
+      await searchDuringHeldRefresh('');
+    });
+
+    it('R2a-B: Search changed to another value during a held mutation refresh clears the selection', async () => {
+      await searchDuringHeldRefresh('alp');
+    });
+
+    // The established refresh contract (mutation-refresh spec E) is unchanged:
+    // a Search typed BEFORE the mutation is adopted by the refresh's own load.
+    it('R2a: a refresh adopting a still-debounced Search keeps its own selection contract', async () => {
+      const searched = viewPage({ key: 'searched', query: 'extension=png', ids: [1, 2, 3], membership: [1, 2, 3, 5, 6] });
+      const { initial, requests } = await setup([searched]);
+      const search = currentSearch(initial);
+      search.value = '';
+      search.dispatch('input', { target: search });
+      const refresh = refreshProjectAssetsAfterMutation(initial.document);
+      expect(requests).toHaveLength(1);
+      expect(new URL(requests[0].url).searchParams.has('search')).toBe(false);
+      requests[0].resolve(htmlResponse('searched', requests[0].url));
+      expect(await refresh).toMatchObject({ status: 'installed' });
+      expect(checkedIds(searched).sort()).toEqual(['1', '2']);
+      expect(retainedAssetSelectionIds(initial.document)).toEqual([]);
+    });
+
+    it('R2a-E/F: a pure View during a held refresh, and the refresh\'s own Retry, keep the selection', async () => {
+      const listed = viewPage({ key: 'listed', view: 'list', query: TEMPORARY, ids: [1], membership: [1, 2, 5, 6] });
+      const again = viewPage({ key: 'again', view: 'list', query: TEMPORARY, ids: [1], membership: [1, 2, 5, 6] });
+      const { initial, refreshed, requests } = await setup([listed, again]);
+      void refreshProjectAssetsAfterMutation(initial.document);
+      refreshed.listLink.dispatch('click', { button: 0 });
+      requests[1].resolve(htmlResponse('listed', requests[1].url));
+      await flush();
+      expect(installed(initial)).toBe(listed.region);
+      expect(checkedIds(listed)).toEqual(['1']);
+      expect(retainedAssetSelectionIds(initial.document)).toEqual(['2']);
+
+      const refresh = refreshProjectAssetsAfterMutation(initial.document);
+      requests[2].reject(new Error('offline'));
+      expect(await refresh).toMatchObject({ status: 'failed' });
+      liveFailureRetries(initial.document)[0].dispatch('click', { button: 0 });
+      requests[3].resolve(htmlResponse('again', requests[3].url));
+      await flush();
+      expect(installed(initial)).toBe(again.region);
+      expect(checkedIds(again)).toEqual(['1']);
+      expect(retainedAssetSelectionIds(initial.document)).toEqual(['2']);
+    });
+
+    it('R2b-G/H/I: Grid chosen while the List body is pending installs Grid in the same load', async () => {
+      const listed = restoredPage('listed', 'list');
+      const gridded = restoredPage('gridded', 'grid');
+      const { initial, refreshed, windowObject, requests, events } = await setup([listed, gridded]);
+
+      initial.reset.dispatch('click', { target: initial.reset, button: 0 });
+      refreshed.listLink.dispatch('click', { button: 0 });
+      requests[0].resolve(htmlResponse('not-installed', RESTORED));
+      await flush();
+      const held = bodyHeld(requests[1].url);
+      requests[1].resolve(held.response);
+      await flush();
+      expect(held.response.text).toHaveBeenCalled();
+      refreshed.gridLink.dispatch('click', { button: 0 });
+      expect(requests).toHaveLength(2);
+      held.release('listed');
+      await flush();
+      expect(installed(initial)).toBe(refreshed.region);
+      expect(requests[2].url).toBe(withView(RESTORED, 'grid'));
+      requests[2].resolve(htmlResponse('gridded', requests[2].url));
+      await flush();
+
+      expectResetInstalled(gridded, initial);
+      expect(phases(events)).toEqual(['started', 'prepared', 'installed']);
+      expect(windowObject.history.pushes.map(({ url }) => url)).toEqual([withView(RESTORED, 'grid')]);
+      expect(requests).toHaveLength(3);
+    });
+
+    it('R2b-K: a rapid Grid then List while the List body is pending installs List with no extra GET', async () => {
+      const listed = restoredPage('listed', 'list');
+      const { initial, refreshed, windowObject, requests, events } = await setup([listed]);
+
+      initial.reset.dispatch('click', { target: initial.reset, button: 0 });
+      refreshed.listLink.dispatch('click', { button: 0 });
+      requests[0].resolve(htmlResponse('not-installed', RESTORED));
+      await flush();
+      const held = bodyHeld(requests[1].url);
+      requests[1].resolve(held.response);
+      await flush();
+      refreshed.gridLink.dispatch('click', { button: 0 });
+      refreshed.listLink.dispatch('click', { button: 0 });
+      held.release('listed');
+      await flush();
+      expectResetInstalled(listed, initial);
+      expect(requests).toHaveLength(2);
+      expect(phases(events)).toEqual(['started', 'prepared', 'installed']);
+      expect(windowObject.history.pushes.map(({ url }) => url)).toEqual([withView(RESTORED, 'list')]);
+    });
+
+    it('R2b: Grid while the carried refresh\'s List body is pending wins; the refresh installs once', async () => {
+      const listed = restoredPage('listed', 'list');
+      const gridded = restoredPage('gridded', 'grid');
+      const { initial, refreshed, windowObject, requests, events } = await setup([listed, gridded]);
+
+      initial.reset.dispatch('click', { target: initial.reset, button: 0 });
+      refreshed.listLink.dispatch('click', { button: 0 });
+      requests[0].resolve(htmlResponse('not-installed', RESTORED));
+      await flush();
+      const refresh = refreshProjectAssetsAfterMutation(initial.document);
+      expect(pathOf(requests[2])).toBe(RESET);
+      requests[2].resolve(htmlResponse('not-installed', RESTORED));
+      await flush();
+      expect(requests[3].url).toBe(withView(RESTORED, 'list'));
+      const held = bodyHeld(requests[3].url);
+      requests[3].resolve(held.response);
+      await flush();
+      refreshed.gridLink.dispatch('click', { button: 0 });
+      held.release('listed');
+      await flush();
+      expect(requests[4].url).toBe(withView(RESTORED, 'grid'));
+      requests[4].resolve(htmlResponse('gridded', requests[4].url));
+      expect(await refresh).toMatchObject({ status: 'installed' });
+      // The obsolete original continuation released last installs nothing.
+      requests[1].resolve(htmlResponse('listed', requests[1].url));
+      await flush();
+
+      expectResetInstalled(gridded, initial);
+      expect(phases(events)).toEqual(['started', 'prepared', 'installed']);
+      expect(windowObject.history.pushes.map(({ url }) => url)).toEqual([withView(RESTORED, 'grid')]);
+      expect(requests).toHaveLength(5);
+      expect(requests.every((request) => methodOf(request) === 'GET')).toBe(true);
+    });
+
+    it('R2b: a failed late-View continuation keeps the latest View for a GET-only Retry', async () => {
+      const gridded = restoredPage('gridded', 'grid');
+      const { initial, refreshed, requests, events } = await setup([gridded]);
+
+      initial.reset.dispatch('click', { target: initial.reset, button: 0 });
+      refreshed.listLink.dispatch('click', { button: 0 });
+      requests[0].resolve(htmlResponse('not-installed', RESTORED));
+      await flush();
+      const held = bodyHeld(requests[1].url);
+      requests[1].resolve(held.response);
+      await flush();
+      refreshed.gridLink.dispatch('click', { button: 0 });
+      held.release('listed');
+      await flush();
+      requests[2].reject(new Error('offline'));
+      await flush();
+      expect(phases(events)).toEqual(['started', 'failed']);
+      expect(installed(initial)).toBe(refreshed.region);
+
+      liveFailureRetries(initial.document)[0].dispatch('click', { button: 0 });
+      expect(pathOf(requests[3])).toBe(RESET);
+      requests[3].resolve(htmlResponse('not-installed', RESTORED));
+      await flush();
+      expect(requests[4].url).toBe(withView(RESTORED, 'grid'));
+      requests[4].resolve(htmlResponse('gridded', requests[4].url));
+      await flush();
+      expectResetInstalled(gridded, initial);
+      expect(phases(events)).toEqual(['started', 'failed', 'started', 'prepared', 'installed']);
+    });
+  });
+
+  // F7-R3: data-refresh ownership (which GET installs the mutated results) is
+  // distinct from selection ownership (whether that install keeps or clears
+  // the selection). A newer Search that took over an owed refresh decided
+  // "clear"; later refreshes re-reading its destination keep that decision.
+  describe('F7-R3 selection authority across several mutation refreshes', () => {
+    const searchInput = (page) => page.form.querySelector('[name="search"]');
+    const bulkPayload = (page) => page.region.querySelectorAll('input[type="checkbox"][name="selectedAssetIds"]')
+      .filter((box) => box.checked && box.form === page.selectionForm)
+      .map((box) => box.value);
+    // Search cleared: every PNG (1, 2 and 3), including hidden 2.
+    const pngPage = (key, view = 'grid') => viewPage({ key, view, query: 'extension=png', ids: [1, 2, 3], membership: [1, 2, 3, 5, 6] });
+    const searchParam = (request) => new URL(request.url).searchParams.get('search');
+
+    function expectCleared(page, initial) {
+      expect(installed(initial)).toBe(page.region);
+      expect(checkedIds(page)).toEqual([]);
+      expect(retainedAssetSelectionIds(initial.document)).toEqual([]);
+      expect(bulkPayload(page)).toEqual([]);
+    }
+
+    // M1 held, then Search cleared (a newer genuine filter) held.
+    async function mutationThenSearch(pages) {
+      const ctx = await setup(pages);
+      searchInput(ctx.initial).value = 'alpha';
+      ctx.m1Recovered = vi.fn();
+      ctx.m1 = refreshProjectAssetsAfterMutation(ctx.initial.document, { onRecovered: ctx.m1Recovered });
+      expect(searchParam(ctx.requests[0])).toBe('alpha');
+      searchInput(ctx.initial).value = '';
+      ctx.initial.form.dispatch('submit', { target: ctx.initial.form });
+      expect(await ctx.m1).toMatchObject({ status: 'superseded' });
+      expect(ctx.requests).toHaveLength(2);
+      expect(searchParam(ctx.requests[1])).toBeNull();
+      return ctx;
+    }
+
+    it('A/D/E: M1 -> newer Search -> M2 re-reading it installs first; old ids stay cleared', async () => {
+      const searched = pngPage('searched');
+      const ctx = await mutationThenSearch([searched]);
+      const { initial, windowObject, requests } = ctx;
+      const m2 = refreshProjectAssetsAfterMutation(initial.document);
+      expect(requests[1].options.signal.aborted).toBe(true);
+      expect(requests[2].url).toBe(requests[1].url);
+      requests[2].resolve(htmlResponse('searched', requests[2].url));
+      const result = await m2;
+      expect(result).toMatchObject({ status: 'installed' });
+      // Older responses released last install nothing.
+      requests[1].resolve(htmlResponse('refreshed', requests[1].url));
+      requests[0].resolve(htmlResponse('refreshed', requests[0].url));
+      await flush();
+
+      expectCleared(searched, initial);
+      expect(result.reconciliation.selection.removed.sort()).toEqual(['1', '2']);
+      expect(ctx.m1Recovered).toHaveBeenCalledTimes(1);
+      expect(windowObject.history.pushes.map(({ url }) => url)).toEqual([requests[1].url]);
+      expect(requests).toHaveLength(3);
+      expect(requests.every((request) => methodOf(request) === 'GET')).toBe(true);
+    });
+
+    it('B: M1 -> newer Search -> M2 -> M3 keeps the clearing decision through every re-read', async () => {
+      const searched = pngPage('searched');
+      const { initial, windowObject, requests } = await mutationThenSearch([searched]);
+      const m2 = refreshProjectAssetsAfterMutation(initial.document);
+      const m3 = refreshProjectAssetsAfterMutation(initial.document);
+      expect(await m2).toMatchObject({ status: 'superseded' });
+      expect(requests.slice(2).map((request) => request.url)).toEqual([requests[1].url, requests[1].url]);
+      requests[3].resolve(htmlResponse('searched', requests[3].url));
+      expect(await m3).toMatchObject({ status: 'installed' });
+      [2, 1, 0].forEach((index) => requests[index].resolve(htmlResponse('refreshed', requests[index].url)));
+      await flush();
+
+      expectCleared(searched, initial);
+      expect(windowObject.history.pushes.map(({ url }) => url)).toEqual([requests[1].url]);
+      expect(requests).toHaveLength(4);
+    });
+
+    it('C: the newer Search installing first clears; a later M2 is ordinary and keeps the new selection', async () => {
+      const searched = pngPage('searched');
+      const again = pngPage('again');
+      const { initial, windowObject, requests } = await mutationThenSearch([searched, again]);
+      requests[1].resolve(htmlResponse('searched', requests[1].url));
+      await flush();
+      expectCleared(searched, initial);
+      // A selection made in the new Search context is the user's to keep.
+      searched.boxes.get(3).checked = true;
+
+      const m2 = refreshProjectAssetsAfterMutation(initial.document);
+      expect(searchParam(requests[2])).toBeNull();
+      requests[2].resolve(htmlResponse('again', requests[2].url));
+      expect(await m2).toMatchObject({ status: 'installed' });
+      requests[0].resolve(htmlResponse('refreshed', requests[0].url));
+      await flush();
+      expect(installed(initial)).toBe(again.region);
+      expect(checkedIds(again)).toEqual(['3']);
+      expect(bulkPayload(again)).toEqual(['3']);
+      expect(windowObject.history.pushes.map(({ url }) => url)).toEqual([requests[1].url]);
+    });
+
+    it('F: a failed M2 re-read keeps the decision for its GET-only Retry; a later M3 keeps it too', async () => {
+      const searched = pngPage('searched');
+      const { initial, refreshed, windowObject, requests } = await mutationThenSearch([searched]);
+      const m2 = refreshProjectAssetsAfterMutation(initial.document);
+      requests[2].reject(new Error('offline'));
+      expect(await m2).toMatchObject({ status: 'failed' });
+      // Nothing installed: the page keeps its own selection meanwhile.
+      expect(installed(initial)).toBe(refreshed.region);
+      expect(checkedIds(refreshed)).toEqual(['1']);
+
+      liveFailureRetries(initial.document)[0].dispatch('click', { button: 0 });
+      expect(requests[3].url).toBe(requests[1].url);
+      requests[3].reject(new Error('offline again'));
+      await flush();
+      const m3 = refreshProjectAssetsAfterMutation(initial.document);
+      expect(requests[4].url).toBe(requests[1].url);
+      requests[4].resolve(htmlResponse('searched', requests[4].url));
+      expect(await m3).toMatchObject({ status: 'installed' });
+      requests[1].resolve(htmlResponse('refreshed', requests[1].url));
+      requests[0].resolve(htmlResponse('refreshed', requests[0].url));
+      await flush();
+
+      expectCleared(searched, initial);
+      expect(liveFailureNotice(initial.document)).toBeNull();
+      expect(windowObject.history.pushes.map(({ url }) => url)).toEqual([requests[1].url]);
+      expect(requests.every((request) => methodOf(request) === 'GET')).toBe(true);
+    });
+
+    it('F: Retry of a failed M2 installs with the selection cleared', async () => {
+      const searched = pngPage('searched');
+      const { initial, requests } = await mutationThenSearch([searched]);
+      void refreshProjectAssetsAfterMutation(initial.document);
+      requests[2].reject(new Error('offline'));
+      await flush();
+      liveFailureRetries(initial.document)[0].dispatch('click', { button: 0 });
+      requests[3].resolve(htmlResponse('searched', requests[3].url));
+      await flush();
+      expectCleared(searched, initial);
+    });
+
+    it('G: Search changed again while M2 is pending clears, as the newest navigation', async () => {
+      const narrowed = viewPage({ key: 'narrowed', query: 'extension=png&search=be', ids: [2, 3], membership: [1, 2, 3, 5, 6] });
+      const { initial, requests } = await mutationThenSearch([narrowed]);
+      void refreshProjectAssetsAfterMutation(initial.document);
+      searchInput(initial).value = 'be';
+      initial.form.dispatch('submit', { target: initial.form });
+      expect(searchParam(requests[3])).toBe('be');
+      requests[3].resolve(htmlResponse('narrowed', requests[3].url));
+      [2, 1, 0].forEach((index) => requests[index].resolve(htmlResponse('refreshed', requests[index].url)));
+      await flush();
+      expectCleared(narrowed, initial);
+    });
+
+    it('H: Back to another context while M2 is pending clears and adds no history entry', async () => {
+      const jpg = viewPage({ key: 'jpg', query: 'extension=jpg', ids: [5, 6], membership: [1, 2, 5, 6] });
+      const { initial, windowObject, setLocation, requests } = await mutationThenSearch([jpg]);
+      void refreshProjectAssetsAfterMutation(initial.document);
+      setLocation(`${ORIGIN}/projects/1/assets?extension=jpg`);
+      windowObject.dispatch('popstate');
+      requests[3].resolve(htmlResponse('jpg', requests[3].url));
+      [2, 1, 0].forEach((index) => requests[index].resolve(htmlResponse('refreshed', requests[index].url)));
+      await flush();
+      expectCleared(jpg, initial);
+      expect(windowObject.history.pushes).toHaveLength(0);
+    });
+
+    it('H: Back to the installed context abandons the Search and keeps the selection it belongs to (F10)', async () => {
+      const previous = viewPage({ key: 'previous', query: TEMPORARY, ids: [1, 2], membership: [1, 2, 5, 6] });
+      const { initial, windowObject, setLocation, requests } = await mutationThenSearch([previous]);
+      void refreshProjectAssetsAfterMutation(initial.document);
+      setLocation(`${ORIGIN}/projects/1/assets?${TEMPORARY}`);
+      windowObject.dispatch('popstate');
+      requests[3].resolve(htmlResponse('previous', requests[3].url));
+      [2, 1, 0].forEach((index) => requests[index].resolve(htmlResponse('refreshed', requests[index].url)));
+      await flush();
+      expect(installed(initial)).toBe(previous.region);
+      expect(checkedIds(previous).sort()).toEqual(['1', '2']);
+      expect(retainedAssetSelectionIds(initial.document)).toEqual([]);
+      expect(windowObject.history.pushes).toHaveLength(0);
+    });
+
+    it('I: a new Reset during M2 supersedes the sequence with Reset semantics', async () => {
+      const restored = restoredPage('restored', 'grid');
+      const { initial, requests, events } = await mutationThenSearch([restored]);
+      void refreshProjectAssetsAfterMutation(initial.document);
+      initial.reset.dispatch('click', { target: initial.reset, button: 0 });
+      expect(pathOf(requests[3])).toBe(RESET);
+      requests[3].resolve(htmlResponse('restored', RESTORED));
+      [2, 1, 0].forEach((index) => requests[index].resolve(htmlResponse('refreshed', requests[index].url)));
+      await flush();
+      expectResetInstalled(restored, initial);
+      expect(phases(events)).toEqual(['started', 'prepared', 'installed']);
+    });
+
+    it('J: a View click after M2 adopted the newer Search is still not a pure View change: cleared', async () => {
+      const listed = pngPage('listed', 'list');
+      const { initial, refreshed, requests } = await mutationThenSearch([listed]);
+      void refreshProjectAssetsAfterMutation(initial.document);
+      refreshed.listLink.dispatch('click', { button: 0 });
+      const listedRequest = requests[requests.length - 1];
+      expect(new URL(listedRequest.url).searchParams.get('view')).toBe('list');
+      listedRequest.resolve(htmlResponse('listed', listedRequest.url));
+      await flush();
+      expectCleared(listed, initial);
+    });
+
+    it('J: a pure View change during M1, adopted by M2, keeps the selection (F10)', async () => {
+      const listed = viewPage({ key: 'listed', view: 'list', query: TEMPORARY, ids: [1], membership: [1, 2, 5, 6] });
+      const { initial, refreshed, requests } = await setup([listed]);
+      void refreshProjectAssetsAfterMutation(initial.document);
+      refreshed.listLink.dispatch('click', { button: 0 });
+      const m2 = refreshProjectAssetsAfterMutation(initial.document);
+      expect(requests[2].url).toBe(requests[1].url);
+      requests[2].resolve(htmlResponse('listed', requests[2].url));
+      expect(await m2).toMatchObject({ status: 'installed' });
+      expect(installed(initial)).toBe(listed.region);
+      expect(checkedIds(listed)).toEqual(['1']);
+      expect(retainedAssetSelectionIds(initial.document)).toEqual(['2']);
+    });
+
+    it('K: M1 -> M2 with no newer filter keeps visible and hidden selections', async () => {
+      const again = viewPage({ key: 'again', query: TEMPORARY, ids: [1], membership: [1, 2, 5, 6] });
+      const { initial, requests } = await setup([again]);
+      void refreshProjectAssetsAfterMutation(initial.document);
+      const m2 = refreshProjectAssetsAfterMutation(initial.document);
+      requests[1].resolve(htmlResponse('again', requests[1].url));
+      expect(await m2).toMatchObject({ status: 'installed' });
+      expect(checkedIds(again)).toEqual(['1']);
+      expect(retainedAssetSelectionIds(initial.document)).toEqual(['2']);
+      expect(bulkPayload(again)).toEqual(['1']);
+    });
+
+    it('L: a mutation adopting a Search already in flight before it keeps membership (WP09A)', async () => {
+      const searched = pngPage('searched');
+      const { initial, requests } = await setup([searched]);
+      searchInput(initial).value = '';
+      initial.form.dispatch('submit', { target: initial.form });
+      expect(searchParam(requests[0])).toBeNull();
+      const refresh = refreshProjectAssetsAfterMutation(initial.document);
+      expect(requests[1].url).toBe(requests[0].url);
+      requests[1].resolve(htmlResponse('searched', requests[1].url));
+      expect(await refresh).toMatchObject({ status: 'installed' });
+      expect(checkedIds(searched).sort()).toEqual(['1', '2']);
+      expect(retainedAssetSelectionIds(initial.document)).toEqual([]);
+      // The next mutation after that install is ordinary again.
+    });
+
+    it('L: once the cleared install lands, the next Search adopted by a mutation follows WP09A again', async () => {
+      const searched = pngPage('searched');
+      const narrowed = viewPage({ key: 'narrowed', query: 'extension=png&search=be', ids: [2, 3], membership: [1, 2, 3, 5, 6] });
+      const { initial, requests } = await mutationThenSearch([searched, narrowed]);
+      void refreshProjectAssetsAfterMutation(initial.document);
+      requests[2].resolve(htmlResponse('searched', requests[2].url));
+      await flush();
+      expectCleared(searched, initial);
+      searched.boxes.get(2).checked = true;
+      searched.boxes.get(3).checked = true;
+
+      searchInput(initial).value = 'be';
+      initial.form.dispatch('submit', { target: initial.form });
+      const refresh = refreshProjectAssetsAfterMutation(initial.document);
+      requests[4].resolve(htmlResponse('narrowed', requests[4].url));
+      expect(await refresh).toMatchObject({ status: 'installed' });
+      expect(checkedIds(narrowed).sort()).toEqual(['2', '3']);
+    });
+  });
+});
+
+describe('R3 Project Assets presentation fields follow the native View select', () => {
+  function heldFetch(windowObject) {
+    const requests = [];
+    windowObject.fetch.mockImplementation((url, options) => new Promise((resolve, reject) => {
+      requests.push({ url, options, resolve, reject });
+      options?.signal?.addEventListener?.('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+    }));
+    return requests;
+  }
+  const methodOf = (request) => String(request.options?.method || 'GET').toUpperCase();
+
+  function nativeDropdown(parent, { id, name, value, options, form }) {
+    const fieldset = makeNode({ tagName: 'fieldset' });
+    const select = makeNode({
+      tagName: 'select',
+      attrs: { id, name, form, 'data-cc-dropdown-native-select': '' },
+      value,
+    });
+    select.options = options.map((optionValue) => ({ value: optionValue, disabled: false }));
+    const details = makeNode({
+      tagName: 'details',
+      attrs: { id: `${id}-dropdown`, 'data-cc-dropdown': '', 'data-cc-dropdown-mode': 'single' },
+    });
+    const summary = makeNode({ tagName: 'summary', attrs: { id: `${id}-trigger` } });
+    details.appendChild(summary);
+    fieldset.appendChild(select);
+    fieldset.appendChild(details);
+    parent.appendChild(fieldset);
+    return { select, details, summary };
+  }
+
+  // The Miscellaneous section as assets.njk renders it: the live View select
+  // (form="asset-filters") and the three presentation fields, each hidden by
+  // the server for the inactive `renderedView`.
+  function addPresentation(page, {
+    renderedView = 'grid',
+    selectValue = renderedView,
+    gridStyle = 'cropped',
+    gridSize = 'large',
+    listSize = 'compact',
+  } = {}) {
+    const misc = makeNode({ tagName: 'section' });
+    const viewWrapper = makeNode({ attrs: { 'data-project-assets-live-misc': 'view' } });
+    // reconcileProjectAssetsAssociatedFilterControls moves childNodes.
+    viewWrapper.childNodes = viewWrapper.children;
+    const view = nativeDropdown(viewWrapper, {
+      id: 'asset-view-filter', name: 'view', value: selectValue, options: ['grid', 'list'], form: 'asset-filters',
+    });
+    view.select.form = page.form;
+    misc.appendChild(viewWrapper);
+    const fields = {};
+    [['gridStyle', 'grid', gridStyle], ['gridSize', 'grid', gridSize], ['listSize', 'list', listSize]]
+      .forEach(([key, fieldView, value]) => {
+        const wrapper = makeNode({
+          attrs: {
+            class: 'field app-dialog-field',
+            'data-dialog-field': key,
+            'data-filters-visible-when-view': fieldView,
+            ...(fieldView !== renderedView ? { hidden: '' } : {}),
+          },
+        });
+        const dropdown = nativeDropdown(wrapper, {
+          id: `project-assets-defaults-${key}`,
+          name: key,
+          value,
+          options: ['compact', 'default', 'large', 'cropped', 'uncropped'],
+          form: 'project-assets-defaults-form',
+        });
+        misc.appendChild(wrapper);
+        fields[key] = { wrapper, ...dropdown };
+      });
+    page.dialog.appendChild(misc);
+    return { viewWrapper, view, fields };
+  }
+
+  const shown = (presentation) => Object.fromEntries(
+    Object.entries(presentation.fields).map(([key, field]) => [key, !field.wrapper.hidden]),
+  );
+  const values = (presentation) => Object.fromEntries(
+    Object.entries(presentation.fields).map(([key, field]) => [key, field.select.value]),
+  );
+  const GRID = { gridStyle: true, gridSize: true, listSize: false };
+  const LIST = { gridStyle: false, gridSize: false, listSize: true };
+  const KEPT = { gridStyle: 'cropped', gridSize: 'large', listSize: 'compact' };
+
+  it('keeps the server-rendered visibility on enhance and reconciles a browser-restored View select', () => {
+    const grid = makePage({ view: 'grid' });
+    const gridFields = addPresentation(grid, { renderedView: 'grid' });
+    makeWindow(grid.document);
+    enhanceProjectAssetsLiveFiltering(grid.document);
+    expect(shown(gridFields)).toEqual(GRID);
+
+    const restored = makePage({ view: 'grid' });
+    const restoredFields = addPresentation(restored, { renderedView: 'grid', selectValue: 'list' });
+    makeWindow(restored.document);
+    enhanceProjectAssetsLiveFiltering(restored.document);
+    expect(shown(restoredFields)).toEqual(LIST);
+    expect(values(restoredFields)).toEqual(KEPT);
+  });
+
+  it('a dialog View choice hides the inactive fields at once, keeps every value, and sends one GET and no POST', () => {
+    const initial = makePage({ view: 'grid' });
+    const presentation = addPresentation(initial, { renderedView: 'grid' });
+    const { windowObject } = makeWindow(initial.document);
+    const requests = heldFetch(windowObject);
+    enhanceProjectAssetsLiveFiltering(initial.document);
+
+    presentation.view.select.value = 'list';
+    presentation.view.select.dispatch('change');
+    expect(shown(presentation)).toEqual(LIST);
+    expect(values(presentation)).toEqual(KEPT);
+    // Hidden is presentation only: still enabled, named and form-associated.
+    ['gridStyle', 'gridSize'].forEach((key) => {
+      const { select } = presentation.fields[key];
+      expect(select.disabled).toBe(false);
+      expect(select.getAttribute('name')).toBe(key);
+      expect(select.getAttribute('form')).toBe('project-assets-defaults-form');
+    });
+    expect(requests).toHaveLength(1);
+
+    presentation.view.select.value = 'grid';
+    presentation.view.select.dispatch('change');
+    expect(shown(presentation)).toEqual(GRID);
+    expect(values(presentation)).toEqual(KEPT);
+    expect(requests).toHaveLength(2);
+    expect(requests.every((request) => methodOf(request) === 'GET')).toBe(true);
+  });
+
+  it('follows a toolbar View click, which sends no change event', () => {
+    const initial = makePage({ view: 'grid', viewUrl: '/projects/1/assets?view=list' });
+    const presentation = addPresentation(initial, { renderedView: 'grid' });
+    const { windowObject } = makeWindow(initial.document);
+    const requests = heldFetch(windowObject);
+    enhanceProjectAssetsLiveFiltering(initial.document);
+
+    initial.viewLink.dispatch('click', { button: 0 });
+    expect(presentation.view.select.value).toBe('list');
+    expect(shown(presentation)).toEqual(LIST);
+    expect(values(presentation)).toEqual(KEPT);
+    expect(requests).toHaveLength(1);
+    expect(methodOf(requests[0])).toBe('GET');
+  });
+
+  it('a replaced View control decides the fields; an older response released last changes nothing', async () => {
+    const initial = makePage({ view: 'grid', viewUrl: '/projects/1/assets?view=list' });
+    const presentation = addPresentation(initial, { renderedView: 'grid' });
+    const stale = makePage({ view: 'grid', extension: 'png' });
+    addPresentation(stale, { renderedView: 'grid' });
+    const listed = makePage({ view: 'list', extension: 'png' });
+    addPresentation(listed, { renderedView: 'list' });
+    const { windowObject } = makeWindow(initial.document, new Map([['stale', stale.document], ['listed', listed.document]]));
+    windowObject.location.href = 'http://creatorcrate.test/projects/1/assets?view=grid';
+    const requests = heldFetch(windowObject);
+    enhanceProjectAssetsLiveFiltering(initial.document);
+
+    initial.extensionInput.value = 'png';
+    initial.form.dispatch('change', { target: initial.extensionInput });
+    initial.viewLink.dispatch('click', { button: 0 });
+    expect(requests).toHaveLength(2);
+    expect(shown(presentation)).toEqual(LIST);
+
+    requests[1].resolve(htmlResponse('listed', requests[1].url));
+    await flush();
+    // The response's View control replaced the dialog's own.
+    const control = initial.document.querySelector('#asset-view-filter');
+    expect(control).not.toBe(presentation.view.select);
+    expect(control.value).toBe('list');
+    expect(shown(presentation)).toEqual(LIST);
+
+    requests[0].resolve(htmlResponse('stale', requests[0].url));
+    await flush();
+    expect(initial.document.querySelector('#asset-view-filter').value).toBe('list');
+    expect(shown(presentation)).toEqual(LIST);
+    expect(values(presentation)).toEqual(KEPT);
+    expect(requests.every((request) => methodOf(request) === 'GET')).toBe(true);
+  });
+
+  it('a Reset filters response restores the saved View and its fields without a POST', async () => {
+    const initial = makePage({ view: 'list' });
+    const presentation = addPresentation(initial, { renderedView: 'list' });
+    const restored = makePage({ view: 'grid' });
+    addPresentation(restored, { renderedView: 'grid' });
+    const { windowObject } = makeWindow(initial.document, new Map([['restored', restored.document]]));
+    const requests = heldFetch(windowObject);
+    enhanceProjectAssetsLiveFiltering(initial.document);
+    expect(shown(presentation)).toEqual(LIST);
+
+    initial.reset.dispatch('click', { button: 0 });
+    expect(requests).toHaveLength(1);
+    expect(new URL(requests[0].url).searchParams.get('resetFilters')).toBe('1');
+    requests[0].resolve(htmlResponse('restored', 'http://creatorcrate.test/projects/1/assets?view=grid'));
+    await flush();
+    expect(initial.document.querySelector('#asset-view-filter').value).toBe('grid');
+    expect(shown(presentation)).toEqual(GRID);
+    expect(requests.every((request) => methodOf(request) === 'GET')).toBe(true);
+  });
+
+  it('a failed GET keeps the chosen View fields, and its Retry is GET only', async () => {
+    const initial = makePage({ view: 'grid', viewUrl: '/projects/1/assets?view=list' });
+    const presentation = addPresentation(initial, { renderedView: 'grid' });
+    const listed = makePage({ view: 'list' });
+    addPresentation(listed, { renderedView: 'list' });
+    const { windowObject } = makeWindow(initial.document, new Map([['listed', listed.document]]));
+    const requests = heldFetch(windowObject);
+    enhanceProjectAssetsLiveFiltering(initial.document);
+
+    initial.viewLink.dispatch('click', { button: 0 });
+    requests[0].reject(new Error('network'));
+    await flush();
+    expect(liveFailureNotice(initial.document)).not.toBeNull();
+    expect(shown(presentation)).toEqual(LIST);
+
+    liveFailureRetries(initial.document)[0].dispatch('click', { button: 0 });
+    expect(requests).toHaveLength(2);
+    expect(methodOf(requests[1])).toBe('GET');
+    requests[1].resolve(htmlResponse('listed', requests[1].url));
+    await flush();
+    expect(shown(presentation)).toEqual(LIST);
+    expect(values(presentation)).toEqual(KEPT);
+  });
+
+  it('closes an open dropdown in a field being hidden and moves its focus to the View control', () => {
+    const initial = makePage({ view: 'grid', viewUrl: '/projects/1/assets?view=list' });
+    const presentation = addPresentation(initial, { renderedView: 'grid' });
+    const { windowObject } = makeWindow(initial.document);
+    heldFetch(windowObject);
+    enhanceProjectAssetsLiveFiltering(initial.document);
+
+    const gridSize = presentation.fields.gridSize;
+    gridSize.details.open = true;
+    gridSize.details.setAttribute('open', '');
+    gridSize.summary.focus();
+    initial.viewLink.dispatch('click', { button: 0 });
+    expect(gridSize.wrapper.hidden).toBe(true);
+    expect(gridSize.details.open).toBe(false);
+    expect(gridSize.details.hasAttribute('open')).toBe(false);
+    expect(initial.document.activeElement).toBe(presentation.view.summary);
+
+    // Showing it again does not reopen it; focus in List size (now hidden)
+    // moves to the View control too.
+    presentation.fields.listSize.summary.focus();
+    presentation.view.select.value = 'grid';
+    presentation.view.select.dispatch('change');
+    expect(gridSize.wrapper.hidden).toBe(false);
+    expect(gridSize.details.open).toBe(false);
+    expect(gridSize.select.value).toBe('large');
+    expect(initial.document.activeElement).toBe(presentation.view.summary);
   });
 });

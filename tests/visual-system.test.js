@@ -1101,17 +1101,19 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       expect(gridFieldRule).toContain('min-width: 0;');
       expect(css).toMatch(/@media\s*\(max-width:\s*540px\)[\s\S]*?\.page-defaults-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
       for (const templatePath of [
-        'projects/index.njk',
-        'assets/index.njk',
+        'releases/index.njk',
+        'releases/calendar.njk',
       ]) {
         expect(fs.readFileSync(path.join(VIEWS_DIR, templatePath), 'utf8'))
           .toContain('<div class="page-defaults-grid">');
       }
-      // WP7: Project Assets lays its controls out in the Filters & Defaults
-      // sections' three-column grid instead.
-      {
-        expect(fs.readFileSync(path.join(VIEWS_DIR, 'projects/assets.njk'), 'utf8'))
-          .toContain('<div class="filters-defaults-grid">');
+      // WP7 / WP9b / WP10b: Project Assets, the Asset Library and Projects lay
+      // their controls out in the Filters & Defaults sections' three-column
+      // grid instead.
+      for (const templatePath of ['projects/assets.njk', 'assets/index.njk', 'projects/index.njk']) {
+        const source = fs.readFileSync(path.join(VIEWS_DIR, templatePath), 'utf8');
+        expect(source).toContain('<div class="filters-defaults-grid">');
+        expect(source).not.toContain('<div class="page-defaults-grid">');
       }
       expect(css).not.toMatch(/\.project-assets-defaults-grid\b/);
     });

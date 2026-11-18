@@ -1816,6 +1816,69 @@ describe('asset browser HTTP workflow', () => {
       expect(list.text).not.toContain('data-grid-style=');
       expect(app.locals.pageDefaultsService.resolveGlobalPageDefaults('projectAssets').gridStyle).toBe('cropped');
     });
+
+    it('R3: renders only the presentation fields of the effective View, keeping hidden values (URL, Project-only, Global)', async () => {
+      const project = await createProject('R3 Presentation Visibility');
+      const id = Number(project.headers.location.replace('/projects/', ''));
+      const dialogOf = (res) => res.text.match(/<dialog id="project-assets-filter-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+      const wrapper = (dialog, key) => dialog.match(
+        new RegExp(`<div class="field app-dialog-field[^"]*" data-dialog-field="${key}"[^>]*>[\\s\\S]*?</select>`),
+      )?.[0] || '';
+      const openTag = (dialog, key) => wrapper(dialog, key).match(/^<div[^>]*>/)?.[0] || '';
+      const isHidden = (dialog, key) => /\shidden(\s|>|=)/.test(openTag(dialog, key));
+      const visibility = (dialog) => ({
+        gridStyle: !isHidden(dialog, 'gridStyle'),
+        gridSize: !isHidden(dialog, 'gridSize'),
+        listSize: !isHidden(dialog, 'listSize'),
+      });
+      const GRID = { gridStyle: true, gridSize: true, listSize: false };
+      const LIST = { gridStyle: false, gridSize: false, listSize: true };
+      const submit = (scope, body) => agent.post(`/projects/${id}/assets/defaults`).type('form').send({
+        sort: 'filename',
+        order: 'asc',
+        pageSize: '25',
+        extension: 'all',
+        tag: 'all',
+        scope,
+        loadedScope: scope,
+        returnTo: `/projects/${id}/assets`,
+        _csrf: csrfToken,
+        ...body,
+      }).expect(302);
+
+      // Project-only saved List: a bare address renders the List field only,
+      // with the Grid values present (selected, enabled, form-associated).
+      await submit('project', { view: 'list', gridStyle: 'cropped', gridSize: 'large', listSize: 'compact' });
+      const savedList = dialogOf(await agent.get(`/projects/${id}/assets`).redirects(2).expect(200));
+      expect(visibility(savedList)).toEqual(LIST);
+      ['gridStyle', 'gridSize', 'listSize'].forEach((key) => {
+        expect(openTag(savedList, key)).toContain(`data-filters-visible-when-view="${key === 'listSize' ? 'list' : 'grid'}"`);
+        expect(wrapper(savedList, key)).toContain('form="project-assets-defaults-form"');
+        expect(wrapper(savedList, key)).not.toMatch(/<select[^>]*\sdisabled/);
+      });
+      expect(wrapper(savedList, 'gridStyle')).toMatch(/value="cropped" selected/);
+      expect(wrapper(savedList, 'gridSize')).toMatch(/value="large" selected/);
+      expect(wrapper(savedList, 'listSize')).toMatch(/value="compact" selected/);
+      expect(savedList).toMatch(/<select id="asset-view-filter"[\s\S]*?value="list" selected/);
+
+      // An explicit URL View wins over the saved one.
+      const explicitGrid = dialogOf(await agent.get(`/projects/${id}/assets?view=grid`).redirects(2).expect(200));
+      expect(visibility(explicitGrid)).toEqual(GRID);
+      expect(wrapper(explicitGrid, 'listSize')).toMatch(/value="compact" selected/);
+
+      // The Global authority (its own saved Grid View) decides once active;
+      // the dormant Project-only values stay stored.
+      await submit('global', { view: 'grid', gridStyle: 'uncropped', gridSize: 'default', listSize: 'large' });
+      expect(app.locals.pageDefaultsService.getPageDefaultScope('projectAssets', { projectId: id })).toBe('global');
+      const globalGrid = dialogOf(await agent.get(`/projects/${id}/assets`).redirects(2).expect(200));
+      expect(visibility(globalGrid)).toEqual(GRID);
+      expect(wrapper(globalGrid, 'listSize')).toMatch(/value="large" selected/);
+      expect(app.locals.projectPageDefaultRepository.getPageOptions(id, 'projectAssets'))
+        .toMatchObject({ view: 'list', gridStyle: 'cropped', gridSize: 'large', listSize: 'compact' });
+      const explicitList = dialogOf(await agent.get(`/projects/${id}/assets?view=list`).redirects(2).expect(200));
+      expect(visibility(explicitList)).toEqual(LIST);
+      expect(wrapper(explicitList, 'gridStyle')).toMatch(/value="uncropped" selected/);
+    });
   });
 
 
@@ -5031,7 +5094,7 @@ describe('asset browser HTTP workflow', () => {
     const resetForm = filterDialog.match(/<form class="projects-filter-reset filters-defaults-reset-form" method="get" action="[^"]+">[\s\S]*?<\/form>/)?.[0];
     expect(resetForm).toBeDefined();
     expect(resetForm).toContain(`action="/projects/${id}/assets?resetFilters=1"`);
-    expect(resetForm).toContain('<button class="button button-secondary" type="submit" data-project-assets-reset>Reset filters</button>');
+    expect(resetForm).toContain('<button class="button button-primary" type="submit" data-project-assets-reset>Reset filters</button>');
     const categoryPosition = filterForm.indexOf('data-asset-category-filter');
     const searchPosition = filterForm.indexOf('<label for="search">Search</label>');
     expect(categoryPosition).toBeGreaterThanOrEqual(0);

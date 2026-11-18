@@ -14197,12 +14197,14 @@
    Add button; actions without the icon keep symmetric padding, as do the
    Dashboard's Overdue/Today Publish links, which match the Publish dialog's
    submit. Manage Categories' Add, Edit Asset's per-section submits, and
-   Import/Export Books' Export and Import submits take the same dark treatment. Disabled styling,
-   hover brightness, focus ring, and pressed movement come from the rules
-   around it. */
+   Import/Export Books' Export and Import submits take the same dark treatment, as does
+   the Filters & Defaults footer's Reset filters inside its display: contents GET form.
+   Disabled styling, hover brightness, focus ring, and pressed movement come
+   from the rules around it. */
 .button.dashboard-create-action,
 .button.dashboard-release-row-action--publish,
 .app-dialog .app-dialog-footer > .button-primary,
+.app-dialog--filters-defaults .filters-defaults-reset-form > .button-primary,
 #release-signatures-dialog.app-dialog--refined [data-release-signature-add],
 #project-asset-category-management-dialog .project-category-management-add-submit > .button-primary,
 #asset-edit-dialog .asset-action-form .button-primary,
@@ -14223,6 +14225,7 @@
 .button.dashboard-create-action:not(:disabled):not([aria-disabled="true"]),
 .button.dashboard-release-row-action--publish:not(:disabled):not([aria-disabled="true"]),
 .app-dialog .app-dialog-footer > .button-primary:not(:disabled):not([aria-disabled="true"]),
+.app-dialog--filters-defaults .filters-defaults-reset-form > .button-primary:not(:disabled):not([aria-disabled="true"]),
 #release-signatures-dialog.app-dialog--refined [data-release-signature-add]:not(:disabled):not([aria-disabled="true"]),
 #project-asset-category-management-dialog .project-category-management-add-submit > .button-primary:not(:disabled):not([aria-disabled="true"]),
 #asset-edit-dialog .asset-action-form .button-primary:not(:disabled):not([aria-disabled="true"]),
@@ -14235,6 +14238,7 @@
 .button.dashboard-create-action:hover:not(:disabled):not([aria-disabled="true"]),
 .button.dashboard-release-row-action--publish:hover:not(:disabled):not([aria-disabled="true"]),
 .app-dialog .app-dialog-footer > .button-primary:hover:not(:disabled):not([aria-disabled="true"]),
+.app-dialog--filters-defaults .filters-defaults-reset-form > .button-primary:hover:not(:disabled):not([aria-disabled="true"]),
 #release-signatures-dialog.app-dialog--refined [data-release-signature-add]:hover:not(:disabled):not([aria-disabled="true"]),
 #project-asset-category-management-dialog .project-category-management-add-submit > .button-primary:hover:not(:disabled):not([aria-disabled="true"]),
 #asset-edit-dialog .asset-action-form .button-primary:hover:not(:disabled):not([aria-disabled="true"]),
@@ -17738,4 +17742,56 @@ html:has(.unified-viewer-dialog > .app-dialog-card:fullscreen) {
   .app-dialog--filters-defaults .filters-defaults-footer .button {
     flex: 1 1 auto;
   }
+}
+
+/* ── Asset Library Filters & Defaults (Filters & Defaults M3 WP9b) ──
+   Projects and Project Types are both searchable selectors in one dialog
+   grid. The shared selector's z-index would make each a sibling stacking
+   context, so a later field (stacked below it in narrow layouts) painted over
+   the earlier one's open overlay panel; inside this dialog they stack like the
+   other fields and the open dropdown's own layering applies. Unavailable
+   Project selections read as a restriction, not an ordinary choice. */
+.app-dialog--filters-defaults.asset-library-filters-defaults .asset-viewer-project-filter {
+  z-index: auto;
+}
+.app-dialog--filters-defaults.asset-library-filters-defaults .asset-library-project-option--unavailable label > span {
+  color: var(--muted);
+  font-style: italic;
+}
+.app-dialog--filters-defaults.asset-library-filters-defaults .filters-defaults-recovery {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+.app-dialog--filters-defaults.asset-library-filters-defaults .filters-defaults-recovery[hidden],
+.app-dialog--filters-defaults.asset-library-filters-defaults .filters-defaults-recovery > [hidden] {
+  display: none;
+}
+
+/* ── Projects Filters & Defaults (Filters & Defaults M3 WP10b) ──
+   The same shared combined-dialog layout as Asset Library. The searchable
+   Projects selector keeps no stacking context of its own inside the dialog,
+   so a later field never paints over its open overlay. Unavailable selected
+   Projects read as a restriction; archived ones show their state beside the
+   real title. */
+.app-dialog--filters-defaults.projects-filters-defaults .asset-viewer-project-filter {
+  z-index: auto;
+}
+.app-dialog--filters-defaults.projects-filters-defaults .projects-project-option--unavailable label > span {
+  color: var(--muted);
+  font-style: italic;
+}
+.app-dialog--filters-defaults.projects-filters-defaults .projects-project-option--archived label > span > em {
+  color: var(--muted);
+  font-size: 0.85em;
+  font-style: normal;
+}
+.app-dialog--filters-defaults.projects-filters-defaults .filters-defaults-recovery {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+.app-dialog--filters-defaults.projects-filters-defaults .filters-defaults-recovery[hidden],
+.app-dialog--filters-defaults.projects-filters-defaults .filters-defaults-recovery > [hidden] {
+  display: none;
 }

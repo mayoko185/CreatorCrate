@@ -417,21 +417,31 @@ test.describe('CreatorCrate development browser smoke', () => {
     });
     expect(response?.status()).toBe(200);
 
+    // WP10b: the filters live in the combined Filters & Defaults dialog.
+    const filtersDialog = await openProjectsFiltersDialog(page);
     const projectFilter = page.locator('#project-project-filter');
     const projectSummary = projectFilter.locator('summary');
     await expect(projectFilter.locator('.asset-filter-multiselect-summary-current')).toHaveText(longProjectTitle);
 
+    // The long Project never spills over its neighbours in the dialog grid.
     const summaryGeometry = await page.evaluate(() => {
-      const project = document.querySelector('#project-project-filter summary')?.getBoundingClientRect();
-      const following = ['status', 'tag', 'sort', 'order'].map((name) => (
-        document.querySelector(`#project-${name}-filter-trigger`)?.getBoundingClientRect()
-      ));
-      return {
-        projectY: project?.y,
-        followingY: following.map((rect) => rect?.y),
+      const box = (element) => {
+        const rect = element?.getBoundingClientRect();
+        return rect ? { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom } : null;
       };
+      const dialog = box(document.querySelector('#projects-filter-dialog'));
+      const project = box(document.querySelector('#project-project-filter summary'));
+      const following = ['status', 'tag', 'sort', 'order'].map((name) => (
+        box(document.querySelector(`#project-${name}-filter-trigger`))
+      ));
+      return { dialog, project, following };
     });
-    expect(summaryGeometry.followingY.every((y) => Math.abs(summaryGeometry.projectY - y) <= 1)).toBe(true);
+    const overlaps = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+    expect(summaryGeometry.project).not.toBeNull();
+    expect(summaryGeometry.following.every(Boolean)).toBe(true);
+    expect(summaryGeometry.following.some((rect) => overlaps(summaryGeometry.project, rect))).toBe(false);
+    expect(summaryGeometry.project.left).toBeGreaterThanOrEqual(summaryGeometry.dialog.left);
+    expect(summaryGeometry.project.right).toBeLessThanOrEqual(summaryGeometry.dialog.right);
 
     const projectSummaryMetrics = await projectFilter.locator('.asset-filter-multiselect-summary-current').evaluate((element) => {
       const style = getComputedStyle(element);
@@ -460,6 +470,8 @@ test.describe('CreatorCrate development browser smoke', () => {
     async function hitAtCenter(selector) {
       const hit = await page.evaluate((targetSelector) => {
         const element = document.querySelector(targetSelector);
+        // The combined dialog body scrolls; hit-test where the user would see it.
+        element?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
         const rect = element?.getBoundingClientRect();
         if (!element || !rect) return null;
         const x = rect.left + rect.width / 2;
@@ -484,26 +496,29 @@ test.describe('CreatorCrate development browser smoke', () => {
       await expect(trigger).toHaveAttribute('aria-expanded', 'true');
       await expect(page.locator(`#project-${name}-filter-options`)).toBeVisible();
       await expect(projectFilter).not.toHaveAttribute('open');
+      // Escape closes only the open dropdown; the dialog stays open.
       await page.keyboard.press('Escape');
       await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+      await expect(filtersDialog).toBeVisible();
     }
 
     await expect(projectSummary).toBeVisible();
+    await closeProjectsFiltersDialog(page);
 
+    const tagOption = 'input[name="tag"]:not([data-cc-dropdown-select-all])';
     const filterChanges = [
-      { name: 'status', value: 'planned' },
-      { name: 'tag', value: null },
-      { name: 'sort', value: 'title' },
-      { name: 'order', value: 'asc' },
+      { name: 'status', option: 'input[name="status"][value="planned"]' },
+      { name: 'tag', option: tagOption },
+      { name: 'sort', option: 'input[name="sort"][value="title"]' },
+      { name: 'order', option: 'input[name="order"][value="asc"]' },
     ];
     for (const change of filterChanges) {
       await page.goto(`${devServer.baseURL}/projects?project=${longProjectId}`, {
         waitUntil: 'domcontentloaded',
       });
+      await openProjectsFiltersDialog(page);
       const filter = page.locator(`#project-${change.name}-filter`);
-      const input = change.value === null
-        ? filter.locator('input[name="tag"]').first()
-        : filter.locator(`input[name="${change.name}"][value="${change.value}"]`);
+      const input = filter.locator(change.option).first();
       await expect(input).toHaveCount(1);
 
       const requests = [];
@@ -520,14 +535,19 @@ test.describe('CreatorCrate development browser smoke', () => {
         await hitAtCenter(`#project-${change.name}-filter-trigger`);
         await expect(filter.locator('summary')).toHaveAttribute('aria-expanded', 'true');
         await input.scrollIntoViewIfNeeded();
-        await hitAtCenter(`#project-${change.name}-filter-options input[name="${change.name}"]${change.value === null ? '' : `[value="${change.value}"]`}`);
+        await hitAtCenter(`#project-${change.name}-filter-options ${change.option}`);
         await responsePromise;
         await expect.poll(() => requests.length).toBe(1);
         await page.waitForTimeout(100);
         expect(requests).toHaveLength(1);
+        // A live filter: the restriction stays and the dialog stays open.
+        await expect(page.locator('[data-projects-live-region]')).not.toHaveAttribute('aria-busy', 'true');
+        expect(new URL(page.url()).searchParams.getAll('project')).toEqual([String(longProjectId)]);
+        await expect(filtersDialog).toBeVisible();
       } finally {
         page.off('request', onRequest);
       }
+      await closeProjectsFiltersDialog(page);
     }
 
     assertNoBrowserDiagnostics(diagnostics);
@@ -2556,12 +2576,9 @@ test.describe('CreatorCrate development browser smoke', () => {
     }
 
     await page.goto(`${devServer.baseURL}/projects`, { waitUntil: 'domcontentloaded' });
-    const [response] = await Promise.all([
-      page.waitForNavigation({ waitUntil: 'domcontentloaded' }),
-      submitProjectSortFilter(page),
-    ]);
+    const response = await applyProjectSortFilter(page);
 
-    expect(response?.status()).toBe(200);
+    expect(response.status()).toBe(200);
     const submittedUrl = new URL(page.url());
     expect(submittedUrl.pathname).toBe('/projects');
     expect(submittedUrl.searchParams.get('sort')).toBe('title');
@@ -2683,11 +2700,8 @@ test.describe('CreatorCrate production browser smoke', () => {
     assertNoToastUiRequests(diagnostics);
 
     await exerciseServerNavigation(page, productionServer.baseURL);
-    const [response] = await Promise.all([
-      page.waitForNavigation({ waitUntil: 'domcontentloaded' }),
-      submitProjectSortFilter(page),
-    ]);
-    expect(response?.status()).toBe(200);
+    const response = await applyProjectSortFilter(page);
+    expect(response.status()).toBe(200);
     expect(new URL(page.url()).searchParams.get('sort')).toBe('title');
     await expect(page.locator('h1')).toHaveText('Projects');
     await expect.poll(() => readBodyBackground(page)).toBe('rgb(13, 15, 19)');
@@ -3066,7 +3080,25 @@ async function createBrowserTag(page, baseURL, name) {
   ]);
 }
 
+// WP10b: the Projects filters live in the one combined Filters & Defaults
+// dialog, opened from the toolbar and closed from its header (or Escape).
+async function openProjectsFiltersDialog(page) {
+  // The enhancement is ready once the live NSFW form is bound.
+  await page.locator('[data-projects-nsfw-filter][data-projects-nsfw-bound="true"]').waitFor({ state: 'attached' });
+  const dialog = page.locator('#projects-filter-dialog');
+  await page.getByRole('link', { name: 'Filters & Defaults', exact: true }).click();
+  await expect(dialog).toBeVisible();
+  return dialog;
+}
+
+async function closeProjectsFiltersDialog(page) {
+  const dialog = page.locator('#projects-filter-dialog');
+  await dialog.getByRole('button', { name: 'Close Filters & Defaults', exact: true }).click();
+  await expect(dialog).toBeHidden();
+}
+
 async function exerciseSearchableProjectDropdown(page) {
+  const dialog = await openProjectsFiltersDialog(page);
   const filter = page.locator('#project-project-filter');
   await expect(filter).toHaveCount(1);
   await expect(filter.locator('label[for="project-project-filter-search"]')).not.toHaveClass(/(?:^|\s)sr-only(?:\s|$)/);
@@ -3077,6 +3109,12 @@ async function exerciseSearchableProjectDropdown(page) {
   await filter.locator('input[data-cc-dropdown-search]').fill('creatorcrate-browser-smoke-no-match');
   await expect(filter.locator('[data-cc-dropdown-no-results]')).toBeVisible();
   await expect(filter.locator('summary')).toHaveAttribute('aria-expanded', 'true');
+  // Escape closes the dropdown first, then the dialog itself.
+  await page.keyboard.press('Escape');
+  await expect(filter.locator('summary')).toHaveAttribute('aria-expanded', 'false');
+  await expect(dialog).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
 }
 
 async function exerciseServerNavigation(page, baseURL) {
@@ -3088,10 +3126,41 @@ async function exerciseServerNavigation(page, baseURL) {
   await page.goto(`${baseURL}/projects`, { waitUntil: 'domcontentloaded' });
 }
 
-async function submitProjectSortFilter(page) {
-  await page.locator('#project-sort-filter-trigger').click();
-  await page.locator('#project-sort-filter-options input[name="sort"][value="title"]').check();
-  return page.locator('button[type="submit"][form="project-filters"]').click();
+// Applies Sort: Title through the combined dialog's GET filter form. The
+// change navigates live (one GET, a pushed address, no document reload and
+// no mutation); returns that GET's response once installed.
+async function applyProjectSortFilter(page) {
+  const dialog = await openProjectsFiltersDialog(page);
+  await page.evaluate(() => { window.__creatorcrateSmokeSameDocument = true; });
+  const mutations = [];
+  const onRequest = (request) => {
+    if (request.method() !== 'GET') mutations.push(`${request.method()} ${request.url()}`);
+  };
+  page.on('request', onRequest);
+  let response;
+  try {
+    const responsePromise = page.waitForResponse((candidate) => {
+      const url = new URL(candidate.url());
+      return candidate.request().method() === 'GET' && url.pathname === '/projects'
+        && url.searchParams.get('sort') === 'title';
+    });
+    await page.locator('#project-sort-filter-trigger').click();
+    await page.locator('#project-sort-filter-options input[name="sort"][value="title"]').check();
+    response = await responsePromise;
+    await expect(page.locator('[data-projects-live-region]')).not.toHaveAttribute('aria-busy', 'true');
+    await expect.poll(() => new URL(page.url()).searchParams.get('sort')).toBe('title');
+    await expect(page.locator('#project-sort-filter-options input[name="sort"][value="title"]')).toBeChecked();
+    // The live filter keeps the dialog open; the toolbar links follow the result.
+    await expect(dialog).toBeVisible();
+    expect(new URL(await page.getByRole('link', { name: 'List view', exact: true }).getAttribute('href'), page.url())
+      .searchParams.get('sort')).toBe('title');
+  } finally {
+    page.off('request', onRequest);
+  }
+  expect(await page.evaluate(() => window.__creatorcrateSmokeSameDocument)).toBe(true);
+  expect(mutations).toEqual([]);
+  await closeProjectsFiltersDialog(page);
+  return response;
 }
 
 async function createAndScanBrowserPickerAssets(page, baseURL, projectsRoot, projectId) {

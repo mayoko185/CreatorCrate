@@ -81,6 +81,11 @@ function cleanupScrollableDropdownPositioning(dropdown, { restoreScroll = true }
     state.viewport?.removeEventListener?.('resize', state.reposition);
     state.viewport?.removeEventListener?.('scroll', state.reposition, true);
     state.observer?.disconnect();
+    state.layoutObserver?.disconnect();
+    state.resizeObserver?.disconnect();
+    if (state.layoutFrame !== null && state.layoutFrame !== undefined) {
+      state.viewport?.cancelAnimationFrame?.(state.layoutFrame);
+    }
     if (restoreScroll && state.body) {
       state.body.scrollTop = state.lastScrollTop ?? state.body.scrollTop;
     }
@@ -94,6 +99,7 @@ function cleanupScrollableDropdownPositioning(dropdown, { restoreScroll = true }
 function resetDropdownPanelOverlay(panel) {
   if (!panel) return;
   delete panel.__creatorCrateDropdownTriggerWidth;
+  delete panel.__creatorCrateDropdownPlacement;
   panel.removeAttribute?.(CC_DROPDOWN_OVERLAY_ATTRIBUTE);
   ['position', 'left', 'top', 'width', 'min-width', 'max-height'].forEach((property) => {
     dropdownPanelStyleRemove(panel, property);
@@ -109,6 +115,21 @@ function dropdownViewport(dropdown) {
   return { viewport, width, height };
 }
 
+/*
+ * Everything a placement depends on: the trigger box, the usable viewport and
+ * the panel's content height. A reposition request whose inputs match the
+ * last placement changes nothing, so it does no style writes (scrolling the
+ * panel itself, or a layout notification that did not move the trigger).
+ */
+function dropdownPlacementSignature(dropdown) {
+  const rect = dropdown?.querySelector?.('summary')?.getBoundingClientRect?.();
+  const panel = dropdown?.querySelector?.(CC_DROPDOWN_PANEL_SELECTOR);
+  const { width, height } = dropdownViewport(dropdown);
+  if (!rect) return null;
+  return [rect.left, rect.top, rect.bottom, rect.width, width, height, Number(panel?.scrollHeight) || 0]
+    .map((value) => Number(value)).join(',');
+}
+
 function positionScrollableCategoryDropdown(dropdown, dialogBody) {
   if (!dropdown || dropdown.open !== true
     || (!dropdown.hasAttribute?.('data-cc-viewport-disclosure') && !isScrollableDialogBody(dialogBody))) return false;
@@ -120,8 +141,12 @@ function positionScrollableCategoryDropdown(dropdown, dialogBody) {
   const placedTriggerWidth = panel?.__creatorCrateDropdownTriggerWidth;
   const remeasure = placedTriggerWidth !== undefined
     && placedTriggerWidth !== Number(summary?.getBoundingClientRect?.()?.width);
-  const panelScrollTop = remeasure ? panel.scrollTop : 0;
+  // A placed panel keeps its fixed width, but its height cap is measured again so a trigger
+  // that moved (into more or less space) gets the cap of its new position, not its old one.
+  const replace = !remeasure && panel?.hasAttribute?.(CC_DROPDOWN_OVERLAY_ATTRIBUTE) === true;
+  const panelScrollTop = remeasure || replace ? panel.scrollTop : 0;
   if (remeasure) resetDropdownPanelOverlay(panel);
+  else if (replace) dropdownPanelStyleRemove(panel, 'max-height');
   const summaryRect = summary?.getBoundingClientRect?.();
   const panelRect = panel?.getBoundingClientRect?.();
   const { width: viewportWidth, height: viewportHeight } = dropdownViewport(dropdown);
@@ -163,8 +188,10 @@ function positionScrollableCategoryDropdown(dropdown, dialogBody) {
 
   const positionedPanelRect = panel.getBoundingClientRect?.() || panelRect;
   const naturalPanelHeight = Number(positionedPanelRect.height) || Number(panelRect.height) || 0;
-  const spaceBelow = Math.max(1, viewportHeight - triggerBottom - CC_DROPDOWN_VIEWPORT_GUTTER);
-  const spaceAbove = Math.max(1, triggerTop - CC_DROPDOWN_VIEWPORT_GUTTER);
+  // The gap counts against the space, so the viewport clamp below never pushes a full-height
+  // panel back over its own trigger.
+  const spaceBelow = Math.max(1, viewportHeight - triggerBottom - CC_DROPDOWN_PANEL_GAP - CC_DROPDOWN_VIEWPORT_GUTTER);
+  const spaceAbove = Math.max(1, triggerTop - CC_DROPDOWN_PANEL_GAP - CC_DROPDOWN_VIEWPORT_GUTTER);
   const opensAbove = naturalPanelHeight > spaceBelow && spaceAbove > spaceBelow;
   const availableHeight = opensAbove ? spaceAbove : spaceBelow;
   const maxPanelHeight = Math.max(1, Math.min(naturalPanelHeight || availableHeight, availableHeight));
@@ -187,7 +214,15 @@ function positionScrollableCategoryDropdown(dropdown, dialogBody) {
   dropdownPanelStyleSet(panel, 'left', `${left}px`);
   dropdownPanelStyleSet(panel, 'top', `${top}px`);
   panel.__creatorCrateDropdownTriggerWidth = triggerWidth;
+  panel.__creatorCrateDropdownPlacement = dropdownPlacementSignature(dropdown);
   return true;
+}
+
+// The element whose content changes can move an open dialog dropdown's trigger: the whole
+// dialog (a notice is inserted before its forms; fields are shown and hidden by attribute).
+function dropdownLayoutRoot(dropdown, dialogBody) {
+  if (dialogBody === dropdown?.ownerDocument?.documentElement) return dialogBody;
+  return dialogBody?.closest?.('[data-app-dialog]') || dialogBody?.closest?.('dialog') || dialogBody;
 }
 
 function bindScrollableCategoryDropdownPositioning(dropdown, dialogBody) {
@@ -203,6 +238,8 @@ function bindScrollableCategoryDropdownPositioning(dropdown, dialogBody) {
       return;
     }
     lastScrollTop = Number(dialogBody.scrollTop) || 0;
+    const placement = dropdown.querySelector?.(CC_DROPDOWN_PANEL_SELECTOR)?.__creatorCrateDropdownPlacement;
+    if (placement && placement === dropdownPlacementSignature(dropdown)) return;
     if (positionScrollableCategoryDropdown(dropdown, dialogBody)) return;
     dropdown.open = false;
     dropdown.removeAttribute?.('open');
@@ -219,21 +256,67 @@ function bindScrollableCategoryDropdownPositioning(dropdown, dialogBody) {
   viewport?.addEventListener?.('resize', reposition);
   viewport?.addEventListener?.('scroll', reposition, true);
   dropdown.__creatorCrateDropdownRecordScroll = recordScroll;
-  dropdown[CC_DROPDOWN_OVERLAY_STATE] = {
+  const state = {
     body: dialogBody,
     viewport,
     reposition,
+    layoutFrame: null,
     get lastScrollTop() { return lastScrollTop; },
   };
-  if (dropdown.hasAttribute?.('data-cc-viewport-disclosure') && viewport?.MutationObserver) {
+  dropdown[CC_DROPDOWN_OVERLAY_STATE] = state;
+
+  /*
+   * Content changes can move the trigger without a scroll, a viewport resize or a change to
+   * the trigger's own size (a Retry notice inserted above it, a field above it shown or
+   * hidden). Those notifications coalesce into one placement per frame, through the same
+   * reposition (and its placement guard), and stop with the state's cleanup.
+   */
+  const scheduleLayoutReposition = () => {
+    if (dropdown[CC_DROPDOWN_OVERLAY_STATE] !== state || state.layoutFrame !== null) return;
+    if (typeof viewport?.requestAnimationFrame !== 'function') {
+      reposition();
+      return;
+    }
+    state.layoutFrame = viewport.requestAnimationFrame(() => {
+      state.layoutFrame = null;
+      if (dropdown[CC_DROPDOWN_OVERLAY_STATE] === state) reposition();
+    });
+  };
+  const viewportDisclosure = dropdown.hasAttribute?.('data-cc-viewport-disclosure');
+  if (viewportDisclosure && viewport?.MutationObserver) {
     const observer = new viewport.MutationObserver(() => {
       if (!dropdown.isConnected) {
         dropdown.open = false;
         cleanupScrollableDropdownPositioning(dropdown);
+        return;
       }
+      scheduleLayoutReposition();
     });
     observer.observe(dropdown.ownerDocument.documentElement, { childList: true, subtree: true });
-    dropdown[CC_DROPDOWN_OVERLAY_STATE].observer = observer;
+    state.observer = observer;
+  }
+  const layoutRoot = dropdownLayoutRoot(dropdown, dialogBody);
+  const panel = dropdown.querySelector?.(CC_DROPDOWN_PANEL_SELECTOR);
+  if (!viewportDisclosure && layoutRoot && viewport?.MutationObserver) {
+    const layoutObserver = new viewport.MutationObserver((records) => {
+      // The panel's own placement styles are this code's writes, not a layout change.
+      if (records.every((record) => record.type === 'attributes' && record.target === panel)) return;
+      scheduleLayoutReposition();
+    });
+    layoutObserver.observe(layoutRoot, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['hidden', 'class', 'style', 'open'],
+    });
+    state.layoutObserver = layoutObserver;
+  }
+  if (viewport?.ResizeObserver) {
+    const resizeObserver = new viewport.ResizeObserver(scheduleLayoutReposition);
+    const summary = dropdown.querySelector?.('summary');
+    if (summary) resizeObserver.observe(summary);
+    if (!viewportDisclosure && layoutRoot) resizeObserver.observe(layoutRoot);
+    state.resizeObserver = resizeObserver;
   }
 }
 

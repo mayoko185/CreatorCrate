@@ -299,12 +299,64 @@ function buildProjectAssetBrowserConditions(projectId, filters = {}) {
   return { conditions, params };
 }
 
+function readGlobalAssetSelection(filters, pluralKey, ...legacyKeys) {
+  if (Object.hasOwn(filters, pluralKey) && filters[pluralKey] !== undefined) {
+    return filters[pluralKey];
+  }
+  for (const key of legacyKeys) {
+    if (filters[key] !== undefined && filters[key] !== null) return filters[key];
+  }
+  return undefined;
+}
+
+/**
+ * Cross-project owning-Project restrictions shared by every Asset Library
+ * query surface (page, count, slideshow and extension choices).
+ *
+ * - `projectIds` (legacy scalar `projectId`): asset belongs to any listed
+ *   Project (OR within the dimension).
+ * - `projectTypes`: owning Project's current `project_type` is any listed
+ *   stable catalogue value (OR within the dimension).
+ *
+ * Dimensions are AND-ed with each other and with every other filter. An
+ * omitted, null or empty selection imposes no restriction, so no empty IN()
+ * is ever produced. A non-empty selection with no usable value fails closed
+ * rather than silently meaning "all".
+ */
+function appendGlobalAssetProjectConditions(conditions, params, filters = {}) {
+  const projectSelection = readGlobalAssetSelection(filters, 'projectIds', 'projectId', 'project_id');
+  if (projectSelection !== undefined && projectSelection !== null) {
+    const values = Array.isArray(projectSelection) ? projectSelection : [projectSelection];
+    const ids = [...new Set(values
+      .map((value) => (typeof value === 'string' && /^[1-9]\d*$/.test(value) ? Number(value) : value))
+      .filter((value) => Number.isSafeInteger(value) && value > 0))]
+      .sort((left, right) => left - right);
+    if (ids.length > 0) {
+      conditions.push(`a.project_id IN (${ids.map(() => '?').join(',')})`);
+      params.push(...ids);
+    } else if (values.length > 0) {
+      conditions.push('1 = 0');
+    }
+  }
+
+  const typeSelection = readGlobalAssetSelection(filters, 'projectTypes', 'projectType');
+  if (typeSelection !== undefined && typeSelection !== null) {
+    const values = Array.isArray(typeSelection) ? typeSelection : [typeSelection];
+    const types = [...new Set(values.filter((value) => typeof value === 'string' && value !== ''))].sort();
+    if (types.length > 0) {
+      conditions.push(`p.project_type IN (${types.map(() => '?').join(',')})`);
+      params.push(...types);
+    } else if (values.length > 0) {
+      conditions.push('1 = 0');
+    }
+  }
+}
+
 function buildAllAssetBrowserConditions(filters = {}) {
   const { conditions, params } = buildSharedAssetBrowserConditions({
     ...filters,
     extension: undefined,
   });
-  const projectId = filters.projectId ?? filters.project_id;
 
   // Active project browsing excludes either archive indicator. Normal archive
   // operations set both; checking both also avoids exposing transient
@@ -312,10 +364,7 @@ function buildAllAssetBrowserConditions(filters = {}) {
   conditions.push('p.archived_at IS NULL', 'p.status <> ?');
   params.push('archived');
 
-  if (projectId !== undefined && projectId !== null) {
-    conditions.push('a.project_id = ?');
-    params.push(projectId);
-  }
+  appendGlobalAssetProjectConditions(conditions, params, filters);
 
   appendGlobalAssetCategoryCondition(conditions, params, filters.categories ?? filters.category);
   appendGlobalAssetTagCondition(conditions, params, filters.tags ?? filters.tag);
@@ -2189,12 +2238,14 @@ export function createAssetRepository(db) {
 
     /**
      * Stable extension choices for the cross-project asset browser. The
-     * optional project scope follows the same active-project semantics as
-     * findAllAssets, while the unscoped form covers every active project.
-     * @param {{ projectId?: number|null }} [filters]
+     * optional Project / Project Type scope uses the same owning-Project
+     * predicate as findAllAssets, while the unscoped form covers every
+     * active project. Other asset filters deliberately do not narrow the
+     * choices.
+     * @param {{ projectId?: number|null, projectIds?: number[], projectTypes?: string[], includeArchived?: boolean }} [filters]
      * @returns {string[]}
      */
-    listAllAssetExtensions({ projectId, includeArchived = false } = {}) {
+    listAllAssetExtensions({ includeArchived = false, ...scope } = {}) {
       const conditions = ['a.extension <> ?'];
       const params = [''];
 
@@ -2203,10 +2254,7 @@ export function createAssetRepository(db) {
         params.unshift('archived');
       }
 
-      if (projectId !== undefined && projectId !== null) {
-        conditions.push('a.project_id = ?');
-        params.push(projectId);
-      }
+      appendGlobalAssetProjectConditions(conditions, params, scope);
 
       const sql = `
         SELECT DISTINCT LOWER(a.extension) AS extension

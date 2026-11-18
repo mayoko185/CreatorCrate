@@ -95,6 +95,7 @@ export function enhancePageDefaultsFetchSave(scope = globalThis.document, option
     explicitSaveControlSelector,
     saveBlockedReason,
     prepareSave,
+    prepareRequestBody,
   } = options;
   if (!formSelector || !markerAttribute || typeof beginRefresh !== 'function'
     || typeof refresh !== 'function' || !refreshFailureMessage) return 0;
@@ -110,6 +111,7 @@ export function enhancePageDefaultsFetchSave(scope = globalThis.document, option
         ? { querySelectorAll: () => [form.querySelector?.(explicitSaveControlSelector)].filter(Boolean) }
         : form;
       const enhanced = enhanceSettingsFetchSave(bindingScope, {
+        ...(typeof prepareRequestBody === 'function' ? { prepareRequestBody } : {}),
         onStart: ({ form: currentForm, payload }) => {
           onStart?.(currentForm, payload);
           clearDefaultsValidation(currentForm);

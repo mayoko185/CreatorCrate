@@ -3,6 +3,11 @@ import {
   enhanceProjectsDefaultsFetchSave,
   enhanceProjectsLiveFiltering,
 } from '../src/static/creatorcrate.js';
+import {
+  navigateProjectsLive,
+  projectsLiveSnapshot,
+  subscribeProjectsLive,
+} from '../src/static/client/live-regions.js';
 
 function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } = {}) {
   const attributes = new Map();
@@ -255,8 +260,16 @@ function makePage(values = {}) {
     return field;
   };
 
+  // WP10b: the results Search of the combined dialog (opt-in per test).
+  const search = values.search === undefined
+    ? null
+    : add({ id: 'projects-search', name: 'search', type: 'search', 'data-projects-search': '' }, values.search);
   const page = add({ name: 'page', type: 'hidden' }, '4');
-  const view = add({ name: 'view', type: 'hidden' }, values.view || 'list');
+  // R2: opt-in radio-backed View (the combined dialog's real control) and the
+  // Grid style field that is shown only for Grid.
+  const view = values.viewRadios
+    ? null
+    : add({ name: 'view', type: 'hidden' }, values.view || 'list');
   const allProjects = makeNode({
     tagName: 'input',
     attrs: { id: 'project-project-option-all', name: 'project', type: 'radio', value: '' },
@@ -357,6 +370,42 @@ function makePage(values = {}) {
     if (field === allProjects) form.appendChild(projectDropdown);
     else if (field !== project) form.appendChild(field);
   });
+  let viewGrid = null;
+  let viewList = null;
+  let viewSummary = null;
+  let gridStyleField = null;
+  let gridStyleDropdown = null;
+  let gridStyleSummary = null;
+  let gridStyleSelect = null;
+  if (values.viewRadios) {
+    const initialView = values.viewRadios === 'list' ? 'list' : 'grid';
+    const viewDropdown = makeNode({
+      tagName: 'details',
+      attrs: { id: 'project-view-filter', class: 'cc-dropdown', 'data-cc-dropdown': '', 'data-cc-dropdown-mode': 'single' },
+    });
+    viewSummary = makeNode({ tagName: 'summary', attrs: { id: 'project-view-filter-trigger' } });
+    viewDropdown.appendChild(viewSummary);
+    viewGrid = makeNode({ tagName: 'input', attrs: { id: 'project-view-option-grid', name: 'view', type: 'radio', value: 'grid' }, checked: initialView === 'grid' });
+    viewList = makeNode({ tagName: 'input', attrs: { id: 'project-view-option-list', name: 'view', type: 'radio', value: 'list' }, checked: initialView === 'list' });
+    viewDropdown.appendChild(viewGrid);
+    viewDropdown.appendChild(viewList);
+    form.appendChild(viewDropdown);
+    gridStyleField = makeNode({
+      tagName: 'fieldset',
+      attrs: {
+        'data-projects-grid-style-field': '',
+        'data-filters-visible-when-view': 'grid',
+        ...(initialView === 'list' ? { hidden: '' } : {}),
+      },
+    });
+    gridStyleDropdown = makeNode({ tagName: 'details', attrs: { id: 'project-grid-style-filter', class: 'cc-dropdown', 'data-cc-dropdown': '' } });
+    gridStyleSummary = makeNode({ tagName: 'summary', attrs: { id: 'project-grid-style-filter-trigger' } });
+    gridStyleDropdown.appendChild(gridStyleSummary);
+    gridStyleSelect = makeNode({ tagName: 'select', attrs: { id: 'projects-grid-style', 'data-projects-grid-style': '' }, value: values.gridStyle || 'cropped' });
+    gridStyleField.appendChild(gridStyleDropdown);
+    gridStyleField.appendChild(gridStyleSelect);
+    form.appendChild(gridStyleField);
+  }
   const nsfw = makeNsfwForm(values.nsfwEnabled === true);
   const image = makeNode({
     tagName: 'img',
@@ -403,7 +452,29 @@ function makePage(values = {}) {
     gridSizeSlider,
     nsfw,
     image,
+    search,
+    viewGrid,
+    viewList,
+    viewSummary,
+    gridStyleField,
+    gridStyleDropdown,
+    gridStyleSummary,
+    gridStyleSelect,
   };
+}
+
+// WP10b: select several Projects in the multi-select (repeated values).
+function selectProjects(page, ids) {
+  page.allProjects.checked = false;
+  page.project.checked = false;
+  ids.forEach((id) => {
+    const input = makeNode({
+      tagName: 'input',
+      attrs: { name: 'project', type: 'checkbox', value: String(id) },
+      checked: true,
+    });
+    page.form.appendChild(input);
+  });
 }
 
 function addProjectsDefaultsAutosave(page) {
@@ -1141,9 +1212,13 @@ describe('Projects live filtering enhancement', () => {
     const next = makePage({ nsfwEnabled: true });
     const pages = new Map([['nsfw-enabled', next.document]]);
     const windowObject = makeWindow(initial.document, pages);
+    // WP10a F1: the installed address carries repeated Projects the legacy
+    // single-Project Filter form cannot express; the refresh re-requests it.
+    const installed = 'http://creatorcrate.test/projects?project=7&project=12&page=4&view=list&status=ready&tag=2&tag=3&sort=title&order=asc';
+    windowObject.setLocation(installed);
     windowObject.fetch
       .mockResolvedValueOnce(jsonResponse({ status: 'success', enabled: true }))
-      .mockResolvedValueOnce(responseFor(next, 'nsfw-enabled', 'http://creatorcrate.test/projects?page=4'));
+      .mockResolvedValueOnce(responseFor(next, 'nsfw-enabled', installed));
 
     expect(enhanceProjectsLiveFiltering(initial.document)).toBe(1);
     initial.nsfw.form.dispatch('submit', { target: initial.nsfw.toggle, submitter: initial.nsfw.toggle });
@@ -1160,7 +1235,8 @@ describe('Projects live filtering enhancement', () => {
       ['enabled', '1'],
       ['returnTo', '/projects?page=4'],
     ]);
-    expect(windowObject.fetch.mock.calls[1][0]).toBe('http://creatorcrate.test/projects?page=4&view=list&status=ready&tag=2&tag=3&sort=title&order=asc');
+    expect(windowObject.fetch.mock.calls[1][0]).toBe(installed);
+    expect(new URL(windowObject.fetch.mock.calls[1][0]).searchParams.getAll('project')).toEqual(['7', '12']);
     expect(windowObject.history.pushes).toHaveLength(0);
     expect(windowObject.history.replaces).toHaveLength(0);
     expect(initial.document.querySelector('[data-projects-live-region]')).toBe(next.region);
@@ -1200,6 +1276,479 @@ describe('Projects live filtering enhancement', () => {
     expect(disabled.nsfw.toggle.getAttribute('aria-pressed')).toBe('false');
   });
 
+  it('re-requests a pending filter navigation with the history entry it still owes (WP10a F1)', async () => {
+    const page = makePage({ nsfwEnabled: false });
+    const next = makePage({ nsfwEnabled: true });
+    const windowObject = makeWindow(page.document, new Map([['pending', next.document]]));
+    const requests = [];
+    windowObject.fetch.mockImplementation((url, options) => new Promise((resolve) => requests.push({ url, options, resolve })));
+    enhanceProjectsLiveFiltering(page.document);
+
+    page.form.dispatch('change', { target: page.planned });
+    expect(requests).toHaveLength(1);
+    const pendingUrl = requests[0].url;
+    page.nsfw.form.dispatch('submit', { target: page.nsfw.toggle });
+    expect(requests).toHaveLength(2);
+    expect(requests[0].options.signal.aborted).toBe(true);
+
+    requests[1].resolve(jsonResponse({ status: 'success', enabled: true }));
+    await flush();
+    expect(requests).toHaveLength(3);
+    expect(requests[2].url).toBe(pendingUrl);
+    requests[2].resolve(responseFor(next, 'pending', pendingUrl));
+    await flush();
+
+    expect(page.document.querySelector('[data-projects-live-region]')).toBe(next.region);
+    expect(windowObject.history.pushes.map((entry) => entry.url)).toEqual([pendingUrl]);
+    expect(windowObject.history.replaces).toHaveLength(0);
+    expect(next.nsfw.toggle.disabled).toBe(false);
+  });
+
+  it('refreshes a navigation started during the NSFW POST, not the older destination (WP10a F1)', async () => {
+    const page = makePage({ nsfwEnabled: false });
+    const newer = makePage({ nsfwEnabled: false });
+    const refreshed = makePage({ nsfwEnabled: true });
+    const windowObject = makeWindow(page.document, new Map([
+      ['newer', newer.document],
+      ['refreshed', refreshed.document],
+    ]));
+    const installed = 'http://creatorcrate.test/projects?project=7&project=12&view=list';
+    windowObject.setLocation(installed);
+    const requests = [];
+    windowObject.fetch.mockImplementation((url, options) => new Promise((resolve) => requests.push({ url, options, resolve })));
+    enhanceProjectsLiveFiltering(page.document);
+
+    page.nsfw.form.dispatch('submit', { target: page.nsfw.toggle });
+    expect(requests).toHaveLength(1);
+    page.form.dispatch('change', { target: page.planned });
+    expect(requests).toHaveLength(2);
+    const newerUrl = requests[1].url;
+    expect(newerUrl).not.toBe(installed);
+
+    requests[0].resolve(jsonResponse({ status: 'success', enabled: true }));
+    await flush();
+    // The stale installed destination never replaces the newer intent.
+    expect(requests).toHaveLength(3);
+    expect(requests[1].options.signal.aborted).toBe(true);
+    expect(requests[2].url).toBe(newerUrl);
+    requests[2].resolve(responseFor(refreshed, 'refreshed', newerUrl));
+    await flush();
+
+    expect(page.document.querySelector('[data-projects-live-region]')).toBe(refreshed.region);
+    expect(windowObject.history.pushes.map((entry) => entry.url)).toEqual([newerUrl]);
+    expect(refreshed.nsfw.toggle.getAttribute('aria-pressed')).toBe('true');
+    expect(refreshed.nsfw.toggle.disabled).toBe(false);
+  });
+
+  describe('WP10b combined dialog Search and request state', () => {
+    it('debounces results Search, keeps repeated Projects, and lets the newest typing win', async () => {
+      vi.useFakeTimers();
+      const page = makePage({ search: '' });
+      selectProjects(page, [7, 12]);
+      const next = makePage({ search: 'beta' });
+      const windowObject = makeWindow(page.document, new Map([['beta', next.document]]));
+      windowObject.setTimeout = setTimeout;
+      windowObject.clearTimeout = clearTimeout;
+      const requests = [];
+      windowObject.fetch.mockImplementation((url, options) => new Promise((resolve) => requests.push({ url, options, resolve })));
+      enhanceProjectsLiveFiltering(page.document);
+
+      page.search.value = 'al';
+      page.form.dispatch('input', { target: page.search });
+      // A Search change event never navigates on its own.
+      page.form.dispatch('change', { target: page.search });
+      await vi.advanceTimersByTimeAsync(200);
+      page.search.value = 'beta';
+      page.form.dispatch('input', { target: page.search });
+      expect(requests).toHaveLength(0);
+      expect(projectsLiveSnapshot(page.document)).toMatchObject({ pending: true, requestedHistoryMode: 'push' });
+      const intended = new URL(projectsLiveSnapshot(page.document).intendedUrl);
+      expect(intended.searchParams.get('search')).toBe('beta');
+      expect(intended.searchParams.getAll('project')).toEqual(['7', '12']);
+
+      await vi.advanceTimersByTimeAsync(350);
+      expect(requests).toHaveLength(1);
+      const url = new URL(requests[0].url);
+      expect(url.searchParams.get('search')).toBe('beta');
+      expect(url.searchParams.getAll('project')).toEqual(['7', '12']);
+      expect(url.search).not.toContain('7%2C12');
+      expect(url.searchParams.has('page')).toBe(false);
+      requests[0].resolve(responseFor(next, 'beta', requests[0].url));
+      await flush();
+      expect(windowObject.history.pushes.map((entry) => entry.url)).toEqual([requests[0].url]);
+    });
+
+    it('reports lifecycle phases to subscribers and navigates GET-only through the one engine', async () => {
+      const page = makePage();
+      selectProjects(page, [7, 12]);
+      const next = makePage();
+      const windowObject = makeWindow(page.document, new Map([['reset', next.document]]));
+      const requests = [];
+      windowObject.fetch.mockImplementation((url, options) => new Promise((resolve) => requests.push({ url, options, resolve })));
+      enhanceProjectsLiveFiltering(page.document);
+      const phases = [];
+      const unsubscribe = subscribeProjectsLive(page.document, (detail) => phases.push(detail.phase));
+
+      page.form.dispatch('change', { target: page.planned });
+      const first = navigateProjectsLive(page.document, '/projects', { historyMode: 'push' });
+      expect(first.status).toBe('started');
+      expect(requests).toHaveLength(2);
+      expect(requests[0].options.signal.aborted).toBe(true);
+      expect(requests[1].options.method).toBe('GET');
+      expect(requests[1].url).toBe('http://creatorcrate.test/projects');
+      expect(navigateProjectsLive(page.document, '/asset-viewer').status).toBe('unavailable');
+
+      requests[1].resolve(responseFor(next, 'reset', 'http://creatorcrate.test/projects?sort=title'));
+      await flush();
+      expect(phases).toEqual(['superseded', 'started', 'superseded', 'started', 'installed']);
+      expect(projectsLiveSnapshot(page.document)).toMatchObject({
+        pending: false,
+        failed: false,
+        intendedUrl: 'http://creatorcrate.test/projects?sort=title',
+      });
+      unsubscribe();
+    });
+
+    it('refreshes NSFW to a still-debounced Search with repeated Projects and the push it is owed', async () => {
+      vi.useFakeTimers();
+      const page = makePage({ search: '', nsfwEnabled: false });
+      selectProjects(page, [7, 12]);
+      const next = makePage({ search: 'needle', nsfwEnabled: true });
+      const windowObject = makeWindow(page.document, new Map([['refreshed', next.document]]));
+      windowObject.setTimeout = setTimeout;
+      windowObject.clearTimeout = clearTimeout;
+      const requests = [];
+      windowObject.fetch.mockImplementation((url, options) => new Promise((resolve) => requests.push({ url, options, resolve })));
+      enhanceProjectsLiveFiltering(page.document);
+
+      page.search.value = 'needle';
+      page.form.dispatch('input', { target: page.search });
+      page.nsfw.form.dispatch('submit', { target: page.nsfw.toggle });
+      expect(requests).toHaveLength(1);
+      // The debounced Search is taken over by the refresh, never fired twice.
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(requests).toHaveLength(1);
+
+      requests[0].resolve(jsonResponse({ status: 'success', enabled: true }));
+      await flush();
+      expect(requests).toHaveLength(2);
+      const refreshUrl = new URL(requests[1].url);
+      expect(refreshUrl.searchParams.get('search')).toBe('needle');
+      expect(refreshUrl.searchParams.getAll('project')).toEqual(['7', '12']);
+      requests[1].resolve(responseFor(next, 'refreshed', requests[1].url));
+      await flush();
+      expect(windowObject.history.pushes.map((entry) => entry.url)).toEqual([requests[1].url]);
+      expect(next.nsfw.toggle.getAttribute('aria-pressed')).toBe('true');
+    });
+
+    // F1: a toolbar Grid/List link rendered against the installed page must
+    // apply its View to the newest intended filter state, not discard it.
+    it('applies a toolbar View to a still-pending filter GET, keeps repeated Projects, and lets it win', async () => {
+      const page = makePage({ view: 'grid' });
+      selectProjects(page, [7, 12]);
+      const stale = makePage({ view: 'grid' });
+      const listed = makePage({ view: 'list' });
+      const windowObject = makeWindow(page.document, new Map([
+        ['stale', stale.document],
+        ['listed', listed.document],
+      ]));
+      const shown = 'http://creatorcrate.test/projects';
+      windowObject.setLocation(shown);
+      const requests = [];
+      windowObject.fetch.mockImplementation((url, options) => new Promise((resolve) => requests.push({ url, options, resolve })));
+      const link = addLiveLink(page, 'view', '/projects?view=list');
+      enhanceProjectsLiveFiltering(page.document);
+
+      page.planned.checked = true;
+      page.form.dispatch('change', { target: page.planned });
+      expect(requests).toHaveLength(1);
+      const pendingUrl = new URL(requests[0].url);
+      expect(pendingUrl.searchParams.getAll('project')).toEqual(['7', '12']);
+      expect(pendingUrl.searchParams.get('view')).toBe('grid');
+
+      const event = link.dispatch('click', { button: 0 });
+      expect(event.defaultPrevented).toBe(true);
+      expect(requests).toHaveLength(2);
+      expect(requests[0].options.signal.aborted).toBe(true);
+      const viewUrl = new URL(requests[1].url);
+      expect(viewUrl.searchParams.get('view')).toBe('list');
+      expect(viewUrl.searchParams.getAll('project')).toEqual(['7', '12']);
+      expect(viewUrl.searchParams.getAll('status')).toEqual(['ready', 'planned']);
+      expect(viewUrl.searchParams.getAll('tag')).toEqual(['2', '3']);
+      expect(viewUrl.searchParams.get('sort')).toBe('title');
+      expect(viewUrl.searchParams.get('order')).toBe('asc');
+      expect(viewUrl.search).not.toContain('%2C');
+      expect(viewUrl.searchParams.has('page')).toBe(false);
+
+      requests[1].resolve(responseFor(listed, 'listed', requests[1].url));
+      await flush();
+      // The superseded GET answers last and cannot steal the page.
+      requests[0].resolve(responseFor(stale, 'stale', requests[0].url));
+      await flush();
+      expect(page.document.querySelector('[data-projects-live-region]')).toBe(listed.region);
+      expect(windowObject.history.pushes.map((entry) => entry.url)).toEqual([requests[1].url]);
+      expect(windowObject.location.href).toBe(requests[1].url);
+    });
+
+    it('applies a toolbar View to a debounced Search with repeated Projects and never fires the Search separately', async () => {
+      vi.useFakeTimers();
+      const page = makePage({ search: '', view: 'grid' });
+      selectProjects(page, [7, 12]);
+      const listed = makePage({ search: 'Alpha', view: 'list' });
+      const windowObject = makeWindow(page.document, new Map([['listed', listed.document]]));
+      windowObject.setTimeout = setTimeout;
+      windowObject.clearTimeout = clearTimeout;
+      windowObject.setLocation('http://creatorcrate.test/projects?project=7&project=12');
+      const requests = [];
+      windowObject.fetch.mockImplementation((url, options) => new Promise((resolve) => requests.push({ url, options, resolve })));
+      const link = addLiveLink(page, 'view', '/projects?project=7&project=12&view=list');
+      enhanceProjectsLiveFiltering(page.document);
+
+      page.search.value = 'Alpha';
+      page.form.dispatch('input', { target: page.search });
+      expect(requests).toHaveLength(0);
+      link.dispatch('click', { button: 0 });
+      expect(requests).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(requests).toHaveLength(1);
+
+      const viewUrl = new URL(requests[0].url);
+      expect(viewUrl.searchParams.get('search')).toBe('Alpha');
+      expect(viewUrl.searchParams.getAll('project')).toEqual(['7', '12']);
+      expect(viewUrl.searchParams.get('view')).toBe('list');
+      requests[0].resolve(responseFor(listed, 'listed', requests[0].url));
+      await flush();
+      expect(windowObject.history.pushes.map((entry) => entry.url)).toEqual([requests[0].url]);
+    });
+
+    it('applies a toolbar View to a failed filter request and keeps Retry GET-only', async () => {
+      const page = makePage({ view: 'list' });
+      selectProjects(page, [7]);
+      const gridPage = makePage({ view: 'grid' });
+      const windowObject = makeWindow(page.document, new Map([['grid', gridPage.document]]));
+      windowObject.setLocation('http://creatorcrate.test/projects?view=list');
+      const requests = [];
+      windowObject.fetch.mockImplementation((url, options) => new Promise((resolve, reject) => requests.push({
+        url, options, resolve, reject,
+      })));
+      const link = addLiveLink(page, 'view', '/projects');
+      enhanceProjectsLiveFiltering(page.document);
+
+      page.form.dispatch('change', { target: page.planned });
+      requests[0].resolve({ ok: false, url: requests[0].url, text: vi.fn(async () => '') });
+      await flush();
+      expect(liveFailureNotice(page.document)).not.toBeNull();
+
+      // The omitted-view Grid link keeps the server's implicit default View.
+      link.dispatch('click', { button: 0 });
+      expect(requests).toHaveLength(2);
+      const viewUrl = new URL(requests[1].url);
+      expect(viewUrl.searchParams.getAll('project')).toEqual(['7']);
+      expect(viewUrl.searchParams.has('view')).toBe(false);
+      expect(requests[1].options.method).toBe('GET');
+
+      requests[1].reject(new Error('offline'));
+      await flush();
+      const [retry] = liveFailureRetries(page.document);
+      retry.dispatch('click', { button: 0 });
+      expect(requests).toHaveLength(3);
+      expect(requests[2].url).toBe(requests[1].url);
+      expect(requests.every((request) => request.options.method === 'GET')).toBe(true);
+      requests[2].resolve(responseFor(gridPage, 'grid', requests[2].url));
+      await flush();
+      expect(page.document.querySelector('[data-projects-live-region]')).toBe(gridPage.region);
+      expect(windowObject.history.pushes.map((entry) => entry.url)).toEqual([requests[2].url]);
+    });
+
+    it('keeps the rendered View link address on an idle page and syncs the dialog View control', async () => {
+      const page = makePage({ view: 'grid' });
+      const dropdown = makeNode({ tagName: 'details', attrs: { 'data-cc-dropdown': '' } });
+      const gridRadio = makeNode({ tagName: 'input', attrs: { name: 'view', type: 'radio', value: 'grid' }, checked: true });
+      const listRadio = makeNode({ tagName: 'input', attrs: { name: 'view', type: 'radio', value: 'list' } });
+      dropdown.appendChild(gridRadio);
+      dropdown.appendChild(listRadio);
+      page.form.appendChild(dropdown);
+      const windowObject = makeWindow(page.document);
+      windowObject.setLocation('http://creatorcrate.test/projects?page=2');
+      const requests = [];
+      windowObject.fetch.mockImplementation((url, options) => new Promise((resolve) => requests.push({ url, options, resolve })));
+      const link = addLiveLink(page, 'view', '/projects?page=2&view=list');
+      enhanceProjectsLiveFiltering(page.document);
+
+      link.dispatch('click', { button: 0 });
+      expect(requests).toHaveLength(1);
+      expect(requests[0].url).toBe('http://creatorcrate.test/projects?page=2&view=list');
+      expect(listRadio.checked).toBe(true);
+      expect(gridRadio.checked).toBe(false);
+    });
+
+    it('collapses an owed push when the NSFW refresh returns the address already shown', async () => {
+      const page = makePage({ search: '', nsfwEnabled: false });
+      const next = makePage({ search: '', nsfwEnabled: true });
+      const windowObject = makeWindow(page.document, new Map([['same', next.document]]));
+      const shown = 'http://creatorcrate.test/projects?project=7&project=12';
+      windowObject.setLocation(shown);
+      const requests = [];
+      windowObject.fetch.mockImplementation((url, options) => new Promise((resolve) => requests.push({ url, options, resolve })));
+      enhanceProjectsLiveFiltering(page.document);
+
+      // A pending push whose canonical answer is the shown address.
+      page.form.dispatch('change', { target: page.planned });
+      page.nsfw.form.dispatch('submit', { target: page.nsfw.toggle });
+      requests[1].resolve(jsonResponse({ status: 'success', enabled: true }));
+      await flush();
+      requests[2].resolve(responseFor(next, 'same', shown));
+      await flush();
+      expect(windowObject.history.pushes).toHaveLength(0);
+      expect(page.document.querySelector('[data-projects-live-region]')).toBe(next.region);
+    });
+  });
+
+  // WP10b F6: a push whose FINAL canonical address is the one shown at
+  // installation adds no history entry; any other final address still does.
+  describe('WP10b F6 same-address history', () => {
+    const SHOWN = 'http://creatorcrate.test/projects';
+
+    function f6Page(extraPages = {}) {
+      const page = makePage({ view: 'grid' });
+      const pages = new Map(Object.entries(extraPages).map(([key, value]) => [key, value.document]));
+      const windowObject = makeWindow(page.document, pages);
+      windowObject.setLocation(SHOWN);
+      windowObject.location.assign = vi.fn();
+      const requests = [];
+      windowObject.fetch.mockImplementation((url, options) => new Promise((resolve) => requests.push({ url, options, resolve })));
+      return { page, windowObject, requests };
+    }
+
+    it('List held, then Grid back to the shown address: no entry, and the late List never installs', async () => {
+      const gridded = makePage({ view: 'grid' });
+      const listed = makePage({ view: 'list' });
+      const { page, windowObject, requests } = f6Page({ gridded, listed });
+      const list = addLiveLink(page, 'view', '/projects?view=list');
+      const grid = addLiveLink(page, 'view', '/projects');
+      enhanceProjectsLiveFiltering(page.document);
+
+      list.dispatch('click', { button: 0 });
+      grid.dispatch('click', { button: 0 });
+      expect(requests).toHaveLength(2);
+      expect(requests[0].options.signal.aborted).toBe(true);
+      expect(requests[1].url).toBe(SHOWN);
+      requests[1].resolve(responseFor(gridded, 'gridded', SHOWN));
+      await flush();
+      requests[0].resolve(responseFor(listed, 'listed', 'http://creatorcrate.test/projects?view=list'));
+      await flush();
+
+      expect(page.document.querySelector('[data-projects-live-region]')).toBe(gridded.region);
+      expect(windowObject.history.pushes).toEqual([]);
+      expect(windowObject.history.replaces).toEqual([]);
+      expect(windowObject.location.href).toBe(SHOWN);
+      expect(windowObject.location.assign).not.toHaveBeenCalled();
+    });
+
+    it('a genuinely different View is still one push', async () => {
+      const listed = makePage({ view: 'list' });
+      const { page, windowObject, requests } = f6Page({ listed });
+      const list = addLiveLink(page, 'view', '/projects?view=list');
+      enhanceProjectsLiveFiltering(page.document);
+
+      list.dispatch('click', { button: 0 });
+      requests[0].resolve(responseFor(listed, 'listed', requests[0].url));
+      await flush();
+      expect(windowObject.history.pushes.map((entry) => entry.url)).toEqual(['http://creatorcrate.test/projects?view=list']);
+      expect(windowObject.history.replaces).toEqual([]);
+    });
+
+    it('compares the final (redirected) address, not the request, in both directions', async () => {
+      const same = makePage();
+      const sorted = makePage();
+      const { page, windowObject, requests } = f6Page({ same, sorted });
+      enhanceProjectsLiveFiltering(page.document);
+
+      // A different request redirected to the shown address: reconciled.
+      navigateProjectsLive(page.document, '/projects?resetFilters=1');
+      requests[0].resolve(responseFor(same, 'same', SHOWN));
+      await flush();
+      expect(page.document.querySelector('[data-projects-live-region]')).toBe(same.region);
+      expect(windowObject.history.pushes).toEqual([]);
+
+      // The shown address requested, canonicalized elsewhere: a real entry.
+      const canonical = 'http://creatorcrate.test/projects?sort=title&order=asc';
+      navigateProjectsLive(page.document, SHOWN);
+      requests[1].resolve(responseFor(sorted, 'sorted', canonical));
+      await flush();
+      expect(page.document.querySelector('[data-projects-live-region]')).toBe(sorted.region);
+      expect(windowObject.history.pushes.map((entry) => entry.url)).toEqual([canonical]);
+      expect(windowObject.location.href).toBe(canonical);
+    });
+
+    it('keeps exact query semantics: explicit neutral values, order and repeated Projects are distinct', async () => {
+      const explicit = makePage();
+      const repeated = makePage();
+      const reordered = makePage();
+      const { page, windowObject, requests } = f6Page({ explicit, repeated, reordered });
+      enhanceProjectsLiveFiltering(page.document);
+
+      const explicitGrid = 'http://creatorcrate.test/projects?view=grid';
+      const sevenTwelve = 'http://creatorcrate.test/projects?project=7&project=12';
+      const twelveSeven = 'http://creatorcrate.test/projects?project=12&project=7';
+      navigateProjectsLive(page.document, explicitGrid);
+      requests[0].resolve(responseFor(explicit, 'explicit', explicitGrid));
+      await flush();
+      navigateProjectsLive(page.document, sevenTwelve);
+      requests[1].resolve(responseFor(repeated, 'repeated', sevenTwelve));
+      await flush();
+      navigateProjectsLive(page.document, twelveSeven);
+      requests[2].resolve(responseFor(reordered, 'reordered', twelveSeven));
+      await flush();
+
+      expect(windowObject.history.pushes.map((entry) => entry.url)).toEqual([explicitGrid, sevenTwelve, twelveSeven]);
+      expect(new URL(windowObject.location.href).searchParams.getAll('project')).toEqual(['12', '7']);
+    });
+
+    it('keeps replace (Back/Forward) ownership and never turns it into a push', async () => {
+      const restored = makePage();
+      const { page, windowObject, requests } = f6Page({ restored });
+      enhanceProjectsLiveFiltering(page.document);
+      windowObject.setLocation('http://creatorcrate.test/projects?view=list');
+      windowObject.dispatch('popstate');
+      requests[0].resolve(responseFor(restored, 'restored', 'http://creatorcrate.test/projects?view=list'));
+      await flush();
+      expect(windowObject.history.pushes).toEqual([]);
+      expect(windowObject.history.replaces).toEqual([]);
+      expect(page.document.querySelector('[data-projects-live-region]')).toBe(restored.region);
+    });
+
+    it('a failed push retried GET-only to the shown address adds no entry; a different one adds one', async () => {
+      const recovered = makePage();
+      const listed = makePage({ view: 'list' });
+      const { page, windowObject, requests } = f6Page({ recovered, listed });
+      enhanceProjectsLiveFiltering(page.document);
+
+      navigateProjectsLive(page.document, '/projects?resetFilters=1');
+      requests[0].resolve({ ok: false, status: 500, url: SHOWN, text: async () => '' });
+      await flush();
+      expect(liveFailureNotice(page.document)).toBeTruthy();
+      expect(windowObject.history.pushes).toEqual([]);
+      liveFailureRetries(page.document)[0].dispatch('click');
+      expect(requests).toHaveLength(2);
+      expect(requests[1].url).toBe('http://creatorcrate.test/projects?resetFilters=1');
+      requests[1].resolve(responseFor(recovered, 'recovered', SHOWN));
+      await flush();
+      expect(page.document.querySelector('[data-projects-live-region]')).toBe(recovered.region);
+      expect(liveFailureNotice(page.document)).toBeFalsy();
+      expect(windowObject.history.pushes).toEqual([]);
+
+      navigateProjectsLive(page.document, '/projects?view=list');
+      requests[2].resolve({ ok: false, status: 500, url: requests[2].url, text: async () => '' });
+      await flush();
+      liveFailureRetries(page.document)[0].dispatch('click');
+      requests[3].resolve(responseFor(listed, 'listed', 'http://creatorcrate.test/projects?view=list'));
+      await flush();
+      expect(windowObject.history.pushes.map((entry) => entry.url)).toEqual(['http://creatorcrate.test/projects?view=list']);
+      expect(windowObject.location.assign).not.toHaveBeenCalled();
+    });
+  });
+
   it('restores the existing state and announces an error when the NSFW POST fails', async () => {
     const page = makePage({ nsfwEnabled: false });
     const windowObject = makeWindow(page.document);
@@ -1214,5 +1763,452 @@ describe('Projects live filtering enhancement', () => {
     expect(page.nsfw.toggle.disabled).toBe(false);
     expect(page.status.textContent).toContain('Could not update the NSFW filter');
     expect(page.form.submit).not.toHaveBeenCalled();
+  });
+});
+
+// F8: a toolbar Grid/List click while Projects Reset filters (a default
+// navigation: bare GET /projects, resolved by the server from the saved
+// defaults) is in flight is that Reset's View, never a reason to abandon it.
+describe('Projects F8 pending Reset filters + toolbar View', () => {
+  const BASE = 'http://creatorcrate.test';
+  const TEMPORARY = `${BASE}/projects?search=F8&status=ready&project=7&project=12`;
+  const RESTORED = `${BASE}/projects?status=planned&status=ready&tag=2&tag=3&sort=title`;
+
+  function f8Page(extraPages = {}) {
+    const page = makePage({ view: 'grid' });
+    const pages = new Map(Object.entries(extraPages).map(([key, value]) => [key, value.document]));
+    const windowObject = makeWindow(page.document, pages);
+    windowObject.setLocation(TEMPORARY);
+    windowObject.location.assign = vi.fn();
+    const requests = [];
+    windowObject.fetch.mockImplementation((url, options) => new Promise((resolve, reject) => requests.push({
+      url, options, resolve, reject,
+    })));
+    const list = addLiveLink(page, 'view', '/projects?search=F8&status=ready&project=7&project=12&view=list');
+    const grid = addLiveLink(page, 'view', '/projects?search=F8&status=ready&project=7&project=12');
+    enhanceProjectsLiveFiltering(page.document);
+    const phases = [];
+    subscribeProjectsLive(page.document, (detail) => phases.push(`${detail.phase}:${detail.generation}`));
+    return { page, windowObject, requests, list, grid, phases };
+  }
+
+  function startReset(page) {
+    const outcome = navigateProjectsLive(page.document, '/projects', { historyMode: 'push' });
+    expect(outcome.status).toBe('started');
+    return outcome.generation;
+  }
+
+  const region = (page) => page.document.querySelector('[data-projects-live-region]');
+
+  it('absorbs List into the pending Reset, then continues at the restored address with only view replaced', async () => {
+    const listed = makePage({ view: 'list' });
+    const { page, windowObject, requests, list, phases } = f8Page({ listed });
+    const generation = startReset(page);
+    expect(requests.map((request) => request.url)).toEqual([`${BASE}/projects`]);
+
+    const event = list.dispatch('click', { button: 0 });
+    expect(event.defaultPrevented).toBe(true);
+    // Nothing superseded, nothing sent: the Reset still owns the results.
+    expect(requests).toHaveLength(1);
+    expect(requests[0].options.signal.aborted).toBe(false);
+
+    const reset = responseFor(listed, 'unused', RESTORED);
+    requests[0].resolve(reset);
+    await flush();
+    expect(reset.text).not.toHaveBeenCalled();
+    expect(requests).toHaveLength(2);
+    const continuation = new URL(requests[1].url);
+    // Repeated values stay repeated; only `view` is added.
+    expect(continuation.searchParams.getAll('status')).toEqual(['planned', 'ready']);
+    expect(continuation.searchParams.getAll('tag')).toEqual(['2', '3']);
+    expect(continuation.searchParams.get('sort')).toBe('title');
+    expect(continuation.searchParams.get('view')).toBe('list');
+    expect(continuation.searchParams.has('project')).toBe(false);
+    expect(continuation.searchParams.has('search')).toBe(false);
+    expect(requests[1].url).not.toContain('%2C');
+    expect(requests[1].options.method).toBe('GET');
+
+    requests[1].resolve(responseFor(listed, 'listed', requests[1].url));
+    await flush();
+    expect(region(page)).toBe(listed.region);
+    expect(windowObject.history.pushes.map((entry) => entry.url)).toEqual([requests[1].url]);
+    expect(windowObject.history.replaces).toEqual([]);
+    expect(windowObject.location.assign).not.toHaveBeenCalled();
+    // One Reset lifecycle: same generation throughout, never superseded.
+    expect(phases.filter((phase) => phase.endsWith(`:${generation}`)))
+      .toEqual([`started:${generation}`, `started:${generation}`, `installed:${generation}`]);
+  });
+
+  it('latest of rapid choices wins; Grid on an address that omits view needs no follow-up GET', async () => {
+    const gridded = makePage({ view: 'grid' });
+    const { page, windowObject, requests, list, grid } = f8Page({ gridded });
+    startReset(page);
+    list.dispatch('click', { button: 0 });
+    grid.dispatch('click', { button: 0 });
+    list.dispatch('click', { button: 0 });
+    grid.dispatch('click', { button: 0 });
+    expect(requests).toHaveLength(1);
+    requests[0].resolve(responseFor(gridded, 'gridded', RESTORED));
+    await flush();
+    expect(requests).toHaveLength(1);
+    expect(region(page)).toBe(gridded.region);
+    expect(windowObject.history.pushes.map((entry) => entry.url)).toEqual([RESTORED]);
+  });
+
+  it('replaces a restored saved View: saved List + Grid click continues with view=grid', async () => {
+    const gridded = makePage({ view: 'grid' });
+    const { page, requests, grid } = f8Page({ gridded });
+    startReset(page);
+    grid.dispatch('click', { button: 0 });
+    requests[0].resolve(responseFor(gridded, 'unused', `${BASE}/projects?status=planned&view=list`));
+    await flush();
+    expect(requests.map((request) => request.url))
+      .toEqual([`${BASE}/projects`, `${BASE}/projects?status=planned&view=grid`]);
+  });
+
+  it('no saved defaults: the bare address continues to ?view=list', async () => {
+    const listed = makePage({ view: 'list' });
+    const { page, requests, list } = f8Page({ listed });
+    startReset(page);
+    list.dispatch('click', { button: 0 });
+    requests[0].resolve(responseFor(listed, 'unused', `${BASE}/projects`));
+    await flush();
+    expect(requests.map((request) => request.url)).toEqual([`${BASE}/projects`, `${BASE}/projects?view=list`]);
+  });
+
+  it('a View click during the follow-up GET supersedes it at the restored address; the late follow-up never installs', async () => {
+    const listed = makePage({ view: 'list' });
+    const gridded = makePage({ view: 'grid' });
+    const { page, windowObject, requests, list, grid } = f8Page({ listed, gridded });
+    startReset(page);
+    list.dispatch('click', { button: 0 });
+    requests[0].resolve(responseFor(listed, 'unused', RESTORED));
+    await flush();
+    expect(requests).toHaveLength(2);
+    grid.dispatch('click', { button: 0 });
+    expect(requests).toHaveLength(3);
+    expect(requests[1].options.signal.aborted).toBe(true);
+    // The Grid link omits view: the restored address as the server gave it.
+    expect(requests[2].url).toBe(RESTORED);
+    requests[2].resolve(responseFor(gridded, 'gridded', RESTORED));
+    await flush();
+    requests[1].resolve(responseFor(listed, 'listed', requests[1].url));
+    await flush();
+    expect(region(page)).toBe(gridded.region);
+    expect(windowObject.history.pushes.map((entry) => entry.url)).toEqual([RESTORED]);
+    expect(requests).toHaveLength(3);
+  });
+
+  it('failed Reset GET: no install; a View click or Retry repeats the Reset GET-only with the latest View', async () => {
+    const listed = makePage({ view: 'list' });
+    const { page, windowObject, requests, list } = f8Page({ listed });
+    const before = region(page);
+    startReset(page);
+    list.dispatch('click', { button: 0 });
+    requests[0].resolve({ ok: false, url: `${BASE}/projects`, text: vi.fn(async () => '') });
+    await flush();
+    expect(liveFailureNotice(page.document)).not.toBeNull();
+    expect(region(page)).toBe(before);
+    expect(windowObject.location.href).toBe(TEMPORARY);
+
+    const [retry] = liveFailureRetries(page.document);
+    retry.dispatch('click', { button: 0 });
+    expect(requests.map((request) => request.url)).toEqual([`${BASE}/projects`, `${BASE}/projects`]);
+    requests[1].reject(new Error('offline'));
+    await flush();
+
+    // A View click on the failed Reset re-requests the Reset itself.
+    list.dispatch('click', { button: 0 });
+    expect(requests.map((request) => request.url)).toEqual([`${BASE}/projects`, `${BASE}/projects`, `${BASE}/projects`]);
+    requests[2].resolve(responseFor(listed, 'unused', RESTORED));
+    await flush();
+    expect(new URL(requests[3].url).searchParams.get('view')).toBe('list');
+    requests[3].resolve(responseFor(listed, 'listed', requests[3].url));
+    await flush();
+    expect(region(page)).toBe(listed.region);
+    expect(windowObject.history.pushes.map((entry) => entry.url)).toEqual([requests[3].url]);
+    expect(requests.every((request) => request.options.method === 'GET')).toBe(true);
+  });
+
+  it('failed follow-up GET: no install; Retry resolves the Reset again and re-applies the View', async () => {
+    const listed = makePage({ view: 'list' });
+    const { page, windowObject, requests, list } = f8Page({ listed });
+    const before = region(page);
+    startReset(page);
+    list.dispatch('click', { button: 0 });
+    requests[0].resolve(responseFor(listed, 'unused', RESTORED));
+    await flush();
+    requests[1].resolve({ ok: false, url: requests[1].url, text: vi.fn(async () => '') });
+    await flush();
+    expect(liveFailureNotice(page.document)).not.toBeNull();
+    expect(region(page)).toBe(before);
+    expect(windowObject.history.pushes).toEqual([]);
+    expect(projectsLiveSnapshot(page.document).failedUrl).toBe(`${BASE}/projects`);
+
+    const [retry] = liveFailureRetries(page.document);
+    retry.dispatch('click', { button: 0 });
+    expect(requests[2].url).toBe(`${BASE}/projects`);
+    requests[2].resolve(responseFor(listed, 'unused', RESTORED));
+    await flush();
+    expect(new URL(requests[3].url).searchParams.get('view')).toBe('list');
+    requests[3].resolve(responseFor(listed, 'listed', requests[3].url));
+    await flush();
+    expect(region(page)).toBe(listed.region);
+    expect(windowObject.history.pushes.map((entry) => entry.url)).toEqual([requests[3].url]);
+    expect(requests.every((request) => request.options.method === 'GET')).toBe(true);
+  });
+
+  it('a newer filter edit owns the page: the late Reset installs nothing and its View is dropped', async () => {
+    const edited = makePage({ view: 'grid' });
+    const reset = makePage({ view: 'grid' });
+    const { page, windowObject, requests, list } = f8Page({ edited, reset });
+    startReset(page);
+    list.dispatch('click', { button: 0 });
+    page.form.dispatch('change', { target: page.planned });
+    expect(requests).toHaveLength(2);
+    expect(requests[0].options.signal.aborted).toBe(true);
+    const editUrl = requests[1].url;
+    requests[1].resolve(responseFor(edited, 'edited', editUrl));
+    await flush();
+    requests[0].resolve(responseFor(reset, 'reset', RESTORED));
+    await flush();
+    expect(requests).toHaveLength(2);
+    expect(region(page)).toBe(edited.region);
+    expect(windowObject.location.href).toBe(editUrl);
+
+    // A later Reset carries no stale View.
+    startReset(page);
+    requests[2].resolve(responseFor(reset, 'reset', RESTORED));
+    await flush();
+    expect(requests).toHaveLength(3);
+    expect(region(page)).toBe(reset.region);
+  });
+
+  it('a new Reset drops the earlier Reset View; Back/Forward to a default navigation does too', async () => {
+    const reset = makePage({ view: 'grid' });
+    const popped = makePage({ view: 'grid' });
+    const { page, windowObject, requests, list } = f8Page({ reset, popped });
+    startReset(page);
+    list.dispatch('click', { button: 0 });
+    startReset(page);
+    expect(requests[0].options.signal.aborted).toBe(true);
+    requests[1].resolve(responseFor(reset, 'reset', RESTORED));
+    await flush();
+    expect(requests).toHaveLength(2);
+    expect(region(page)).toBe(reset.region);
+
+    startReset(page);
+    list.dispatch('click', { button: 0 });
+    windowObject.setLocation(`${BASE}/projects`);
+    windowObject.dispatch('popstate');
+    expect(requests).toHaveLength(4);
+    expect(requests[2].options.signal.aborted).toBe(true);
+    requests[3].resolve(responseFor(popped, 'popped', RESTORED));
+    await flush();
+    expect(requests).toHaveLength(4);
+    expect(region(page)).toBe(popped.region);
+    expect(windowObject.history.replaces.map((entry) => entry.url)).toEqual([RESTORED]);
+  });
+
+  it('pagination during a pending Reset is newer intent and is not absorbed', async () => {
+    const paged = makePage({ view: 'grid' });
+    const { page, requests, list } = f8Page({ paged });
+    const next = addLiveLink(page, 'pagination', '/projects?status=ready&page=2');
+    enhanceProjectsLiveFiltering(page.document);
+    startReset(page);
+    list.dispatch('click', { button: 0 });
+    next.dispatch('click', { button: 0 });
+    expect(requests).toHaveLength(2);
+    expect(requests[0].options.signal.aborted).toBe(true);
+    expect(requests[1].url).toBe(`${BASE}/projects?status=ready&page=2`);
+    requests[1].resolve(responseFor(paged, 'paged', requests[1].url));
+    await flush();
+    expect(requests).toHaveLength(2);
+  });
+
+  it('an NSFW refresh during a pending Reset + View re-requests the Reset and still applies the View', async () => {
+    const listed = makePage({ view: 'list', nsfwEnabled: true });
+    const { page, windowObject, requests, list } = f8Page({ listed });
+    startReset(page);
+    list.dispatch('click', { button: 0 });
+    page.nsfw.form.dispatch('submit', { target: page.nsfw.toggle });
+    expect(requests).toHaveLength(2);
+    expect(requests[0].options.signal.aborted).toBe(true);
+    requests[1].resolve(jsonResponse({ status: 'success', enabled: true }));
+    await flush();
+    expect(requests[2].url).toBe(`${BASE}/projects`);
+    requests[2].resolve(responseFor(listed, 'unused', RESTORED));
+    await flush();
+    expect(new URL(requests[3].url).searchParams.get('view')).toBe('list');
+    requests[3].resolve(responseFor(listed, 'listed', requests[3].url));
+    await flush();
+    expect(region(page)).toBe(listed.region);
+    expect(windowObject.history.pushes.map((entry) => entry.url)).toEqual([requests[3].url]);
+    expect(listed.nsfw.toggle.disabled).toBe(false);
+  });
+
+  it('an NSFW refresh after a failed follow-up retries the Reset with the push it still owes', async () => {
+    const listed = makePage({ view: 'list', nsfwEnabled: true });
+    const { page, windowObject, requests, list } = f8Page({ listed });
+    startReset(page);
+    list.dispatch('click', { button: 0 });
+    requests[0].resolve(responseFor(listed, 'unused', RESTORED));
+    await flush();
+    requests[1].reject(new Error('offline'));
+    await flush();
+    page.nsfw.form.dispatch('submit', { target: page.nsfw.toggle });
+    requests[2].resolve(jsonResponse({ status: 'success', enabled: true }));
+    await flush();
+    expect(requests[3].url).toBe(`${BASE}/projects`);
+    requests[3].resolve(responseFor(listed, 'unused', RESTORED));
+    await flush();
+    expect(new URL(requests[4].url).searchParams.get('view')).toBe('list');
+    requests[4].resolve(responseFor(listed, 'listed', requests[4].url));
+    await flush();
+    expect(windowObject.history.pushes.map((entry) => entry.url)).toEqual([requests[4].url]);
+  });
+});
+
+describe('R2 Projects Grid style visibility follows the radio View', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const gridUrl = 'http://creatorcrate.test/projects?view=grid';
+  const listUrl = 'http://creatorcrate.test/projects?view=list';
+
+  it('keeps the server-rendered initial state for Grid and List', () => {
+    const grid = makePage({ viewRadios: 'grid' });
+    makeWindow(grid.document);
+    enhanceProjectsLiveFiltering(grid.document);
+    expect(grid.gridStyleField.hidden).toBe(false);
+
+    const list = makePage({ viewRadios: 'list' });
+    makeWindow(list.document);
+    enhanceProjectsLiveFiltering(list.document);
+    expect(list.gridStyleField.hidden).toBe(true);
+  });
+
+  it('hides on a dialog List choice before the GET answers, restores on Grid, and keeps the Grid style value', async () => {
+    const initial = makePage({ viewRadios: 'grid', gridStyle: 'cropped' });
+    const windowObject = makeWindow(initial.document);
+    windowObject.fetch.mockImplementation(() => new Promise(() => {}));
+    enhanceProjectsLiveFiltering(initial.document);
+    const select = initial.gridStyleSelect;
+
+    initial.viewGrid.checked = false;
+    initial.viewList.checked = true;
+    initial.form.dispatch('change', { target: initial.viewList });
+    expect(initial.gridStyleField.hidden).toBe(true);
+    expect(initial.form.contains(select)).toBe(true);
+    expect(select.disabled).toBe(false);
+    expect(select.value).toBe('cropped');
+
+    initial.viewList.checked = false;
+    initial.viewGrid.checked = true;
+    initial.form.dispatch('change', { target: initial.viewGrid });
+    expect(initial.gridStyleField.hidden).toBe(false);
+    expect(select.value).toBe('cropped');
+    await flush();
+    // Only the ordinary GETs were requested; visibility schedules nothing.
+    windowObject.fetch.mock.calls.forEach(([url, options]) => {
+      expect(options?.method || 'GET').toBe('GET');
+      expect(new URL(url).pathname).toBe('/projects');
+    });
+  });
+
+  it('closes an open Grid style disclosure and moves focus to the View summary when List hides it', () => {
+    const initial = makePage({ viewRadios: 'grid' });
+    const windowObject = makeWindow(initial.document);
+    windowObject.fetch.mockImplementation(() => new Promise(() => {}));
+    enhanceProjectsLiveFiltering(initial.document);
+    initial.gridStyleDropdown.open = true;
+    initial.gridStyleDropdown.setAttribute('open', '');
+    initial.gridStyleSummary.focus();
+
+    initial.viewGrid.checked = false;
+    initial.viewList.checked = true;
+    initial.form.dispatch('change', { target: initial.viewList });
+
+    expect(initial.gridStyleField.hidden).toBe(true);
+    expect(initial.gridStyleDropdown.open).toBe(false);
+    expect(initial.gridStyleDropdown.hasAttribute('open')).toBe(false);
+    expect(initial.document.activeElement).toBe(initial.viewSummary);
+
+    initial.viewList.checked = false;
+    initial.viewGrid.checked = true;
+    initial.form.dispatch('change', { target: initial.viewGrid });
+    expect(initial.gridStyleField.hidden).toBe(false);
+    expect(initial.gridStyleDropdown.open).toBe(false);
+  });
+
+  it('follows a toolbar View link that synchronizes the radio without a change event', async () => {
+    const initial = makePage({ viewRadios: 'grid' });
+    const next = makePage({ viewRadios: 'list' });
+    const windowObject = makeWindow(initial.document, new Map([['next', next.document]]));
+    let resolve;
+    windowObject.fetch.mockImplementation(() => new Promise((done) => { resolve = done; }));
+    const link = addLiveLink(initial, 'view', '/projects?view=list');
+    enhanceProjectsLiveFiltering(initial.document);
+
+    link.dispatch('click', { button: 0 });
+    expect(initial.viewList.checked).toBe(true);
+    expect(initial.gridStyleField.hidden).toBe(true);
+
+    resolve(responseFor(next, 'next', listUrl));
+    await flush();
+    expect(initial.form.contains(next.gridStyleField)).toBe(true);
+    expect(next.gridStyleField.hidden).toBe(true);
+  });
+
+  it('reconciled form children follow the installed View, and a stale older response never installs', async () => {
+    const initial = makePage({ viewRadios: 'grid' });
+    const listPage = makePage({ viewRadios: 'list' });
+    const gridPage = makePage({ viewRadios: 'grid' });
+    const pages = new Map([['list', listPage.document], ['grid', gridPage.document]]);
+    const windowObject = makeWindow(initial.document, pages);
+    const requests = [];
+    windowObject.fetch.mockImplementation((url, options) => new Promise((resolve) => requests.push({ url, options, resolve })));
+    enhanceProjectsLiveFiltering(initial.document);
+
+    initial.viewGrid.checked = false;
+    initial.viewList.checked = true;
+    initial.form.dispatch('change', { target: initial.viewList });
+    expect(initial.gridStyleField.hidden).toBe(true);
+    initial.viewList.checked = false;
+    initial.viewGrid.checked = true;
+    initial.form.dispatch('change', { target: initial.viewGrid });
+    expect(initial.gridStyleField.hidden).toBe(false);
+    expect(requests).toHaveLength(2);
+    expect(requests[0].options.signal.aborted).toBe(true);
+
+    requests[1].resolve(responseFor(gridPage, 'grid', gridUrl));
+    await flush();
+    expect(initial.form.contains(gridPage.gridStyleField)).toBe(true);
+    expect(gridPage.gridStyleField.hidden).toBe(false);
+
+    // The older List response arrives last and is ignored.
+    requests[0].resolve(responseFor(listPage, 'list', listUrl));
+    await flush();
+    expect(initial.form.contains(listPage.gridStyleField)).toBe(false);
+    expect(gridPage.gridStyleField.hidden).toBe(false);
+    expect(windowObject.location.href).toBe(gridUrl);
+  });
+
+  it('a failed GET keeps the intended View and its visibility', async () => {
+    const initial = makePage({ viewRadios: 'grid' });
+    const windowObject = makeWindow(initial.document);
+    windowObject.fetch.mockRejectedValue(new Error('offline'));
+    enhanceProjectsLiveFiltering(initial.document);
+
+    initial.viewGrid.checked = false;
+    initial.viewList.checked = true;
+    initial.form.dispatch('change', { target: initial.viewList });
+    await flush();
+
+    expect(liveFailureNotice(initial.document)).not.toBeNull();
+    expect(initial.viewList.checked).toBe(true);
+    expect(initial.gridStyleField.hidden).toBe(true);
+    expect(windowObject.history.pushes).toHaveLength(0);
   });
 });

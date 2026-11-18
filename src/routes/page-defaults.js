@@ -93,6 +93,17 @@ export function handlePageDefaultsPost(req, res, next, {
   optionCatalogues = {},
   validateSubmission = null,
   saveValidatedValues = null,
+  // Optional extra fields for the JSON acknowledgement, read after the save
+  // committed (for example authoritative saved-state metadata). A failure
+  // here never turns a committed save into a reported "no changes" error.
+  enhancedSuccessPayload = null,
+  // Optional request-correlated acknowledgement fields for every JSON answer
+  // this handler produces ({ outcome: 'invalid' | 'failed' | 'committed',
+  // submission }). Inert unless a caller supplies it.
+  enhancedOperationPayload = null,
+  // Optional handler for an error thrown by the save transaction (after its
+  // rollback). Returning true means the caller answered the request.
+  handleSaveError = null,
 } = {}) {
   const pageDefinition = getPageDefaultDefinition(page);
   const rawBody = req.body && typeof req.body === 'object' ? req.body : {};
@@ -108,6 +119,14 @@ export function handlePageDefaultsPost(req, res, next, {
   const useOptionCatalogues = hasOptionCatalogues(optionCatalogues);
   let validatedValues;
   let submission;
+  const operationPayload = (outcome) => {
+    if (typeof enhancedOperationPayload !== 'function') return {};
+    try {
+      return enhancedOperationPayload({ outcome, submission }) || {};
+    } catch {
+      return {};
+    }
+  };
 
   try {
     submission = typeof validateSubmission === 'function'
@@ -122,6 +141,7 @@ export function handlePageDefaultsPost(req, res, next, {
     const errors = err.errors || {};
     if (enhanced) {
       res.status(422).json({
+        ...operationPayload('invalid'),
         status: 'error',
         errors,
         values: submittedValues,
@@ -151,8 +171,11 @@ export function handlePageDefaultsPost(req, res, next, {
     if (typeof db?.transaction === 'function') db.transaction(save)();
     else save();
   } catch (err) {
+    if (typeof handleSaveError === 'function'
+      && handleSaveError({ err, enhanced, submittedValues, submission }) === true) return;
     if (enhanced) {
       res.status(500).json({
+        ...operationPayload('failed'),
         status: 'error',
         message: saveErrorMessage,
       });
@@ -163,7 +186,19 @@ export function handlePageDefaultsPost(req, res, next, {
   }
 
   if (enhanced) {
+    let extra = {};
+    if (typeof enhancedSuccessPayload === 'function') {
+      try {
+        extra = enhancedSuccessPayload({ validatedValues, submission }) || {};
+      } catch {
+        // The save committed; only the follow-up read failed. Report the
+        // acknowledged values without claiming authoritative metadata.
+        extra = { authorityUnavailable: true };
+      }
+    }
     res.json({
+      ...extra,
+      ...operationPayload('committed'),
       status: 'success',
       message: successMessage,
       values: validatedValues,

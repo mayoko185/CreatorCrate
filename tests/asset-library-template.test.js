@@ -197,7 +197,34 @@ function makeModel(overrides = {}) {
   model.extensionFilterSelectedValues = (model.extensionOptions || [])
     .filter((candidate) => candidate.selected)
     .map((candidate) => candidate.value);
+  // WP9b: the route's Projects / Project Types multi-select model.
+  const selectedProjects = (filters.projectIds ?? (filters.projectId ? [filters.projectId] : [])).map(String);
+  const activeProjects = new Set(model.projectOptions.map((project) => String(project.id)));
+  model.projectFilterSelectedValues = overrides.projectFilterSelectedValues ?? selectedProjects;
+  model.projectFilterOptions = overrides.projectFilterOptions ?? [
+    ...selectedProjects.filter((value) => !activeProjects.has(value)).map((value) => ({
+      value,
+      label: `Unavailable project (ID ${value})`,
+      selected: true,
+      unavailable: true,
+      classes: 'asset-library-project-option--unavailable',
+      attributes: [['data-asset-library-unavailable-project', true]],
+    })),
+    ...model.projectOptions.map((project) => ({
+      value: String(project.id), label: project.title, selected: selectedProjects.includes(String(project.id)),
+    })),
+  ];
+  const selectedTypes = filters.projectTypes ?? [];
+  model.projectTypeFilterSelectedValues = overrides.projectTypeFilterSelectedValues ?? selectedTypes;
+  model.projectTypeFilterOptions = overrides.projectTypeFilterOptions ?? [
+    { value: 'comic', label: 'Comic', selected: selectedTypes.includes('comic') },
+    { value: 'images', label: 'Illustration', selected: selectedTypes.includes('images') },
+  ];
   return model;
+}
+
+function dialogMarkup(html) {
+  return html.match(/<dialog id="asset-viewer-filter-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
 }
 
 function renderPage(overrides = {}) {
@@ -278,29 +305,34 @@ describe('cross-project Asset Viewer template', () => {
       ],
     });
 
-    expect(html).toMatch(/<dialog id="asset-viewer-filter-dialog"[\s\S]*?<form id="asset-filters" class="app-dialog-form project-form" method="get" action="\/asset-viewer">/);
+    expect(html).toMatch(/<dialog id="asset-viewer-filter-dialog"[\s\S]*?<form id="asset-filters" class="filters-defaults-filters" method="get" action="\/asset-viewer">/);
     expect(html.indexOf('id="asset-viewer-filter-dialog"')).toBeGreaterThan(html.indexOf('data-asset-library-live-region'));
-    expect(html).toContain('<input type="hidden" name="view" value="list">');
-    expect(html).toContain('aria-label="Project filter: Beta Project"');
+    // View is a real control in Miscellaneous now, not a hidden carry-over.
+    expect(html).not.toContain('<input type="hidden" name="view" value="list">');
+    expect(html).toMatch(/<input[^>]+name="view"[^>]+type="radio"[^>]+value="list" checked>/);
+    expect(html).toContain('aria-label="Projects filter: Beta Project"');
     expect(html).toContain('<span data-cc-dropdown-summary-current class="asset-filter-multiselect-summary-current">Beta Project</span>');
-    expect(html).toMatch(/<input id="2" name="project" type="radio" value="2" checked>/);
+    expect(html).toMatch(/<input[^>]+name="project" type="checkbox" value="2" checked>/);
     expect(html).toContain('aria-label="Category filter: Renders"');
     expect(html).toMatch(/<input[^>]+name="category"[^>]+value="renders" checked>/);
     expect(html).toContain('aria-label="Tag filter: Beta Tag"');
     expect(html).toMatch(/<input[^>]+name="tag"[^>]+value="2" checked>/);
+    // WP9b: the results Search field (distinct from the dropdown option searches).
     expect(html).not.toContain('id="asset-search"');
-    expect(html).not.toMatch(/<label[^>]+for="asset-search"/);
-    expect(html).not.toMatch(/<input[^>]+name="search"/);
+    expect(html).toMatch(/<label for="asset-library-search">Search<\/label>/);
+    expect(html).toMatch(/<input id="asset-library-search" name="search" type="search" value="shared" maxlength="128"/);
+    expect((html.match(/<input[^>]+name="search"/g) || [])).toHaveLength(1);
     expect(html).toMatch(/<label[^>]+for="asset-project-filter-search">Search projects<\/label>/);
     expect(html).toMatch(/id="asset-project-filter-search"[^>]*type="search"/);
+    expect(html).toMatch(/<label[^>]+for="asset-project-type-filter-search">Search project types<\/label>/);
     expect(html).toContain('aria-label="Extension filter: .png"');
     expect(html).toMatch(/<input[^>]+name="extension"[^>]+value="png" checked>/);
     expect(html).toContain('aria-label="Presence filter: Missing"');
     expect(html).toContain('aria-label="Release usage filter: Used in releases"');
     expect(html).toContain('aria-label="Sort by filter: Project"');
     expect(html).toContain('aria-label="Sort order filter: Descending"');
-    expect(html).toContain('aria-label="Page size filter: 50"');
-    for (const label of ['Missing', 'Used in releases', 'Project', 'Descending', '50']) {
+    expect(html).toContain('aria-label="Assets per page filter: 50"');
+    for (const label of ['Missing', 'Used in releases', 'Project', 'Descending', '50', 'List']) {
       expect(html).toContain(`<span data-cc-dropdown-summary-current class="asset-filter-multiselect-summary-current">${label}</span>`);
     }
     expect(html).toMatch(/<input[^>]+name="presence"[^>]+type="radio"[^>]+value="missing" checked>/);
@@ -308,12 +340,14 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).toMatch(/<input[^>]+name="sort"[^>]+type="radio"[^>]+value="project" checked>/);
     expect(html).toMatch(/<input[^>]+name="order"[^>]+type="radio"[^>]+value="desc" checked>/);
     expect(html).toMatch(/<input[^>]+name="pageSize"[^>]+type="radio"[^>]+value="50" checked>/);
-    for (const [name, count] of [['presence', 3], ['usage', 3], ['sort', 2], ['order', 2], ['pageSize', 7]]) {
+    for (const [name, count] of [['presence', 3], ['usage', 3], ['sort', 2], ['order', 2], ['pageSize', 7], ['view', 2]]) {
       expect((html.match(new RegExp(`name="${name}"[^>]+type="radio"`, 'g')) || [])).toHaveLength(count);
     }
-    // Filter and defaults dropdowns only: B5b retired the legacy slideshow
+    // Thirteen controls: Search plus twelve dropdowns (Projects, Project
+    // Types, Category, Presence, Usage, Tag, Extension, Sort by, Sort order,
+    // View, Grid style, Assets per page). B5b retired the legacy slideshow
     // scaffold (and its speed dropdown) in favour of the unified viewer.
-    expect((withoutUnifiedViewer(html).match(/data-cc-dropdown data-cc-dropdown-mode="(?:single|multiple)"/g) || [])).toHaveLength(9);
+    expect((withoutUnifiedViewer(html).match(/data-cc-dropdown data-cc-dropdown-mode="(?:single|multiple)"/g) || [])).toHaveLength(12);
     expect(html).not.toMatch(/<select[^>]+id="asset-(presence|usage|sort|order|page-size)"/);
     for (const [triggerId, optionsId] of [
       ['asset-presence-filter-trigger', 'asset-presence-filter-options'],
@@ -321,6 +355,8 @@ describe('cross-project Asset Viewer template', () => {
       ['asset-sort-filter-trigger', 'asset-sort-filter-options'],
       ['asset-order-filter-trigger', 'asset-order-filter-options'],
       ['asset-page-size-filter-trigger', 'asset-page-size-filter-options'],
+      ['asset-view-filter-trigger', 'asset-view-filter-options'],
+      ['asset-grid-style-filter-trigger', 'asset-grid-style-filter-options'],
     ]) {
       const disclosure = (html.match(/<details[^>]*data-cc-dropdown[\s\S]*?<\/details>/g) || [])
         .find((candidate) => candidate.includes(`aria-controls="${optionsId}"`)) || '';
@@ -330,18 +366,22 @@ describe('cross-project Asset Viewer template', () => {
       expect(disclosure).toContain('class="asset-filter-multiselect-summary-width" aria-hidden="true"');
       expect(disclosure).not.toContain('data-asset-viewer-filter-disclosure');
     }
-    expect(html).toContain('data-asset-library-reset');
-    expect(html).toContain('<button class="button button-secondary" type="submit" data-asset-library-reset>Reset filters</button>');
+    expect(html).toContain('data-asset-library-filters-reset');
+    expect(html).toContain('<button class="button button-primary" type="submit" data-asset-library-filters-reset>Reset filters</button>');
   });
 
-  it('renders the Asset Viewer defaults link with dialog-open and accessibility text', () => {
+  it('WP9b: retires the separate Defaults entry; the filter icon opens Filters & Defaults', () => {
     const html = renderPage();
+    const toolbar = html.match(/<div class="project-filter-actions project-filter-actions--projects">[\s\S]*?<\/div>/)?.[0] ?? '';
 
-    expect(html).toContain('href="/asset-viewer?defaults=1"');
-    expect(html).toContain('aria-label="Asset Viewer defaults"');
-    expect(html).toContain('data-tooltip="Asset Viewer defaults"');
-    expect(html).toContain('data-dialog-open="asset-viewer-defaults-dialog"');
-    expect(html).toContain('data-asset-viewer-defaults-link');
+    expect(html).not.toContain('href="/asset-viewer?defaults=1"');
+    expect(html).not.toContain('data-asset-viewer-defaults-link');
+    expect(html).not.toContain('asset-viewer-defaults-dialog');
+    expect(html).not.toContain('aria-label="Asset Viewer defaults"');
+    expect(html).not.toContain('aria-label="Filter assets"');
+    expect(toolbar).toContain('href="#asset-viewer-filter-dialog" aria-label="Filters &amp; Defaults"');
+    expect(toolbar).toContain('data-dialog-open="asset-viewer-filter-dialog" data-tooltip="Filters &amp; Defaults"');
+    expect((toolbar.match(/data-dialog-open=/g) || [])).toHaveLength(1);
   });
 
   it('keeps the exact page-size selector available when View All has one page', () => {
@@ -356,57 +396,89 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).not.toContain('aria-label="Asset Viewer pages"');
   });
 
-  it('renders the Asset Viewer Filter trigger before Defaults and hosts the form in the shared dialog pattern', () => {
+  it('WP9b: hosts both forms in the combined Filters & Defaults dialog pattern', () => {
     const html = renderPage();
     const toolbar = html.match(/<div class="project-filter-actions project-filter-actions--projects">[\s\S]*?<\/div>/)?.[0] ?? '';
-    const dialogHtml = html.slice(html.indexOf('<dialog id="asset-viewer-filter-dialog"'));
+    const dialogHtml = dialogMarkup(html);
 
     expect(toolbar).toContain('href="#asset-viewer-filter-dialog"');
     expect(toolbar).toContain('data-dialog-open="asset-viewer-filter-dialog"');
-    expect(toolbar.indexOf('data-dialog-open="asset-viewer-filter-dialog"'))
-      .toBeLessThan(toolbar.indexOf('data-dialog-open="asset-viewer-defaults-dialog"'));
-    expect(dialogHtml).toMatch(/<div class="app-dialog-body">\s*<div class="page-defaults-grid">/);
-    expect(dialogHtml).toContain('class="asset-viewer-filter-reset app-dialog-footer"');
+    expect(dialogHtml).toMatch(/<dialog id="asset-viewer-filter-dialog" class="app-dialog app-dialog--utility app-dialog--filters-defaults asset-library-filters-defaults" data-app-dialog/);
+    expect(dialogHtml).toMatch(/<div class="app-dialog-body filters-defaults-dialog-body">\s*<form id="asset-viewer-defaults-form"/);
+    expect(dialogHtml).toContain('<footer class="app-dialog-footer filters-defaults-footer">');
+    expect(dialogHtml).not.toContain('page-defaults-grid');
     expect(toolbar).not.toContain('data-asset-library-reset');
+    expect(toolbar).not.toContain('data-asset-library-filters-reset');
   });
 
-  it('renders Project as a searchable single-select disclosure with safe radio values', () => {
+  it('WP9b: renders Projects as a searchable multi-select with an unrestricted Select all', () => {
     const emptyHtml = renderPage();
-    const selectedHtml = renderPage({ filters: { projectId: 2 } });
+    const selectedHtml = renderPage({ filters: { projectIds: [1, 2], projectId: null } });
+    const projectFilter = (html) => html.match(/<details[^>]*id="asset-project-filter"[\s\S]*?<\/details>/)?.[0] || '';
 
     expect(emptyHtml).not.toMatch(/<select[^>]+(?:id="asset-project"|name="project")/);
-    expect(emptyHtml).toContain('<legend>Project</legend>');
-    expect(emptyHtml).toContain('data-cc-dropdown-searchable');
-    expect(emptyHtml).toContain('data-cc-dropdown-type="searchable-single"');
-    expect(emptyHtml).not.toContain('data-asset-project-filter');
+    expect(emptyHtml).toContain('<legend>Projects</legend>');
+    expect(projectFilter(emptyHtml)).toContain('data-cc-dropdown-mode="multiple" data-cc-dropdown-searchable data-cc-dropdown-type="searchable-multiple"');
+    expect(projectFilter(emptyHtml)).toContain('data-cc-dropdown-select-all=""');
     expect((emptyHtml.match(/data-asset-viewer-filter-disclosure/g) || [])).toHaveLength(0);
     expect(emptyHtml).toContain('id="asset-project-filter-trigger" aria-controls="asset-project-filter-options"');
     expect(emptyHtml).toContain('id="asset-project-filter-search" class="asset-project-filter-search" type="search" autocomplete="off" data-cc-dropdown-search');
-    expect(emptyHtml).toContain('id="asset-project-filter-option-list" class="asset-project-filter-option-list" data-cc-dropdown-option-list');
+    expect(emptyHtml).toContain('id="asset-project-filter-option-list" class="asset-project-filter-option-list" data-cc-dropdown-option-list role="group"');
     expect(emptyHtml).toContain('data-cc-dropdown-no-results');
-    expect(emptyHtml).toMatch(/<input id="asset-project-option-all" name="project" type="radio" value="" checked>/);
-    expect(emptyHtml).toMatch(/<input id="1" name="project" type="radio" value="1">/);
-    expect(emptyHtml).toMatch(/<input id="2" name="project" type="radio" value="2">/);
-    expect(emptyHtml).toContain('>All projects</span>');
+    // Select all is the unrestricted filter: checked, empty value (no query key),
+    // and it never checks the individual Projects.
+    expect(projectFilter(emptyHtml)).toMatch(/<input id="asset-project-option-select-all" name="project" type="checkbox" value="" data-cc-dropdown-select-all checked>/);
+    expect(projectFilter(emptyHtml)).toMatch(/<input[^>]+name="project" type="checkbox" value="1">/);
+    expect(projectFilter(emptyHtml)).toMatch(/<input[^>]+name="project" type="checkbox" value="2">/);
+    expect(projectFilter(emptyHtml)).toContain('>All projects</span>');
+    expect(emptyHtml).toContain('aria-label="Projects filter: All projects"');
     expect(emptyHtml).not.toMatch(/<input[^>]+type="hidden"[^>]+name="project"/);
-    expect((emptyHtml.match(/<input[^>]+name="project"[^>]+type="radio"/g) || [])).toHaveLength(3);
+    expect((emptyHtml.match(/<input[^>]+name="project"[^>]+type="checkbox"/g) || [])).toHaveLength(3);
+    expect(emptyHtml).not.toMatch(/name="project"[^>]+type="radio"/);
 
-    expect(selectedHtml).toContain('aria-expanded="false"');
-    expect(selectedHtml).toContain('aria-label="Project filter: Beta Project"');
-    expect(selectedHtml).toContain('<span data-cc-dropdown-summary-current class="asset-filter-multiselect-summary-current">Beta Project</span>');
-    expect(selectedHtml).toMatch(/<input id="asset-project-option-all" name="project" type="radio" value="">/);
-    expect(selectedHtml).toMatch(/<input id="2" name="project" type="radio" value="2" checked>/);
+    expect(selectedHtml).toContain('aria-label="Projects filter: 2 projects selected"');
+    expect(selectedHtml).toContain('<span data-cc-dropdown-summary-current class="asset-filter-multiselect-summary-current">2 projects selected</span>');
+    expect(projectFilter(selectedHtml)).toMatch(/<input id="asset-project-option-select-all" name="project" type="checkbox" value="" data-cc-dropdown-select-all>/);
+    expect(projectFilter(selectedHtml)).toMatch(/name="project" type="checkbox" value="1" checked>/);
+    expect(projectFilter(selectedHtml)).toMatch(/name="project" type="checkbox" value="2" checked>/);
     expect(selectedHtml).not.toMatch(/<input id="asset-project-filter-search"[^>]+name="project"/);
   });
 
-  it('falls back to All projects when the requested Project is not an available option', () => {
-    const html = renderPage({ filters: { projectId: 999999 } });
+  it('WP9b: keeps an unavailable selected Project as a checked ID-labelled restriction, never All projects', () => {
+    const html = renderPage({ filters: { projectIds: [999999], projectId: 999999 } });
     const projectFilter = html.match(/<details[^>]*id="asset-project-filter"[\s\S]*?<\/details>/)?.[0] || '';
 
-    expect(projectFilter).toMatch(/id="asset-project-option-all"[^>]*name="project"[^>]*value="" checked/);
-    expect(projectFilter).not.toMatch(/name="project"[^>]*value="999999"[^>]*checked/);
-    expect(projectFilter).toContain('<span data-cc-dropdown-summary-current class="asset-filter-multiselect-summary-current">All projects</span>');
-    expect(projectFilter).toContain('aria-label="Project filter: All projects"');
+    expect(projectFilter).toMatch(/name="project" type="checkbox" value="999999" checked data-asset-library-unavailable-project>/);
+    expect(projectFilter).toContain('Unavailable project (ID 999999)');
+    expect(projectFilter).toContain('asset-library-project-option--unavailable');
+    expect(projectFilter).toMatch(/<input id="asset-project-option-select-all" name="project" type="checkbox" value="" data-cc-dropdown-select-all>/);
+    expect(projectFilter).toContain('<span data-cc-dropdown-summary-current class="asset-filter-multiselect-summary-current">Unavailable project (ID 999999)</span>');
+    expect(projectFilter).not.toContain('aria-label="Projects filter: All projects"');
+
+    const mixed = renderPage({ filters: { projectIds: [2, 999999], projectId: null } });
+    const mixedFilter = mixed.match(/<details[^>]*id="asset-project-filter"[\s\S]*?<\/details>/)?.[0] || '';
+    expect(mixedFilter).toContain('aria-label="Projects filter: 2 projects selected"');
+    expect(mixedFilter).toMatch(/value="999999" checked/);
+    expect(mixedFilter).toMatch(/value="2" checked/);
+  });
+
+  it('WP9b: renders Project Types as a searchable multi-select over the catalogue values', () => {
+    const emptyHtml = renderPage();
+    const selectedHtml = renderPage({ filters: { projectTypes: ['comic', 'images'] } });
+    const typeFilter = (html) => html.match(/<details[^>]*id="asset-project-type-filter"[\s\S]*?<\/details>/)?.[0] || '';
+
+    expect(emptyHtml).toContain('<legend>Project Types</legend>');
+    expect(typeFilter(emptyHtml)).toContain('data-cc-dropdown-searchable');
+    expect(typeFilter(emptyHtml)).toMatch(/<input id="asset-project-type-option-select-all" name="type" type="checkbox" value="" data-cc-dropdown-select-all checked>/);
+    expect(typeFilter(emptyHtml)).toMatch(/name="type" type="checkbox" value="comic">/);
+    expect(typeFilter(emptyHtml)).toMatch(/name="type" type="checkbox" value="images">/);
+    expect(typeFilter(emptyHtml)).toContain('>Illustration</span>');
+    expect(emptyHtml).toContain('aria-label="Project Types filter: All project types"');
+
+    expect(selectedHtml).toContain('aria-label="Project Types filter: 2 project types selected"');
+    expect(typeFilter(selectedHtml)).toMatch(/name="type" type="checkbox" value="comic" checked>/);
+    expect(typeFilter(selectedHtml)).toMatch(/name="type" type="checkbox" value="images" checked>/);
+    expect(typeFilter(selectedHtml)).toMatch(/<input id="asset-project-type-option-select-all" name="type" type="checkbox" value="" data-cc-dropdown-select-all>/);
   });
 
   it('renders repeated checkbox parameters, simultaneous checked values, and empty summaries', () => {
@@ -443,9 +515,14 @@ describe('cross-project Asset Viewer template', () => {
     for (const id of ['asset-category-filter-trigger', 'asset-tag-filter-trigger', 'asset-extension-filter-trigger']) {
       expect(html).toContain(`id="${id}"`);
     }
-    expect((html.match(/name="category"/g) || [])).toHaveLength(2);
-    expect((html.match(/name="tag"/g) || [])).toHaveLength(2);
-    expect((html.match(/name="extension"/g) || [])).toHaveLength(2);
+    // WP9b: each multi-select leads with an unrestricted Select all row whose
+    // value is empty, so it never adds a query key.
+    expect((html.match(/name="category"/g) || [])).toHaveLength(3);
+    expect((html.match(/name="tag"/g) || [])).toHaveLength(3);
+    expect((html.match(/name="extension"/g) || [])).toHaveLength(3);
+    for (const name of ['category', 'tag', 'extension']) {
+      expect(html).toMatch(new RegExp(`name="${name}" type="checkbox" value="" data-cc-dropdown-select-all>`));
+    }
     expect((html.match(/name="category"[^>]+checked/g) || [])).toHaveLength(2);
     expect((html.match(/name="tag"[^>]+checked/g) || [])).toHaveLength(2);
     expect((html.match(/name="extension"[^>]+checked/g) || [])).toHaveLength(2);
@@ -462,7 +539,7 @@ describe('cross-project Asset Viewer template', () => {
       expect(disclosure).toMatch(new RegExp(`<label for="[^"]+">\\s*<input[^>]+name="${inputName}"`));
     }
     expect(html).not.toContain('id="asset-search"');
-    expect(html).not.toMatch(/<input[^>]+name="search"/);
+    expect((html.match(/<input[^>]+name="search"/g) || [])).toHaveLength(1);
     expect(html).not.toMatch(/<select[^>]+(?:id="asset-(tag|category|extension)"|name="(tag|category|extension)")/);
     expect(html).not.toMatch(/type="hidden"[^>]+name="(tag|category|extension)"/);
   });
@@ -481,7 +558,8 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).toContain('<select id="asset-sort" name="sort" class="cc-dropdown-native-select" data-cc-dropdown-native-select');
     expect(html).toContain('<input id="asset-order" name="order" type="text" value="asc">');
     expect(html).toContain('<input id="asset-page-size" name="pageSize" type="number" value="25">');
-    expect((withoutUnifiedViewer(html).match(/data-cc-dropdown data-cc-dropdown-mode="single"/g) || [])).toHaveLength(4);
+    // Presence, Usage, Sort by, View and the native-backed Grid style.
+    expect((withoutUnifiedViewer(html).match(/data-cc-dropdown data-cc-dropdown-mode="single"/g) || [])).toHaveLength(5);
     expect((html.match(/data-asset-viewer-filter-disclosure/g) || [])).toHaveLength(0);
     for (const id of [
       'asset-presence-filter-trigger',
@@ -938,11 +1016,17 @@ describe('cross-project Asset Viewer template', () => {
     const html = renderPage({ _csrf: 'test-csrf', nsfwFilterEnabled: false });
     const forms = html.match(/<form\b[^>]*>/g) || [];
 
+    // Filters (GET), Reset filters (GET), NSFW and Save new defaults; Reset
+    // defaults (F3) is a JavaScript-only control with no form.
     expect(forms).toHaveLength(4);
     expect(forms.find((f) => f.includes('method="get"'))).toBeDefined();
     expect(forms.find((f) => f.includes('action="/asset-viewer/nsfw-filter"'))).toBeDefined();
-    expect(forms.find((f) => f.includes('action="/asset-viewer/defaults"'))).toBeDefined();
-    expect(html).not.toMatch(/Manually scan project files|Rename|Move file|Add selected|Set as primary|select all/i);
+    // F2: Save new defaults is JavaScript-only; its form has no native POST.
+    expect(forms.find((f) => f.includes('id="asset-viewer-defaults-form"') && f.includes('method="dialog"'))).toBeDefined();
+    expect(forms.find((f) => f.includes('action="/asset-viewer/defaults"'))).toBeUndefined();
+    expect(forms.find((f) => f.includes('action="/asset-viewer/defaults/reset"'))).toBeUndefined();
+    // Filter "Select all" rows are the unrestricted filter, not asset selection.
+    expect(html.replaceAll('<span>Select all</span>', '')).not.toMatch(/Manually scan project files|Rename|Move file|Add selected|Set as primary|select all/i);
     expect(html).not.toContain('name="selectedAssetIds"');
     expect(html).not.toContain('asset-select-checkbox');
     expect(html).not.toContain('asset-rename-trigger');
@@ -961,7 +1045,7 @@ describe('cross-project Asset Viewer template', () => {
   it.each(['grid', 'list'])('both Asset Viewer Reset controls use supplied %s intent', (view) => {
     const clearFiltersUrl = '/asset-viewer?resetFilters=1&view=' + view;
     const html = renderPage({ assets: [], hasAnyAssets: true, filters: { view, search: 'missing' }, clearFiltersUrl });
-    const resetForm = html.match(/<form class="asset-viewer-filter-reset app-dialog-footer"[^>]*>/)?.[0] ?? '';
+    const resetForm = html.match(/<form class="asset-viewer-filter-reset filters-defaults-reset-form"[^>]*>/)?.[0] ?? '';
     const emptyReset = html.match(/<a\b[^>]*data-asset-library-reset[^>]*>/)?.[0] ?? '';
     expect(resetForm).toContain('action="' + href(clearFiltersUrl) + '"');
     expect(emptyReset).toContain('href="' + href(clearFiltersUrl) + '"');
@@ -1247,56 +1331,139 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).not.toContain('asset-details-link');
   });
 
-  it('renders the Asset Viewer defaults dialog in the overlay block', () => {
+  it('WP9b: renders one Filters & Defaults dialog with three sections and the exact footer', () => {
+    const html = renderPage({ _csrf: 'test-csrf' });
+    const dialogHtml = dialogMarkup(html);
+    const footer = dialogHtml.match(/<footer class="app-dialog-footer filters-defaults-footer">[\s\S]*?<\/footer>/)?.[0] || '';
+
+    expect((html.match(/<dialog id="asset-viewer-filter-dialog"/g) || [])).toHaveLength(1);
+    expect(html).not.toContain('id="asset-viewer-defaults-dialog"');
+    expect(dialogHtml).toMatch(/<h2 id="asset-viewer-filter-dialog-title">Filters &amp; Defaults<\/h2>\s*<p class="app-dialog-subtitle">Asset Library<\/p>/);
+    expect(dialogHtml).toContain('aria-label="Close Filters &amp; Defaults"');
+    expect((dialogHtml.match(/data-dialog-close/g) || [])).toHaveLength(1);
+    expect([...dialogHtml.matchAll(/<section class="filters-defaults-section"[^>]*>\s*<h3[^>]*>([^<]+)<\/h3>/g)].map(([, heading]) => heading))
+      .toEqual(['Filters', 'Sort options', 'Miscellaneous']);
+
+    const sections = dialogHtml.split('<section class="filters-defaults-section"').slice(1);
+    const legends = (markup) => [...markup.matchAll(/<legend>([^<]+)<\/legend>|<label for="asset-library-search">([^<]+)<\/label>/g)]
+      .map(([, legend, label]) => legend || label);
+    expect(legends(sections[0])).toEqual(['Search', 'Projects', 'Project Types', 'Category', 'Presence', 'Release usage', 'Tag', 'Extension']);
+    expect(legends(sections[1])).toEqual(['Sort by', 'Sort order']);
+    expect(legends(sections[2])).toEqual(['View', 'Grid style', 'Assets per page']);
+
+    // R1: exactly Save new defaults | Reset defaults | Reset filters in DOM
+    // (and so Tab) order; no Cancel. Save and Reset defaults are secondary,
+    // Reset filters carries the footer's primary treatment.
+    expect([...footer.matchAll(/<button\b[^>]*>([^<]+)<\/button>/g)].map(([, label]) => label.trim()))
+      .toEqual(['Save new defaults', 'Reset defaults', 'Reset filters']);
+    expect([...footer.matchAll(/<button class="([^"]+)"/g)].map(([, cls]) => cls))
+      .toEqual(['button button-secondary', 'button button-secondary', 'button button-primary']);
+    expect(dialogHtml).not.toMatch(/>\s*(?:Cancel|Apply|Done|Close)\s*</);
+    expect(footer).toContain('<button class="button button-primary" type="submit" data-asset-library-filters-reset>Reset filters</button>');
+    // F3: JavaScript-only Reset defaults — disabled type="button", no form.
+    expect(footer).toContain('<button class="button button-secondary" type="button" disabled data-asset-library-defaults-reset>Reset defaults</button>');
+    // F2: JavaScript-only Save — never a native submit control; rendered
+    // disabled until the explicit-save controller arms it.
+    expect(footer).toContain('<button class="button button-secondary" type="button" disabled data-asset-library-defaults-save>Save new defaults</button>');
+    expect(footer).not.toContain('form="asset-viewer-defaults-form"');
+    expect(footer).toMatch(/<form class="asset-viewer-filter-reset filters-defaults-reset-form" method="get" action="[^"]*resetFilters=1[^"]*">\s*<input type="hidden" name="resetFilters" value="1">/);
+    expect(footer).not.toContain('asset-viewer-defaults-reset-form');
+    expect(footer).not.toContain('/asset-viewer/defaults/reset');
+    expect(footer).not.toMatch(/method="post"/);
+    expect(footer).not.toContain('data-asset-library-defaults-native');
+    // Reset filters is the WP9a transport hook, not the engine's link hook.
+    expect(footer).not.toContain('data-asset-library-reset');
+  });
+
+  it('WP9b: opts the defaults form into explicit save and retires the autosave contract', () => {
     const html = renderPage({
       _csrf: 'test-csrf',
-      assetViewerDefaults: {
-        fields: [
-          { id: 'av-view', name: 'view', label: 'View', selectedValue: 'grid', options: [{ value: 'grid', label: 'Grid' }, { value: 'list', label: 'List' }] },
-          { id: 'av-sort', name: 'sort', label: 'Sort', selectedValue: 'filename', options: [{ value: 'filename', label: 'Filename' }] },
-          { id: 'av-order', name: 'order', label: 'Order', selectedValue: 'asc', options: [{ value: 'asc', label: 'Ascending' }] },
-          { id: 'av-page-size', name: 'pageSize', label: 'Page size', selectedValue: '25', options: [{ value: '25', label: '25' }] },
-          { id: 'av-extension', name: 'extension', label: 'Extension', multi: true, selectedValue: ['jpg', 'png'], selectedValues: ['jpg', 'png'], options: [{ value: 'jpg', label: '.jpg' }, { value: 'png', label: '.png' }] },
-          { id: 'av-category', name: 'category', label: 'Category', selectedValue: 'all', options: [{ value: 'all', label: 'All categories' }] },
-          { id: 'av-presence', name: 'presence', label: 'Presence', selectedValue: 'all', options: [{ value: 'all', label: 'All assets' }] },
-          { id: 'av-tag', name: 'tag', label: 'Tag', multi: true, selectedValue: ['1', '2'], selectedValues: ['1', '2'], options: [{ value: '1', label: 'First tag' }, { value: '2', label: 'Second tag' }] },
-        ],
+      assetViewerDefaultsGeneration: 12,
+      assetViewerDefaultsReturnUrl: '/asset-viewer?project=1&project=2&type=comic&type=images&usage=used',
+      assetViewerDefaultsAuthority: {
+        fields: ['view', 'gridStyle', 'sort', 'order', 'pageSize', 'extension', 'category', 'presence', 'tag'],
+        savedKeys: ['view', 'sort'],
+        current: {
+          view: 'list', gridStyle: 'cropped', sort: 'project', order: 'desc', pageSize: '50',
+          extension: ['jpg', 'png'], category: 'all', presence: 'present', tag: ['7'],
+        },
       },
-      assetViewerDefaultsDialogOpen: false,
-      assetViewerDefaultsReturnUrl: '/asset-viewer',
     });
+    const form = html.match(/<form id="asset-viewer-defaults-form"[\s\S]*?<\/form>/)?.[0] || '';
 
-    expect(html).toContain('id="asset-viewer-defaults-dialog"');
-    expect(html).toContain('Asset Viewer defaults');
-    expect(html).toContain('id="asset-viewer-defaults-form"');
-    expect(html).toContain('action="/asset-viewer/defaults"');
-    expect(html).toContain('data-dialog-form');
-    expect(html).toContain('data-dialog-async="false"');
-    expect(html).toContain('data-asset-viewer-defaults-autosave');
-    expect(html).toContain('name="returnTo"');
-    const defaultsDialog = html.match(/<dialog id="asset-viewer-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
-    expect(defaultsDialog).not.toContain('data-dialog-submit');
-    expect(defaultsDialog).not.toContain('Save defaults');
-    expect(defaultsDialog).not.toContain('<footer');
-    expect(defaultsDialog).toContain('data-settings-fetch-save-status');
-    expect(defaultsDialog).toContain('aria-live="polite"');
-    expect(defaultsDialog).toContain('aria-atomic="true"');
-    expect(defaultsDialog).not.toMatch(/<button[^>]*>\s*Cancel\s*<\/button>/);
-    expect(defaultsDialog.match(/data-dialog-close/g)).toHaveLength(1);
-    expect(defaultsDialog).toContain('aria-label="Close Asset Viewer defaults"');
-    expect(html).toMatch(/<select id="av-view" name="view" class="cc-dropdown-native-select" data-cc-dropdown-native-select[^>]*data-autosubmit="fetch"[^>]*>/);
-    expect(html).toMatch(/<select id="av-sort" name="sort" class="cc-dropdown-native-select" data-cc-dropdown-native-select[^>]*data-autosubmit="fetch"[^>]*>/);
-    expect((defaultsDialog.match(/data-cc-dropdown-dispatch-native-change/g) || [])).toHaveLength(8);
-    expect((defaultsDialog.match(/data-cc-dropdown-mode="multiple"/g) || [])).toHaveLength(2);
-    expect((defaultsDialog.match(/data-cc-dropdown-mode="single"/g) || [])).toHaveLength(6);
-    expect(defaultsDialog).toMatch(/<select id="av-extension" name="extension"[^>]* multiple[^>]*data-autosubmit="fetch"[^>]*>/);
-    expect(defaultsDialog).toMatch(/<select id="av-tag" name="tag"[^>]* multiple[^>]*data-autosubmit="fetch"[^>]*>/);
-    expect(defaultsDialog).toMatch(/<option value="jpg" selected>\.jpg<\/option>/);
-    expect(defaultsDialog).toMatch(/<option value="png" selected>\.png<\/option>/);
-    expect(defaultsDialog).toMatch(/<option value="1" selected>First tag<\/option>/);
-    expect(defaultsDialog).toMatch(/<option value="2" selected>Second tag<\/option>/);
-    expect(defaultsDialog).not.toMatch(/<option value="all"[^>]*>All (?:extensions|tags)<\/option>/);
-    expect(defaultsDialog).not.toMatch(/type="checkbox" value="all"/);
+    // F2: no native mutation — a native submission only closes the dialog.
+    expect(form).toMatch(/^<form id="asset-viewer-defaults-form" method="dialog" class="filters-defaults-defaults-form"\s+data-dialog-form data-dialog-async="false" data-defaults-explicit-save novalidate>/);
+    expect(form).not.toMatch(/\baction=|method="post"/);
+    expect(form).not.toContain('data-asset-viewer-defaults-autosave');
+    expect(html).not.toContain('data-asset-viewer-defaults-autosave');
+    expect(html).not.toContain('data-autosubmit');
+    expect(form).toContain('<input type="hidden" name="_csrf" value="test-csrf">');
+    expect(form).toContain('data-settings-fetch-save-status role="status" aria-live="polite" aria-atomic="true"');
+    expect(form).toMatch(/<p class="filters-defaults-saved-indicator" data-asset-library-defaults-indicator>2 of 9 defaults saved\.<\/p>/);
+    // No Global / Project-only scope selector on the Asset Library.
+    expect(html).not.toContain('filters-defaults-scope');
+    expect(html).not.toMatch(/name="scope"/);
+    // No visible defaults controls, and (F2) no hidden snapshot a native
+    // POST could send: the controller builds the snapshot from the installed
+    // authority at Save time.
+    expect(form).not.toContain('data-cc-dropdown');
+    expect(form).not.toContain('data-asset-library-defaults-native');
+    expect(form).not.toMatch(/name="(?:view|gridStyle|sort|order|pageSize|extension|category|presence|tag|defaultsGeneration|returnTo)"/);
+    // Temporary filters are never part of the defaults form.
+    expect(form).not.toMatch(/name="(?:project|type|search|usage)"/);
+    // F3: Reset defaults renders no native form or generation/returnTo
+    // fields; the controller sends the authority's generation.
+    expect(html).not.toContain('asset-viewer-defaults-reset-form');
+    expect(html).not.toContain('name="defaultsGeneration"');
+    expect(html).not.toContain('/asset-viewer/defaults/reset');
+    expect(html).not.toContain('data-asset-library-defaults-native');
+  });
+
+  it('WP9b: Grid style is an unnamed session control that never joins the GET', () => {
+    const html = renderPage({ gridStyle: 'cropped' });
+    const field = html.match(/<fieldset[^>]*data-asset-library-grid-style-field[\s\S]*?<\/fieldset>/)?.[0] || '';
+
+    expect(field).toMatch(/<select id="asset-library-grid-style" class="cc-dropdown-native-select" data-cc-dropdown-native-select aria-label="Grid style" data-asset-library-grid-style>/);
+    expect(field).not.toMatch(/name="/);
+    expect(field).toMatch(/<option value="cropped" selected>Cropped<\/option>/);
+    expect(field).toContain('data-cc-dropdown-dispatch-native-change');
+    expect(html).toContain('data-grid-style="cropped"');
+  });
+
+  it('R2: Grid style starts visible for Grid and hidden (not removed, disabled or renamed) for List', () => {
+    const fieldOf = (html) => html.match(/<fieldset[^>]*data-asset-library-grid-style-field[\s\S]*?<\/fieldset>/)?.[0] || '';
+    const openTag = (html) => html.match(/<fieldset[^>]*data-asset-library-grid-style-field[^>]*>/)?.[0] || '';
+
+    const grid = renderPage({ gridStyle: 'cropped' });
+    expect(openTag(grid)).toContain('data-filters-visible-when-view="grid"');
+    expect(openTag(grid)).not.toMatch(/\shidden(\s|>|=)/);
+    expect(grid).toMatch(/name="view"[^>]*value="grid"[^>]*checked/);
+
+    const list = renderPage({ gridStyle: 'cropped', filters: { view: 'list' }, presentation: { view: 'list' } });
+    expect(openTag(list)).toContain('data-filters-visible-when-view="grid"');
+    expect(openTag(list)).toMatch(/\shidden(\s|>|=)/);
+    expect(list).toMatch(/name="view"[^>]*value="list"[^>]*checked/);
+    const field = fieldOf(list);
+    // Hidden is presentation only: the same control, value and identity.
+    expect(field).toMatch(/<select id="asset-library-grid-style" class="cc-dropdown-native-select" data-cc-dropdown-native-select aria-label="Grid style" data-asset-library-grid-style>/);
+    expect(field).toMatch(/<option value="cropped" selected>Cropped<\/option>/);
+    expect(field).not.toContain('disabled');
+    // View and Assets per page stay visible in List.
+    const fieldsets = [...list.matchAll(/<fieldset[^>]*>\s*<legend>([^<]+)<\/legend>/g)];
+    ['View', 'Assets per page'].forEach((legend) => {
+      const tag = fieldsets.find((match) => match[1] === legend)?.[0] || '';
+      expect(tag).not.toBe('');
+      expect(tag).not.toMatch(/\shidden(\s|>|=)/);
+    });
+  });
+
+  it('WP9b: shows saved-state presence, not value equality, in the initial indicator', () => {
+    const fields = ['view', 'gridStyle', 'sort', 'order', 'pageSize', 'extension', 'category', 'presence', 'tag'];
+    const indicator = (savedKeys) => renderPage({ assetViewerDefaultsAuthority: { fields, savedKeys, current: null } })
+      .match(/data-asset-library-defaults-indicator>([^<]*)</)?.[1];
+    expect(indicator([])).toBe('No saved defaults.');
+    expect(indicator(fields)).toBe('Defaults saved.');
+    expect(indicator(['gridStyle'])).toBe('1 of 9 defaults saved.');
   });
 
   it('does not render a no-JavaScript Filter submit fallback', () => {
@@ -1577,7 +1744,8 @@ describe('slideshow scaffold — static UI', () => {
     const filterDialog = html.slice(html.indexOf('<dialog id="asset-viewer-filter-dialog"'));
     expect(toolbarDiv).toContain('data-asset-library-slideshow-trigger');
     expect(toolbarDiv).not.toContain('data-asset-library-reset');
-    expect(filterDialog).toContain('data-asset-library-reset');
+    expect(toolbarDiv).not.toContain('data-asset-library-filters-reset');
+    expect(filterDialog).toContain('data-asset-library-filters-reset');
   });
 
   it('asset-viewer page: slideshow trigger has accessible label and styled tooltip', () => {
@@ -1643,18 +1811,19 @@ describe('slideshow scaffold — static UI', () => {
     const trigger = html.indexOf('data-asset-library-slideshow-trigger');
     expect(trigger).toBeGreaterThan(regionStart);
     expect(trigger).toBeLessThan(filterDialogStart);
-    expect(sequenceStart).toBeGreaterThan(html.indexOf('<dialog id="asset-viewer-defaults-dialog"'));
+    expect(html).not.toContain('<dialog id="asset-viewer-defaults-dialog"');
+    expect(sequenceStart).toBeGreaterThan(filterDialogStart);
     expect(viewerStart).toBeGreaterThan(sequenceStart);
   });
 
-  it('asset-viewer page: toolbar has Filter, Defaults, NSFW, and Slideshow controls', () => {
+  it('asset-viewer page: toolbar has Filters & Defaults, NSFW, and Slideshow controls', () => {
     const html = renderPage({ _csrf: 'test-csrf', nsfwFilterEnabled: false });
     expect(html).toContain('data-dialog-open="asset-viewer-filter-dialog"');
-    expect(html).toContain('data-dialog-open="asset-viewer-defaults-dialog"');
+    expect(html).not.toContain('data-dialog-open="asset-viewer-defaults-dialog"');
     expect(html).toContain('data-asset-library-nsfw-toggle');
     expect(html).toContain('data-asset-library-slideshow-trigger');
-    expect(html).toContain('data-asset-library-reset');
-    expect(html).toContain('href="/asset-viewer?defaults=1"');
+    expect(html).toContain('data-asset-library-filters-reset');
+    expect(html).not.toContain('href="/asset-viewer?defaults=1"');
     expect(html).not.toContain('<noscript>');
   });
 
@@ -1821,9 +1990,13 @@ describe('slideshow scaffold — static UI', () => {
     // Exactly three footer actions, grouped; no Cancel, Apply, Done or Close.
     const footer = dialog.match(/<footer class="app-dialog-footer filters-defaults-footer">[\s\S]*?<\/footer>/)?.[0] ?? '';
     const actions = [...footer.matchAll(/<button[^>]*>([^<]+)<\/button>/g)].map((match) => match[1].trim());
-    expect(actions).toEqual(['Reset filters', 'Reset defaults', 'Save new defaults']);
-    expect(footer).toContain('type="submit" form="project-assets-defaults-form" data-project-assets-defaults-save>Save new defaults');
-    expect(footer).toContain('class="button button-primary"');
+    // R1: Save new defaults | Reset defaults | Reset filters, in DOM order.
+    expect(actions).toEqual(['Save new defaults', 'Reset defaults', 'Reset filters']);
+    expect(footer).toContain('<button class="button button-secondary" type="submit" form="project-assets-defaults-form" data-project-assets-defaults-save>Save new defaults</button>');
+    expect(footer).toContain('<button class="button button-secondary" type="button" data-project-assets-defaults-reset');
+    expect(footer).toContain('<button class="button button-primary" type="submit" data-project-assets-reset>Reset filters</button>');
+    expect([...footer.matchAll(/<button class="([^"]+)"/g)].map(([, cls]) => cls))
+      .toEqual(['button button-secondary', 'button button-secondary', 'button button-primary']);
     expect(dialog).not.toMatch(/>\s*(Cancel|Apply|Done)\s*</);
     expect((dialog.match(/<footer/g) || [])).toHaveLength(1);
 

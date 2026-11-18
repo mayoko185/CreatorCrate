@@ -1094,3 +1094,251 @@ describe('Filters & Defaults dialog dropdown overlay hook', () => {
     expect(panelStyle.position).toBeUndefined();
   });
 });
+
+describe('open dialog dropdown re-anchoring after layout changes (consolidated review F1)', () => {
+  function layoutDropdown() {
+    const observers = { mutation: [], resize: [] };
+    const frames = new Map();
+    let nextFrame = 1;
+    const writes = [];
+    const panelAttributes = new Set();
+    const panelStyle = {
+      setProperty(property, value) { writes.push(property); this[property] = value; },
+      removeProperty(property) { delete this[property]; },
+    };
+    const panel = {
+      style: panelStyle,
+      scrollTop: 0,
+      scrollHeight: 120,
+      getBoundingClientRect() { return { width: 240, height: 120 }; },
+      setAttribute(name) { panelAttributes.add(name); },
+      removeAttribute(name) { panelAttributes.delete(name); },
+      hasAttribute(name) { return panelAttributes.has(name); },
+    };
+    const trigger = { top: 200 };
+    const summary = {
+      getBoundingClientRect() {
+        return { left: 40, top: trigger.top, bottom: trigger.top + 36, right: 280, width: 240 };
+      },
+      setAttribute() {},
+      focus: vi.fn(),
+    };
+    const dialog = { id: 'dialog' };
+    const body = {
+      scrollTop: 0,
+      scrollLeft: 0,
+      isConnected: true,
+      classList: {
+        contains: (name) => ['app-dialog-body', 'filters-defaults-dialog-body'].includes(name),
+        remove() {},
+        toggle() {},
+      },
+      closest: (selector) => (selector === '[data-app-dialog]' ? dialog : null),
+      addEventListener() {},
+      removeEventListener() {},
+    };
+    class FakeMutationObserver {
+      constructor(callback) { this.callback = callback; this.disconnected = false; observers.mutation.push(this); }
+      observe(target, options) { this.target = target; this.options = options; }
+      disconnect() { this.disconnected = true; }
+    }
+    class FakeResizeObserver {
+      constructor(callback) { this.callback = callback; this.targets = []; this.disconnected = false; observers.resize.push(this); }
+      observe(target) { this.targets.push(target); }
+      disconnect() { this.disconnected = true; }
+    }
+    const view = {
+      innerWidth: 1200,
+      innerHeight: 800,
+      addEventListener() {},
+      removeEventListener() {},
+      getComputedStyle() { return { maxWidth: 'none' }; },
+      MutationObserver: FakeMutationObserver,
+      ResizeObserver: FakeResizeObserver,
+      requestAnimationFrame(callback) { const id = nextFrame++; frames.set(id, callback); return id; },
+      cancelAnimationFrame(id) { frames.delete(id); },
+    };
+    const dropdown = {
+      open: true,
+      isConnected: true,
+      hasAttribute: () => false,
+      removeAttribute() {},
+      closest: (selector) => (selector === '.app-dialog-body' ? body : null),
+      querySelector: (selector) => (selector === 'summary' ? summary : panel),
+      ownerDocument: { documentElement: { clientWidth: 1200 }, defaultView: view },
+    };
+    const runFrames = () => {
+      const pending = Array.from(frames.values());
+      frames.clear();
+      pending.forEach((callback) => callback());
+    };
+    const mutate = (records = [{ type: 'childList', target: dialog }]) => {
+      observers.mutation.forEach((observer) => !observer.disconnected && observer.callback(records));
+    };
+    return { dropdown, panel, panelStyle, trigger, dialog, summary, observers, frames, writes, runFrames, mutate };
+  }
+
+  it('re-places an open panel when dialog content moves its trigger, once per frame', () => {
+    const fixture = layoutDropdown();
+    updateAssetViewerFilterDisclosureState(fixture.dropdown);
+    expect(fixture.panelStyle.top).toBe('240px');
+    const [layoutObserver] = fixture.observers.mutation;
+    expect(layoutObserver.target).toBe(fixture.dialog);
+    expect(layoutObserver.options).toMatchObject({ childList: true, subtree: true, attributes: true });
+    expect(layoutObserver.options.attributeFilter).toEqual(expect.arrayContaining(['hidden', 'class']));
+    expect(fixture.observers.resize[0].targets).toEqual([fixture.summary, fixture.dialog]);
+
+    // A notice inserted above the trigger moves it 60px without resizing it.
+    fixture.trigger.top = 260;
+    fixture.mutate();
+    fixture.mutate();
+    expect(fixture.frames.size).toBe(1);
+    expect(fixture.panelStyle.top).toBe('240px');
+    fixture.runFrames();
+    expect(fixture.panelStyle.top).toBe('300px');
+
+    // Removal moves it back; the same mechanism follows.
+    fixture.trigger.top = 200;
+    fixture.observers.resize[0].callback([]);
+    fixture.runFrames();
+    expect(fixture.panelStyle.top).toBe('240px');
+  });
+
+  it('ignores its own panel style writes and does no writes when the trigger did not move', () => {
+    const fixture = layoutDropdown();
+    updateAssetViewerFilterDisclosureState(fixture.dropdown);
+    fixture.mutate([{ type: 'attributes', target: fixture.panel, attributeName: 'style' }]);
+    expect(fixture.frames.size).toBe(0);
+
+    fixture.writes.length = 0;
+    fixture.mutate();
+    fixture.runFrames();
+    expect(fixture.writes).toEqual([]);
+    expect(fixture.frames.size).toBe(0);
+  });
+
+  it('stops observing and cancels a pending frame when the dropdown closes', () => {
+    const fixture = layoutDropdown();
+    updateAssetViewerFilterDisclosureState(fixture.dropdown);
+    fixture.trigger.top = 260;
+    fixture.mutate();
+    expect(fixture.frames.size).toBe(1);
+
+    fixture.dropdown.open = false;
+    updateAssetViewerFilterDisclosureState(fixture.dropdown);
+    expect(fixture.frames.size).toBe(0);
+    expect(fixture.observers.mutation.every((observer) => observer.disconnected)).toBe(true);
+    expect(fixture.observers.resize.every((observer) => observer.disconnected)).toBe(true);
+    expect(fixture.panelStyle.position).toBeUndefined();
+  });
+
+  it('cleans up without placing when the open dropdown was detached by a replacement', () => {
+    const fixture = layoutDropdown();
+    updateAssetViewerFilterDisclosureState(fixture.dropdown);
+    fixture.dropdown.isConnected = false;
+    fixture.writes.length = 0;
+    fixture.mutate();
+    fixture.runFrames();
+    expect(fixture.writes).toEqual([]);
+    expect(fixture.observers.mutation.every((observer) => observer.disconnected)).toBe(true);
+    expect(fixture.observers.resize.every((observer) => observer.disconnected)).toBe(true);
+    fixture.mutate();
+    expect(fixture.frames.size).toBe(0);
+  });
+});
+
+describe('searchable multi-select filter dropdowns (Filters & Defaults M3 WP9b)', () => {
+  // The Asset Library Projects shape: a searchable multi-select whose
+  // unrestricted Select all row has an empty value (no query key).
+  function searchableMultiFixture(selectedValues) {
+    const fixture = makeDropdown('multiple', [
+      { value: '', label: 'Select all' },
+      { value: '1', label: 'Alpha Project' },
+      { value: '2', label: 'Beta Project' },
+      { value: '3', label: 'Gamma Project' },
+    ], selectedValues);
+    const { dropdown, inputs } = fixture;
+    dropdown.dataset.ccDropdownSearchable = '';
+    dropdown.dataset.ccDropdownSelectAll = '';
+    dropdown.dataset.ccDropdownEmptySummary = 'All projects';
+    dropdown.dataset.ccDropdownCountLabel = 'projects';
+    inputs[0].hasAttribute = (name) => name === 'data-cc-dropdown-select-all';
+    const rows = inputs.map((input) => ({
+      hidden: false,
+      querySelector(selector) {
+        return selector === 'input[type="checkbox"]' ? input : null;
+      },
+      setAttribute(name) {
+        if (name === 'hidden') this.hidden = true;
+      },
+      removeAttribute(name) {
+        if (name === 'hidden') this.hidden = false;
+      },
+    }));
+    const search = {
+      value: '',
+      closest: (selector) => (selector === '[data-cc-dropdown]' ? dropdown : null),
+      setAttribute() {},
+      removeAttribute() {},
+    };
+    const noResults = {
+      hidden: true,
+      setAttribute(name) { if (name === 'hidden') this.hidden = true; },
+      removeAttribute(name) { if (name === 'hidden') this.hidden = false; },
+    };
+    const querySelector = dropdown.querySelector.bind(dropdown);
+    dropdown.querySelector = (selector) => {
+      if (selector === '[data-cc-dropdown-search]') return search;
+      if (selector === '[data-cc-dropdown-option-list]') {
+        return { querySelectorAll: (candidate) => (candidate === '.asset-filter-multiselect-option' ? rows : []) };
+      }
+      if (selector === '[data-cc-dropdown-no-results]') return noResults;
+      return querySelector(selector);
+    };
+    const checkedValues = () => inputs.filter((input) => input.checked).map((input) => input.value);
+    return { ...fixture, rows, search, noResults, checkedValues };
+  }
+
+  it('hides only non-matching rows: hidden selections stay checked and Select all stays visible', () => {
+    const fixture = searchableMultiFixture(['1', '3']);
+    enhanceDropdowns(fixture.scope);
+    expect(fixture.currentSummary.textContent).toBe('2 projects selected');
+    expect(fixture.inputs[0].checked).toBe(false);
+
+    fixture.search.value = 'beta';
+    fixture.scope.dispatch('input', fixture.search);
+    expect(fixture.rows.map((row) => row.hidden)).toEqual([false, true, false, true]);
+    expect(fixture.checkedValues()).toEqual(['1', '3']);
+
+    // Choosing a visible Project keeps the hidden selections and the menu open.
+    fixture.dropdown.open = true;
+    fixture.inputs[2].checked = true;
+    fixture.scope.dispatch('change', fixture.inputs[2]);
+    expect(fixture.checkedValues()).toEqual(['1', '2', '3']);
+    expect(fixture.currentSummary.textContent).toBe('3 projects selected');
+    expect(fixture.dropdown.open).toBe(true);
+
+    fixture.search.value = '';
+    fixture.scope.dispatch('input', fixture.search);
+    expect(fixture.rows.map((row) => row.hidden)).toEqual([false, false, false, false]);
+  });
+
+  it('Select all is unrestricted: it clears individual Projects instead of checking them all', () => {
+    const fixture = searchableMultiFixture(['2']);
+    enhanceDropdowns(fixture.scope);
+    expect(fixture.currentSummary.textContent).toBe('Beta Project');
+
+    fixture.inputs[0].checked = true;
+    fixture.scope.dispatch('change', fixture.inputs[0]);
+    expect(fixture.checkedValues()).toEqual(['']);
+    expect(fixture.currentSummary.textContent).toBe('All projects');
+
+    // Clearing the last individual value returns to unrestricted.
+    fixture.inputs[3].checked = true;
+    fixture.scope.dispatch('change', fixture.inputs[3]);
+    expect(fixture.checkedValues()).toEqual(['3']);
+    fixture.inputs[3].checked = false;
+    fixture.scope.dispatch('change', fixture.inputs[3]);
+    expect(fixture.checkedValues()).toEqual(['']);
+  });
+});

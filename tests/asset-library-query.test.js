@@ -360,3 +360,101 @@ describe('Asset Viewer query foundation', () => {
     expect(new URL(`http://localhost${url}`).searchParams.getAll('search')).toEqual(['two']);
   });
 });
+
+describe('Asset Viewer WP8 Project and Project Type query contract', () => {
+  it('keeps a single legacy project value working with the scalar alias', () => {
+    expect(parseAssetLibraryQuery({ project: '7' })).toMatchObject({
+      projectId: 7,
+      projectIds: [7],
+      projectTypes: [],
+    });
+    expect(buildAssetLibraryUrl(parseAssetLibraryQuery({ project: '7' }))).toBe('/asset-viewer?project=7');
+  });
+
+  it('parses repeated project values into a deduplicated ascending selection', () => {
+    const parsed = parseAssetLibraryQuery({ project: ['12', '7', '12', '30'] });
+    expect(parsed.projectIds).toEqual([7, 12, 30]);
+    // A multi-project request never narrows to its first or last ID.
+    expect(parsed.projectId).toBeNull();
+  });
+
+  it('discards malformed project values individually, including comma-joined IDs', () => {
+    const parsed = parseAssetLibraryQuery({
+      project: ['', '0', '-3', '01', '1.5', '1e2', ' 2 ', 'x', '7,12', '9007199254740993', '12'],
+    });
+    expect(parsed.projectIds).toEqual([12]);
+    expect(parsed.projectId).toBe(12);
+    expect(parseAssetLibraryQuery({ project: '7,12' }).projectIds).toEqual([]);
+    expect(parseAssetLibraryQuery({ project: { 0: '7' } }).projectIds).toEqual([]);
+  });
+
+  it('parses repeated Project Type values with the stable catalogue value syntax', () => {
+    expect(parseAssetLibraryQuery({ type: 'comic' }).projectTypes).toEqual(['comic']);
+    expect(parseAssetLibraryQuery({ type: ['images', 'comic', 'images'] }).projectTypes)
+      .toEqual(['comic', 'images']);
+    // Labels, case variants, padding and comma lists are not stable values.
+    expect(parseAssetLibraryQuery({
+      type: ['Images', ' comic ', 'comic,images', '', 'all', 'bad_value', 'two-part'],
+    }).projectTypes).toEqual(['all', 'two-part']);
+  });
+
+  it('treats project and type as meaningful Asset Viewer query keys', () => {
+    expect(hasAssetLibraryQuery({ type: 'comic' })).toBe(true);
+    expect(isBareAssetLibraryRequest({ type: 'comic' })).toBe(false);
+    expect(hasAssetLibraryQuery({ project: ['1', '2'] })).toBe(true);
+  });
+
+  it('serializes Projects and Types as repeated canonical parameters in public key order', () => {
+    const parsed = parseAssetLibraryQuery({
+      view: 'list',
+      extension: 'png',
+      type: ['images', 'comic'],
+      category: 'source',
+      project: ['12', '7'],
+      page: '2',
+    });
+    const url = buildAssetLibraryUrl(parsed);
+    expect(url).toBe('/asset-viewer?project=7&project=12&type=comic&type=images&category=source&extension=png&page=2&view=list');
+    const params = new URL(`http://localhost${url}`).searchParams;
+    expect(params.getAll('project')).toEqual(['7', '12']);
+    expect(params.getAll('type')).toEqual(['comic', 'images']);
+    expect(url).not.toContain('%2C');
+    expect(url).not.toContain('7,12');
+    // Parameter order in the request does not change the canonical URL.
+    expect(buildAssetLibraryUrl(parseAssetLibraryQuery({
+      page: '2', project: ['7', '12'], extension: 'png', view: 'list', category: 'source', type: ['comic', 'images'],
+    }))).toBe(url);
+  });
+
+  it('retains Project and Type selections through sort, page, size and view changes', () => {
+    const parsed = parseAssetLibraryQuery({ project: ['3', '1'], type: ['comic', 'animation'] });
+    const prefix = '/asset-viewer?project=1&project=3&type=animation&type=comic';
+    expect(buildAssetLibraryUrl(parsed, { page: 4 })).toBe(`${prefix}&page=4`);
+    expect(buildAssetLibraryUrl(parsed, { sort: 'size', order: 'desc' })).toBe(`${prefix}&sort=size&order=desc`);
+    expect(buildAssetLibraryUrl(parsed, { pageSize: 'all' })).toBe(`${prefix}&pageSize=all`);
+    expect(buildAssetLibraryUrl(parsed, { view: 'list' })).toBe(`${prefix}&view=list`);
+    expect(buildAssetLibraryUrl(parsed, { search: 'cover' })).toBe(`${prefix}&search=cover`);
+    expect(buildAssetLibraryUrl(parsed, { categories: ['source'] })).toBe(`${prefix}&category=source`);
+  });
+
+  it('accepts array, legacy scalar and clearing overrides without mutating state', () => {
+    const parsed = parseAssetLibraryQuery({ project: ['3', '1'], type: 'comic' });
+    const original = structuredClone(parsed);
+
+    expect(buildAssetLibraryUrl(parsed, { projectIds: [9, 2, 9] })).toBe('/asset-viewer?project=2&project=9&type=comic');
+    expect(buildAssetLibraryUrl(parsed, { projectId: 5 })).toBe('/asset-viewer?project=5&type=comic');
+    expect(buildAssetLibraryUrl(parsed, { project: 6 })).toBe('/asset-viewer?project=6&type=comic');
+    expect(buildAssetLibraryUrl(parsed, { projectIds: [] })).toBe('/asset-viewer?type=comic');
+    expect(buildAssetLibraryUrl(parsed, { projectId: null })).toBe('/asset-viewer?type=comic');
+    expect(buildAssetLibraryUrl(parsed, { projectTypes: [] })).toBe('/asset-viewer?project=1&project=3');
+    expect(buildAssetLibraryUrl(parsed, { type: ['images', 'Bad'] })).toBe('/asset-viewer?project=1&project=3&type=images');
+    expect(parsed).toEqual(original);
+  });
+
+  it('keeps legacy scalar state callers compatible', () => {
+    expect(buildAssetLibraryUrl({ projectId: 9 })).toBe('/asset-viewer?project=9');
+    expect(buildAssetLibraryUrl({ project: 9 })).toBe('/asset-viewer?project=9');
+    expect(buildAssetLibraryUrl({ projectId: '0' })).toBe('/asset-viewer');
+    expect(buildAssetLibraryUrl({}, { presence: 'missing' })).toBe('/asset-viewer?presence=missing');
+  });
+});

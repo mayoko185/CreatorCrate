@@ -323,11 +323,22 @@ test('Projects Grid style crops previews to squares only when Cropped is saved',
     expect(uncroppedWide.width).toBeGreaterThan(uncroppedWide.height * 3);
     expect(uncroppedTall.height).toBeGreaterThan(uncroppedTall.width * 3);
 
-    // Save Cropped through the Projects defaults dialog autosave.
-    await page.getByRole('link', { name: 'Projects defaults' }).click();
-    await page.locator('#projects-default-gridStyle').selectOption('cropped', { force: true });
+    // WP10b: choose Cropped in Filters & Defaults (applies to the current
+    // page at once), then save it explicitly with Save new defaults.
+    await page.getByRole('link', { name: 'Filters & Defaults', exact: true }).click();
+    await expect(page.locator('[data-projects-defaults-save]')).toBeEnabled();
+    await page.locator('#projects-grid-style').selectOption('cropped', { force: true });
+    await expect(page.locator('.project-grid')).toHaveAttribute('data-grid-style', 'cropped');
+    await page.locator('[data-projects-defaults-save]').click();
+    await expect(page.locator('#projects-defaults-form [data-settings-fetch-save-status]')).toHaveText('Defaults saved.');
     await expect(page.locator('.project-grid')).toHaveAttribute('data-grid-style', 'cropped');
     await page.keyboard.press('Escape');
+    await expect(page.locator('#projects-filter-dialog')).toBeHidden();
+    // The pointer is still where Save was clicked, now over a grid card whose
+    // hover card would cover the next target; start the hover checks from a
+    // neutral pointer position with no information card open.
+    await moveAway(page);
+    await expect(page.locator('[data-project-info-card]:visible')).toHaveCount(0);
 
     for (const preview of [gridPreview(page, wideId), gridPreview(page, tallId)]) {
       await expect(preview.image).toBeVisible();

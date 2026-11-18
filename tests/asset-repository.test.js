@@ -1653,6 +1653,101 @@ describe('asset repository', () => {
       expect(assetRepo.countAllAssets({ projectId: other.id })).toBe(1);
     });
 
+    describe('WP8 owning Project and Project Type predicates', () => {
+      let scope;
+
+      beforeEach(() => {
+        const comic = createProject('WP8 Comic', { projectType: 'comic' });
+        const animation = createProject('WP8 Animation', { projectType: 'animation' });
+        const archived = createProject('WP8 Archived Comic', { projectType: 'comic' });
+        const rows = {
+          base: addAsset(projectId, 'base.png'),
+          baseJpg: addAsset(projectId, 'base.jpg', { extension: 'jpg', mimeType: 'image/jpeg' }),
+          comicCbz: addAsset(comic.id, 'issue.cbz', { extension: 'cbz', mimeType: 'application/vnd.comicbook+zip' }),
+          comicPng: addAsset(comic.id, 'page.png'),
+          animMp4: addAsset(animation.id, 'clip.mp4', { extension: 'mp4', mimeType: 'video/mp4' }),
+          archivedTiff: addAsset(archived.id, 'old.tiff', { extension: 'tiff', mimeType: 'image/tiff' }),
+        };
+        db.prepare(`UPDATE projects SET status = 'archived', archived_at = datetime('now') WHERE id = ?`)
+          .run(archived.id);
+        scope = { comic, animation, archived, rows };
+      });
+
+      const rowIds = (rows) => rows.map((row) => row.id);
+      const sortedIds = (...rows) => rows.map((row) => row.id).sort((left, right) => left - right);
+
+      it('ORs Project IDs and ORs Project Types, AND-ing the dimensions on every query surface', () => {
+        const { comic, animation, rows } = scope;
+        const filters = { projectIds: [animation.id, comic.id], projectTypes: ['comic'] };
+
+        expect(rowIds(assetRepo.findAllAssets({ ...filters, limit: null })).sort((l, r) => l - r))
+          .toEqual(sortedIds(rows.comicCbz, rows.comicPng));
+        expect(assetRepo.countAllAssets(filters)).toBe(2);
+        expect(rowIds(assetRepo.findAllAssetsSlideshowSequence(filters)).sort((l, r) => l - r))
+          .toEqual(sortedIds(rows.comicCbz, rows.comicPng));
+        expect(assetRepo.listAllAssetExtensions(filters)).toEqual(['cbz', 'png']);
+
+        expect(assetRepo.countAllAssets({ projectIds: [projectId, animation.id] })).toBe(3);
+        expect(assetRepo.countAllAssets({ projectTypes: ['images', 'animation'] })).toBe(3);
+        expect(assetRepo.listAllAssetExtensions({ projectTypes: ['images', 'animation'] }))
+          .toEqual(['jpg', 'mp4', 'png']);
+      });
+
+      it('applies the predicates before LIMIT/OFFSET with stable ordering', () => {
+        const filters = { projectTypes: ['images', 'comic'], sort: 'filename', order: 'asc' };
+        const all = rowIds(assetRepo.findAllAssets({ ...filters, limit: null }));
+        const pages = [0, 2].flatMap((offset) => rowIds(assetRepo.findAllAssets({ ...filters, limit: 2, offset })));
+
+        expect(all).toHaveLength(4);
+        expect(pages).toEqual(all);
+        expect(rowIds(assetRepo.findAllAssetsSlideshowSequence(filters))).toEqual(all);
+      });
+
+      it('imposes no restriction for empty or null selections and never emits an empty IN()', () => {
+        const prepareSpy = vi.spyOn(db, 'prepare');
+        const unrestricted = assetRepo.countAllAssets();
+
+        expect(assetRepo.countAllAssets({ projectIds: [], projectTypes: [] })).toBe(unrestricted);
+        expect(assetRepo.countAllAssets({ projectIds: null, projectTypes: null })).toBe(unrestricted);
+        expect(unrestricted).toBe(5);
+        expect(prepareSpy.mock.calls.map((call) => call[0]).join('\n')).not.toMatch(/IN \(\)/);
+      });
+
+      it('keeps archived and unknown Projects ineligible instead of broadening results', () => {
+        const { archived, rows } = scope;
+        expect(assetRepo.countAllAssets({ projectIds: [archived.id] })).toBe(0);
+        expect(assetRepo.countAllAssets({ projectIds: [archived.id, 999999] })).toBe(0);
+        expect(rowIds(assetRepo.findAllAssets({ projectIds: [archived.id, projectId], limit: null })).sort((l, r) => l - r))
+          .toEqual(sortedIds(rows.base, rows.baseJpg));
+        expect(assetRepo.listAllAssetExtensions({ projectIds: [archived.id] })).toEqual([]);
+        expect(assetRepo.listAllAssetExtensions({ projectTypes: ['comic'] })).toEqual(['cbz', 'png']);
+        expect(assetRepo.listAllAssetExtensions({ projectTypes: ['comic'], includeArchived: true }))
+          .toEqual(['cbz', 'png', 'tiff']);
+      });
+
+      it('fails closed for non-empty selections without a usable value', () => {
+        expect(assetRepo.countAllAssets({ projectIds: ['x', 0, -1] })).toBe(0);
+        expect(assetRepo.countAllAssets({ projectTypes: [''] })).toBe(0);
+        expect(assetRepo.findAllAssetsSlideshowSequence({ projectTypes: [7] })).toEqual([]);
+      });
+
+      it('binds Project Type values as parameters', () => {
+        const prepareSpy = vi.spyOn(db, 'prepare');
+        const hostile = "comic') OR 1=1 --";
+        expect(assetRepo.countAllAssets({ projectTypes: [hostile] })).toBe(0);
+        const sql = prepareSpy.mock.calls.at(-1)[0];
+        expect(sql).toContain('p.project_type IN (?)');
+        expect(sql).not.toContain(hostile);
+      });
+
+      it('keeps the legacy scalar projectId filter working', () => {
+        const { comic, rows } = scope;
+        expect(rowIds(assetRepo.findAllAssets({ projectId: comic.id, limit: null })).sort((l, r) => l - r))
+          .toEqual(sortedIds(rows.comicCbz, rows.comicPng));
+        expect(assetRepo.listAllAssetExtensions({ projectId: comic.id })).toEqual(['cbz', 'png']);
+      });
+    });
+
     it('filters global assets by effective tags across projects before pagination without duplicates', () => {
       const other = createProject('Other Tagged Project');
       const category = insertCategory(projectId, {

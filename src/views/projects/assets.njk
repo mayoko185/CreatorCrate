@@ -1230,7 +1230,11 @@
                 {% set summaryAttributes = [["aria-describedby", field.id ~ '-error'], ["aria-invalid", true]] %}
               {% endif %}
               {% set fieldLabel = 'Grid size default' if field.name == 'gridSize' else ('List size default' if field.name == 'listSize' else field.label) %}
-              <div class="field app-dialog-field{% if field.error %} field-error{% endif %}" data-dialog-field="{{ field.name }}">
+              {# R3: Grid style and Grid size apply to Grid, List size to List. The
+                 inactive View's field is hidden from the first render (presentation
+                 only: its control, value and form association stay for Save). #}
+              {% set fieldView = 'list' if field.name == 'listSize' else 'grid' %}
+              <div class="field app-dialog-field{% if field.error %} field-error{% endif %}" data-dialog-field="{{ field.name }}" data-filters-visible-when-view="{{ fieldView }}"{% if fieldView != ('list' if filters.view == 'list' else 'grid') %} hidden{% endif %}>
                 {{ dropdown.singleSelect({
                   id: field.id ~ '-dropdown',
                   name: field.name,
@@ -1279,12 +1283,12 @@
       </section>
     </div>
     <footer class="app-dialog-footer filters-defaults-footer">
-      <form class="projects-filter-reset filters-defaults-reset-form" method="get" action="{{ resetFiltersUrl }}">
-        <button class="button button-secondary" type="submit" data-project-assets-reset>Reset filters</button>
-      </form>
+      <button class="button button-secondary" type="submit" form="project-assets-defaults-form" data-project-assets-defaults-save>Save new defaults</button>
       <button class="button button-secondary" type="button" data-project-assets-defaults-reset
               data-reset-action="/projects/{{ project.id }}/assets/defaults/reset">Reset defaults</button>
-      <button class="button button-primary" type="submit" form="project-assets-defaults-form" data-project-assets-defaults-save>Save new defaults</button>
+      <form class="projects-filter-reset filters-defaults-reset-form" method="get" action="{{ resetFiltersUrl }}">
+        <button class="button button-primary" type="submit" data-project-assets-reset>Reset filters</button>
+      </form>
     </footer>
   {% endcall %}
   {% set currentCategoryId = '' %}

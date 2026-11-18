@@ -17,6 +17,21 @@ async function selectAndSave(page, locator, value) {
     .getByRole('button', { name: 'Save new defaults', exact: true }).click();
 }
 
+// R3: the dialog shows only the current View's presentation fields; the other
+// View's Grid style / size field is hidden, but stays enabled, valued and
+// saved. Several scenarios below deliberately edit that hidden field while the
+// other View is displayed (a setup Save, or an edit made during a held
+// activation whose request timing they measure). A user reaches it by
+// switching the View, which would add a navigation to those scenarios, so a
+// hidden field is set through its native select instead: the same input and
+// change the dropdown dispatches for a choice. Visible fields keep the UI path.
+async function chooseHiddenPresentationField(page, dropdownId, label) {
+  const wrapper = page.locator(`#${dropdownId}`).locator('xpath=ancestor::*[@data-filters-visible-when-view][1]');
+  if (await wrapper.count() === 0 || !(await wrapper.evaluate((node) => node.hidden))) return false;
+  await page.locator(`#${dropdownId.replace(/-dropdown$/, '')}`).selectOption({ label }, { force: true });
+  return true;
+}
+
 // External runs intentionally edit defaults for two explicitly named projects.
 // Without these environment variables all data is isolated and removed afterward.
 async function fixture({ many = false, extra = 0 } = {}) {
@@ -664,6 +679,7 @@ test('Filters & Defaults Save keeps the current context, newer edits and failed 
   const settledRegion = () => expect(region).not.toHaveAttribute('aria-busy', 'true');
   const snapshots = () => form.locator('[data-project-assets-default-values]').evaluate((el) => JSON.parse(el.textContent));
   const pick = async (id, label) => {
+    if (await chooseHiddenPresentationField(page, id, label)) return settledRegion();
     const dropdown = dialog.locator(`#${id}`);
     await dropdown.locator('summary').click();
     await dropdown.locator('label').filter({ hasText: new RegExp(`^\\s*${label}\\s*$`) }).click();
@@ -796,6 +812,7 @@ test('Grid style applies live and acknowledged defaults synchronize browser size
     localStorage.getItem('creatorcrate-asset-list-size'),
   ]);
   const pick = async (id, label) => {
+    if (await chooseHiddenPresentationField(page, id, label)) return settledRegion();
     const dropdown = dialog.locator(`#${id}`);
     await dropdown.locator('summary').click();
     await dropdown.locator('label').filter({ hasText: new RegExp(`^\\s*${label}\\s*$`) }).click();
@@ -992,6 +1009,7 @@ test('Grid and List size defaults preview live and survive region replacement, S
     localStorage.getItem('creatorcrate-asset-list-size'),
   ]);
   const choose = async (id, label) => {
+    if (await chooseHiddenPresentationField(page, id, label)) return;
     const dropdown = dialog.locator(`#${id}`);
     await dropdown.locator('summary').click();
     await dropdown.locator('label').filter({ hasText: new RegExp(`^\\s*${label}\\s*$`) }).click();
@@ -1173,6 +1191,7 @@ test('a held scope activation with a newer edit synchronizes the untouched size 
     localStorage.getItem('creatorcrate-asset-list-size'),
   ]);
   const choose = async (id, label) => {
+    if (await chooseHiddenPresentationField(page, id, label)) return;
     const dropdown = dialog.locator(`#${id}`);
     await dropdown.locator('summary').click();
     await dropdown.locator('label').filter({ hasText: new RegExp(`^\\s*${label}\\s*$`) }).click();
@@ -1399,6 +1418,7 @@ test('a GET-only check after a failed recovery read keeps size edits made during
   const settledRegion = () => expect(region).not.toHaveAttribute('aria-busy', 'true');
   const snapshots = () => form.locator('[data-project-assets-default-values]').evaluate((el) => JSON.parse(el.textContent));
   const choose = async (id, label) => {
+    if (await chooseHiddenPresentationField(page, id, label)) return;
     const dropdown = dialog.locator(`#${id}`);
     await dropdown.locator('summary').click();
     await dropdown.locator('label').filter({ hasText: new RegExp(`^\\s*${label}\\s*$`) }).click();
@@ -1556,6 +1576,7 @@ test('Space on the shown Grid or List size during an unresolved activation keeps
   const settledRegion = () => expect(region).not.toHaveAttribute('aria-busy', 'true');
   const snapshots = () => form.locator('[data-project-assets-default-values]').evaluate((el) => JSON.parse(el.textContent));
   const choose = async (id, label) => {
+    if (await chooseHiddenPresentationField(page, id, label)) return;
     const dropdown = dialog.locator(`#${id}`);
     await dropdown.locator('summary').click();
     await dropdown.locator('label').filter({ hasText: new RegExp(`^\\s*${label}\\s*$`) }).click();
@@ -1688,6 +1709,12 @@ test('Space on the shown Grid or List size during an unresolved activation keeps
     await pick('projectAssets-default-gridSize-dropdown', 'Default');
     await saveAndSettle();
     await expect(listSizeSelect).toHaveValue('large');
+    // R3: List size default is shown (and its checked option reachable by
+    // Space) only while List is the View, so this half runs in List; the View
+    // change happens while idle, before the activation under test.
+    await pick('asset-view-filter-dropdown', 'List');
+    await expect(list).toHaveAttribute('data-list-size', 'large');
+    const listReturnTo = new URL(await form.locator('input[name="returnTo"]').inputValue(), f.baseURL).href;
     held = await holdUnreadable();
     const postsBeforeSecond = posts.length;
     const requestsBeforeSecond = requests.length;
@@ -1695,7 +1722,7 @@ test('Space on the shown Grid or List size during an unresolved activation keeps
     await expect(form).toHaveAttribute('data-settings-fetch-save-state', 'pending');
     await spaceOnShown('projectAssets-default-listSize-dropdown', 'large');
     // The automatic recovery read succeeds at once.
-    const recovered = page.waitForResponse((r) => r.request().method() === 'GET' && r.url() === returnTo);
+    const recovered = page.waitForResponse((r) => r.request().method() === 'GET' && r.url() === listReturnTo);
     held.release();
     expect((await recovered).status()).toBe(200);
     await expect(loadedScope).toHaveValue('project');
@@ -1703,7 +1730,7 @@ test('Space on the shown Grid or List size during an unresolved activation keeps
     await settledRegion();
     await held.unroute();
     expect(posts).toHaveLength(postsBeforeSecond + 1);
-    expect(requests.slice(requestsBeforeSecond).filter((r) => r.method === 'GET' && r.url === returnTo)).toHaveLength(1);
+    expect(requests.slice(requestsBeforeSecond).filter((r) => r.method === 'GET' && r.url === listReturnTo)).toHaveLength(1);
     await expect(gridSizeSelect).toHaveValue('large');
     await expect(listSizeSelect).toHaveValue('large');
     await expect(gridSizeSummary).toHaveAttribute('aria-label', /Large$/);
@@ -1713,7 +1740,6 @@ test('Space on the shown Grid or List size during an unresolved activation keeps
       .toEqual(['save', 'project', 'large', 'large']);
     expect((await snapshots()).project).toMatchObject({ gridSize: 'large', listSize: 'large' });
     expect((await snapshots()).global).toMatchObject({ gridSize: 'default', listSize: 'large' });
-    await pick('asset-view-filter-dropdown', 'List');
     await expect(list).toHaveAttribute('data-list-size', 'large');
     expect(pageErrors).toEqual([]);
   } finally {
@@ -1741,6 +1767,7 @@ test('an acknowledged Save reconciles pagination links with a newer live filter 
   const snapshots = () => form.locator('[data-project-assets-default-values]').evaluate((el) => JSON.parse(el.textContent));
   const linkParams = async (locator) => new URL(await locator.getAttribute('href'), f.baseURL).searchParams;
   const pick = async (id, label) => {
+    if (await chooseHiddenPresentationField(page, id, label)) return settledRegion();
     const dropdown = dialog.locator(`#${id}`);
     await dropdown.locator('summary').click();
     await dropdown.locator('label').filter({ hasText: new RegExp(`^\\s*${label}\\s*$`) }).click();
@@ -1878,6 +1905,7 @@ test('Reset defaults keeps the displayed Tag and Extension for the next Save', a
   const displayed = (name) => page.locator(`#asset-filters input[name="${name}"]:checked`)
     .evaluateAll((inputs) => inputs.map((input) => input.value).filter((value) => value !== 'all').sort());
   const pick = async (id, label) => {
+    if (await chooseHiddenPresentationField(page, id, label)) return settledRegion();
     const dropdown = dialog.locator(`#${id}`);
     await dropdown.locator('summary').click();
     await dropdown.locator('label').filter({ hasText: new RegExp(`^\\s*${label}\\s*$`) }).click();
@@ -2091,6 +2119,7 @@ test('Reset defaults rebuilds pagination links so Next and Previous keep the cur
   });
   const urlParams = () => Object.fromEntries(new URL(page.url()).searchParams);
   const pick = async (id, label) => {
+    if (await chooseHiddenPresentationField(page, id, label)) return settledRegion();
     const dropdown = dialog.locator(`#${id}`);
     await dropdown.locator('summary').click();
     await dropdown.locator('label').filter({ hasText: new RegExp(`^\\s*${label}\\s*$`) }).click();
@@ -2378,6 +2407,7 @@ function resetHarness(page, f) {
       localStorage.getItem('creatorcrate-asset-list-size'),
     ]),
     pick: async (id, label) => {
+      if (await chooseHiddenPresentationField(page, id, label)) return settledRegion();
       const dropdown = dialog.locator(`#${id}`);
       await dropdown.locator('summary').click();
       await dropdown.locator('label').filter({ hasText: new RegExp(`^\\s*${label}\\s*$`) }).click();
@@ -2940,7 +2970,7 @@ test('Use default scope choices stay anchored while the saved status changes', a
     await expect(dialog.getByText('Defaults scope:')).toHaveCount(0);
     await expect(radio('Global')).toBeChecked();
     await expect(radio('Project only')).not.toBeChecked();
-    await expect(dialog.locator('footer button')).toHaveText(['Reset filters', 'Reset defaults', 'Save new defaults']);
+    await expect(dialog.locator('footer button')).toHaveText(['Save new defaults', 'Reset defaults', 'Reset filters']);
 
     // U2: the compact themed radio, not the native control or a segmented toggle.
     const look = (name) => radio(name).evaluate((el) => {
@@ -3079,6 +3109,7 @@ test('Reset filters restores saved/default filters, Sort, View and page size ove
     await expect(dialog).toBeVisible();
   };
   const pick = async (id, label) => {
+    if (await chooseHiddenPresentationField(page, id, label)) return;
     const dropdown = dialog.locator(`#${id}`);
     await dropdown.locator('summary').click();
     await dropdown.locator('label').filter({ hasText: new RegExp(`^\\s*${label}\\s*$`) }).click();
@@ -3331,6 +3362,7 @@ test('Reset filters restores Grid style and Grid/List sizes without touching bro
     await expect(dialog).toBeHidden();
   };
   const pick = async (id, label) => {
+    if (await chooseHiddenPresentationField(page, id, label)) return;
     const dropdown = dialog.locator(`#${id}`);
     await dropdown.locator('summary').click();
     await dropdown.locator('label').filter({ hasText: new RegExp(`^\\s*${label}\\s*$`) }).click();
@@ -3568,6 +3600,7 @@ async function presentationHarness(page, projectId) {
   };
   // A pointer choice of an option (the shown one, or another).
   h.choose = async (key, value) => {
+    if (await chooseHiddenPresentationField(page, DROPDOWN[key], LABELS[value])) return;
     const dropdown = h.dropdown(key);
     await dropdown.locator('summary').click();
     await dropdown.locator('label').filter({ hasText: new RegExp(`^\\s*${LABELS[value]}\\s*$`) }).click();

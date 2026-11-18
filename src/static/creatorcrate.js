@@ -10,6 +10,11 @@ import { enhanceReleaseDelete } from './client/release-delete.js';
 import { enhanceReleasePublishDialog } from './client/release-publish-dialog.js';
 import { enhanceProjectCreateDialog } from './client/project-create-dialog.js';
 import { enhanceReleaseCreateDialog } from './client/release-create-dialog.js';
+// WP9a/WP9b: the Asset Library Filters & Defaults explicit-save transport.
+// It binds the combined dialog's #asset-viewer-defaults-form, which opts in
+// with data-defaults-explicit-save and carries no legacy autosave marker.
+import { enhanceAssetLibraryFiltersDefaults } from './client/asset-library-filters-defaults.js';
+import { enhanceProjectsFiltersDefaults } from './client/projects-filters-defaults.js';
 import { enhanceProjectEditDialog } from './client/project-edit-dialog.js';
 import { enhanceProjectArchive } from './client/project-archive.js';
 import { enhanceProjectDelete } from './client/project-delete.js';
@@ -336,13 +341,9 @@ if (typeof document !== 'undefined') {
       refresh: refreshCalendarLiveRegion,
       refreshFailureMessage: 'Settings saved, but Calendar could not refresh. Refresh the page to see the saved defaults.',
     });
-    enhancePageDefaultsFetchSave(document, {
-      formSelector: '#asset-viewer-defaults-form',
-      markerAttribute: 'data-asset-viewer-defaults-autosave',
-      beginRefresh: beginAssetViewerDefaultsLiveRefresh,
-      refresh: refreshAssetViewerLiveRegion,
-      refreshFailureMessage: 'Settings saved, but Asset Viewer could not refresh. Refresh the page to see the saved defaults.',
-    });
+    // WP9b: the Asset Viewer per-control autosave binding is retired; the
+    // combined Filters & Defaults dialog saves only through the explicit
+    // transport (enhanceAssetLibraryFiltersDefaults below).
     enhanceProjectAssetsDefaultsScope(document);
     enhanceReleaseSocialPrepAutoLaunch(document);
     enhanceProjectAssetsDefaultsFetchSave(document);
@@ -383,11 +384,15 @@ if (typeof document !== 'undefined') {
     enhanceBookCoverUploads(document);
     enhanceProjectAssetCategoryManagement(document);
     enhanceProjectsLiveFiltering(document);
+    // WP10b: the Projects combined Filters & Defaults dialog saves only through
+    // the explicit transport; the legacy per-control autosave form is retired.
+    enhanceProjectsFiltersDefaults(document);
     enhanceReleasesLiveFiltering(document);
     enhanceCalendarLiveFiltering(document);
     enhanceReleaseAssetsLiveFiltering(document);
     enhanceProjectAssetsLiveFiltering(document);
     enhanceAssetLibraryLiveFiltering(document);
+    enhanceAssetLibraryFiltersDefaults(document);
     enhanceAssetViewerInfoCards(document);
     enhanceCalendarInfoCards(document);
     enhanceDashboardTitleInfoCards(document);

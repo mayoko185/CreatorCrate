@@ -498,8 +498,22 @@ describe('Filters & Defaults dialog styles (Filters & Defaults M2 WP5)', () => {
       ".app-dialog--filters-defaults .filters-defaults-scope-option input[type='radio'],",
       ".app-dialog--filters-defaults .filters-defaults-scope-option input[type='radio']:checked,",
     ];
-    expect(beforeBlock.split('\n').filter((line) => line.includes('filters-defaults')).map((line) => line.trim()))
-      .toEqual(sharedThemedRadio);
+    // R1: the footer's Reset filters (inside its display: contents GET form)
+    // joins the shared dark primary dialog-footer treatment the same way:
+    // exactly these three lines, each inside that shared rule.
+    const sharedFooterPrimary = [
+      '.app-dialog--filters-defaults .filters-defaults-reset-form > .button-primary,',
+      '.app-dialog--filters-defaults .filters-defaults-reset-form > .button-primary:not(:disabled):not([aria-disabled="true"]),',
+      '.app-dialog--filters-defaults .filters-defaults-reset-form > .button-primary:hover:not(:disabled):not([aria-disabled="true"]),',
+    ];
+    expect(beforeBlock.split('\n').filter((line) => line.includes('filters-defaults')).map((line) => line.trim()).sort())
+      .toEqual([...sharedThemedRadio, ...sharedFooterPrimary].sort());
+    for (const line of sharedFooterPrimary) {
+      const at = beforeBlock.indexOf(line);
+      const ruleSelectors = beforeBlock.slice(beforeBlock.lastIndexOf('}', at) + 1, beforeBlock.indexOf('{', at));
+      expect(ruleSelectors).toContain(`.app-dialog .app-dialog-footer > .button-primary${line.slice(line.indexOf('.button-primary') + '.button-primary'.length)}`);
+      expect(ruleSelectors).not.toMatch(/filters-defaults-(?!reset-form > \.button-primary)/);
+    }
     for (const line of sharedThemedRadio) {
       const at = beforeBlock.indexOf(line);
       const ruleSelectors = beforeBlock.slice(beforeBlock.lastIndexOf('}', at) + 1, beforeBlock.indexOf('{', at));
@@ -509,5 +523,45 @@ describe('Filters & Defaults dialog styles (Filters & Defaults M2 WP5)', () => {
     expect(block).toMatch(/\.filters-defaults-grid \{[^}]*repeat\(3, minmax\(0, 1fr\)\)/);
     expect(block).toMatch(/@media \(max-width: 860px\)[^@]*repeat\(2, minmax\(0, 1fr\)\)/);
     expect(block).toMatch(/@media \(max-width: 540px\)[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
+  });
+});
+
+describe('searchable multi-select (Filters & Defaults M3 WP9b)', () => {
+  it('renders checkbox rows and an empty-valued Select all inside the searchable option list', () => {
+    const html = renderDropdown('multiSelect', {
+      id: 'project-filter',
+      name: 'project',
+      label: 'Projects',
+      options: [
+        { value: '7', label: 'Alpha', selected: true },
+        { value: '12', label: 'Beta', selected: false },
+      ],
+      selectedValues: ['7'],
+      selectAll: { value: '' },
+      emptySummary: 'All projects',
+      countLabel: 'projects',
+      searchable: true,
+      searchLabel: 'Search projects',
+      searchInputId: 'project-filter-search',
+      optionListLabel: 'Project choices',
+    });
+
+    expect(html).toContain('data-cc-dropdown data-cc-dropdown-mode="multiple" data-cc-dropdown-searchable data-cc-dropdown-type="searchable-multiple"');
+    expect(html).toContain('data-cc-dropdown-select-all=""');
+    expect(html).toMatch(/<input id="project-filter-search" class="asset-project-filter-search" type="search" autocomplete="off" data-cc-dropdown-search aria-controls="project-filter-option-list">/);
+    const list = html.match(/<div id="project-filter-option-list"[\s\S]*?<p id="project-filter-no-results"/)?.[0] || '';
+    expect(list).toContain('role="group" aria-label="Project choices"');
+    expect(list).toMatch(/<input id="project-filter-option-select-all" name="project" type="checkbox" value="" data-cc-dropdown-select-all>/);
+    expect(list).toMatch(/name="project" type="checkbox" value="7" checked>/);
+    expect(list).toMatch(/name="project" type="checkbox" value="12">/);
+    expect(list).not.toContain('type="radio"');
+    expect(html).toContain('>Alpha</span>');
+  });
+
+  it('keeps single searchable selects on the existing searchable-single type', () => {
+    const html = renderDropdown('searchableSingleSelect', {
+      id: 'one', name: 'one', label: 'One', options: [{ value: '1', label: 'One' }],
+    });
+    expect(html).toContain('data-cc-dropdown-type="searchable-single"');
   });
 });

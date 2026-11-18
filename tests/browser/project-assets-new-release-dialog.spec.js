@@ -408,9 +408,9 @@ test('a live filter change shows the selection the dialog will use and the dialo
     await select(page, ids['a.png']);
     await page.locator('nav.view-switcher a[href*="view=list"]').first().click();
     await expect(page.locator('[data-project-assets-live-region]')).not.toHaveAttribute('aria-busy', 'true');
-    // The established refresh renders a new, unselected page; the count says so.
+    // F10: a pure Grid/List change keeps the selection by identity; the count says so.
     const remaining = await selectedOnPage(page);
-    expect(remaining).toEqual([]);
+    expect(remaining).toEqual([ids['a.png']]);
     await expect(page.locator('[data-selected-count]')).toContainText(`${remaining.length} of`);
 
     await trigger(page).click();

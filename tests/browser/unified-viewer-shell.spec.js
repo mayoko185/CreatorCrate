@@ -456,10 +456,11 @@ test('closes on a refresh that empties the source', async ({ page }) => {
 
 test('coexists with the page’s other app dialogs', async ({ page }) => {
   await openLibrary(page);
-  const defaults = page.locator('[data-dialog-open="asset-viewer-defaults-dialog"]').first();
+  // WP9b: the Asset Library's one Filters & Defaults dialog.
+  const defaults = page.locator('[data-dialog-open="asset-viewer-filter-dialog"]').first();
   await expect(defaults).toBeVisible();
   await defaults.click();
-  const defaultsDialog = page.locator('#asset-viewer-defaults-dialog');
+  const defaultsDialog = page.locator('#asset-viewer-filter-dialog');
   await expect(defaultsDialog).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(defaultsDialog).toBeHidden();

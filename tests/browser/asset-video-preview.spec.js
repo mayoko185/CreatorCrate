@@ -378,7 +378,7 @@ test('selection, details, role, modifier clicks, view switches, and filters neve
     await page.getByRole('link', { name: 'List view' }).click();
     await expect(page).toHaveURL(/view=list/);
     await waitForFrameMetadata(page);
-    await page.getByRole('link', { name: 'Filter assets' }).click();
+    await page.getByRole('link', { name: 'Filters & Defaults', exact: true }).click();
     const filterDialog = page.locator('#asset-viewer-filter-dialog');
     await expect(filterDialog).toBeVisible();
     const response = page.waitForResponse((candidate) => new URL(candidate.url()).pathname === '/asset-viewer');

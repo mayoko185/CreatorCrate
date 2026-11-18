@@ -439,8 +439,8 @@ test('filtering, Back/Forward and a delayed stale response reconcile to the late
   const historyLength = await page.evaluate(() => window.history.length);
   expect(await sequenceEntries(page)).toHaveLength(10);
 
-  // Filter to project two through the real Filter dialog (live, pushed).
-  await page.getByRole('link', { name: 'Filter assets' }).click();
+  // Filter to project two through the real Filters & Defaults dialog (live, pushed).
+  await page.getByRole('link', { name: 'Filters & Defaults', exact: true }).click();
   const filterDialog = page.locator('#asset-viewer-filter-dialog');
   await expect(filterDialog).toBeVisible();
   await waitForRegionSwap(page, async () => {

@@ -192,8 +192,8 @@ describe('workflow query service — asset library page model', () => {
     expect(page.hasAnyAssets).toBe(true);
 
     expect(page.projectOptions).toEqual([
-      { id: alpha.id, title: 'Alpha Project' },
-      { id: beta.id, title: 'Beta Project' },
+      { id: alpha.id, title: 'Alpha Project', selected: false },
+      { id: beta.id, title: 'Beta Project', selected: false },
     ]);
     expect(page.categoryOptions.find((option) => option.value === 'all')).toMatchObject({
       label: 'All categories',
@@ -1001,6 +1001,8 @@ describe('workflow query service — asset library page model', () => {
     expect(page.hasNextPage).toBe(false);
     expect(page.filters).toEqual({
       projectId: project.id,
+      projectIds: [project.id],
+      projectTypes: [],
       categories: ['source'],
       tags: [],
       search: 'keep',
@@ -1017,7 +1019,7 @@ describe('workflow query service — asset library page model', () => {
       page: 2,
       pageSize: 1,
     });
-    expect(page.projectOptions).toContainEqual({ id: project.id, title: 'Filtered Project' });
+    expect(page.projectOptions).toContainEqual({ id: project.id, title: 'Filtered Project', selected: true });
     expect(page.categoryOptions.find((option) => option.value === 'source').selected).toBe(true);
     expect(page.extensionOptions.find((option) => option.value === 'png').selected).toBe(true);
     expect(page.presenceOptions.find((option) => option.value === 'present').selected).toBe(true);
@@ -1090,5 +1092,246 @@ describe('workflow query service — asset library page model', () => {
     expect(projectPage).toHaveProperty('releaseTargets');
     expect(libraryPage.assets).toHaveLength(1);
     expect(libraryPage).not.toHaveProperty('releaseTargets');
+  });
+
+  describe('WP8 multi-project and Project Type filtering', () => {
+    let fixture;
+
+    beforeEach(() => {
+      insertGlobalCategory(db, { displayName: 'Library Source', directorySlug: 'library-source', displayOrder: 1 });
+      const alpha = insertProject(db, { title: 'WP8 Alpha', projectType: 'images' });
+      const beta = insertProject(db, { title: 'WP8 Beta', projectType: 'comic' });
+      const gamma = insertProject(db, { title: 'WP8 Gamma', projectType: 'animation' });
+      const delta = insertProject(db, { title: 'WP8 Delta', projectType: 'images' });
+      const archived = insertProject(db, {
+        title: 'WP8 Archived',
+        projectType: 'comic',
+        status: 'archived',
+        archivedAt: '2026-01-01 00:00:00',
+      });
+      const categoryFor = (project) => insertProjectCategory(db, {
+        projectId: project.id,
+        displayName: 'Source',
+        directorySlug: 'library-source',
+      });
+      const alphaSource = categoryFor(alpha);
+      const betaSource = categoryFor(beta);
+      const assets = {
+        a1: insertAsset(db, { projectId: alpha.id, relativePath: 'a1.png', categoryId: alphaSource.id }),
+        a2: insertAsset(db, { projectId: alpha.id, relativePath: 'a2.jpg' }),
+        a3: insertAsset(db, { projectId: alpha.id, relativePath: 'a3.png', isPresent: 0 }),
+        b1: insertAsset(db, { projectId: beta.id, relativePath: 'b1.cbz' }),
+        b2: insertAsset(db, { projectId: beta.id, relativePath: 'b2.png', categoryId: betaSource.id }),
+        g1: insertAsset(db, { projectId: gamma.id, relativePath: 'g1.mp4' }),
+        g2: insertAsset(db, { projectId: gamma.id, relativePath: 'g2.png' }),
+        d1: insertAsset(db, { projectId: delta.id, relativePath: 'd1.webp' }),
+        x1: insertAsset(db, { projectId: archived.id, relativePath: 'x1.png' }),
+        x2: insertAsset(db, { projectId: archived.id, relativePath: 'x2.tiff' }),
+      };
+      db.prepare(`UPDATE assets SET size_bytes = 4096, modified_at = '2026-08-02T12:00:00.000Z'`).run();
+      db.prepare(`UPDATE assets SET mime_type = 'image/png' WHERE extension = 'png'`).run();
+      db.prepare(`UPDATE assets SET mime_type = 'image/jpeg' WHERE extension = 'jpg'`).run();
+      fixture = { alpha, beta, gamma, delta, archived, assets };
+    });
+
+    const ids = (page) => page.assets.map((asset) => asset.id);
+    const sequenceIds = (page) => page.slideshowSequence.map((entry) => entry.id);
+    // The slideshow keeps only previewable rows, in the same filtered order.
+    const previewableIds = (page) => page.assets.filter((asset) => asset.preview_url).map((asset) => asset.id);
+    const extensionValues = (page) => page.extensionOptions.map((option) => option.value);
+    const pick = (...names) => names.map((name) => fixture.assets[name].id);
+    const ascending = (values) => [...values].sort((left, right) => left - right);
+
+    it('ORs several selected Projects across page, count, slideshow and extension choices', () => {
+      const { alpha, beta } = fixture;
+      const page = service.getAssetLibraryPage({ projectIds: [beta.id, alpha.id, beta.id] });
+
+      expect(page.filters.projectIds).toEqual(ascending([alpha.id, beta.id]));
+      expect(page.filters.projectId).toBeNull();
+      expect(page.total).toBe(5);
+      expect(ids(page)).toEqual(pick('a1', 'a2', 'a3', 'b1', 'b2'));
+      expect(sequenceIds(page)).toEqual(pick('a1', 'a2', 'b2'));
+      expect(sequenceIds(page)).toEqual(previewableIds(page));
+      expect(extensionValues(page)).toEqual(['cbz', 'jpg', 'png']);
+      expect(page.projectOptions.filter((option) => option.selected).map((option) => option.id))
+        .toEqual([alpha.id, beta.id]);
+    });
+
+    it('keeps the legacy scalar projectId alias for exactly one selected Project', () => {
+      const legacy = service.getAssetLibraryPage({ projectId: fixture.gamma.id });
+      const single = service.getAssetLibraryPage({ projectIds: [fixture.gamma.id] });
+
+      expect(legacy.filters.projectIds).toEqual([fixture.gamma.id]);
+      expect(legacy.filters.projectId).toBe(fixture.gamma.id);
+      expect(ids(legacy)).toEqual(pick('g1', 'g2'));
+      expect(ids(single)).toEqual(ids(legacy));
+      expect(extensionValues(legacy)).toEqual(['mp4', 'png']);
+    });
+
+    it('filters by one or several live Project Types using the owning Project type', () => {
+      const comic = service.getAssetLibraryPage({ projectTypes: ['comic'] });
+      expect(comic.filters.projectTypes).toEqual(['comic']);
+      // The archived comic Project stays excluded.
+      expect(ids(comic)).toEqual(pick('b1', 'b2'));
+      expect(extensionValues(comic)).toEqual(['cbz', 'png']);
+
+      const several = service.getAssetLibraryPage({ projectTypes: ['images', 'comic', 'images'] });
+      expect(several.filters.projectTypes).toEqual(['comic', 'images']);
+      expect(several.total).toBe(6);
+      expect(ids(several)).toEqual(pick('a1', 'a2', 'a3', 'b1', 'b2', 'd1'));
+      expect(sequenceIds(several)).toEqual(pick('a1', 'a2', 'b2'));
+      expect(extensionValues(several)).toEqual(['cbz', 'jpg', 'png', 'webp']);
+    });
+
+    it('drops unknown, malformed and stale Project Types against the live catalogue', () => {
+      const mixed = service.getAssetLibraryPage({ projectTypes: ['animation', 'bogus', 'Images', '', 7] });
+      expect(mixed.filters.projectTypes).toEqual(['animation']);
+      expect(ids(mixed)).toEqual(pick('g1', 'g2'));
+
+      projectOptionCatalogueService.deleteOption('projectType', 'wallpaper');
+      const stale = service.getAssetLibraryPage({ projectTypes: ['wallpaper'] });
+      expect(stale.filters.projectTypes).toEqual([]);
+      expect(stale.projectTypeOptions.map((option) => option.value)).not.toContain('wallpaper');
+    });
+
+    it('exposes the complete live Project Type catalogue with selected state and display metadata', () => {
+      const page = service.getAssetLibraryPage({ projectTypes: ['animation', 'comic'] });
+      expect(page.projectTypeOptions.map(({ value, label, selected }) => ({ value, label, selected }))).toEqual([
+        { value: 'images', label: 'Images', selected: false },
+        { value: 'comic', label: 'Comic', selected: true },
+        { value: 'animation', label: 'Animation', selected: true },
+        { value: 'wallpaper', label: 'Wallpaper', selected: false },
+      ]);
+      expect(page.projectTypeOptions[0]).toMatchObject({ color: '#22D3EE' });
+      expect(typeof page.projectTypeOptions[0].foregroundColor).toBe('string');
+    });
+
+    it('ANDs Projects with Project Types and returns consistent empty results', () => {
+      const { alpha, beta, gamma } = fixture;
+      const page = service.getAssetLibraryPage({
+        projectIds: [alpha.id, beta.id, gamma.id],
+        projectTypes: ['images', 'animation'],
+      });
+
+      expect(ids(page)).toEqual(pick('a1', 'a2', 'a3', 'g1', 'g2'));
+      expect(page.total).toBe(5);
+      expect(extensionValues(page)).toEqual(['jpg', 'mp4', 'png']);
+
+      const disjoint = service.getAssetLibraryPage({ projectIds: [beta.id], projectTypes: ['images'] });
+      expect(disjoint.total).toBe(0);
+      expect(disjoint.assets).toEqual([]);
+      expect(disjoint.slideshowSequence).toEqual([]);
+      expect(disjoint.extensionOptions).toEqual([]);
+      expect(disjoint.page).toBe(1);
+      expect(disjoint.pageCount).toBe(1);
+      expect(disjoint.hasAnyAssets).toBe(true);
+    });
+
+    it('composes Project/Type with Category, Tag, Extension, Presence, Usage and Search', () => {
+      const { alpha, beta, gamma, delta } = fixture;
+      const tagRepository = createTagRepository(db);
+      const tag = tagRepository.create({ displayName: 'WP8 Tag', normalizedName: 'wp8-tag' });
+      tagRepository.assignToAsset(fixture.assets.a2.id, tag.id);
+      tagRepository.assignToProject(gamma.id, tag.id);
+      const release = insertRelease(db, { projectId: alpha.id, title: 'WP8 Release' });
+      linkAssetToRelease(db, release.id, fixture.assets.a1.id);
+
+      expect(ids(service.getAssetLibraryPage({
+        projectIds: [alpha.id, beta.id],
+        categories: ['library-source'],
+      }))).toEqual(pick('a1', 'b2'));
+      expect(ids(service.getAssetLibraryPage({
+        projectTypes: ['images', 'animation'],
+        tags: [tag.id],
+      }))).toEqual(pick('a2', 'g1', 'g2'));
+      expect(ids(service.getAssetLibraryPage({
+        projectIds: [alpha.id, gamma.id, delta.id],
+        extensions: ['png'],
+        presence: 'present',
+      }))).toEqual(pick('a1', 'g2'));
+      expect(ids(service.getAssetLibraryPage({
+        projectTypes: ['images'],
+        usage: 'used',
+      }))).toEqual(pick('a1'));
+      expect(ids(service.getAssetLibraryPage({
+        projectTypes: ['images'],
+        usage: 'unused',
+        search: 'a',
+      }))).toEqual(pick('a2', 'a3'));
+    });
+
+    it('drops a selected Extension only when absent from the Project/Type-scoped universe', () => {
+      const scoped = service.getAssetLibraryPage({ projectTypes: ['comic'], extensions: ['cbz', 'mp4'] });
+      expect(scoped.filters.extensions).toEqual(['cbz']);
+      expect(ids(scoped)).toEqual(pick('b1'));
+
+      // A page that renders none of the webp rows still offers and keeps webp.
+      const firstPage = service.getAssetLibraryPage({ projectTypes: ['images'], pageSize: 10, extensions: ['jpg'] });
+      expect(ids(firstPage)).toEqual(pick('a2'));
+      expect(extensionValues(firstPage)).toEqual(['jpg', 'png', 'webp']);
+      const webp = service.getAssetLibraryPage({ projectTypes: ['images'], pageSize: 10, extensions: ['webp'] });
+      expect(webp.filters.extensions).toEqual(['webp']);
+      expect(ids(webp)).toEqual(pick('d1'));
+    });
+
+    it('paginates the filtered set before LIMIT/OFFSET and keeps View All and slideshow complete', () => {
+      const { alpha, beta, gamma } = fixture;
+      for (let index = 0; index < 12; index += 1) {
+        insertAsset(db, { projectId: gamma.id, relativePath: `z-${String(index).padStart(2, '0')}.png`, sizeBytes: 4096, modifiedAt: '2026-08-02T12:00:00.000Z' });
+        db.prepare(`UPDATE assets SET mime_type = 'image/png' WHERE extension = 'png'`).run();
+      }
+      const input = { projectIds: [alpha.id, beta.id, gamma.id], projectTypes: ['comic', 'animation'], pageSize: 10 };
+      const first = service.getAssetLibraryPage({ ...input, page: 1 });
+      const second = service.getAssetLibraryPage({ ...input, page: 2 });
+      const all = service.getAssetLibraryPage({ ...input, pageSize: 'all' });
+
+      expect(first.total).toBe(16);
+      expect(first.pageCount).toBe(2);
+      expect(first.assets).toHaveLength(10);
+      expect(second.assets).toHaveLength(6);
+      expect(second.page).toBe(2);
+      expect(second.hasNextPage).toBe(false);
+      expect([...ids(first), ...ids(second)]).toEqual(ids(all));
+      expect(new Set([...ids(first), ...ids(second)]).size).toBe(16);
+      expect(all.assets.every((asset) => [beta.id, gamma.id].includes(asset.project_id))).toBe(true);
+      expect(all.total).toBe(16);
+      expect(all.pageCount).toBe(1);
+      expect(sequenceIds(all).length).toBeGreaterThan(10);
+      expect(sequenceIds(all)).toEqual(previewableIds(all));
+      expect(sequenceIds(first)).toEqual(sequenceIds(all));
+      expect(sequenceIds(second)).toEqual(sequenceIds(all));
+
+      const clamped = service.getAssetLibraryPage({ ...input, page: 9 });
+      expect(clamped.page).toBe(2);
+      expect(ids(clamped)).toEqual(ids(second));
+    });
+
+    it('never broadens access for archived or unknown Project IDs', () => {
+      const { alpha, archived } = fixture;
+      const onlyIneligible = service.getAssetLibraryPage({ projectIds: [archived.id, 999999] });
+      expect(onlyIneligible.filters.projectIds).toEqual(ascending([archived.id, 999999]));
+      expect(onlyIneligible.total).toBe(0);
+      expect(onlyIneligible.slideshowSequence).toEqual([]);
+      expect(onlyIneligible.extensionOptions).toEqual([]);
+      expect(onlyIneligible.projectOptions.map((option) => option.id)).not.toContain(archived.id);
+
+      const mixed = service.getAssetLibraryPage({ projectIds: [alpha.id, archived.id] });
+      expect(ids(mixed)).toEqual(pick('a1', 'a2', 'a3'));
+      expect(mixed.filters.projectIds).toEqual(ascending([alpha.id, archived.id]));
+
+      const malformed = service.getAssetLibraryPage({ projectIds: ['0', '-1', 'x', '1,2', 1.5] });
+      expect(malformed.filters.projectIds).toEqual([]);
+    });
+
+    it('keeps unrestricted behavior for omitted or empty Project/Type selections', () => {
+      const baseline = service.getAssetLibraryPage({ pageSize: 'all' });
+      const empty = service.getAssetLibraryPage({ projectIds: [], projectTypes: [], pageSize: 'all' });
+
+      expect(ids(baseline)).toEqual(pick('a1', 'a2', 'a3', 'b1', 'b2', 'd1', 'g1', 'g2'));
+      expect(ids(empty)).toEqual(ids(baseline));
+      expect(empty.total).toBe(8);
+      expect(extensionValues(empty)).toEqual(['cbz', 'jpg', 'mp4', 'png', 'webp']);
+      expect(empty.filters).toMatchObject({ projectId: null, projectIds: [], projectTypes: [] });
+    });
   });
 });

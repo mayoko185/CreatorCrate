@@ -10,20 +10,6 @@
 
 {% set page_title = "Projects" %}
 
-{% macro renderFilterSummary(selectedValues, options, emptyLabel, countLabel, prefix) -%}
-  {%- if selectedValues.length == 0 -%}
-    {{ emptyLabel }}
-  {%- elif selectedValues.length == 1 -%}
-    {%- for option in options -%}
-      {%- if option.selected -%}
-        {{ prefix or '' }}{{ option.label or option.displayName }}
-      {%- endif -%}
-    {%- endfor -%}
-  {%- else -%}
-    {{ selectedValues.length }} {{ countLabel }} selected
-  {%- endif -%}
-{%- endmacro %}
-
 {% block content %}
   {% call pageHeading.render("Browse active and archived project records.") %}
     <a class="button button-primary dashboard-create-action" href="/projects/new" data-dialog-open="project-create-dialog" data-dialog-invocation><span class="project-create-submit-icon" aria-hidden="true">{{ icons.icon('plus') }}</span>New Project</a>
@@ -41,6 +27,14 @@
 
   <div data-projects-live-region>
     <span class="sr-only" data-projects-live-status aria-live="polite" aria-atomic="true"></span>
+    {# WP10b: authoritative defaults metadata of this rendered page (effective
+       current values of the seven saveable settings, saved-key presence,
+       fallbacks, durable generation). Data only; it travels with every
+       live-region install so a prepared response is never mistaken for the
+       installed one. #}
+    {% if projectsDefaultsAuthorityJson %}
+    <script type="application/json" data-projects-defaults-authority>{{ projectsDefaultsAuthorityJson | safe }}</script>
+    {% endif %}
 
     <div class="asset-viewer-display-controls"{% if view == 'grid' %} data-project-grid-size-controls{% endif %}>
       {{ viewSwitcher.render(view, pageUrl, "Project display", true) }}
@@ -51,17 +45,12 @@
       {% endif %}
 
       <div class="project-filter-actions project-filter-actions--projects">
+        {# WP10b: the one Filters & Defaults entry (the separate Defaults entry is retired). #}
         <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
-           href="#projects-filter-dialog" aria-label="Filter projects"
+           href="#projects-filter-dialog" aria-label="Filters &amp; Defaults"
            data-dialog-open="projects-filter-dialog"
-           data-tooltip="Filter projects">
+           data-tooltip="Filters &amp; Defaults">
           {{ icons.icon('content-filter') }}
-        </a>
-        <a class="asset-viewer-defaults-link button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
-           href="/projects?defaults=1" aria-label="Projects defaults"
-           data-dialog-open="projects-defaults-dialog"
-           data-tooltip="Projects defaults">
-          {{ icons.icon('settings') }}
         </a>
         {% set nsfwToggleLabel = "Disable NSFW filter" if nsfwFilterEnabled else "Enable NSFW filter" %}
         <form method="post" action="/projects/nsfw-filter" class="inline-form" data-projects-nsfw-filter>
@@ -153,201 +142,223 @@
      project-edit-dialog.js loads the chosen project into it. #}
   {% if projectEditForm %}{{ projectEditDialog.render(none, projectEditForm, _csrf, false, '', 'edit-project-') }}{% endif %}
 
-  {% call dialog.render('projects-filter-dialog', 'Filter', dialogClass='app-dialog--utility') %}
-    <form id="project-filters" class="app-dialog-form project-form" method="get" action="/projects">
-      <div class="app-dialog-body">
-        <div class="page-defaults-grid">
-          {% if view == 'list' or preserveViewQuery %}
-            <input type="hidden" name="view" value="{{ view }}">
-          {% endif %}
+  {#
+    WP10b Filters & Defaults: one dialog, owning forms side by side, no nesting.
+    - #projects-defaults-form holds the saved-state line and the explicit-save
+      status. client/projects-filters-defaults.js binds it
+      (data-defaults-explicit-save, no autosave marker): Save new defaults
+      posts one snapshot of the seven eligible settings from the INSTALLED
+      page authority plus the session Grid style, with the current durable
+      generation and an operation identity. Save and Reset defaults are
+      JavaScript-only: the form has no native mutation (method="dialog", no
+      saveable fields), both buttons are rendered disabled and type="button",
+      and the controller arms them only once it owns their click paths.
+    - #project-filters (GET) is the only filter state. Every control that
+      changes results (Search, Projects, Status, Project Type, Tag, Sort by,
+      Sort order, View) belongs to it and navigates through the one Projects
+      live-region engine. Repeated values stay repeated (project=7&project=12).
+    - Grid style is a current-session presentation choice: it has no name, so
+      it never joins the GET and never posts; the controller owns it until
+      Save, Reset filters or Reset defaults.
+  #}
+  {% set projectsAuthority = projectsDefaultsAuthority %}
+  {% set gridStyleChoices = [{ value: 'uncropped', label: 'Uncropped' }, { value: 'cropped', label: 'Cropped' }] %}
+  {% if projectsDefaults and projectsDefaults.fields %}
+    {% for field in projectsDefaults.fields %}
+      {% if field.name == 'gridStyle' and field.options and field.options.length > 0 %}{% set gridStyleChoices = field.options %}{% endif %}
+    {% endfor %}
+  {% endif %}
+  {% set savedDefaultCount = projectsAuthority.savedKeys.length if projectsAuthority and projectsAuthority.savedKeys else 0 %}
+  {% call dialog.render('projects-filter-dialog', 'Filters & Defaults', projectsDefaultsDialogOpen, '', 'projects-defaults-form', 'app-dialog--utility app-dialog--filters-defaults projects-filters-defaults', [], true, 'Projects') %}
+    <div class="app-dialog-body filters-defaults-dialog-body">
+      <form id="projects-defaults-form" method="dialog" class="filters-defaults-defaults-form"
+            data-dialog-form data-dialog-async="false" data-defaults-explicit-save novalidate>
+        <input type="hidden" name="_csrf" value="{{ _csrf }}">
 
-          {{ dropdown.searchableSingleSelect({
-            id: "project-project-filter",
-            name: "project",
-            label: "Project",
-            options: projectOptions,
-            valueKey: "id",
-            labelKey: "title",
-            selected: selectedProject.id if selectedProject else null,
-            placeholder: "All projects",
-            panelLabel: "Project options",
-            searchLabel: "Search projects",
-            searchInputId: "project-project-filter-search",
-            noResultsText: "No matching projects",
-            optionListLabel: "Project choices",
-            optionIdPrefix: "project-project",
-            fieldClasses: "app-dialog-field asset-viewer-filter-field asset-viewer-project-filter projects-filter-field--project",
-            classes: "asset-project-filter-disclosure"
-          }) }}
+        <div class="filters-defaults-status-row">
+          <p class="filters-defaults-saved-indicator" data-projects-defaults-indicator>
+            {%- if not projectsAuthority -%}Saved defaults could not be read.
+            {%- elif savedDefaultCount == 0 -%}No saved defaults.
+            {%- elif savedDefaultCount == projectsAuthority.fields.length -%}Defaults saved.
+            {%- else -%}{{ savedDefaultCount }} of {{ projectsAuthority.fields.length }} defaults saved.{%- endif -%}
+          </p>
+        </div>
 
-          {{ dropdown.multiSelect({
-            id: "project-status-filter",
-            name: "status",
-            label: "Status",
-            fieldClasses: "app-dialog-field asset-viewer-filter-field",
-            options: statusOptions,
-            optionIdPrefix: "project-status",
-            selectedValues: query.statuses,
-            summary: renderFilterSummary(query.statuses, statusOptions, "All active", "statuses", ""),
-            emptySummary: "All active",
-            countLabel: "statuses",
-            panelLabel: "Status options"
-          }) }}
-
-          {{ dropdown.multiSelect({
-            id: "project-type-filter",
-            name: "type",
-            label: "Project Type",
-            fieldClasses: "app-dialog-field asset-viewer-filter-field",
-            options: projectTypeOptions,
-            optionIdPrefix: "project-type",
-            selectedValues: query.projectTypes,
-            summary: renderFilterSummary(query.projectTypes, projectTypeOptions, "All types", "types", ""),
-            emptySummary: "All types",
-            countLabel: "types",
-            panelLabel: "Project Type options"
-          }) }}
-
-          {{ dropdown.multiSelect({
-            id: "project-tag-filter",
-            name: "tag",
-            label: "Tag",
-            fieldClasses: "app-dialog-field asset-viewer-filter-field",
-            options: tagOptions,
-            optionIdPrefix: "project-tag",
-            selectedValues: query.tagIds,
-            summary: renderFilterSummary(query.tagIds, tagOptions, "All tags", "tags", ""),
-            emptySummary: "All tags",
-            countLabel: "tags",
-            panelLabel: "Tag options",
-            emptyOptionText: "No tags available"
-          }) }}
-
-          {% set sortSummary = '' %}
-          {% for opt in sortOptions %}
-            {% if query.sort == opt or (not query.sort and opt == 'created') %}
-              {% set sortSummary = opt | replace('-', ' ') | title %}
+        <div class="app-dialog-error" data-dialog-error role="alert" hidden>
+          <p data-dialog-error-text></p>
+          <ul data-dialog-error-list></ul>
+        </div>
+        {% if projectsDefaults and projectsDefaults.fields %}
+          {% for field in projectsDefaults.fields %}
+            {% if field.error %}
+              <p class="field-error-message" id="{{ field.id }}-error" role="alert" data-projects-defaults-field-error="{{ field.name }}">{{ field.label }}: {{ field.error }}</p>
             {% endif %}
           {% endfor %}
-          {% set orderSummary = 'Desc' %}
-          {% if query.order == 'asc' %}
-            {% set orderSummary = 'Asc' %}
-          {% endif %}
-
-          {{ dropdown.singleSelect({
-            id: "project-sort-filter",
-            name: "sort",
-            label: "Sort",
-            fieldClasses: "app-dialog-field asset-viewer-filter-field",
-            options: [
-              { value: "updated", label: "Updated" },
-              { value: "created", label: "Created" },
-              { value: "title", label: "Title" }
-            ],
-            selected: query.sort or "created",
-            summary: sortSummary,
-            optionIdPrefix: "project-sort",
-            panelLabel: "Sort options"
-          }) }}
-
-          {{ dropdown.singleSelect({
-            id: "project-order-filter",
-            name: "order",
-            label: "Sort order",
-            fieldClasses: "app-dialog-field asset-viewer-filter-field",
-            options: [
-              { id: "project-order-option-desc", value: "desc", label: "Desc" },
-              { id: "project-order-option-asc", value: "asc", label: "Asc" }
-            ],
-            selected: query.order or "desc",
-            summary: orderSummary,
-            optionIdPrefix: "project-order",
-            panelLabel: "Sort order options"
-          }) }}
-
+        {% endif %}
+        <div class="app-dialog-status filters-defaults-status" data-settings-fetch-save-status role="status" aria-live="polite" aria-atomic="true"></div>
+        <div class="filters-defaults-recovery" data-projects-defaults-recovery hidden>
+          <button class="button button-small button-secondary" type="button" data-projects-defaults-retry hidden>Retry</button>
+          <button class="button button-small button-secondary" type="button" data-projects-defaults-check hidden>Check again</button>
         </div>
-      </div>
-    </form>
-    <form class="projects-filter-reset app-dialog-footer" method="get" action="{{ resetFiltersUrl }}">
-      <button class="button button-secondary" type="submit" data-projects-reset>Reset filters</button>
-    </form>
-  {% endcall %}
+      </form>
 
-  {% call dialog.render('projects-defaults-dialog', 'Projects defaults', projectsDefaultsDialogOpen, 'projects-defaults-description', 'projects-defaults-form', 'app-dialog--utility') %}
-    <form id="projects-defaults-form" method="post" action="/projects/defaults" class="app-dialog-form project-form"
-          data-dialog-form data-dialog-async="false" data-projects-defaults-autosave novalidate>
-      <p id="projects-defaults-description" class="app-dialog-description">
-        Choose the default filters and view used when you open Projects.
-      </p>
+      <form id="project-filters" class="filters-defaults-filters" method="get" action="/projects">
+        <section class="filters-defaults-section" aria-labelledby="projects-filters-heading">
+          <h3 id="projects-filters-heading">Filters</h3>
+          <div class="filters-defaults-grid">
+            <div class="app-dialog-field field projects-search-field">
+              <label for="projects-search">Search</label>
+              <input id="projects-search" name="search" type="search" value="{{ query.search or '' }}" maxlength="200" autocomplete="off" data-projects-search>
+            </div>
 
-      <div class="app-dialog-error" data-dialog-error role="alert" hidden>
-        <p data-dialog-error-text></p>
-        <ul data-dialog-error-list></ul>
-      </div>
+            {{ dropdown.multiSelect({
+              id: "project-project-filter",
+              name: "project",
+              label: "Projects",
+              options: projectFilterOptions or [],
+              selectedValues: projectFilterSelectedValues or [],
+              selectAll: { value: '' },
+              emptySummary: "All projects",
+              countLabel: "projects",
+              searchable: true,
+              searchLabel: "Search projects",
+              searchInputId: "project-project-filter-search",
+              noResultsText: "No matching projects",
+              optionListLabel: "Project choices",
+              optionIdPrefix: "project-project",
+              panelLabel: "Project options",
+              emptyOptionText: "No projects available",
+              fieldClasses: "app-dialog-field asset-viewer-filter-field asset-viewer-project-filter projects-filter-field--project",
+              fieldAttributes: [["data-projects-project-filter", true]],
+              classes: "asset-project-filter-disclosure"
+            }) }}
 
-      <input type="hidden" name="_csrf" value="{{ _csrf }}">
+            {{ dropdown.multiSelect({
+              id: "project-status-filter",
+              name: "status",
+              label: "Status",
+              fieldClasses: "app-dialog-field asset-viewer-filter-field",
+              options: statusOptions,
+              optionIdPrefix: "project-status",
+              selectedValues: query.statuses,
+              selectAll: { value: '' },
+              emptySummary: "All active",
+              countLabel: "statuses",
+              panelLabel: "Status options"
+            }) }}
 
-      <div class="app-dialog-body">
-        <div class="page-defaults-grid">
-          {% for field in projectsDefaults.fields %}
-          {% set submittedOption = none %}
-          {% set nativeAttributes = [["data-autosubmit", "fetch"]] if field.multi else [["required", true], ["data-autosubmit", "fetch"]] %}
-          {% set summaryAttributes = [] %}
-          {% if field.showSubmittedValue %}
-            {% set submittedOption = {
-              id: field.id ~ '-submitted',
-              value: field.submittedOptionValue,
-              label: 'Submitted value: ' ~ field.submittedDisplayValue,
-              attributes: [["data-dialog-submitted-value", true]],
-              selected: true
-            } %}
-          {% endif %}
-          {% if field.error %}
-            {% set nativeAttributes = [["data-autosubmit", "fetch"], ["aria-describedby", field.id ~ '-error'], ["aria-invalid", true]] if field.multi else [["required", true], ["data-autosubmit", "fetch"], ["aria-describedby", field.id ~ '-error'], ["aria-invalid", true]] %}
-            {% set summaryAttributes = [["aria-describedby", field.id ~ '-error'], ["aria-invalid", true]] %}
-          {% endif %}
-          <div class="field app-dialog-field{% if field.error %} field-error{% endif %}" data-dialog-field="{{ field.name }}">
-            {% if field.multi %}
-              {{ dropdown.multiSelect({
-                id: field.id ~ '-dropdown',
-                name: field.name,
-                label: field.label,
-                options: field.options,
-                selectedValues: field.selectedValues,
-                emptySummary: field.emptySummary,
-                countLabel: 'values',
-                optionIdPrefix: field.id,
-                dispatchNativeChange: true,
-                summaryAttributes: summaryAttributes,
-                nativeSelect: {
-                  id: field.id,
-                  attributes: nativeAttributes
-                }
-              }) }}
-            {% else %}
+            {{ dropdown.multiSelect({
+              id: "project-type-filter",
+              name: "type",
+              label: "Project Type",
+              fieldClasses: "app-dialog-field asset-viewer-filter-field",
+              options: projectTypeOptions,
+              optionIdPrefix: "project-type",
+              selectedValues: query.projectTypes,
+              selectAll: { value: '' },
+              emptySummary: "All types",
+              countLabel: "types",
+              panelLabel: "Project Type options"
+            }) }}
+
+            {{ dropdown.multiSelect({
+              id: "project-tag-filter",
+              name: "tag",
+              label: "Tag",
+              fieldClasses: "app-dialog-field asset-viewer-filter-field",
+              options: tagOptions,
+              optionIdPrefix: "project-tag",
+              selectedValues: query.tagIds,
+              selectAll: { value: '' },
+              emptySummary: "All tags",
+              countLabel: "tags",
+              panelLabel: "Tag options",
+              emptyOptionText: "No tags available"
+            }) }}
+          </div>
+        </section>
+
+        <section class="filters-defaults-section" aria-labelledby="projects-sort-heading">
+          <h3 id="projects-sort-heading">Sort options</h3>
+          <div class="filters-defaults-grid">
             {{ dropdown.singleSelect({
-              id: field.id ~ '-dropdown',
-              name: field.name,
-              label: field.label,
-              options: field.options,
-              selected: field.selectedValue,
-              optionIdPrefix: field.id,
-              leadingOption: submittedOption,
+              id: "project-sort-filter",
+              name: "sort",
+              label: "Sort by",
+              fieldClasses: "app-dialog-field asset-viewer-filter-field",
+              options: [
+                { value: "updated", label: "Updated" },
+                { value: "created", label: "Created" },
+                { value: "title", label: "Title" }
+              ],
+              selected: query.sort or "created",
+              optionIdPrefix: "project-sort",
+              panelLabel: "Sort by options"
+            }) }}
+
+            {{ dropdown.singleSelect({
+              id: "project-order-filter",
+              name: "order",
+              label: "Sort order",
+              fieldClasses: "app-dialog-field asset-viewer-filter-field",
+              options: [
+                { id: "project-order-option-asc", value: "asc", label: "Ascending" },
+                { id: "project-order-option-desc", value: "desc", label: "Descending" }
+              ],
+              selected: query.order or "desc",
+              optionIdPrefix: "project-order",
+              panelLabel: "Sort order options"
+            }) }}
+          </div>
+        </section>
+
+        <section class="filters-defaults-section" aria-labelledby="projects-misc-heading">
+          <h3 id="projects-misc-heading">Miscellaneous</h3>
+          <div class="filters-defaults-grid">
+            {{ dropdown.singleSelect({
+              id: "project-view-filter",
+              name: "view",
+              label: "View",
+              fieldClasses: "app-dialog-field asset-viewer-filter-field",
+              options: [
+                { value: "grid", label: "Grid" },
+                { value: "list", label: "List" }
+              ],
+              selected: view,
+              optionIdPrefix: "project-view",
+              panelLabel: "View options"
+            }) }}
+
+            {# Unnamed on purpose: a session presentation choice, never a GET key. #}
+            {{ dropdown.singleSelect({
+              id: "project-grid-style-filter",
+              label: "Grid style",
+              fieldClasses: "app-dialog-field asset-viewer-filter-field",
+              fieldAttributes: [["data-projects-grid-style-field", true], ["data-filters-visible-when-view", "grid"], ["hidden", view == "list"]],
+              options: gridStyleChoices,
+              selected: gridStyle,
+              optionIdPrefix: "project-grid-style",
               dispatchNativeChange: true,
-              summaryAttributes: summaryAttributes,
+              panelLabel: "Grid style options",
               nativeSelect: {
-                id: field.id,
-                attributes: nativeAttributes
+                id: "projects-grid-style",
+                attributes: [["data-projects-grid-style", true]]
               }
             }) }}
-            {% endif %}
-            {% if field.error %}<span class="field-error-message" id="{{ field.id }}-error">{{ field.error }}</span>{% endif %}
           </div>
-          {% endfor %}
-        </div>
-      </div>
-
-      <div class="app-dialog-status projects-defaults-save-status" data-settings-fetch-save-status role="status" aria-live="polite" aria-atomic="true"></div>
-    </form>
+        </section>
+      </form>
+    </div>
+    <footer class="app-dialog-footer filters-defaults-footer">
+      <button class="button button-secondary" type="button" disabled data-projects-defaults-save>Save new defaults</button>
+      {# Reset defaults is JavaScript-only, like Save: no form, no native POST
+         and no rendered returnTo/generation. It is disabled until the
+         explicit-save controller owns it. #}
+      <button class="button button-secondary" type="button" disabled data-projects-defaults-reset>Reset defaults</button>
+      {# GET-only: the server resolves the effective saved/default destination. #}
+      <form class="projects-filter-reset filters-defaults-reset-form" method="get" action="{{ resetFiltersUrl or '/projects' }}">
+        <button class="button button-primary" type="submit" data-projects-filters-reset>Reset filters</button>
+      </form>
+    </footer>
   {% endcall %}
 {% endblock %}

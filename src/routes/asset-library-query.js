@@ -2,6 +2,7 @@ import { validateDirectorySlug } from '../services/asset-category-validation.js'
 
 export const ASSET_LIBRARY_QUERY_KEYS = Object.freeze([
   'project',
+  'type',
   'category',
   'tag',
   'search',
@@ -31,7 +32,11 @@ export const ASSET_LIBRARY_DEFAULTS = Object.freeze({
   view: 'grid',
 });
 
-const ASSET_LIBRARY_SEARCH_MAX_LENGTH = 128;
+export const ASSET_LIBRARY_SEARCH_MAX_LENGTH = 128;
+// Stable Project option catalogue value syntax (see
+// project-option-catalogue-service VALUE_PATTERN). Membership in the live
+// catalogue is validated by the service, not here.
+const PROJECT_TYPE_VALUE_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const PRESENTATION_KEYS = Object.freeze(['view', 'sort', 'order', 'pageSize']);
 const PRESENTATION_VALUES = Object.freeze({
   view: Object.freeze(['grid', 'list']),
@@ -83,6 +88,11 @@ function normalizeExtension(value) {
   const normalized = value.trim().replace(/^\./, '').toLowerCase();
   if (normalized === '' || normalized.startsWith('.')) return null;
   return normalized;
+}
+
+function normalizeProjectTypeValue(value) {
+  const normalized = scalarString(value);
+  return normalized !== null && PROJECT_TYPE_VALUE_PATTERN.test(normalized) ? normalized : null;
 }
 
 function normalizeCategorySelectionValue(value) {
@@ -173,6 +183,8 @@ export function isBareAssetLibraryRequest(rawQuery) {
  * @param {unknown} rawQuery
  * @returns {{
  *   projectId: number|null,
+ *   projectIds: number[],
+ *   projectTypes: string[],
  *   category: string,
  *   categories: string[],
  *   tag: number|null,
@@ -199,9 +211,19 @@ export function parseAssetLibraryQuery(rawQuery = {}) {
   const categories = normalizeSelection(raw.category, normalizeCategorySelectionValue, compareStringValues);
   const tags = normalizeSelection(raw.tag, parsePositiveInteger, compareNumericValues);
   const extensions = normalizeSelection(raw.extension, normalizeExtension, compareStringValues);
+  // Repeated `project` values are OR-ed. Each value is validated with the
+  // scalar policy (strict positive integer); malformed values, including
+  // comma-joined lists, are discarded individually. Unknown or archived IDs
+  // are kept and simply match no active assets.
+  const projectIds = normalizeSelection(raw.project, parsePositiveInteger, compareNumericValues);
+  const projectTypes = normalizeSelection(raw.type, normalizeProjectTypeValue, compareStringValues);
 
   return {
-    projectId: parsePositiveInteger(raw.project),
+    // Legacy single-project alias: only meaningful when exactly one Project
+    // is selected, so a multi-project request never narrows to its first ID.
+    projectId: projectIds.length === 1 ? projectIds[0] : null,
+    projectIds,
+    projectTypes,
     categories,
     category: categories[0] ?? ASSET_LIBRARY_DEFAULTS.category,
     tags,
@@ -223,34 +245,26 @@ export function parseAssetLibraryQuery(rawQuery = {}) {
 
 export const normalizeAssetLibraryQuery = parseAssetLibraryQuery;
 
-function readStateValue(state, key) {
-  if (key === 'projectId') {
-    return hasOwn(state, 'projectId') ? state.projectId : state.project;
-  }
-  return state[key];
-}
-
 function readOverride(state, overrides, key) {
-  const overrideKeys = key === 'projectId' ? ['projectId', 'project'] : [key];
-  for (const overrideKey of overrideKeys) {
-    if (hasOwn(overrides, overrideKey)) {
-      return { value: overrides[overrideKey], overridden: true };
-    }
-  }
-  return { value: readStateValue(state, key), overridden: false };
-}
-
-function readSelectionOverride(state, overrides, key, legacyKey) {
   if (hasOwn(overrides, key)) {
     return { value: overrides[key], overridden: true };
   }
-  if (hasOwn(overrides, legacyKey)) {
-    return { value: overrides[legacyKey], overridden: true };
+  return { value: state[key], overridden: false };
+}
+
+function readSelectionOverride(state, overrides, key, ...legacyKeys) {
+  const keys = [key, ...legacyKeys];
+  for (const candidate of keys) {
+    if (hasOwn(overrides, candidate)) {
+      return { value: overrides[candidate], overridden: true };
+    }
   }
-  if (hasOwn(state, key)) {
-    return { value: state[key], overridden: false };
+  for (const candidate of keys) {
+    if (hasOwn(state, candidate)) {
+      return { value: state[candidate], overridden: false };
+    }
   }
-  return { value: state[legacyKey], overridden: false };
+  return { value: undefined, overridden: false };
 }
 
 function normalizePresentationCandidate(value, key) {
@@ -309,7 +323,8 @@ function appendExplicitNeutralFilters(query, state) {
 export function buildAssetLibraryUrl(normalizedState = {}, overrides = {}) {
   const state = isRecord(normalizedState) ? normalizedState : {};
   const safeOverrides = isRecord(overrides) ? overrides : {};
-  const project = readOverride(state, safeOverrides, 'projectId');
+  const projects = readSelectionOverride(state, safeOverrides, 'projectIds', 'projectId', 'project');
+  const projectTypes = readSelectionOverride(state, safeOverrides, 'projectTypes', 'projectType', 'type');
   const categories = readSelectionOverride(state, safeOverrides, 'categories', 'category');
   const tags = readSelectionOverride(state, safeOverrides, 'tags', 'tag');
   const search = readOverride(state, safeOverrides, 'search');
@@ -327,7 +342,8 @@ export function buildAssetLibraryUrl(normalizedState = {}, overrides = {}) {
   );
 
   const query = new URLSearchParams();
-  appendQueryValue(query, 'project', parsePositiveInteger(project.value));
+  appendQueryValues(query, 'project', projects.value, parsePositiveInteger, compareNumericValues);
+  appendQueryValues(query, 'type', projectTypes.value, normalizeProjectTypeValue, compareStringValues);
 
   appendQueryValues(query, 'category', categories.value, normalizeCategorySelectionValue, compareStringValues);
   appendQueryValues(query, 'tag', tags.value, parsePositiveInteger, compareNumericValues);

@@ -336,6 +336,33 @@ function normalizeAssetLibraryTagSelection(value, tagCatalog) {
   return [...selected].sort((left, right) => left - right);
 }
 
+function readAssetLibraryProjectSelection(input) {
+  if (hasOwn(input, 'projectIds') && input.projectIds !== undefined) return input.projectIds;
+  return input.projectId;
+}
+
+/**
+ * Normalize selected owning-Project IDs with the strict positive-integer
+ * policy. IDs are deliberately not pruned against the active catalogue:
+ * an unknown or archived ID stays a restriction that matches no active
+ * assets, so it can never broaden results.
+ */
+function normalizeAssetLibraryProjectSelection(value) {
+  const values = value === undefined || value === null
+    ? []
+    : (Array.isArray(value) ? value : [value]);
+  const selected = new Set();
+
+  for (const candidate of values) {
+    const normalized = typeof candidate === 'number'
+      ? candidate
+      : (typeof candidate === 'string' && /^[1-9]\d*$/.test(candidate) ? Number(candidate) : null);
+    if (Number.isSafeInteger(normalized) && normalized > 0) selected.add(normalized);
+  }
+
+  return [...selected].sort((left, right) => left - right);
+}
+
 function normalizeAssetLibraryStringSelection(
   value,
   availableValues,
@@ -1218,7 +1245,9 @@ export function createWorkflowQueryService({
    * option lists from their unpaged sources.
    *
    * @param {object} [input]
-   * @param {number|null} [input.projectId]
+   * @param {number|null} [input.projectId] - legacy scalar alias
+   * @param {number[]} [input.projectIds] - OR-ed owning Project IDs
+   * @param {string[]} [input.projectTypes] - OR-ed owning Project Type values
    * @param {'all'|'uncategorized'|string} [input.category='all'] - legacy alias
    * @param {string[]} [input.categories]
    * @param {string|null} [input.search]
@@ -1248,7 +1277,8 @@ export function createWorkflowQueryService({
    *   filters: object,
    *   presentation: { view: 'grid'|'list' },
    *   context: object,
-   *   projectOptions: Array<{ id: number, title: string }>,
+   *   projectOptions: Array<{ id: number, title: string, selected: boolean }>,
+   *   projectTypeOptions: Array<{ value: string, label: string, color: string, foregroundColor: string, selected: boolean }>,
    *   categoryOptions: Array<{ value: string, label: string, selected: boolean }>,
    *   tagOptions: Array<{ value: string, displayName: string, selected: boolean }>,
    *   extensionOptions: Array<{ value: string, label: string, selected: boolean }>,
@@ -1283,7 +1313,19 @@ export function createWorkflowQueryService({
   function getAssetLibraryPage(input = {}, options = {}) {
     const projectOptionPresentation = options.projectOptionPresentation
       ?? buildAssetLibraryProjectOptionPresentation();
-    const projectId = input.projectId ?? null;
+    const projectIds = normalizeAssetLibraryProjectSelection(readAssetLibraryProjectSelection(input));
+    // Legacy scalar alias, populated only for an exact single selection.
+    const projectId = projectIds.length === 1 ? projectIds[0] : null;
+    // Project Types are validated against the live, request-scoped catalogue
+    // (getProjectTypeCatalogue). Stale or unknown values are dropped like
+    // other catalogue-backed Asset Library selections.
+    const projectTypeCatalogue = projectOptionPresentation?.projectTypeByValue instanceof Map
+      ? projectOptionPresentation.projectTypeByValue
+      : new Map();
+    const projectTypes = normalizeAssetLibraryStringSelection(
+      readAssetLibrarySelection(input, 'projectTypes', 'projectType'),
+      new Set(projectTypeCatalogue.keys()),
+    );
     const tagCatalog = tagRepository.list();
     const categoryDefaults = assetCategoryRepository.listDefaults();
     const availableCategoryValues = new Set([
@@ -1292,7 +1334,9 @@ export function createWorkflowQueryService({
         .filter((categoryOption) => categoryOption.enabled === 1 || categoryOption.enabled === true)
         .map((categoryOption) => categoryOption.directory_slug),
     ]);
-    const availableExtensions = new Set(assetRepository.listAllAssetExtensions({ projectId }));
+    // Extension choices span the complete Project/Type-scoped active asset
+    // universe (never the current page), matching the previous project scope.
+    const availableExtensions = new Set(assetRepository.listAllAssetExtensions({ projectIds, projectTypes }));
     const tags = normalizeAssetLibraryTagSelection(
       readAssetLibrarySelection(input, 'tags', 'tag'),
       tagCatalog,
@@ -1318,6 +1362,8 @@ export function createWorkflowQueryService({
 
     const filters = {
       projectId,
+      projectIds,
+      projectTypes,
       categories,
       tags,
       search,
@@ -1329,7 +1375,8 @@ export function createWorkflowQueryService({
       view,
     };
     const repositoryFilters = {
-      projectId,
+      projectIds,
+      projectTypes,
       categories,
       tags,
       search,
@@ -1378,8 +1425,17 @@ export function createWorkflowQueryService({
     // filter control's complete source, not the current asset page.
     const projectOptions = projectRepository
       .listActiveAssetFilterOptions()
-      .map((project) => ({ id: project.id, title: project.title }))
+      .map((project) => ({ id: project.id, title: project.title, selected: projectIds.includes(project.id) }))
       .sort(compareProjectOptions);
+    // Complete live Project Type catalogue in catalogue order; label/color
+    // are display metadata only, filtering always uses `value`.
+    const projectTypeOptions = [...projectTypeCatalogue.values()].map((entry) => ({
+      value: entry.value,
+      label: entry.label,
+      color: entry.color,
+      foregroundColor: entry.foregroundColor,
+      selected: projectTypes.includes(entry.value),
+    }));
 
     const categoryOptions = buildAssetLibraryCategoryOptions(categoryDefaults, categories);
     const extensionOptions = [...availableExtensions]
@@ -1409,6 +1465,7 @@ export function createWorkflowQueryService({
       presentation: { view },
       context,
       projectOptions,
+      projectTypeOptions,
       categoryOptions,
       tagOptions,
       extensionOptions,

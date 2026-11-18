@@ -41,6 +41,7 @@ import {
   enhanceProjectAssetCategoryFilter,
   initializeCreatorCrateDropdown,
   syncCreatorCrateDropdownFromNative,
+  updateAssetViewerFilterDisclosureState,
 } from './dropdowns.js';
 import {
   ASSET_GRID_SIZE_CONFIG,
@@ -69,6 +70,10 @@ const PROJECTS_LIVE_STATUS_SELECTOR = '[data-projects-live-status]';
 const PROJECTS_LIVE_STATE_ATTRIBUTE = 'data-projects-live-state';
 const PROJECTS_NSFW_FORM_SELECTOR = '[data-projects-nsfw-filter]';
 const PROJECTS_NSFW_TOGGLE_SELECTOR = '[data-projects-nsfw-toggle]';
+// WP10b: the results Search of the Projects Filters & Defaults dialog.
+const PROJECTS_SEARCH_SELECTOR = '#projects-search';
+const PROJECTS_DROPDOWN_SEARCH_SELECTOR = '#project-filters [data-cc-dropdown-search]';
+const PROJECTS_LIVE_DEBOUNCE_MS = 350;
 const RELEASES_LIVE_REGION_SELECTOR = '[data-releases-live-region]';
 const RELEASES_FILTER_SELECTOR = '[data-releases-filter]';
 const RELEASES_LIVE_STATUS_SELECTOR = '[data-releases-live-status]';
@@ -205,6 +210,20 @@ function sameResponsePath(finalUrl, requestedUrl) {
   return finalUrl.pathname === requestedUrl.pathname;
 }
 
+// Two addresses name the same document state: same origin, path and query
+// (the fragment is not part of the filter state). Exact query comparison:
+// repeated keys and their order are significant and never normalized here.
+function liveRegionSameAddress(url, href) {
+  if (!url || !href) return false;
+  let shown;
+  try {
+    shown = new URL(href);
+  } catch {
+    return false;
+  }
+  return url.origin === shown.origin && url.pathname === shown.pathname && url.search === shown.search;
+}
+
 export function createLiveRegionEngine(config) {
   const {
     regionSelector,
@@ -238,6 +257,17 @@ export function createLiveRegionEngine(config) {
     isCurrentUrl = () => true,
     loadFailureMessage = null,
     responseMatches = null,
+    // Optional (state, link, url) hook: returns the destination a followed
+    // live link navigates to (default: the link's own rendered address). It
+    // runs before the click supersedes any debounced, pending or failed load.
+    // Returning false means the hook took the click as intent for the load
+    // already in flight: nothing is superseded and no request is sent.
+    linkDestination = null,
+    // Optional (state, finalUrl, requestedUrl) hook, called with the final
+    // (post-redirect) address of the current load's successful response
+    // before its body is read. A returned URL continues the same load there:
+    // same generation, history mode and Retry address, no install between.
+    followResponse = null,
   } = config || {};
 
   function regionFor(scope) {
@@ -363,6 +393,14 @@ export function createLiveRegionEngine(config) {
     else currentRegion.parentNode.replaceChild(nextRegion, currentRegion);
 
     const finalUrl = responseUrl(state.response, requestedUrl, windowObject);
+    // WP10b F6: a push whose FINAL canonical address (after any redirect) is
+    // the address shown at installation only reconciles the current entry:
+    // the state did not change, so Back must not step through a copy of it
+    // (e.g. a View reversed before its GET installed). Any other address,
+    // including one shown earlier but not now, still adds an entry.
+    if (historyMode === 'push' && liveRegionSameAddress(finalUrl, windowObject.location?.href)) {
+      historyMode = 'replace';
+    }
     if (historyMode === 'push') {
       windowObject.history.pushState(historyState, '', finalUrl.href);
     } else if (historyMode === 'replace' && finalUrl.href !== windowObject.location?.href) {
@@ -430,7 +468,7 @@ export function createLiveRegionEngine(config) {
   // The last valid results stay installed and the requested controls stay as
   // chosen. state.loadFailure owns the request Retry repeats until any newer
   // load or filter change supersedes it; only a successful install commits it.
-  function reportLoadFailure(state, url, historyMode) {
+  function reportLoadFailure(state, url, historyMode, generation = state.generation) {
     const region = regionFor(state.document);
     const message = loadFailureMessage(state, url, historyMode);
     region?.removeAttribute?.('aria-busy');
@@ -446,7 +484,8 @@ export function createLiveRegionEngine(config) {
     const text = state.document.createElement?.('p');
     text.textContent = message;
     notice.appendChild?.(text);
-    const failure = { url, historyMode, notice };
+    // generation: the failed load, so a Retry can carry that load's ownership.
+    const failure = { url, historyMode, notice, generation };
     state.loadFailure = failure;
     placeLoadFailureNotice(state);
 
@@ -462,7 +501,13 @@ export function createLiveRegionEngine(config) {
         if (state.timer) state.window.clearTimeout?.(state.timer);
         state.timer = null;
         invalidate(state);
-        load(state, failure.url, failure.historyMode, null);
+        // onLoadStart reads which failed load this Retry repeats.
+        state.retryingLoadFailure = failure;
+        try {
+          load(state, failure.url, failure.historyMode, null);
+        } finally {
+          state.retryingLoadFailure = null;
+        }
         if (!wasFocused) return;
         state.loadFailureFocusRetry = true;
         const target = topOpenDialog(state)?.querySelector?.('input:not([type="hidden"]), select, summary, button')
@@ -474,7 +519,7 @@ export function createLiveRegionEngine(config) {
     state.loadFailureFocusRetry = false;
   }
 
-  function loadError(state, generation, error, form, url, historyMode) {
+  function loadError(state, generation, error, form, url, historyMode, retryUrl = url) {
     if (generation !== state.generation) return;
     state.controller = null;
     if (onLoadError?.(state, generation, error, form, url, historyMode, engine) === true) return;
@@ -485,7 +530,7 @@ export function createLiveRegionEngine(config) {
         status(region, '', null);
         return;
       }
-      reportLoadFailure(state, url, historyMode);
+      reportLoadFailure(state, retryUrl, historyMode, generation);
       return;
     }
     if (error?.name === 'AbortError') return;
@@ -495,7 +540,9 @@ export function createLiveRegionEngine(config) {
     fallback(state, form, url, historyMode === 'replace');
   }
 
-  function load(state, url, requestedHistoryMode, form) {
+  // retryUrl: what Retry repeats if this load fails; a followed response
+  // keeps the address of the load it continues.
+  function load(state, url, requestedHistoryMode, form, retryUrl = url) {
     const generation = state.generation;
     const currentRegion = regionFor(state.document);
     if (!currentRegion) return;
@@ -526,25 +573,44 @@ export function createLiveRegionEngine(config) {
     try {
       request = state.window.fetch(url.href, options);
     } catch (error) {
-      loadError(state, generation, error, form, url, historyMode);
+      loadError(state, generation, error, form, url, historyMode, retryUrl);
       return;
     }
 
+    // Set once this load hands its generation to a followed continuation.
+    let followed = false;
     Promise.resolve(request)
       .then((response) => {
         if (generation !== state.generation) return null;
         if (!response?.ok || typeof response.text !== 'function') {
           throw new Error(responseErrorMessage);
         }
+        const continuation = followResponse?.(state, responseUrl(response, url, state.window), url, engine);
+        if (continuation) {
+          followed = true;
+          try { response.body?.cancel?.(); } catch { /* the body is not needed */ }
+          load(state, continuation, historyMode, form, retryUrl);
+          return null;
+        }
         state.response = response;
         return response.text();
       })
       .then((responseText) => {
-        if (responseText === null || generation !== state.generation) return;
+        if (followed || responseText === null || generation !== state.generation) return;
+        // F7-R2b: newer intent absorbed into this load (e.g. a View clicked
+        // while the body was still arriving) is asked again immediately
+        // before installation: the read body is then obsolete and the same
+        // load (generation, history mode, Retry address) continues instead.
+        const continuation = followResponse?.(state, responseUrl(state.response, url, state.window), url, engine);
+        if (continuation) {
+          followed = true;
+          load(state, continuation, historyMode, form, retryUrl);
+          return;
+        }
         replaceRegion(state, responseText, url, historyMode);
       })
       .then(() => {
-        if (generation !== state.generation) return;
+        if (followed || generation !== state.generation) return;
         state.controller = null;
         const region = regionFor(state.document);
         region?.removeAttribute?.('aria-busy');
@@ -552,7 +618,9 @@ export function createLiveRegionEngine(config) {
         bindForm(state);
         onLoadComplete?.(state, generation, region, engine);
       })
-      .catch((error) => loadError(state, generation, error, form, url, historyMode));
+      .catch((error) => {
+        if (!followed) loadError(state, generation, error, form, url, historyMode, retryUrl);
+      });
   }
 
   function schedule(state, form, delay = 0) {
@@ -650,6 +718,16 @@ export function createLiveRegionEngine(config) {
           } catch {
             return;
           }
+          if (linkDestination) {
+            let destination = null;
+            try {
+              destination = linkDestination(state, link, url, engine);
+            } catch {
+              // Keep the link's own address when no newer intent is readable.
+            }
+            if (destination === false) return;
+            url = destination || url;
+          }
           if (state.timer) state.window.clearTimeout?.(state.timer);
           state.timer = null;
           invalidate(state);
@@ -684,6 +762,7 @@ export function createLiveRegionEngine(config) {
         loadFailure: null,
         loadFailureRetryButton: null,
         loadFailureFocusRetry: false,
+        retryingLoadFailure: null,
         engine,
       };
       document[stateKey] = state;
@@ -733,6 +812,108 @@ function reconcileExternalFilterForm(state, parsed, formSelector) {
   currentForm.replaceChildren?.(...children);
   enhanceDropdowns(state.document);
   liveRegionRestoreState(currentForm, state.document, captured);
+  // R2: the replaced children were rendered for the installed View; the
+  // restored disclosures/focus are then reconciled with the current one. Focus
+  // the restore could not place (its control is now in a hidden field) moves
+  // to the View control instead of falling back to the body.
+  syncViewDependentFields(currentForm, liveRegionFindFocus(currentForm, captured?.focus));
+}
+
+/*
+ * R2: a combined Filters & Defaults field marked
+ * data-filters-visible-when-view="<view>" is shown only while the form's
+ * checked radio View matches. Hidden is presentation only: the field stays in
+ * the DOM, enabled, with its value, name and form association, so an explicit
+ * Save keeps it and returning to that View shows the same choice. The checked
+ * View radio is the one source of truth; every path that changes it calls this
+ * (the radio change listener, the toolbar View sync, form reconciliation), and
+ * the server renders the initial state. It never schedules a request or Save.
+ * A form without a radio View (Project Assets' native select) is untouched.
+ */
+function syncViewDependentFields(form, restoredFocus = null) {
+  const fields = Array.from(form?.querySelectorAll?.('[data-filters-visible-when-view]') || []);
+  if (fields.length === 0) return;
+  const radios = Array.from(form.querySelectorAll?.('input[type="radio"][name="view"]') || []);
+  const checked = radios.find((input) => input.checked);
+  if (!checked) return;
+  const viewSummary = checked.closest?.('details')?.querySelector?.('summary');
+  applyViewDependentFields(fields, checked.value, {
+    container: form,
+    focusTarget: viewSummary || checked,
+    restoredFocus,
+  });
+}
+
+/*
+ * R2/R3 shared core: shows each field whose data-filters-visible-when-view
+ * matches `view` and hides the others (the complete wrapper, by the hidden
+ * attribute only). A hidden field keeps its control, value, name, form
+ * association and enabled state. A disclosure open inside a field being hidden
+ * is closed (never reopened by showing it again), and focus inside it moves
+ * to `focusTarget` (the visible View control). `restoredFocus` is focus a
+ * replacement could not place because its control is now in a hidden field;
+ * it counts only while the focus is not already inside `container`.
+ */
+function applyViewDependentFields(fields, view, { container, focusTarget, restoredFocus = null }) {
+  fields.forEach((field) => {
+    const visible = field.getAttribute?.('data-filters-visible-when-view') === view;
+    if (visible) {
+      if (field.hidden) field.hidden = false;
+      return;
+    }
+    const active = field.ownerDocument?.activeElement;
+    const focusInside = Boolean(active && field.contains?.(active))
+      || Boolean(restoredFocus && field.contains?.(restoredFocus) && !container?.contains?.(active));
+    Array.from(field.querySelectorAll?.('details') || []).forEach((details) => {
+      if (details.open !== true) return;
+      details.open = false;
+      details.removeAttribute?.('open');
+      updateAssetViewerFilterDisclosureState(details);
+    });
+    if (!field.hidden) field.hidden = true;
+    if (focusInside) focusTarget?.focus?.({ preventScroll: true });
+  });
+}
+
+/*
+ * R3: Project Assets' View is the native select #asset-view-filter (joined to
+ * #asset-filters by form="…", mirrored by a CreatorCrate dropdown), and its
+ * Grid style / Grid size default / List size default fields sit beside it in
+ * the Filters & Defaults dialog. The select's value is the one source of
+ * truth; every path that changes it calls this: its own change (dialog
+ * choice), the toolbar View sync (which sends no change event) and response
+ * reconciliation (which may replace the View control on its own). Hidden is
+ * presentation only, so Save keeps capturing the hidden values, Reset keeps
+ * restoring them and browser-local sizes are never written here. It never
+ * schedules a request or a Save.
+ */
+function syncProjectAssetsViewDependentFields(document, restoredFocus = null) {
+  const control = document?.querySelector?.('#asset-view-filter');
+  if (!control) return;
+  const view = control.value === 'list' ? 'list' : 'grid';
+  const dialog = control.closest?.('[data-app-dialog]') || control.closest?.('dialog');
+  const fields = Array.from(dialog?.querySelectorAll?.('[data-filters-visible-when-view]') || []);
+  if (fields.length === 0) return;
+  const dropdown = control.closest?.('fieldset')?.querySelector?.(CC_DROPDOWN_SELECTOR);
+  const summary = dropdown && !dropdown.hidden ? dropdown.querySelector?.('summary') : null;
+  applyViewDependentFields(fields, view, {
+    container: control.closest?.('[data-project-assets-live-misc]') || dialog,
+    focusTarget: summary || control,
+    restoredFocus,
+  });
+}
+
+// R2: a user's own View radio choice updates the dependent fields at once
+// (before the debounced or immediate GET); bound once per filter form.
+function bindViewDependentFields(form) {
+  if (!form || isEnhancementBound(form, 'viewDependentFieldsBound')) return;
+  markEnhancementBound(form, 'viewDependentFieldsBound');
+  form.addEventListener?.('change', (event) => {
+    const target = event.target;
+    if (target?.type !== 'radio' || (target.name || target.getAttribute?.('name')) !== 'view') return;
+    syncViewDependentFields(form);
+  });
+  syncViewDependentFields(form);
 }
 
 function enhanceCalendarLiveRegion(region) {
@@ -1118,6 +1299,180 @@ function enhanceCalendarReleaseEditRefresh(document) {
   });
 }
 
+/*
+ * WP10a F1: the destination an NSFW refresh re-requests. The legacy Filter
+ * form holds at most one Project, so serializing it dropped repeated
+ * project= selections and broadened the list under a restricted address.
+ * The refresh therefore never rebuilds from that form; it re-requests the
+ * destination that owns the current intent, with the history it is owed:
+ *   - an in-flight GET: its URL and its own history mode (a pending push
+ *     still pushes, a pending Back/Forward still only replaces);
+ *   - a failed GET: its URL; load() promotes 'none' to the recorded mode;
+ *   - otherwise: the installed location, adding no history entry.
+ * Repeated keys stay repeated; nothing reduces them to the scalar alias.
+ */
+// WP10b: a debounced Search edit not yet requested is the newest intent: the
+// combined filter form (which carries every repeated Project, Status, Type
+// and Tag value, hidden-by-search choices included) with the push schedule()
+// would have made. A push to the address already shown only reconciles it.
+function projectsNsfwRefreshTarget(state) {
+  const base = state.window.location?.href;
+  let target;
+  if (state.timer) {
+    target = {
+      url: projectsLiveEngine.url(
+        projectsLiveEngine.getForm(projectsLiveEngine.getRegion(state.document)),
+        state.window,
+      ),
+      historyMode: 'push',
+    };
+  } else if ((state.controller || state.loadFailure) && state.requestedUrl) {
+    // F8: a failed followed continuation is retried from the address its
+    // Retry repeats (the default navigation), which also owns its history.
+    const owner = state.controller ? state.requestedUrl : state.loadFailure.url || state.requestedUrl;
+    target = {
+      url: new URL(owner.href, base || owner.href),
+      historyMode: state.controller ? state.requestedHistoryMode || 'none' : 'none',
+    };
+  } else {
+    const url = new URL(base);
+    url.hash = '';
+    if (url.pathname !== '/projects') throw new Error('Projects location is unavailable.');
+    target = { url, historyMode: 'none' };
+  }
+  if (target.historyMode === 'push' && base) {
+    const shown = new URL(base);
+    shown.hash = '';
+    if (shown.href === target.url.href) target.historyMode = 'replace';
+  }
+  return target;
+}
+
+// WP10b F1: a toolbar Grid/List link was rendered against the installed page,
+// so it does not know a filter change that is still debounced, in flight or
+// failed. The clicked View is newer intent applied to the latest intended
+// filter destination (the same precedence the NSFW refresh uses); an idle
+// page keeps the link's own canonical address. The dialog's View control
+// follows the click, so a later filter change keeps the chosen View.
+//
+// F8: a default navigation (Reset filters: a bare /projects) is resolved by
+// the server from the saved defaults, and only its redirect tells the
+// restored address; adding `view` to it would stop that resolution. A View
+// click while one is in flight is therefore recorded as that navigation's
+// View (the latest click wins) and the load keeps running;
+// followProjectsResetView applies it to the restored address. A View click on
+// a failed one re-requests it with the View, exactly like its Retry.
+function projectsViewLinkDestination(state, link, url) {
+  if (!link?.closest?.('nav.view-switcher')) {
+    // Pagination (or any other followed link) is newer intent.
+    state.projectsResetView = null;
+    return url;
+  }
+  const view = url.searchParams.get('view') === 'list' ? 'list' : 'grid';
+  const form = projectsLiveEngine.getForm(projectsLiveEngine.getRegion(state.document));
+  syncProjectsViewControl(form, view);
+
+  if (!state.timer && state.controller && isProjectsDefaultNavigationUrl(state.requestedUrl)) {
+    state.projectsResetView = view;
+    return false;
+  }
+  if (!state.timer && !state.controller && isProjectsDefaultNavigationUrl(state.loadFailure?.url)) {
+    state.projectsResetView = view;
+    return new URL(state.loadFailure.url.href);
+  }
+
+  let base;
+  if (state.timer) {
+    base = projectsLiveEngine.url(form, state.window);
+  } else if ((state.controller || state.loadFailure) && state.requestedUrl) {
+    base = new URL(state.requestedUrl.href, state.window.location?.href || state.requestedUrl.href);
+  } else {
+    return url;
+  }
+  if (base.pathname !== url.pathname) return url;
+  // Mirror the link's own View encoding: an omitted view is the resolved
+  // default the server chose to leave implicit.
+  if (url.searchParams.has('view')) base.searchParams.set('view', url.searchParams.get('view'));
+  else base.searchParams.delete('view');
+  base.hash = '';
+  return base;
+}
+
+// Mirrors the route's isProjectsDefaultNavigation(): no list parameter at all.
+const PROJECTS_LIST_QUERY_KEYS = Object.freeze(['search', 'status', 'type', 'tag', 'project', 'sort', 'order', 'view', 'page']);
+
+// The application fallback View: the only View a canonical address omits.
+const PROJECTS_FALLBACK_VIEW = 'grid';
+
+function isProjectsDefaultNavigationUrl(url) {
+  return Boolean(url && url.pathname === '/projects'
+    && !PROJECTS_LIST_QUERY_KEYS.some((key) => url.searchParams.has(key)));
+}
+
+/*
+ * F8: the default navigation's response arrived at the address the server
+ * restored from the saved defaults. With a View chosen meanwhile, the same
+ * load continues there with only `view` replaced: same generation, history
+ * mode and Retry address (the default navigation itself). An omitted `view`
+ * on that address is the application fallback (the server only leaves the
+ * fallback implicit), so a matching choice costs no follow-up GET. The View
+ * is consumed here; a failed continuation hands it back for the Retry.
+ */
+function followProjectsResetView(state, finalUrl, requestedUrl) {
+  const view = state.projectsResetView;
+  if (!view || !isProjectsDefaultNavigationUrl(requestedUrl)) return null;
+  state.projectsResetView = null;
+  state.projectsResetFollowed = { generation: state.generation, view };
+  // Another page (a redirect away) installs nothing and fails as usual.
+  if (finalUrl.origin !== requestedUrl.origin || finalUrl.pathname !== requestedUrl.pathname) return null;
+  if ((finalUrl.searchParams.get('view') || PROJECTS_FALLBACK_VIEW) === view) return null;
+  const destination = new URL(finalUrl.href);
+  destination.searchParams.set('view', view);
+  destination.hash = '';
+  state.projectsResetContinuing = true;
+  return destination;
+}
+
+function syncProjectsViewControl(form, view) {
+  const inputs = Array.from(form?.querySelectorAll?.('input[type="radio"][name="view"]') || []);
+  const target = inputs.find((input) => input.value === view);
+  if (!target || target.checked) return;
+  inputs.forEach((input) => { input.checked = input === target; });
+  const dropdown = target.closest?.(CC_DROPDOWN_SELECTOR);
+  if (dropdown) initializeCreatorCrateDropdown(dropdown);
+  syncViewDependentFields(form);
+}
+
+/*
+ * WP10b F4: the destination of a followed toolbar View link, the clicked View
+ * being newer intent than any pending filter navigation. `pendingUrl` is the
+ * latest intended filter destination, or null on an idle page (the link's
+ * own canonical address is then current). The View is mirrored from the link:
+ * an omitted view is the resolved default the server chose to leave implicit.
+ */
+function applyToolbarView(url, pendingUrl) {
+  if (!pendingUrl || pendingUrl.pathname !== url.pathname) return url;
+  const destination = new URL(pendingUrl.href);
+  if (url.searchParams.has('view')) destination.searchParams.set('view', url.searchParams.get('view'));
+  else destination.searchParams.delete('view');
+  destination.hash = '';
+  return destination;
+}
+
+// WP10b read-only request-lifecycle notifications for the Projects defaults
+// transport (projects-filters-defaults.js), mirroring the Asset Library ones:
+// 'started', 'installed', 'failed', 'superseded'. Observers cannot change the
+// engine's behaviour.
+function notifyProjectsLive(state, detail) {
+  state.projectsObservers?.forEach((listener) => {
+    try {
+      listener(detail);
+    } catch {
+      // A transport observer must never break live filtering.
+    }
+  });
+}
+
 function submitProjectsNsfwToggle(state, form, event) {
   if (!projectsLiveEngine.capabilities(state.window)) return false;
   if (state.nsfwSubmitting) {
@@ -1125,23 +1480,20 @@ function submitProjectsNsfwToggle(state, form, event) {
     return true;
   }
 
-  let refreshUrl;
+  let refresh;
   try {
+    refresh = projectsNsfwRefreshTarget(state);
     if (state.timer) state.window.clearTimeout?.(state.timer);
     state.timer = null;
-    refreshUrl = (state.controller || state.loadFailure) && state.requestedUrl
-      ? new URL(state.requestedUrl.href, state.window.location?.href || state.requestedUrl.href)
-      : projectsLiveEngine.url(
-        projectsLiveEngine.getForm(projectsLiveEngine.getRegion(state.document)),
-        state.window,
-        { preservePage: true },
-      );
   } catch {
     return false;
   }
 
   event.preventDefault?.();
   projectsLiveEngine.invalidate(state);
+  // Any navigation started while the POST is pending (a link, Back/Forward,
+  // a filter change) advances the engine generation and owns the intent.
+  const navigationGeneration = state.generation;
   state.nsfwGeneration += 1;
   const generation = state.nsfwGeneration;
   const enabled = projectLiveNsfwEnabled(form);
@@ -1201,12 +1553,22 @@ function submitProjectsNsfwToggle(state, form, event) {
       state.nsfwEnabled = payload.enabled;
       persistedNsfwEnabled = payload.enabled;
       state.nsfwNeedsRefresh = true;
+      // A newer navigation during the POST owns the destination: refresh
+      // what it requested (or installed), never the older captured target.
+      let target = refresh;
+      if (state.generation !== navigationGeneration) {
+        try {
+          target = projectsNsfwRefreshTarget(state);
+        } catch {
+          // Keep the captured destination when no newer one is readable.
+        }
+      }
       projectsLiveEngine.invalidate(state);
       updateProjectsNsfwControls(projectsLiveEngine.getRegion(state.document), payload.enabled, true);
       projectsLiveEngine.load(
         state,
-        refreshUrl,
-        'none',
+        target.url,
+        target.historyMode,
         projectsLiveEngine.getForm(projectsLiveEngine.getRegion(state.document)),
       );
     })
@@ -1245,9 +1607,13 @@ const projectsLiveEngine = createLiveRegionEngine({
   formScope: 'document',
   linkSelector: 'nav.view-switcher a, .pagination a, [data-projects-reset]',
   linkScope: 'document',
+  searchSelector: PROJECTS_SEARCH_SELECTOR,
+  debounceMs: PROJECTS_LIVE_DEBOUNCE_MS,
   defaultAction: '/projects',
   stateKey: '__creatorCrateProjectsLiveFiltering',
   historyState: { projects: true },
+  linkDestination: projectsViewLinkDestination,
+  followResponse: followProjectsResetView,
   statusSelector: PROJECTS_LIVE_STATUS_SELECTOR,
   statusStateAttribute: PROJECTS_LIVE_STATE_ATTRIBUTE,
   loadingMessage: 'Loading projects.',
@@ -1260,6 +1626,8 @@ const projectsLiveEngine = createLiveRegionEngine({
     state.projectsDefaultsRefreshError = null;
     state.projectsDefaultsRefreshFailureMessage = null;
     state.projectsDefaultsRefreshSuccess = null;
+    state.projectsObservers = new Set();
+    state.projectsLoading = false;
     state.nsfwController = null;
     state.nsfwGeneration = 0;
     state.nsfwSubmitting = false;
@@ -1268,13 +1636,28 @@ const projectsLiveEngine = createLiveRegionEngine({
     state.nsfwRefreshGeneration = null;
     state.nsfwRegionReplaced = false;
     state.nsfwEnabled = projectLiveRenderedNsfwEnabled(region);
+    // F8: the View chosen for a pending (or failed, Retry-able) default
+    // navigation, the one consumed by its in-flight continuation, and whether
+    // the next load start is that continuation.
+    state.projectsResetView = null;
+    state.projectsResetFollowed = null;
+    state.projectsResetContinuing = false;
+    // Back/Forward is newer intent than a pending Reset's View. (Registered
+    // before the engine's own popstate handling, which starts the load.)
+    state.window?.addEventListener?.('popstate', () => {
+      if (state.window.location?.pathname === '/projects') state.projectsResetView = null;
+    });
     enhanceDropdowns(state.document);
     enhanceAssetViewerFilterDisclosures(state.document);
   },
   onBindRegion(state, region) {
     bindProjectsNsfwForm(state, region);
+    bindViewDependentFields(state.document?.querySelector?.(PROJECTS_FILTER_SELECTOR));
   },
   onInvalidate(state) {
+    const supersededLoading = state.projectsLoading;
+    state.projectsLoading = false;
+    notifyProjectsLive(state, { phase: 'superseded', generation: state.generation, loading: supersededLoading });
     if (state.projectsDefaultsRefreshGeneration !== null) {
       state.projectsDefaultsRefreshGeneration = null;
       state.projectsDefaultsRefreshError = null;
@@ -1286,13 +1669,28 @@ const projectsLiveEngine = createLiveRegionEngine({
       state.nsfwRefreshGeneration = null;
     }
   },
-  onLoadStart(state, generation) {
+  onLoadStart(state, generation, url) {
+    const continuing = state.projectsResetContinuing;
+    state.projectsResetContinuing = false;
+    if (!continuing) {
+      state.projectsResetFollowed = null;
+      // Any navigation other than the default navigation (or its Retry) is
+      // newer intent than its View.
+      if (!isProjectsDefaultNavigationUrl(url)) state.projectsResetView = null;
+    }
+    state.projectsLoading = true;
+    notifyProjectsLive(state, { phase: 'started', generation, url: url?.href ?? null });
     const refreshesNsfw = state.nsfwNeedsRefresh && !state.nsfwPostPending;
     if (refreshesNsfw) state.nsfwNeedsRefresh = false;
     if (refreshesNsfw) state.nsfwRefreshGeneration = generation;
   },
   onResponseParsed(state, parsed) {
+    // WP10b: the combined dialog's GET form is reconciled to the installed
+    // response; typed option-search text and a still-typed results Search
+    // (only trimmed by the server) survive it.
+    const drafts = captureFilterDialogDrafts(state.document, PROJECTS_DROPDOWN_SEARCH_SELECTOR, PROJECTS_SEARCH_SELECTOR);
     reconcileExternalFilterForm(state, parsed, PROJECTS_FILTER_SELECTOR);
+    restoreFilterDialogDrafts(state.document, drafts, PROJECTS_DROPDOWN_SEARCH_SELECTOR, PROJECTS_SEARCH_SELECTOR);
   },
   onRegionReplaced(state, nextRegion) {
     if (!state.nsfwSubmitting) return;
@@ -1302,6 +1700,9 @@ const projectsLiveEngine = createLiveRegionEngine({
     updateProjectsNsfwControls(nextRegion, renderedEnabled, true);
   },
   onLoadComplete(state, generation, region) {
+    state.projectsLoading = false;
+    state.projectsResetFollowed = null;
+    notifyProjectsLive(state, { phase: 'installed', generation, url: state.window?.location?.href ?? null });
     if (state.projectsDefaultsRefreshGeneration === generation) {
       const notifyRefreshed = state.projectsDefaultsRefreshSuccess;
       state.projectsDefaultsRefreshGeneration = null;
@@ -1317,7 +1718,16 @@ const projectsLiveEngine = createLiveRegionEngine({
     state.nsfwEnabled = projectLiveRenderedNsfwEnabled(region);
     updateProjectsNsfwControls(region, state.nsfwEnabled);
   },
-  onLoadError(state, generation) {
+  onLoadError(state, generation, error, form, url) {
+    state.projectsLoading = false;
+    // F8: a failed continuation hands its View back for the Retry of the
+    // default navigation, unless a newer View click already replaced it.
+    const followed = state.projectsResetFollowed;
+    state.projectsResetFollowed = null;
+    if (followed?.generation === generation && !state.projectsResetView) state.projectsResetView = followed.view;
+    notifyProjectsLive(state, {
+      phase: 'failed', generation, url: url?.href ?? null, aborted: error?.name === 'AbortError',
+    });
     if (state.projectsDefaultsRefreshGeneration === generation) {
       const notifyRefreshError = state.projectsDefaultsRefreshError;
       // An empty message keeps the region quiet for callers that report the
@@ -1972,7 +2382,9 @@ export const PROJECT_ASSETS_REGION_LOADED_EVENT = 'project-assets-region-loaded'
 // load owns one Reset, and each phase is announced once on the document as
 // PROJECT_ASSETS_FILTERS_RESET_EVENT with detail { id, phase, generation, url }:
 // - 'started':    the Reset GET was issued (initial click, Retry, or a
-//                 post-mutation refresh re-reading a pending/failed Reset).
+//                 post-mutation refresh re-reading a failed Reset). A
+//                 refresh re-reading a Reset still in flight carries that
+//                 same Reset (F7-R1): no new 'started', no 'superseded'.
 // - 'prepared':   its response was parsed and validated, before install;
 //                 detail.parsed is that response document.
 // - 'installed':  its region and controls are installed (after
@@ -2086,6 +2498,9 @@ function submitProjectAssetsNsfwToggle(state, form, event) {
   const previousEnabled = projectAssetsRenderedNsfwEnabled(projectAssetsLiveEngine.getRegion(state.document));
   state.assetNsfwSubmitting = true;
   state.assetNsfwPostPending = true;
+  // WP10b F5: the filter destination this POST carries, for a toolbar View
+  // click made before it answers.
+  state.assetNsfwRefreshUrl = refreshUrl;
   state.assetNsfwNeedsRefresh = false;
   state.assetNsfwRegionReplaced = false;
   state.assetNsfwPreviousEnabled = previousEnabled;
@@ -2135,6 +2550,7 @@ function submitProjectAssetsNsfwToggle(state, form, event) {
       if (generation !== state.assetNsfwGeneration) return;
       state.assetNsfwController = null;
       state.assetNsfwPostPending = false;
+      state.assetNsfwRefreshUrl = null;
       state.assetNsfwEnabled = payload.enabled;
       state.assetNsfwNeedsRefresh = true;
       projectAssetsLiveEngine.invalidate(state);
@@ -2150,6 +2566,7 @@ function submitProjectAssetsNsfwToggle(state, form, event) {
       if (generation !== state.assetNsfwGeneration) return;
       state.assetNsfwController = null;
       state.assetNsfwPostPending = false;
+      state.assetNsfwRefreshUrl = null;
       state.assetNsfwSubmitting = false;
       state.assetNsfwNeedsRefresh = false;
       const region = projectAssetsLiveEngine.getRegion(state.document);
@@ -2226,6 +2643,9 @@ function bindProjectAssetsAssociatedFilterControls(state) {
     const form = control?.form;
     if (!form || form.id !== 'asset-filters' || form.contains?.(control)) return;
     if (!control.name && !control.getAttribute?.('name')) return;
+    // R3: a dialog View choice shows its own presentation fields at once
+    // (before the debounced GET); the GET itself is scheduled as before.
+    if (control.id === 'asset-view-filter') syncProjectAssetsViewDependentFields(document);
     projectAssetsLiveEngine.schedule(state, form);
   });
 }
@@ -2242,6 +2662,9 @@ function reconcileProjectAssetsAssociatedFilterControls(state, parsed) {
     replaced = true;
   });
   if (replaced) enhanceDropdowns(state.document);
+  // R3: the response's View (replaced or kept) decides the presentation
+  // fields; they are never replaced themselves, so their values survive.
+  syncProjectAssetsViewDependentFields(state.document);
 }
 
 // The Manual scan form sits in the page heading, outside the live region, and
@@ -2321,6 +2744,39 @@ function captureProjectAssetsTransientState(state, region) {
     scrollers: Array.from(region?.querySelectorAll?.(PROJECT_ASSETS_SCROLLER_SELECTOR) || [])
       .map((element) => ({ left: element.scrollLeft ?? 0, top: element.scrollTop ?? 0 })),
   };
+}
+
+// F10: the effective asset-filter context a region was rendered for. Its
+// toolbar View links are the server's canonical address of that context
+// (project path, every filter, Sort, Order, page and page size, with values
+// that differ from the saved defaults made explicit), so the context is that
+// address without `view`. A region without them has no known context.
+function projectAssetsSelectionContext(region) {
+  const href = region?.querySelector?.('nav.view-switcher a[href]')?.getAttribute?.('href');
+  if (!href) return null;
+  let url;
+  try {
+    url = new URL(href, 'http://creatorcrate.invalid');
+  } catch {
+    return null;
+  }
+  url.searchParams.delete('view');
+  return `${url.pathname}?${projectAssetsParamsKey(url)}`;
+}
+
+// F10: a user navigation whose response renders the same effective context
+// as the installed results changed only the Grid/List presentation, whatever
+// started it (a toolbar or dialog View, Retry, Back/Forward). Both contexts
+// come from server-rendered regions, so a pending Search, filter or page
+// joined to a View click shows up as a different context. Reset filters, a
+// Defaults refresh and an NSFW refresh are never pure View changes.
+function projectAssetsPureViewChange(state, region, nextRegion) {
+  const generation = state.generation;
+  if (state.projectAssetsFiltersReset?.generation === generation
+    || state.projectAssetsDefaultsRefreshGeneration === generation
+    || state.assetNsfwRefreshGeneration === generation) return false;
+  const installed = projectAssetsSelectionContext(region);
+  return installed !== null && installed === projectAssetsSelectionContext(nextRegion);
 }
 
 // Unsaved orders by category, each held until its own surface renders again. A
@@ -2632,6 +3088,102 @@ function enhanceProjectAssetsLiveRegion(region) {
   refreshProjectAssetsViewer(region);
 }
 
+/*
+ * WP10b F5: a toolbar Grid/List link was rendered against the installed
+ * Project Assets page, so it does not know a filter change that is still
+ * debounced, in flight or failed, or one an unanswered NSFW POST is carrying.
+ * The clicked View is newer intent applied to that latest intended filter
+ * destination (the precedence the mutation refresh and NSFW refresh use); an
+ * idle page keeps the link's own canonical address. The dialog's View control
+ * follows the click, so a filter edit made before the response keeps the
+ * chosen View. Selection, order drafts and defaults stay the engine's ordinary
+ * navigation concerns: nothing here writes, posts or saves.
+ *
+ * F7: Reset filters is resolved by the server from the effective saved
+ * defaults (it ignores a request-time View), and the restored address is only
+ * known from its redirect. A View click while a Reset is in flight is
+ * therefore recorded as the Reset's View (the latest click wins) and the
+ * Reset keeps running; followProjectAssetsResetView applies it to the
+ * restored address. A View click on a failed Reset re-requests that Reset
+ * with the View, exactly like its Retry. A new Reset click starts a new Reset
+ * without an earlier View; any other navigation drops it (onLoadStart).
+ */
+function projectAssetsViewLinkDestination(state, link, url) {
+  if (link?.matches?.('[data-project-assets-reset]')) {
+    state.projectAssetsResetView = null;
+    return url;
+  }
+  if (!link?.closest?.('nav.view-switcher')) return url;
+  const form = projectAssetsLiveEngine.getForm(projectAssetsLiveEngine.getRegion(state.document));
+  const view = url.searchParams.get('view') === 'list' ? 'list' : 'grid';
+  syncProjectAssetsViewControl(state.document, form, view);
+
+  const reset = state.projectAssetsFiltersReset;
+  // Only a Reset load still in flight owns the current generation.
+  if (!state.timer && reset?.generation === state.generation) {
+    state.projectAssetsResetView = view;
+    return false;
+  }
+  if (!state.timer && isProjectAssetsFiltersResetUrl(state.loadFailure?.url)) {
+    state.projectAssetsResetView = view;
+    return new URL(state.loadFailure.url.href);
+  }
+
+  let pendingUrl = null;
+  if (state.timer) {
+    pendingUrl = projectAssetsLiveEngine.url(form, state.window);
+  } else if ((state.controller || state.loadFailure) && state.requestedUrl) {
+    pendingUrl = new URL(state.requestedUrl.href, state.window.location?.href || state.requestedUrl.href);
+  } else if (state.assetNsfwPostPending && state.assetNsfwRefreshUrl) {
+    pendingUrl = new URL(state.assetNsfwRefreshUrl.href);
+  }
+  // A Reset address no longer owned by any load (e.g. an NSFW refresh of
+  // one) carries no restorable filters; the link's own address stands.
+  if (isProjectAssetsFiltersResetUrl(pendingUrl)) return url;
+  return applyToolbarView(url, pendingUrl);
+}
+
+/*
+ * F7: the Reset's own response arrived and redirected to the address the
+ * server restored from the effective defaults. With a View chosen during the
+ * Reset, the same load continues at that address with only `view` replaced:
+ * one GET, one history entry, the Reset lifecycle (prepared/installed or
+ * failed, with a Retry that repeats the Reset) carried over unchanged. The
+ * View is consumed here, so a continuation never continues again unless a
+ * newer View click arrives while it is in flight.
+ */
+function followProjectAssetsResetView(state, finalUrl, requestedUrl) {
+  const view = state.projectAssetsResetView;
+  const reset = state.projectAssetsFiltersReset;
+  if (!view || reset?.generation !== state.generation) return null;
+  state.projectAssetsResetView = null;
+  reset.view = view;
+  // Another page (a redirect away) installs nothing and fails as usual.
+  if (finalUrl.origin !== requestedUrl.origin || finalUrl.pathname !== requestedUrl.pathname
+    || finalUrl.searchParams.get('view') === view) return null;
+  const destination = new URL(finalUrl.href);
+  destination.searchParams.set('view', view);
+  destination.hash = '';
+  state.projectAssetsResetContinuing = true;
+  return destination;
+}
+
+// The dialog View is a native select joined to #asset-filters by form="…"
+// (outside the form element), mirrored by its CreatorCrate dropdown.
+function syncProjectAssetsViewControl(document, form, view) {
+  const control = document?.querySelector?.('#asset-view-filter') || form?.querySelector?.('[name="view"]');
+  if (!control || control.value === view) return;
+  if (control.tagName === 'SELECT') {
+    if (!Array.from(control.options || []).some((option) => option.value === view && !option.disabled)) return;
+    control.value = view;
+    syncCreatorCrateDropdownFromNative(control);
+    // R3: the toolbar sends no change event, so the fields follow here.
+    syncProjectAssetsViewDependentFields(document);
+    return;
+  }
+  control.value = view;
+}
+
 const projectAssetsLiveEngine = createLiveRegionEngine({
   regionSelector: PROJECT_ASSETS_LIVE_REGION_SELECTOR,
   formSelector: PROJECT_ASSETS_FILTER_SELECTOR,
@@ -2639,6 +3191,8 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
   searchSelector: PROJECT_ASSETS_SEARCH_SELECTOR,
   linkSelector: 'nav.view-switcher a, .pagination a, [data-project-assets-reset]',
   linkScope: 'document',
+  linkDestination: projectAssetsViewLinkDestination,
+  followResponse: followProjectAssetsResetView,
   debounceMs: PROJECT_ASSETS_LIVE_DEBOUNCE_MS,
   defaultAction: '/projects',
   stateKey: '__creatorCrateProjectAssetsLiveFiltering',
@@ -2659,11 +3213,34 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
     const region = projectAssetsLiveEngine.getRegion(state.document);
     carryProjectAssetsSizeFallbacks(state, nextRegion);
     retainProjectAssetsOrderDraft(state, region);
-    if (state.projectAssetsRefreshOwed) {
+    state.projectAssetsViewSelection = null;
+    state.projectAssetsResetClearedSelection = null;
+    // F7-R1: a Reset an owed mutation refresh carried installs as a Reset.
+    const installsReset = state.projectAssetsFiltersReset?.generation === state.generation;
+    // F7-R2a: an owed refresh reconciles by identity only when this install
+    // is the refresh's own re-read (or its Retry), or a pure Grid/List change.
+    // A newer genuine filter, page, Back/Forward or NSFW navigation that took
+    // over the refresh still satisfies it (the mutated data installs), but
+    // keeps its own selection boundary: the selection is cleared.
+    // F7-R3: the refresh's own re-read of a newer navigation it adopted keeps
+    // that navigation's clearing decision (a pure View change still carries).
+    const pureView = projectAssetsPureViewChange(state, region, nextRegion);
+    const ownsSelection = state.projectAssetsRefreshOwnerGeneration === state.generation
+      && !state.projectAssetsRefreshClearsSelection;
+    const reconcilesRefresh = state.projectAssetsRefreshOwed && !installsReset
+      && (ownsSelection || pureView);
+    if (state.projectAssetsRefreshOwed) state.projectAssetCategoriesNeedSync = true;
+    if (reconcilesRefresh) {
       state.projectAssetsSnapshot = captureProjectAssetsTransientState(state, region);
-      state.projectAssetCategoriesNeedSync = true;
+    } else if (pureView) {
+      // F10: only the Grid/List presentation changed, so the selection (shown
+      // and retained) carries over by identity, as the user left it.
+      state.projectAssetsViewSelection = captureAssetSelection(region);
     } else {
-      // A user's filter navigation starts a new selection, as always.
+      // A user's filter navigation (Reset filters included, even one a
+      // mutation refresh carried, and one that took over an owed refresh)
+      // starts a new selection, as always; the owed refresh reports it.
+      if (state.projectAssetsRefreshOwed) state.projectAssetsResetClearedSelection = captureAssetSelection(region);
       clearRetainedAssetSelection(state.document);
     }
     if (state.projectAssetCategoriesNeedSync) state.projectAssetCategoriesPage = parsed;
@@ -2706,11 +3283,19 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
     state.assetNsfwGeneration = 0;
     state.assetNsfwSubmitting = false;
     state.assetNsfwPostPending = false;
+    state.assetNsfwRefreshUrl = null;
     state.assetNsfwNeedsRefresh = false;
     state.assetNsfwRefreshGeneration = null;
     state.assetNsfwRegionReplaced = false;
     state.assetNsfwEnabled = projectAssetsRenderedNsfwEnabled(region);
     state.projectAssetsRefreshOwed = false;
+    // F7-R2a: the load generation that is the owed refresh's own re-read of
+    // the installed context (or its GET-only Retry). Any other generation is
+    // a newer user navigation with its own selection boundary.
+    state.projectAssetsRefreshOwnerGeneration = null;
+    // F7-R3: the owed refresh re-reads a newer navigation that already
+    // decided to clear the selection; settled with the owed refresh.
+    state.projectAssetsRefreshClearsSelection = false;
     state.projectAssetsRefreshWaiter = null;
     state.projectAssetsRefreshRecoveries = [];
     state.projectAssetsSnapshot = null;
@@ -2720,15 +3305,33 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
     state.projectAssetsSizeRetentionPredates = null;
     state.projectAssetsFiltersReset = null;
     state.projectAssetsFiltersResetId = 0;
+    // F7: the View chosen for a pending (or failed, Retry-able) Reset, and
+    // whether the next load start is that Reset's followed continuation.
+    state.projectAssetsResetView = null;
+    state.projectAssetsResetContinuing = false;
+    // F7-R1: the in-flight Reset a starting mutation refresh carries, held
+    // only from that refresh's invalidation until its load starts; and the
+    // selection such a Reset install cleared, held until it is reported.
+    state.projectAssetsResetCarried = null;
+    state.projectAssetsResetClearedSelection = null;
+    // F10: the selection a pure Grid/List install carries over, held only
+    // between that response's parse and its installation.
+    state.projectAssetsViewSelection = null;
     enhanceDropdowns(state.document);
     bindProjectAssetsAssociatedFilterControls(state);
+    // R3: the server rendered the fields for its View; a View select the
+    // browser restored (form-state restoration) is reconciled the same way.
+    syncProjectAssetsViewDependentFields(state.document);
   },
   onBindRegion(state, region) {
     bindProjectAssetsNsfwForm(state, region);
   },
   onInvalidate(state) {
-    // A Reset not yet installed loses to the newer load about to start.
-    settleProjectAssetsFiltersReset(state, 'superseded');
+    // A Reset not yet installed loses to the newer load about to start,
+    // unless that load is a mutation refresh carrying it (F7-R1).
+    if (!state.projectAssetsResetCarried || state.projectAssetsResetCarried !== state.projectAssetsFiltersReset) {
+      settleProjectAssetsFiltersReset(state, 'superseded');
+    }
     // The caller learns its GET lost. projectAssetsRefreshOwed stays set, so
     // the next install (rendered after the mutation) reconciles and clears it.
     settleProjectAssetsRefresh(state, 'superseded');
@@ -2743,6 +3346,7 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
       state.assetNsfwController?.abort?.();
       state.assetNsfwController = null;
       state.assetNsfwPostPending = false;
+      state.assetNsfwRefreshUrl = null;
       state.assetNsfwSubmitting = false;
       state.assetNsfwNeedsRefresh = false;
       updateProjectAssetsNsfwControls(
@@ -2756,7 +3360,23 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
     }
   },
   onLoadStart(state, generation, url) {
-    if (isProjectAssetsFiltersResetUrl(url)) beginProjectAssetsFiltersReset(state, generation, url);
+    const continuing = state.projectAssetsResetContinuing;
+    state.projectAssetsResetContinuing = false;
+    const carried = state.projectAssetsResetCarried;
+    state.projectAssetsResetCarried = null;
+    if (carried && carried === state.projectAssetsFiltersReset && isProjectAssetsFiltersResetUrl(url)) {
+      // F7-R1: the same Reset, now owned by the refresh's generation.
+      carried.generation = generation;
+      carried.phase = 'pending';
+    } else if (isProjectAssetsFiltersResetUrl(url)) beginProjectAssetsFiltersReset(state, generation, url);
+    // Any other navigation is newer intent than a Reset's View.
+    else if (!continuing) state.projectAssetsResetView = null;
+    // F7-R2a: a Retry of the refresh's own failed re-read stays its own.
+    const retried = state.retryingLoadFailure;
+    if (retried && retried.generation !== generation
+      && retried.generation === state.projectAssetsRefreshOwnerGeneration) {
+      state.projectAssetsRefreshOwnerGeneration = generation;
+    }
     const refreshesNsfw = state.assetNsfwNeedsRefresh && !state.assetNsfwPostPending;
     if (refreshesNsfw) state.assetNsfwNeedsRefresh = false;
     if (refreshesNsfw) state.assetNsfwRefreshGeneration = generation;
@@ -2768,7 +3388,15 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
       state.projectAssetsReconciliation = restoreProjectAssetsTransientState(state, nextRegion, snapshot);
     } else {
       state.projectAssetsReconciliation = null;
-      restoreProjectAssetsOrderDrafts(state, nextRegion);
+      const viewSelection = state.projectAssetsViewSelection;
+      state.projectAssetsViewSelection = null;
+      if (viewSelection) restoreAssetSelection(nextRegion, viewSelection, projectAssetsMembership(nextRegion));
+      const order = restoreProjectAssetsOrderDrafts(state, nextRegion);
+      // F7-R1: an owed refresh satisfied by a Reset install reports that the
+      // Reset started a new selection; order drafts reconcile as usual.
+      const cleared = state.projectAssetsResetClearedSelection;
+      state.projectAssetsResetClearedSelection = null;
+      if (cleared) state.projectAssetsReconciliation = { selection: { restored: [], retained: [], removed: cleared }, order };
     }
     if (!state.assetNsfwSubmitting) return;
     state.assetNsfwRegionReplaced = true;
@@ -2795,6 +3423,8 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
       const reconciliation = state.projectAssetsReconciliation;
       const recoveries = state.projectAssetsRefreshRecoveries;
       state.projectAssetsRefreshOwed = false;
+      state.projectAssetsRefreshOwnerGeneration = null;
+      state.projectAssetsRefreshClearsSelection = false;
       state.projectAssetsRefreshRecoveries = [];
       state.projectAssetsReconciliation = null;
       if (state.projectAssetsRefreshWaiter?.generation === generation) {
@@ -2822,6 +3452,12 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
     updateProjectAssetsNsfwControls(region, state.assetNsfwEnabled);
   },
   onLoadError(state, generation, error) {
+    // F7: a failed Reset (or its continuation) keeps its View for the Retry,
+    // unless a newer View click already replaced it.
+    const reset = state.projectAssetsFiltersReset;
+    if (reset?.generation === generation && reset.view && !state.projectAssetsResetView) {
+      state.projectAssetsResetView = reset.view;
+    }
     settleProjectAssetsFiltersReset(state, 'failed', generation);
     if (state.projectAssetsRefreshWaiter?.generation === generation) {
       settleProjectAssetsRefresh(state, 'failed', { error: error?.message || 'Project Assets refresh failed.' });
@@ -2888,15 +3524,42 @@ function startProjectAssetsMutationRefresh(scope, onRecovered = null, staleNavig
   // The refresh keeps the latest intended view: a debounced filter still owes
   // its navigation, an in-flight filter keeps its history mode, and load()
   // promotes a failed filter's. An idle page keeps its view and history entry.
+  // F7-R1: a Reset filters still in flight (its own GET or its View
+  // continuation) is not newer intent the mutation outdates: the refresh
+  // carries it. It re-reads the Reset address, so the server resolves the
+  // saved defaults against the mutated data, keeps the Reset's latest View,
+  // and the same Reset (id and edit boundary) completes at this install. A
+  // failed Reset is re-read the same way, as its Retry would.
+  const reset = state.projectAssetsFiltersReset;
   let url;
   let historyMode = 'none';
+  let carriedReset = null;
+  // F7-R3: selection ownership is separate from data ownership. While an
+  // earlier refresh is still owed, a navigation the user started since (a
+  // debounced, in-flight or failed filter/Search that is not that refresh's
+  // own re-read) has already decided to clear the selection. This refresh
+  // re-reads that navigation's destination and keeps its decision, as does
+  // any later refresh re-reading this one. A navigation pending with no
+  // refresh owed is adopted under WP09A and keeps the selection by identity.
+  const owed = state.projectAssetsRefreshOwed;
+  let adoptsNewerNavigation = false;
   try {
-    if (state.timer) {
+    if (!state.timer && state.controller && reset?.generation === state.generation) {
+      url = new URL(reset.url, state.window.location?.href || reset.url);
+      historyMode = state.requestedHistoryMode || 'none';
+      carriedReset = reset;
+    } else if (!state.timer && !state.controller && isProjectAssetsFiltersResetUrl(state.loadFailure?.url)) {
+      url = new URL(state.loadFailure.url.href);
+    } else if (state.timer) {
       url = projectAssetsLiveEngine.url(form, state.window);
       historyMode = 'push';
+      // Typed after the owed refresh began (which cancelled any earlier timer).
+      adoptsNewerNavigation = owed;
     } else if ((state.controller || state.loadFailure) && state.requestedUrl) {
       url = new URL(state.requestedUrl.href, state.window.location?.href || state.requestedUrl.href);
       if (state.controller) historyMode = state.requestedHistoryMode || 'none';
+      const adopted = state.controller ? state.generation : state.loadFailure?.generation;
+      adoptsNewerNavigation = owed && adopted !== state.projectAssetsRefreshOwnerGeneration;
     } else {
       url = projectAssetsLiveEngine.url(form, state.window, { preservePage: true });
     }
@@ -2906,8 +3569,20 @@ function startProjectAssetsMutationRefresh(scope, onRecovered = null, staleNavig
     return null;
   }
 
+  if (carriedReset) {
+    // The latest View chosen for it (a click during the continuation is newer).
+    state.projectAssetsResetView = state.projectAssetsResetView || carriedReset.view || null;
+    state.projectAssetsResetCarried = carriedReset;
+  }
+  // The decision outlives each superseded refresh until an install settles it.
+  const clearsSelection = (owed && state.projectAssetsRefreshClearsSelection) || adoptsNewerNavigation;
   projectAssetsLiveEngine.invalidate(state);
   state.projectAssetsRefreshOwed = true;
+  // F7-R2a: this generation is the refresh's own install (it keeps the
+  // selection by identity, as the established refresh contract does for an
+  // adopted pending navigation too). A later navigation is newer intent.
+  state.projectAssetsRefreshOwnerGeneration = state.generation;
+  state.projectAssetsRefreshClearsSelection = clearsSelection;
   if (typeof onRecovered === 'function') {
     state.projectAssetsRefreshRecoveries.push({ generation: state.generation, onRecovered });
   }
@@ -2915,6 +3590,11 @@ function startProjectAssetsMutationRefresh(scope, onRecovered = null, staleNavig
     state.projectAssetsRefreshWaiter = { generation: state.generation, url, resolve };
   });
   projectAssetsLiveEngine.load(state, url, historyMode, form);
+  // A load that could not start does not keep the Reset it was to carry.
+  if (state.projectAssetsResetCarried) {
+    state.projectAssetsResetCarried = null;
+    settleProjectAssetsFiltersReset(state, 'superseded');
+  }
   return completion;
 }
 
@@ -3271,6 +3951,89 @@ export function enhanceProjectsLiveFiltering(scope = globalThis.document) {
   return projectsLiveEngine.enhance(scope);
 }
 
+function projectsLiveState(scope) {
+  const document = liveRegionDocument(scope);
+  const region = projectsLiveEngine.getRegion(document);
+  if (!document || !region) return null;
+  projectsLiveEngine.enhance(document);
+  const state = document.__creatorCrateProjectsLiveFiltering;
+  if (!state || !projectsLiveEngine.capabilities(state.window)) return null;
+  return state;
+}
+
+/**
+ * WP10b read-only request state. `pending` covers an in-flight GET, a
+ * debounced Search edit not yet requested, and an NSFW toggle that still owes
+ * its refresh; `failed` means the installed results are not the latest
+ * intent. `intendedUrl` is the latest intended destination: a debounced edit
+ * (the filter form, as schedule() would push it), else the pending or failed
+ * request, else the installed location.
+ */
+export function projectsLiveSnapshot(scope = globalThis.document) {
+  const state = projectsLiveState(scope);
+  if (!state) return null;
+  const failedUrl = state.loadFailure?.url?.href ?? null;
+  const pending = Boolean(state.projectsLoading || state.timer || state.nsfwSubmitting);
+  const location = state.window?.location?.href ?? null;
+  let debouncedUrl = null;
+  if (state.timer) {
+    try {
+      debouncedUrl = projectsLiveEngine.url(
+        projectsLiveEngine.getForm(projectsLiveEngine.getRegion(state.document)),
+        state.window,
+      )?.href ?? null;
+    } catch {
+      debouncedUrl = null;
+    }
+  }
+  return {
+    generation: state.generation,
+    pending,
+    failed: Boolean(state.loadFailure),
+    failedUrl,
+    requestedHistoryMode: debouncedUrl ? 'push' : state.requestedHistoryMode ?? null,
+    intendedUrl: debouncedUrl || (pending && state.requestedUrl?.href) || failedUrl || location,
+  };
+}
+
+export function subscribeProjectsLive(scope = globalThis.document, listener) {
+  const state = projectsLiveState(scope);
+  if (!state || typeof listener !== 'function') return null;
+  state.projectsObservers.add(listener);
+  return () => state.projectsObservers.delete(listener);
+}
+
+/**
+ * WP10b canonical GET navigation through the one Projects engine: it
+ * supersedes any older pending GET (or debounced edit) and returns the owning
+ * generation. GET only; a failed load keeps the engine's GET-only Retry.
+ */
+export function navigateProjectsLive(scope = globalThis.document, destination, { historyMode = 'push' } = {}) {
+  const state = projectsLiveState(scope);
+  if (!state) return { status: 'unavailable' };
+  let url;
+  try {
+    url = new URL(destination, state.window.location?.href || '/projects');
+  } catch {
+    return { status: 'unavailable' };
+  }
+  if (url.pathname !== '/projects') return { status: 'unavailable' };
+  if (state.timer) state.window.clearTimeout?.(state.timer);
+  state.timer = null;
+  // F8: a new navigation (a new Reset filters included) drops an earlier
+  // Reset's View.
+  state.projectsResetView = null;
+  projectsLiveEngine.invalidate(state);
+  const generation = state.generation;
+  projectsLiveEngine.load(
+    state,
+    url,
+    ['push', 'replace', 'none'].includes(historyMode) ? historyMode : 'push',
+    projectsLiveEngine.getForm(projectsLiveEngine.getRegion(state.document)),
+  );
+  return { status: 'started', generation };
+}
+
 export function beginProjectsDefaultsLiveRefresh(scope = globalThis.document) {
   const document = liveRegionDocument(scope);
   const region = projectsLiveEngine.getRegion(document);
@@ -3313,6 +4076,9 @@ export function refreshProjectsLiveRegion(
 
   if (state.timer) state.window.clearTimeout?.(state.timer);
   state.timer = null;
+  // F8: an explicit destination is newer intent; a null one takes over the
+  // pending navigation, a pending Reset's View included.
+  if (destination !== null) state.projectsResetView = null;
   projectsLiveEngine.invalidate(state);
   state.projectsDefaultsRefreshGeneration = state.generation;
   state.projectsDefaultsRefreshError = typeof onError === 'function' ? onError : null;
@@ -3401,6 +4167,257 @@ const ASSET_LIBRARY_LIVE_STATE_ATTRIBUTE = 'data-asset-library-live-state';
 const ASSET_LIBRARY_NSFW_FORM_SELECTOR = '[data-asset-library-nsfw-filter]';
 const ASSET_LIBRARY_NSFW_TOGGLE_SELECTOR = '[data-asset-library-nsfw-toggle]';
 const ASSET_LIBRARY_LIVE_DEBOUNCE_MS = 350;
+// WP9b: the results Search of the combined Filters & Defaults dialog.
+const ASSET_LIBRARY_SEARCH_SELECTOR = '#asset-library-search';
+const ASSET_LIBRARY_DROPDOWN_SEARCH_SELECTOR = '#asset-filters [data-cc-dropdown-search]';
+
+/*
+ * WP9b NSFW refresh destination. The old filter form could only express one
+ * Project and no Project Type, so rebuilding the refresh from it dropped
+ * repeated selections. The refresh now uses the canonical filter state:
+ *   - an in-flight or failed request: the URL it requested (its intent);
+ *   - a debounced edit not yet requested: the filter form, which carries
+ *     every repeated value (hidden-by-search choices included);
+ *   - otherwise: the installed canonical location the server produced.
+ * Repeated keys stay repeated; nothing is comma-joined or reduced to the
+ * legacy scalar projectId alias.
+ *
+ * F1: an adopted destination also brings the navigation ownership it was
+ * owed, so the installed results and the browser address agree:
+ *   - a debounced edit would have pushed its URL ('push', as schedule());
+ *   - an in-flight request keeps its own history mode;
+ *   - a failed request is promoted to its recorded mode by load();
+ *   - the installed location keeps its history entry ('none').
+ * A push to the address already shown only reconciles it ('replace'), so the
+ * refresh never adds a duplicate entry.
+ *
+ * F4: the serialized form URL can differ from the shown canonical address
+ * even when the server canonicalizes it back to that address (an edit that
+ * was undone within the debounce). The engine compares the FINAL canonical
+ * response URL of every push with the shown address at installation (F6),
+ * so such a refresh keeps the current entry.
+ */
+function assetLibraryNsfwRefreshTarget(state) {
+  const base = state.window.location?.href;
+  let url;
+  let historyMode = 'none';
+  if (state.timer) {
+    url = assetLibraryLiveEngine.url(
+      assetLibraryLiveEngine.getForm(assetLibraryLiveEngine.getRegion(state.document)),
+      state.window,
+    );
+    historyMode = 'push';
+  } else if (state.controller && state.libReset?.generation === state.generation) {
+    // F9: a Reset filters (or its View continuation) in flight is refreshed
+    // as that Reset, so the server re-resolves it and the View chosen for
+    // it is applied again.
+    url = new URL(state.libReset.url.href);
+    if (!state.libResetView) state.libResetView = state.libReset.view;
+    historyMode = state.requestedHistoryMode || 'none';
+  } else if ((state.controller || state.loadFailure) && state.requestedUrl) {
+    // A failed load is refreshed as what its Retry repeats (F9: a failed
+    // Reset continuation repeats the Reset), so it keeps its owed entry.
+    const failed = !state.controller && state.loadFailure?.url;
+    url = new URL((failed || state.requestedUrl).href, base || state.requestedUrl.href);
+    if (state.controller) historyMode = state.requestedHistoryMode || 'none';
+  } else {
+    url = new URL(base);
+    url.hash = '';
+    if (url.pathname !== '/asset-viewer') throw new Error('Asset Viewer location is unavailable.');
+  }
+  if (historyMode === 'push' && base) {
+    const shown = new URL(base);
+    shown.hash = '';
+    if (shown.href === url.href) historyMode = 'replace';
+  }
+  return { url, historyMode };
+}
+
+/*
+ * WP10b F4: a toolbar Grid/List link is rendered against the installed page,
+ * so it knows nothing of a filter change that is still debounced, in flight,
+ * failed, or held by the NSFW toggle. The clicked View is applied to the
+ * latest intended filter destination, in the precedence the NSFW refresh
+ * uses:
+ *   - a debounced edit not yet requested: the filter form (every repeated
+ *     Project / Project Type / Category / Tag / Extension value, hidden-by-
+ *     search choices included);
+ *   - an in-flight or failed GET: the URL it requested;
+ *   - an NSFW POST still pending: the refresh destination it captured (which
+ *     already adopted any debounced or pending edit);
+ *   - otherwise (idle): the link's own canonical address.
+ * The engine then supersedes the older load and pushes the View navigation.
+ * The dialog's View control follows the click (no change event, no POST), so
+ * a later filter edit and an explicit Save keep the chosen View.
+ */
+function assetLibraryViewLinkDestination(state, link, url) {
+  // F9: the filtered-empty Reset link starts a new Reset without a View.
+  if (link?.matches?.('[data-asset-library-reset]')) {
+    state.libResetView = null;
+    return url;
+  }
+  if (!link?.closest?.('nav.view-switcher')) return url;
+  const form = assetLibraryLiveEngine.getForm(assetLibraryLiveEngine.getRegion(state.document));
+  const view = url.searchParams.get('view') === 'list' ? 'list' : 'grid';
+  syncProjectsViewControl(form, view);
+
+  // F9: a Reset filters still in flight (or its View continuation) takes the
+  // click as its View: the server's resolution is kept, nothing is aborted.
+  const reset = state.libReset;
+  if (!state.timer && reset?.generation === state.generation) {
+    // Its final response is already installing: the View is applied to the
+    // address the server resolved, as an ordinary View navigation.
+    if (reset.installing) {
+      if (reset.installing === view || !reset.canonical) return reset.installing === view ? false : url;
+      return assetLibraryResetViewDestination(reset, view);
+    }
+    state.libResetView = view;
+    return false;
+  }
+  // A failed Reset (or failed continuation) is re-requested with the View,
+  // exactly like its Retry.
+  if (!state.timer && isAssetLibraryFiltersResetUrl(state.loadFailure?.url)) {
+    state.libResetView = view;
+    return new URL(state.loadFailure.url.href);
+  }
+
+  let pendingUrl = null;
+  if (state.timer) {
+    pendingUrl = assetLibraryLiveEngine.url(form, state.window);
+  } else if ((state.controller || state.loadFailure) && state.requestedUrl) {
+    pendingUrl = new URL(state.requestedUrl.href, state.window.location?.href || state.requestedUrl.href);
+  } else if (state.libNsfwPostPending && state.libNsfwRefreshUrl) {
+    pendingUrl = state.libNsfwRefreshUrl;
+  }
+  // An NSFW POST carrying a Reset: the click supersedes it (as any View
+  // click does) and requests that Reset with the View.
+  if (isAssetLibraryFiltersResetUrl(pendingUrl)) {
+    state.libResetView = view;
+    return new URL(pendingUrl.href);
+  }
+  return applyToolbarView(url, pendingUrl);
+}
+
+/*
+ * Milestone 3 F9: Reset filters (?resetFilters=1, from the dialog through
+ * navigateAssetLibraryLive or from the filtered-empty Reset link) is resolved
+ * by the server from the effective saved defaults, ignoring any request-time
+ * View, and its restored address is known only from its redirect. A toolbar
+ * View click while it is in flight is recorded as the Reset's View (the
+ * latest click wins) and the Reset keeps running. Its response then continues
+ * the same load (engine followResponse: same generation, history mode and
+ * Retry address) at the restored address with only the View replaced. A
+ * View equal to the restored one costs no request. A failed Reset or failed
+ * continuation keeps its View for Retry; a new Reset starts without one; any
+ * other navigation drops it (onLoadStart). Nothing here writes defaults.
+ */
+function isAssetLibraryFiltersResetUrl(url) {
+  return Boolean(url?.searchParams?.has?.('resetFilters'));
+}
+
+// The canonical address omits the application fallback View (Grid).
+function assetLibraryUrlView(url) {
+  return url?.searchParams?.get?.('view') === 'list' ? 'list' : 'grid';
+}
+
+// The server-restored address with `view` as the only override; the restored
+// View itself is the restored address unchanged.
+function assetLibraryResetViewDestination(reset, view) {
+  const destination = new URL(reset.canonical.href);
+  if (assetLibraryUrlView(reset.canonical) !== view) destination.searchParams.set('view', view);
+  destination.hash = '';
+  return destination;
+}
+
+function followAssetLibraryResetView(state, finalUrl, requestedUrl) {
+  const reset = state.libReset;
+  if (!reset || reset.generation !== state.generation) return null;
+  const sameResource = finalUrl.origin === requestedUrl.origin && finalUrl.pathname === requestedUrl.pathname;
+  if (isAssetLibraryFiltersResetUrl(requestedUrl) && sameResource && !isAssetLibraryFiltersResetUrl(finalUrl)) {
+    reset.canonical = new URL(finalUrl.href);
+    reset.canonical.hash = '';
+  }
+  const view = state.libResetView;
+  // Another page (a redirect away) installs nothing and fails as usual.
+  if (!view || !reset.canonical || !sameResource) {
+    reset.installing = assetLibraryUrlView(finalUrl);
+    return null;
+  }
+  state.libResetView = null;
+  reset.view = view;
+  if (assetLibraryUrlView(finalUrl) === view) {
+    reset.installing = view;
+    return null;
+  }
+  state.libResetContinuing = true;
+  return assetLibraryResetViewDestination(reset, view);
+}
+
+// Drafts that live only in the dialog and must survive a reconciled filter
+// form: the typed text of each dropdown's option search, and the raw results
+// Search text when the server only normalized it (trimmed whitespace).
+function captureAssetLibraryDialogDrafts(document) {
+  return captureFilterDialogDrafts(document, ASSET_LIBRARY_DROPDOWN_SEARCH_SELECTOR, ASSET_LIBRARY_SEARCH_SELECTOR);
+}
+
+function restoreAssetLibraryDialogDrafts(document, drafts) {
+  restoreFilterDialogDrafts(document, drafts, ASSET_LIBRARY_DROPDOWN_SEARCH_SELECTOR, ASSET_LIBRARY_SEARCH_SELECTOR);
+}
+
+// Shared by the combined Filters & Defaults dialogs (Asset Library, WP10b
+// Projects): the drafts of a dialog's dropdown option searches and results
+// Search that a reconciled filter form must not discard.
+function captureFilterDialogDrafts(document, dropdownSearchSelector, resultsSearchSelector) {
+  const searches = Array.from(document?.querySelectorAll?.(dropdownSearchSelector) || [])
+    .map((input) => ({ id: input.id || input.getAttribute?.('id') || '', value: String(input.value ?? '') }))
+    .filter((entry) => entry.id && entry.value !== '');
+  const results = document?.querySelector?.(resultsSearchSelector);
+  return {
+    searches,
+    results: results ? {
+      value: String(results.value ?? ''),
+      focused: document.activeElement === results,
+      selectionStart: Number.isInteger(results.selectionStart) ? results.selectionStart : null,
+      selectionEnd: Number.isInteger(results.selectionEnd) ? results.selectionEnd : null,
+    } : null,
+  };
+}
+
+function restoreFilterDialogDrafts(document, drafts, dropdownSearchSelector, resultsSearchSelector) {
+  const EventConstructor = document?.defaultView?.Event || globalThis.Event;
+  const searchInputs = Array.from(document?.querySelectorAll?.(dropdownSearchSelector) || []);
+  drafts?.searches?.forEach(({ id, value }) => {
+    const input = searchInputs.find((candidate) => (candidate.id || candidate.getAttribute?.('id')) === id);
+    if (!input || String(input.value ?? '') !== '') return;
+    input.value = value;
+    if (typeof EventConstructor === 'function') input.dispatchEvent?.(new EventConstructor('input', { bubbles: true }));
+  });
+  const results = drafts?.results;
+  const input = document?.querySelector?.(resultsSearchSelector);
+  if (!results || !input) return;
+  const rendered = String(input.value ?? '');
+  if (rendered === results.value || rendered !== results.value.trim()) return;
+  input.value = results.value;
+  if (results.focused && results.selectionStart !== null && typeof input.setSelectionRange === 'function') {
+    input.setSelectionRange(results.selectionStart, results.selectionEnd ?? results.selectionStart);
+  }
+}
+
+// WP9a: read-only request-lifecycle notifications for the Asset Library
+// defaults transport (asset-library-filters-defaults.js). Phases are
+// 'started', 'installed' (onLoadComplete: the region is installed and
+// enhanced), 'failed' and 'superseded' (the generation was invalidated).
+// A prepared response that fails to install reports 'failed', never
+// 'installed'. Observers cannot change the engine's behaviour.
+function notifyAssetLibraryLive(state, detail) {
+  state.assetLibraryObservers?.forEach((listener) => {
+    try {
+      listener(detail);
+    } catch {
+      // A transport observer must never break live filtering.
+    }
+  });
+}
 
 function assetLibraryNsfwForm(region) {
   return region?.querySelector?.(ASSET_LIBRARY_NSFW_FORM_SELECTOR) || null;
@@ -3442,17 +4459,11 @@ function submitAssetLibraryNsfwToggle(state, form, event) {
     return true;
   }
 
-  let refreshUrl;
+  let refresh;
   try {
+    refresh = assetLibraryNsfwRefreshTarget(state);
     if (state.timer) state.window.clearTimeout?.(state.timer);
     state.timer = null;
-    refreshUrl = (state.controller || state.loadFailure) && state.requestedUrl
-      ? new URL(state.requestedUrl.href, state.window.location?.href || state.requestedUrl.href)
-      : assetLibraryLiveEngine.url(
-        assetLibraryLiveEngine.getForm(assetLibraryLiveEngine.getRegion(state.document)),
-        state.window,
-        { preservePage: true },
-      );
   } catch {
     return false;
   }
@@ -3469,6 +4480,8 @@ function submitAssetLibraryNsfwToggle(state, form, event) {
   state.libNsfwRegionReplaced = false;
   state.libNsfwPreviousEnabled = previousEnabled;
   state.libNsfwEnabled = enabled;
+  // F4: the destination a toolbar View link clicked during the POST adopts.
+  state.libNsfwRefreshUrl = refresh.url;
 
   const controller = assetLibraryLiveEngine.controller(state.window);
   state.libNsfwController?.abort?.();
@@ -3520,8 +4533,8 @@ function submitAssetLibraryNsfwToggle(state, form, event) {
       updateAssetLibraryNsfwControls(assetLibraryLiveEngine.getRegion(state.document), payload.enabled, true);
       assetLibraryLiveEngine.load(
         state,
-        refreshUrl,
-        'none',
+        refresh.url,
+        refresh.historyMode,
         assetLibraryLiveEngine.getForm(assetLibraryLiveEngine.getRegion(state.document)),
       );
     })
@@ -3572,10 +4585,13 @@ const assetLibraryLiveEngine = createLiveRegionEngine({
   formScope: 'document',
   linkSelector: 'nav.view-switcher a, .pagination a, [data-asset-library-reset]',
   linkScope: 'document',
+  searchSelector: ASSET_LIBRARY_SEARCH_SELECTOR,
   debounceMs: ASSET_LIBRARY_LIVE_DEBOUNCE_MS,
   defaultAction: '/asset-viewer',
   stateKey: '__creatorCrateAssetLibraryLiveFiltering',
   historyState: { assetLibrary: true },
+  linkDestination: assetLibraryViewLinkDestination,
+  followResponse: followAssetLibraryResetView,
   statusSelector: ASSET_LIBRARY_LIVE_STATUS_SELECTOR,
   statusStateAttribute: ASSET_LIBRARY_LIVE_STATE_ATTRIBUTE,
   loadingMessage: 'Loading Asset Viewer.',
@@ -3584,7 +4600,9 @@ const assetLibraryLiveEngine = createLiveRegionEngine({
   missingRegionMessage: 'Asset Viewer response did not contain the live region.',
   enhanceRegion: enhanceAssetLibraryLiveRegion,
   onResponseParsed(state, parsed) {
+    const drafts = captureAssetLibraryDialogDrafts(state.document);
     reconcileExternalFilterForm(state, parsed, ASSET_LIBRARY_FILTER_SELECTOR);
+    restoreAssetLibraryDialogDrafts(state.document, drafts);
 
     const currentResetForm = state.document?.querySelector?.(ASSET_LIBRARY_RESET_FORM_SELECTOR);
     const nextResetForm = parsed?.querySelector?.(ASSET_LIBRARY_RESET_FORM_SELECTOR);
@@ -3609,21 +4627,36 @@ const assetLibraryLiveEngine = createLiveRegionEngine({
   onCreate(state, region) {
     state.assetViewerDefaultsRefreshGeneration = null;
     state.assetViewerDefaultsRefreshError = null;
+    state.assetLibraryObservers = new Set();
+    state.assetLibraryLoading = false;
     state.libNsfwController = null;
     state.libNsfwGeneration = 0;
     state.libNsfwSubmitting = false;
     state.libNsfwPostPending = false;
     state.libNsfwNeedsRefresh = false;
     state.libNsfwRefreshGeneration = null;
+    state.libNsfwRefreshUrl = null;
     state.libNsfwRegionReplaced = false;
     state.libNsfwEnabled = assetLibraryRenderedNsfwEnabled(region);
+    // F9: the Reset filters load in flight ({ generation, url, canonical,
+    // view, installing }), the View chosen for a pending or failed Reset,
+    // and whether the next load start is that Reset's View continuation.
+    state.libReset = null;
+    state.libResetView = null;
+    state.libResetContinuing = false;
     enhanceDropdowns(state.document);
     enhanceAssetViewerFilterDisclosures(state.document);
   },
   onBindRegion(state, region) {
     bindAssetLibraryNsfwForm(state, region);
+    bindViewDependentFields(state.document?.querySelector?.(ASSET_LIBRARY_FILTER_SELECTOR));
   },
   onInvalidate(state) {
+    const supersededLoading = state.assetLibraryLoading;
+    state.assetLibraryLoading = false;
+    notifyAssetLibraryLive(state, {
+      phase: 'superseded', generation: state.generation, loading: supersededLoading,
+    });
     if (state.assetViewerDefaultsRefreshGeneration !== null) {
       state.assetViewerDefaultsRefreshGeneration = null;
       state.assetViewerDefaultsRefreshError = null;
@@ -3645,7 +4678,20 @@ const assetLibraryLiveEngine = createLiveRegionEngine({
       state.libNsfwRefreshGeneration = null;
     }
   },
-  onLoadStart(state, generation) {
+  onLoadStart(state, generation, url) {
+    const continuing = state.libResetContinuing;
+    state.libResetContinuing = false;
+    if (isAssetLibraryFiltersResetUrl(url)) {
+      state.libReset = {
+        generation, url: new URL(url.href), canonical: null, view: null, installing: null,
+      };
+    } else if (!continuing) {
+      // Any other navigation is newer intent than a Reset's View.
+      state.libReset = null;
+      state.libResetView = null;
+    }
+    state.assetLibraryLoading = true;
+    notifyAssetLibraryLive(state, { phase: 'started', generation, url: url?.href ?? null });
     const refreshesNsfw = state.libNsfwNeedsRefresh && !state.libNsfwPostPending;
     if (refreshesNsfw) state.libNsfwNeedsRefresh = false;
     if (refreshesNsfw) state.libNsfwRefreshGeneration = generation;
@@ -3658,6 +4704,11 @@ const assetLibraryLiveEngine = createLiveRegionEngine({
     updateAssetLibraryNsfwControls(nextRegion, renderedEnabled, true);
   },
   onLoadComplete(state, generation, region) {
+    state.assetLibraryLoading = false;
+    if (state.libReset?.generation === generation) state.libReset = null;
+    notifyAssetLibraryLive(state, {
+      phase: 'installed', generation, url: state.window?.location?.href ?? null,
+    });
     if (state.assetViewerDefaultsRefreshGeneration === generation) {
       state.assetViewerDefaultsRefreshGeneration = null;
       state.assetViewerDefaultsRefreshError = null;
@@ -3669,7 +4720,18 @@ const assetLibraryLiveEngine = createLiveRegionEngine({
     state.libNsfwEnabled = assetLibraryRenderedNsfwEnabled(region);
     updateAssetLibraryNsfwControls(region, state.libNsfwEnabled);
   },
-  onLoadError(state, generation) {
+  onLoadError(state, generation, error, form, url) {
+    state.assetLibraryLoading = false;
+    // F9: a failed Reset (or its continuation) keeps its View for the Retry,
+    // unless a newer View click already replaced it.
+    const reset = state.libReset;
+    if (reset?.generation === generation) {
+      if (reset.view && !state.libResetView) state.libResetView = reset.view;
+      state.libReset = null;
+    }
+    notifyAssetLibraryLive(state, {
+      phase: 'failed', generation, url: url?.href ?? null, aborted: error?.name === 'AbortError',
+    });
     if (state.assetViewerDefaultsRefreshGeneration === generation) {
       const notifyRefreshError = state.assetViewerDefaultsRefreshError;
       state.assetViewerDefaultsRefreshGeneration = null;
@@ -3703,6 +4765,89 @@ const assetLibraryLiveEngine = createLiveRegionEngine({
 
 export function enhanceAssetLibraryLiveFiltering(scope = globalThis.document) {
   return assetLibraryLiveEngine.enhance(scope);
+}
+
+function assetLibraryLiveState(scope) {
+  const document = liveRegionDocument(scope);
+  const region = assetLibraryLiveEngine.getRegion(document);
+  if (!document || !region) return null;
+  assetLibraryLiveEngine.enhance(document);
+  const state = document.__creatorCrateAssetLibraryLiveFiltering;
+  if (!state || !assetLibraryLiveEngine.capabilities(state.window)) return null;
+  return state;
+}
+
+/**
+ * WP9a read-only request state. `pending` covers an in-flight GET, a
+ * debounced change not yet requested, and an NSFW toggle that still owes its
+ * refresh; `failed` means the installed results are not the latest intent.
+ * `intendedUrl` is the latest requested destination (pending or failed),
+ * otherwise the installed location.
+ */
+export function assetLibraryLiveSnapshot(scope = globalThis.document) {
+  const state = assetLibraryLiveState(scope);
+  if (!state) return null;
+  const failedUrl = state.loadFailure?.url?.href ?? null;
+  const pending = Boolean(state.assetLibraryLoading || state.timer || state.libNsfwSubmitting);
+  const location = state.window?.location?.href ?? null;
+  // F3: a debounced edit not yet requested is the latest intention (the
+  // filter form, as schedule() would push it), not the older request.
+  let debouncedUrl = null;
+  if (state.timer) {
+    try {
+      debouncedUrl = assetLibraryLiveEngine.url(
+        assetLibraryLiveEngine.getForm(assetLibraryLiveEngine.getRegion(state.document)),
+        state.window,
+      )?.href ?? null;
+    } catch {
+      debouncedUrl = null;
+    }
+  }
+  return {
+    generation: state.generation,
+    pending,
+    failed: Boolean(state.loadFailure),
+    failedUrl,
+    requestedHistoryMode: debouncedUrl ? 'push' : state.requestedHistoryMode ?? null,
+    intendedUrl: debouncedUrl || (pending && state.requestedUrl?.href) || failedUrl || location,
+  };
+}
+
+export function subscribeAssetLibraryLive(scope = globalThis.document, listener) {
+  const state = assetLibraryLiveState(scope);
+  if (!state || typeof listener !== 'function') return null;
+  state.assetLibraryObservers.add(listener);
+  return () => state.assetLibraryObservers.delete(listener);
+}
+
+/**
+ * WP9a canonical GET navigation through the one Asset Library engine: it
+ * supersedes any older pending GET and returns the owning generation. GET
+ * only; a failed load keeps the engine's GET-only Retry.
+ */
+export function navigateAssetLibraryLive(scope = globalThis.document, destination, { historyMode = 'push' } = {}) {
+  const state = assetLibraryLiveState(scope);
+  if (!state) return { status: 'unavailable' };
+  let url;
+  try {
+    url = new URL(destination, state.window.location?.href || '/asset-viewer');
+  } catch {
+    return { status: 'unavailable' };
+  }
+  if (url.pathname !== '/asset-viewer') return { status: 'unavailable' };
+  // F9: a new Reset filters starts without an earlier Reset's View.
+  if (isAssetLibraryFiltersResetUrl(url)) state.libResetView = null;
+  if (state.timer) state.window.clearTimeout?.(state.timer);
+  state.timer = null;
+  assetLibraryLiveEngine.invalidate(state);
+  const generation = state.generation;
+  assetLibraryLiveEngine.load(
+    state,
+    url,
+    ['push', 'replace', 'none'].includes(historyMode) ? historyMode : 'push',
+    assetLibraryLiveEngine.getForm(assetLibraryLiveEngine.getRegion(state.document)),
+  );
+  return { status: 'started', generation };
 }
 
 export function beginAssetViewerDefaultsLiveRefresh(scope = globalThis.document) {

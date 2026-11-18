@@ -158,8 +158,10 @@ async function chooseReader(page, menu, label) {
 }
 
 async function filterCbz(page, dialogId, region) {
-  // WP7: Project Assets combines Filters & Defaults behind the filter icon.
-  const linkName = dialogId === '#project-assets-filter-dialog' ? 'Filters & Defaults' : 'Filter assets';
+  // WP7 / WP9b: Project Assets and the Asset Library combine Filters &
+  // Defaults behind the filter icon.
+  const linkName = ['#project-assets-filter-dialog', '#asset-viewer-filter-dialog'].includes(dialogId)
+    ? 'Filters & Defaults' : 'Filter assets';
   await page.getByRole('link', { name: linkName, exact: true }).click();
   const dialog = page.locator(dialogId);
   await expect(dialog).toBeVisible();
