@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import slugify from '@sindresorhus/slugify';
+import Database from 'better-sqlite3';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createReleaseRepository } from '../src/data/release-repository.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
@@ -3345,5 +3346,135 @@ describe('release repository dashboard projections', () => {
         { project_id: timestampArchived, ...noRelease, undated_count: 0, last_published_date: null },
       ]);
     });
+  });
+});
+
+// ─── Lightweight saved membership (Manage Assets Package A) ───────────────
+
+describe('release repository — listReleaseAssetMembership', () => {
+  let tmpDir;
+  let dbPath;
+  let db;
+  let releaseRepo;
+  let projectRepo;
+  let pathCounter;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-release-membership-'));
+    dbPath = path.join(tmpDir, 'test.db');
+    db = openDatabase(dbPath);
+    runMigrations(db, MIGRATIONS_DIR);
+    releaseRepo = createReleaseRepository(db);
+    projectRepo = createProjectRepository(db);
+    pathCounter = 0;
+  });
+
+  afterEach(() => {
+    closeDatabase(db);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function insertAsset(projectId, filename, isPresent = 1) {
+    pathCounter += 1;
+    return db.prepare(`
+      INSERT INTO assets (project_id, relative_path, filename, extension, is_present)
+      VALUES (?, ?, ?, 'png', ?)
+      RETURNING id
+    `).get(projectId, `m-${pathCounter}/${filename}`, filename, isPresent).id;
+  }
+
+  function addMember(releaseId, assetId, sortOrder, role = 'attachment') {
+    db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)')
+      .run(releaseId, assetId, role, sortOrder);
+  }
+
+  it('V/W: returns complete lightweight membership in sort_order, asset_id order', () => {
+    const project = projectRepo.create(sampleProject({ title: 'Membership Project' }));
+    const release = releaseRepo.create({ projectId: project.id, ...sampleRelease() });
+    const a = insertAsset(project.id, 'a.png');
+    const b = insertAsset(project.id, 'b.png', 0);
+    const c = insertAsset(project.id, 'c.png');
+    const d = insertAsset(project.id, 'd.png');
+    insertAsset(project.id, 'not-a-member.png');
+    // Insertion order differs from stored order; b/c and a/d tie on sort_order.
+    addMember(release.id, d, 2);
+    addMember(release.id, c, 1, 'preview');
+    addMember(release.id, a, 2);
+    addMember(release.id, b, 1, 'primary');
+
+    const membership = releaseRepo.listReleaseAssetMembership(release.id);
+    const expectedOrder = [[b, c].sort((x, y) => x - y), [a, d].sort((x, y) => x - y)].flat();
+    expect(membership.map((row) => row.asset_id)).toEqual(expectedOrder);
+    expect(membership.find((row) => row.asset_id === b)).toEqual({
+      asset_id: b, role: 'primary', sort_order: 1, is_present: 0,
+    });
+    expect(membership.find((row) => row.asset_id === c)).toEqual({
+      asset_id: c, role: 'preview', sort_order: 1, is_present: 1,
+    });
+    for (const row of membership) {
+      expect(Object.keys(row).sort()).toEqual(['asset_id', 'is_present', 'role', 'sort_order']);
+    }
+    // Same members and order as the existing complete membership API.
+    expect(membership.map((row) => row.asset_id))
+      .toEqual(releaseRepo.listReleaseAssets(release.id).map((row) => row.asset_id));
+    // Stable across repeated reads.
+    expect(releaseRepo.listReleaseAssetMembership(release.id)).toEqual(membership);
+  });
+
+  it('P/Y: excludes cross-project junction rows and enforces the release/project relationship', () => {
+    const projectA = projectRepo.create(sampleProject({ title: 'Membership A' }));
+    const projectB = projectRepo.create(sampleProject({ title: 'Membership B' }));
+    const releaseA = releaseRepo.create({ projectId: projectA.id, ...sampleRelease() });
+    const releaseB = releaseRepo.create({ projectId: projectB.id, ...sampleRelease() });
+    const own = insertAsset(projectA.id, 'own.png');
+    const foreign = insertAsset(projectB.id, 'foreign.png');
+    addMember(releaseA.id, own, 0);
+    addMember(releaseA.id, foreign, 1);
+    addMember(releaseB.id, foreign, 0);
+
+    expect(releaseRepo.listReleaseAssetMembership(releaseA.id).map((row) => row.asset_id)).toEqual([own]);
+    expect(releaseRepo.listReleaseAssetMembership(releaseA.id, { projectId: projectA.id })
+      .map((row) => row.asset_id)).toEqual([own]);
+    expect(releaseRepo.listReleaseAssetMembership(releaseA.id, { projectId: projectB.id })).toEqual([]);
+    expect(releaseRepo.listReleaseAssetMembership(releaseB.id, { projectId: projectA.id })).toEqual([]);
+    expect(releaseRepo.listReleaseAssetMembership(releaseB.id).map((row) => row.asset_id)).toEqual([foreign]);
+    expect(releaseRepo.listReleaseAssetMembership(999999)).toEqual([]);
+    for (const releaseId of [0, -1, 1.5, '1', null, undefined]) {
+      expect(releaseRepo.listReleaseAssetMembership(releaseId)).toEqual([]);
+    }
+    for (const projectId of [0, -1, '1', 1.5]) {
+      expect(releaseRepo.listReleaseAssetMembership(releaseA.id, { projectId })).toEqual([]);
+    }
+  });
+
+  it('reads a large membership with one statement and no asset metadata', () => {
+    const project = projectRepo.create(sampleProject({ title: 'Large Membership' }));
+    const release = releaseRepo.create({ projectId: project.id, ...sampleRelease() });
+    const ids = [];
+    db.transaction(() => {
+      for (let i = 0; i < 2000; i += 1) {
+        const id = insertAsset(project.id, `m${i}.png`, i % 10 === 0 ? 0 : 1);
+        addMember(release.id, id, 2000 - i);
+        ids.push(id);
+      }
+    })();
+
+    // Separate verbose connection: records every statement actually executed.
+    const executed = [];
+    const conn = new Database(dbPath, { verbose: (sql) => executed.push(String(sql)) });
+    try {
+      const instrumentedRepo = createReleaseRepository(conn);
+      executed.length = 0;
+      const membership = instrumentedRepo.listReleaseAssetMembership(release.id, { projectId: project.id });
+
+      expect(executed).toHaveLength(1);
+      expect(executed[0]).toMatch(/SELECT ra\.asset_id, ra\.role, ra\.sort_order, a\.is_present\s+FROM releases r/);
+      expect(executed[0]).not.toMatch(/a\.filename|a\.relative_path|a\.mime_type/);
+      expect(membership).toHaveLength(2000);
+      expect(membership.map((row) => row.asset_id)).toEqual([...ids].reverse());
+      expect(membership.filter((row) => row.is_present === 0)).toHaveLength(200);
+    } finally {
+      conn.close();
+    }
   });
 });

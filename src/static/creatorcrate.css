@@ -16239,6 +16239,11 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   min-height: 1.75rem;
   padding-block: 0;
 }
+/* B7-F1: a rejected draft role that is not a valid role needs correction. */
+:where(.refined-page main) .release-asset-role-field.field-error .cc-dropdown summary {
+  border-color: var(--danger);
+  color: var(--danger);
+}
 
 /* ── Notes shelf, Book detail, and Chapter detail ──
    The Details and Page preview panels and the Chapter's Pages card take the

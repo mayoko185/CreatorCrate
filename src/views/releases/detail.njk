@@ -120,8 +120,11 @@
       <p>{{ errors.general }}</p>
     </div>
   {% endif %}
-  <div class="notice notice--success app-dialog-feedback" data-dialog-feedback role="status" hidden>
-    <p data-dialog-feedback-text></p>
+  {# A completed Manage Assets Save arrives with its one-time confirmation in
+     the page feedback, so a later in-page save replaces it. #}
+  {% set showAssetsSaved = assetsSavedNotice and not errors.general %}
+  <div class="notice notice--success app-dialog-feedback" data-dialog-feedback role="status"{% if showAssetsSaved %} data-release-assets-saved{% else %} hidden{% endif %}>
+    <p data-dialog-feedback-text>{% if showAssetsSaved %}{{ assetsSavedNotice }}{% endif %}</p>
   </div>
 
   <div class="project-detail-summary">

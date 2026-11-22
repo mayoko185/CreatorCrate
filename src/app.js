@@ -21,7 +21,7 @@ import { createProjectAssetCategoriesRouter } from './routes/project-asset-categ
 import { createProjectTagsRouter } from './routes/project-tags.js';
 import { createProjectOwnershipRecoveryRouter } from './routes/project-ownership-recovery.js';
 import { createAssetTagsRouter } from './routes/asset-tags.js';
-import { createReleasesRouter } from './routes/releases.js';
+import { createReleasesRouter, retainReleaseAssetSaveRawBody } from './routes/releases.js';
 import { createReleaseManagementRouter } from './routes/release-management.js';
 import { createCalendarRouter } from './routes/calendar.js';
 import { createNotesRouter } from './routes/notes.js';
@@ -279,7 +279,10 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   }));
 
   app.use(express.json());
-  app.use(express.urlencoded({ extended: true }));
+  // Parsing is unchanged for every form. The verify hook only retains the
+  // already-read raw body of a Manage Assets Save, whose indexed role/order
+  // fields the parsed body compacts (see retainReleaseAssetSaveRawBody).
+  app.use(express.urlencoded({ extended: true, verify: retainReleaseAssetSaveRawBody }));
   const staticAssets = express.static(path.join(__dirname, 'static'), {
     index: false,
   });

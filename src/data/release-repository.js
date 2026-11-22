@@ -368,6 +368,15 @@ export function createReleaseRepository(db) {
     ORDER BY ra.sort_order ASC, ra.asset_id ASC
   `);
 
+  const raMembershipByRelease = db.prepare(`
+    SELECT ra.asset_id, ra.role, ra.sort_order, a.is_present
+    FROM releases r
+    JOIN release_assets ra ON ra.release_id = r.id
+    JOIN assets a ON a.id = ra.asset_id AND a.project_id = r.project_id
+    WHERE r.id = ? AND (? IS NULL OR r.project_id = ?)
+    ORDER BY ra.sort_order ASC, ra.asset_id ASC
+  `);
+
   const raCountByRelease = db.prepare(`
     SELECT COUNT(*) AS c FROM release_assets ra
     JOIN assets a ON a.id = ra.asset_id AND a.project_id = (SELECT project_id FROM releases WHERE id = ?)
@@ -1307,6 +1316,26 @@ export function createReleaseRepository(db) {
      */
     listReleaseAssets(releaseId) {
       return raFindByRelease.all(releaseId, releaseId);
+    },
+
+    /**
+     * Complete saved membership of a release as lightweight records (no
+     * asset metadata), in stored order: sort_order, then asset_id. Missing
+     * members are included with their is_present value. Only junction rows
+     * whose asset belongs to the release's own project are returned — the
+     * same project guard as listReleaseAssets — and an unknown release
+     * returns []. When `projectId` is given, the release must also belong to
+     * that project or the result is []. One statement regardless of
+     * membership size.
+     *
+     * @param {number} releaseId
+     * @param {{ projectId?: number|null }} [options]
+     * @returns {Array<{asset_id: number, role: string, sort_order: number, is_present: number}>}
+     */
+    listReleaseAssetMembership(releaseId, { projectId = null } = {}) {
+      if (!Number.isSafeInteger(releaseId) || releaseId <= 0) return [];
+      if (projectId !== null && (!Number.isSafeInteger(projectId) || projectId <= 0)) return [];
+      return raMembershipByRelease.all(releaseId, projectId, projectId);
     },
 
     /**

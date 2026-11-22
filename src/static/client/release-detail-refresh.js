@@ -47,9 +47,12 @@ const STALE_ACTION_SELECTOR = '[data-dialog-submit], [data-release-social-prep-c
 const STATE_KEY = '__creatorCrateReleaseDetailRefresh';
 const BOUND_KEY = 'releaseDetailRefreshBound';
 const RETRY_KEY = 'retryButton';
+// A Manage Assets Save redirects here with its own one-time ticket.
+const ASSETS_SAVED_PARAM = 'assetsSaved';
 // Deep-link markers open a dialog or launch the companion on render; a
 // refresh must never carry them into the regions it adopts.
-const ONE_SHOT_PARAMS = ['edit', 'publish', 'prep', 'returnTo'];
+const ONE_SHOT_PARAMS = ['edit', 'publish', 'prep', 'returnTo', ASSETS_SAVED_PARAM];
+const ASSETS_SAVED_FEEDBACK_SELECTOR = '[data-dialog-feedback][data-release-assets-saved]';
 const FOCUSABLE_SELECTOR = 'a[href], button, input, select, textarea, summary, [tabindex]';
 
 const SAVE_MESSAGES = Object.freeze({
@@ -616,6 +619,35 @@ export function armCompanionReturnRefresh(document, onReturn) {
   }, { signal });
 }
 
+// The server consumed the Save's ticket when it rendered this page; drop it
+// from this history entry (replacing it, never adding one) so the address no
+// longer names a spent ticket. Should Back/Forward restore this very page from
+// the back/forward cache, its confirmation is withdrawn rather than replayed.
+// Replay protection itself is the server's single-use ticket, not this.
+function retireAssetsSavedConfirmation(document) {
+  const windowObject = liveRegionWindow(document);
+  try {
+    const url = new URL(windowObject.location.href);
+    if (url.searchParams.has(ASSETS_SAVED_PARAM)) {
+      url.searchParams.delete(ASSETS_SAVED_PARAM);
+      windowObject.history.replaceState(windowObject.history.state, '', url.href);
+    }
+  } catch {
+    // The address keeps a spent ticket, which confirms nothing.
+  }
+  const notice = document.querySelector(ASSETS_SAVED_FEEDBACK_SELECTOR);
+  const text = notice?.querySelector('[data-dialog-feedback-text]');
+  if (!notice || !text) return;
+  const confirmation = text.textContent;
+  windowObject.addEventListener?.('pageshow', (event) => {
+    // Only the Save confirmation itself, never later page feedback.
+    if (!event.persisted || !notice.hasAttribute('data-release-assets-saved') || text.textContent !== confirmation) return;
+    notice.removeAttribute('data-release-assets-saved');
+    notice.hidden = true;
+    text.textContent = '';
+  });
+}
+
 // The address stops asking for the dialog once the release has left review.
 function dropPublishMarker(windowObject) {
   const url = new URL(windowObject.location.href);
@@ -634,6 +666,7 @@ export function enhanceReleaseDetailRefresh(scope = globalThis.document) {
   const releaseId = document?.querySelector?.(PAGE_SELECTOR)?.getAttribute('data-release-detail');
   if (!releaseId || isEnhancementBound(document.documentElement, BOUND_KEY)) return false;
   markEnhancementBound(document.documentElement, BOUND_KEY);
+  retireAssetsSavedConfirmation(document);
   document.addEventListener(RELEASE_EDIT_SAVED_EVENT, (event) => {
     if (String(event.detail?.releaseId ?? '') !== releaseId) return;
     void refreshAfterSave(document, releaseId);

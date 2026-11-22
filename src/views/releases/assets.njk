@@ -19,6 +19,7 @@
       <input type="checkbox" form="release-assets-form" id="release-asset-select-{{ asset.id }}" name="selectedAssetIds" value="{{ asset.id }}"
              class="asset-select-checkbox"
              aria-label="{{ selectionLabel }}"
+             data-release-asset-filename="{{ asset.filename }}"
              {% if asset.releaseContext.selected %}checked{% endif %}>
       <span class="asset-selection-control-mark" aria-hidden="true">✓</span>
     </label>
@@ -36,6 +37,36 @@
     {% for option in roles %}
       {% set _ = roleOptions.push({ value: option, label: option | title }) %}
     {% endfor %}
+    {% if submittedRoleOrder %}
+    {# B7-F1: on a recoverable rejected legacy Save (only that page renders the
+       roleOrder carrier) the role edits the unsaved draft instead: no per-asset
+       form and no autosubmit, so nothing is persisted until Save; live-regions.js
+       writes the choice into the carrier. A submitted role that is not a valid
+       role is shown as needing correction, never as a coerced valid role. #}
+    {% set roleValid = role in roles %}
+    {% set roleSummary = (role | title) if roleValid else "Select a valid role" %}
+    <div class="inline-form release-asset-role-form" data-release-asset-draft-role>
+      {{ dropdown.singleSelect({
+        id: "release-asset-role-" ~ asset.id,
+        name: "role",
+        label: "Role for " ~ asset.filename,
+        visuallyHiddenLabel: true,
+        compact: true,
+        fieldClasses: "release-asset-role-field" ~ ("" if roleValid else " field-error"),
+        triggerAriaLabel: "Role for " ~ asset.filename ~ ": " ~ roleSummary,
+        attributes: [["data-cc-viewport-disclosure", true]],
+        dispatchNativeChange: true,
+        selected: role if roleValid else "",
+        placeholder: none if roleValid else "Select a valid role",
+        options: roleOptions,
+        panelLabel: "Role options for " ~ asset.filename,
+        nativeSelect: {
+          id: "role-" ~ asset.id,
+          attributes: [["data-release-asset-draft-role-select", asset.id], ["aria-invalid", none if roleValid else "true"]]
+        }
+      }) }}
+    </div>
+    {% else %}
     <form method="post" action="{{ assetActionUrl(asset.id, 'role') }}" class="inline-form release-asset-role-form">
       <input type="hidden" name="_csrf" value="{{ _csrf }}">
       {{ dropdown.singleSelect({
@@ -57,6 +88,7 @@
         }
       }) }}
     </form>
+    {% endif %}
   {% endif %}
 {% endmacro %}
 
@@ -159,6 +191,9 @@
   {% set isPublished = release and release.published_date %}
   {% set isArchived = projectArchived or releaseArchived %}
   {% set readOnly = isArchived or isPublished %}
+  {# A rejected Save whose draft cannot be reconstructed renders without any
+     editing control (see the POST /releases/:id/assets refusal). #}
+  {% set editLocked = readOnly or saveRecoveryUnavailable %}
   {% set projectLeadHref = "/projects/" ~ project.id if project and project.id else "" %}
   {% set releaseAssetsNavItems = [
     { key: "release", href: "/releases/" ~ release.id, label: "Release", tooltip: "Go to release details" }
@@ -169,7 +204,7 @@
     ].concat(releaseAssetsNavItems) %}
   {% endif %}
   {% call pageHeading.render(navItems=releaseAssetsNavItems) %}
-    {% if not readOnly %}
+    {% if not editLocked %}
       <form id="release-assets-form" method="post" action="{{ pageUrl({}) }}" class="inline-form" data-asset-selection-form>
         <input type="hidden" name="_csrf" value="{{ _csrf }}">
         <span data-release-assets-hidden-membership>
@@ -182,6 +217,29 @@
             <input type="hidden" data-release-assets-persisted-id value="{{ assetId }}">
           {% endfor %}
         </span>
+        {# A rejected legacy Save keeps each submitted asset's role and order,
+           keyed by asset ID rather than by position, so the live region's
+           membership rewrite or a toggled checkbox cannot move a role onto
+           another asset. One compact roleOrder field (a JSON array of
+           [assetId, role, sortOrder]) carries them so a large draft stays
+           within the URL-encoded parameter limit. Membership still comes only
+           from selectedAssetIds. #}
+        {% if submittedRoleOrder %}
+          <span data-release-assets-submitted-role-order>
+            <input type="hidden" name="roleOrder" value="{{ submittedRoleOrder }}">
+          </span>
+          {# B7-F2: a live GET renders Role controls only for saved members, so a
+             selected draft member that is not saved yet would lose its editor.
+             This inert template (outside the live region, so it survives
+             every replacement) is the same recovery Role control for a
+             placeholder asset, rendered with no valid role chosen (the
+             correction prompt), so no role is ever pre-selected in it;
+             live-regions.js clones it for such a member, substituting the
+             asset ID and filename into attributes and text, drops the prompt
+             for a valid carried role and shows the carried role. #}
+          {% set draftRoleTemplateAsset = { id: "cc-draft-role-asset-id", filename: "cc-draft-role-asset-filename", releaseContext: { selected: true, role: "cc-draft-role-unset" } } %}
+          <template data-release-asset-draft-role-template>{{ releaseRoleControl(draftRoleTemplateAsset, roles, _csrf, none) }}</template>
+        {% endif %}
         <button class="button button-small button-primary project-assets-heading-action" type="submit">Save asset selection</button>
       </form>
     {% endif %}
@@ -204,6 +262,12 @@
     {% include "partials/status-badge.njk" %}
   </p>
 
+  {% if saveRecoveryUnavailable and not readOnly %}
+    <div class="notice notice--warning" role="status" data-release-assets-save-recovery-unavailable>
+      <p><strong>Nothing was saved.</strong> The submitted asset selection could not be recovered, so editing is paused and the saved selection is shown. <a href="{{ pageUrl({}) }}">Reload Manage Assets</a> to start again from the saved selection.</p>
+    </div>
+  {% endif %}
+
   {% if errors.general or errors.assets %}
     <div class="error-summary" role="alert">
       <p>{{ errors.general or errors.assets }}</p>
@@ -213,6 +277,17 @@
   {% if errors.role %}
     <div class="error-summary" role="alert">
       <p>{{ errors.role }}</p>
+    </div>
+  {% endif %}
+
+  {% if selectionErrorMessages and selectionErrorMessages.length %}
+    <div class="error-summary" role="alert" data-release-assets-selection-errors>
+      <p>The asset selection was not saved.</p>
+      <ul>
+        {% for message in selectionErrorMessages %}
+          <li>{{ message }}</li>
+        {% endfor %}
+      </ul>
     </div>
   {% endif %}
 
@@ -264,7 +339,7 @@
           {% set assetGridStyleScreen = 'release-assets' %}
           {% include "partials/asset-grid-style-control.njk" %}
 
-          {% if not readOnly %}
+          {% if not editLocked %}
             <div class="project-filter-actions project-filter-actions--projects">
               <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
                  href="#release-assets-filter-dialog" aria-label="Filter assets"
@@ -294,19 +369,19 @@
             <ul class="asset-grid" role="listbox" aria-label="Release assets">
               {% for asset in displayAssets %}
                 <li class="asset-grid-item{% if not asset.is_present %} is-missing{% endif %}">
-                  {{ releaseGridCard(asset, readOnly, roles, _csrf, releaseAssetActionUrl, clockFormat) }}
+                  {{ releaseGridCard(asset, editLocked, roles, _csrf, releaseAssetActionUrl, clockFormat) }}
                 </li>
               {% endfor %}
             </ul>
           {% else %}
             {# Select is omitted when the release is read-only. #}
-            {% set listColumns = ([] if readOnly else ['select'])
+            {% set listColumns = ([] if editLocked else ['select'])
               .concat(['asset', 'category', 'role', 'order', 'type', 'presence', 'size', 'modified']) %}
             {% call assetCards.listTable(listColumns, 'Release asset table') %}
             <ul class="asset-list asset-list--project asset-list--release" role="list" aria-label="Release assets" data-list-size="large">
               {% for asset in displayAssets %}
                 <li class="asset-list-item{% if not asset.is_present %} is-missing{% endif %}">
-                  {{ releaseListCard(asset, readOnly, roles, _csrf, releaseAssetActionUrl, clockFormat, listColumns) }}
+                  {{ releaseListCard(asset, editLocked, roles, _csrf, releaseAssetActionUrl, clockFormat, listColumns) }}
                 </li>
               {% endfor %}
             </ul>
@@ -337,7 +412,7 @@
           {% include "partials/empty-state.njk" %}
         {% endif %}
 
-        {% if displayAssets.length > 0 and not readOnly and totalPages > 1 %}
+        {% if displayAssets.length > 0 and not editLocked and totalPages > 1 %}
           <nav class="pagination" aria-label="Release asset pages">
             {% if currentPage > 1 %}
               <a class="pagination-prev" href="{{ pageUrl({ page: currentPage - 1 }) }}">Previous</a>
@@ -349,7 +424,7 @@
           </nav>
         {% endif %}
 
-        {% if not readOnly %}
+        {% if not editLocked %}
           <form class="page-size-form" method="get" action="/releases/{{ release.id }}/assets" data-release-assets-live-page-size-form>
             {{ dropdown.singleSelect({
               id: "page-size-dropdown",
@@ -401,7 +476,7 @@
   {% set isPublished = release and release.published_date %}
   {% set isArchived = projectArchived or releaseArchived %}
   {% set readOnly = isArchived or isPublished %}
-  {% if not readOnly %}
+  {% if not (readOnly or saveRecoveryUnavailable) %}
     {% set activeFilters = assetFilters or candidateFilters %}
     {% set currentPageSize = assetPageSize if assetPageSize is defined else candidatePageSize %}
     {% set extensionOptions = assetExtensions or candidateExtensions %}
@@ -512,7 +587,7 @@
               fieldClasses: "app-dialog-field asset-viewer-filter-field",
               attributes: [["data-cc-viewport-disclosure", true]],
               dispatchNativeChange: true,
-              selected: (currentPageSize if currentPageSize is defined and currentPageSize is not none else 10) ~ "",
+              selected: (currentPageSize if currentPageSize is defined and currentPageSize is not none else 25) ~ "",
               options: [
                 { value: "10", label: "10" },
                 { value: "25", label: "25" },

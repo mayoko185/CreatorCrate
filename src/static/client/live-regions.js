@@ -2237,6 +2237,8 @@ function reconcileReleaseAssetsSelection(state, region = releaseAssetsLiveEngine
     });
   hiddenContainer.replaceChildren(...hiddenInputs);
   syncReleaseAssetsMembershipInfo(region, selectionState);
+  // B7-F2: a selected draft member keeps a Role editor on recovery pages.
+  restoreReleaseAssetsDraftRoleControls(state, region);
 
   // Keep the reviewed checkbox/card path responsible for styling, aria state,
   // and idempotent interaction binding after every replacement.
@@ -2301,6 +2303,500 @@ function syncReleaseAssetsSelectionFormAction(state) {
   state.document?.querySelector?.(RELEASE_ASSETS_SELECTION_FORM_SELECTOR)?.setAttribute?.('action', action);
 }
 
+/*
+ * B7-F1: only a recoverable rejected legacy Save renders the Save form's
+ * compact `roleOrder` carrier (a JSON array of [assetId, role, sortOrder]).
+ * The Save form lives outside the replaced region, so the carrier marks
+ * recovery mode for the page's lifetime. There a Role control edits the
+ * matching carrier entry in place (asset ID and order kept, every other entry
+ * untouched) and never posts a role update: the choice is persisted only by
+ * Save. A saved member's per-asset autosubmit role form arriving in an
+ * installed GET response is turned into the same draft control before the
+ * shared autosubmit binding runs, and every Role control shows the carried
+ * role, so a correction never reverts on navigation. A carried role that is
+ * not one of the control's own options stays visibly invalid until a valid
+ * option is chosen. Normal pages have no carrier and keep their role forms.
+ */
+const RELEASE_ASSETS_ROLE_ORDER_SELECTOR = '[data-release-assets-submitted-role-order] input[type="hidden"][name="roleOrder"]';
+const RELEASE_ASSETS_ROLE_SELECT_SELECTOR = '.release-asset-role-form select[name="role"]';
+const RELEASE_ASSETS_DRAFT_ROLE_SELECT_ATTRIBUTE = 'data-release-asset-draft-role-select';
+const RELEASE_ASSETS_INVALID_ROLE_SUMMARY = 'Select a valid role';
+
+function releaseAssetsRoleOrderInput(document) {
+  return document?.querySelector?.(RELEASE_ASSETS_SELECTION_FORM_SELECTOR)
+    ?.querySelector?.(RELEASE_ASSETS_ROLE_ORDER_SELECTOR) || null;
+}
+
+// The carrier exactly as rendered, or null when it is not a list of triples
+// (left untouched: the server refuses a malformed carrier).
+function readReleaseAssetsRoleOrder(input) {
+  let entries;
+  try {
+    entries = JSON.parse(String(input?.value ?? ''));
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(entries)) return null;
+  return entries.every((entry) => Array.isArray(entry) && entry.length === 3) ? entries : null;
+}
+
+function releaseAssetsRoleSelectAssetId(select) {
+  const id = String(select?.getAttribute?.(RELEASE_ASSETS_DRAFT_ROLE_SELECT_ATTRIBUTE)
+    ?? /^role-(\d+)$/.exec(String(select?.id ?? select?.getAttribute?.('id') ?? ''))?.[1]
+    ?? '');
+  return /^[1-9]\d*$/.test(id) ? id : null;
+}
+
+// The established roles are the control's own server-rendered options.
+function releaseAssetsRoleChoices(select) {
+  return Array.from(select?.querySelectorAll?.('option') || [])
+    .map((option) => String(option.getAttribute?.('value') ?? option.value ?? ''))
+    .filter((value) => value !== '');
+}
+
+function showReleaseAssetsDraftRole(select, role) {
+  const valid = releaseAssetsRoleChoices(select).includes(role);
+  if (valid) {
+    select.value = role;
+    select.removeAttribute?.('aria-invalid');
+  } else {
+    select.value = '';
+    if (select.value !== '' && 'selectedIndex' in select) select.selectedIndex = -1;
+    select.setAttribute?.('aria-invalid', 'true');
+  }
+  select.closest?.('.release-asset-role-field')?.classList?.toggle?.('field-error', !valid);
+  syncCreatorCrateDropdownFromNative(select);
+  if (valid) return;
+  // No option is chosen, so the shared summary keeps its last label; show the
+  // correction prompt instead of a role the draft does not hold.
+  const dropdown = select.closest?.('.release-asset-role-field')?.querySelector?.(CC_DROPDOWN_SELECTOR);
+  const current = dropdown?.querySelector?.('[data-cc-dropdown-summary-current]');
+  const summary = dropdown?.querySelector?.('summary');
+  if (current) current.textContent = RELEASE_ASSETS_INVALID_ROLE_SUMMARY;
+  if (summary) {
+    summary.setAttribute?.('title', RELEASE_ASSETS_INVALID_ROLE_SUMMARY);
+    const label = String(summary.getAttribute?.('aria-label') ?? '');
+    const separator = label.indexOf(':');
+    if (separator >= 0) {
+      summary.setAttribute?.('aria-label', `${label.slice(0, separator + 1)} ${RELEASE_ASSETS_INVALID_ROLE_SUMMARY}`);
+    }
+  }
+}
+
+// Runs for every enhanced region, before enhanceAutoSubmit binds it.
+function syncReleaseAssetsDraftRoleControls(region) {
+  const input = releaseAssetsRoleOrderInput(liveRegionDocument(region));
+  if (!input) return;
+  const entries = readReleaseAssetsRoleOrder(input);
+  region?.querySelectorAll?.(RELEASE_ASSETS_ROLE_SELECT_SELECTOR)?.forEach?.((select) => {
+    const assetId = releaseAssetsRoleSelectAssetId(select);
+    select.removeAttribute?.('data-autosubmit');
+    select.closest?.('.release-asset-role-form')?.setAttribute?.('data-release-asset-draft-role', '');
+    if (assetId) select.setAttribute?.(RELEASE_ASSETS_DRAFT_ROLE_SELECT_ATTRIBUTE, assetId);
+    const entry = assetId && entries ? entries.find(([entryId]) => String(entryId) === assetId) : null;
+    if (!entry) {
+      // Not in the carried draft (e.g. a saved member the draft removes): its
+      // role is not part of this Save, so it cannot be edited here.
+      select.disabled = true;
+      syncCreatorCrateDropdownFromNative(select);
+      return;
+    }
+    showReleaseAssetsDraftRole(select, String(entry[1]));
+  });
+}
+
+function recordReleaseAssetsDraftRole(state, select) {
+  const input = releaseAssetsRoleOrderInput(state.document);
+  const entries = readReleaseAssetsRoleOrder(input);
+  const assetId = releaseAssetsRoleSelectAssetId(select);
+  if (!entries || !assetId) return;
+  const owned = entries.filter(([entryId]) => String(entryId) === assetId);
+  if (owned.length === 0) return;
+  const role = String(select.value ?? '');
+  if (releaseAssetsRoleChoices(select).includes(role)) {
+    owned.forEach((entry) => { entry[1] = role; });
+    input.value = JSON.stringify(entries);
+  }
+  // Choosing the correction prompt itself keeps the carried role.
+  showReleaseAssetsDraftRole(select, String(owned[0][1]));
+}
+
+/*
+ * B7-F2: a live GET renders Role controls only for saved members, so a
+ * selected draft member that is not saved yet (it is in the carrier because
+ * the rejected Save submitted it) arrives with no editor. Every visible card
+ * whose draft checkbox is selected and whose asset has a carrier entry gets a
+ * recovery Role control cloned from the page's inert template (the server's
+ * own draft control markup, with the asset ID and filename substituted into
+ * attributes and text, never parsed as markup), placed where the server
+ * renders Role for the Grid or List card, and showing the carried role. A
+ * control created here is removed again when its asset is deselected (the
+ * carrier entry is kept, so reselecting restores it) and is never created
+ * twice. It has no form and no autosubmit: the delegated draft change handler
+ * edits the carrier entry only. Normal, read-only and fail-closed pages render
+ * no carrier or template, so nothing happens there.
+ */
+const RELEASE_ASSETS_DRAFT_ROLE_RESTORED_ATTRIBUTE = 'data-release-asset-draft-role-restored';
+const RELEASE_ASSETS_DRAFT_ROLE_TEMPLATE_TOKEN = /cc-draft-role-asset-(?:id|filename)/g;
+const RELEASE_ASSETS_DRAFT_ROLE_TEMPLATE_ID_TOKEN = 'cc-draft-role-asset-id';
+
+function releaseAssetsDraftRoleTemplate(form) {
+  return form?.querySelector?.('template[data-release-asset-draft-role-template]') || null;
+}
+
+// The template is rendered on its correction prompt. For a valid carried role
+// the prompt is dropped (native option, radio row and width sizer), matching
+// the server's markup for a valid draft role.
+function dropReleaseAssetsDraftRolePrompt(control, select) {
+  Array.from(select.querySelectorAll?.('option') || [])
+    .filter((option) => String(option.getAttribute?.('value') ?? option.value ?? '') === '')
+    .forEach((option) => option.remove?.());
+  control.querySelectorAll?.('input[type="radio"][value=""]')?.forEach?.((radio) => {
+    (radio.closest?.('.asset-filter-multiselect-option') || radio).remove?.();
+  });
+  control.querySelectorAll?.('.asset-filter-multiselect-summary-width > span')?.forEach?.((span) => {
+    if (span.textContent === RELEASE_ASSETS_INVALID_ROLE_SUMMARY) span.remove?.();
+  });
+}
+
+function instantiateReleaseAssetsDraftRoleControl(template, assetId, filename) {
+  const control = template?.content?.cloneNode?.(true)?.querySelector?.('.release-asset-role-form');
+  if (!control) return null;
+  const substitute = (text) => String(text).replace(
+    RELEASE_ASSETS_DRAFT_ROLE_TEMPLATE_TOKEN,
+    (token) => (token === RELEASE_ASSETS_DRAFT_ROLE_TEMPLATE_ID_TOKEN ? assetId : filename),
+  );
+  [control, ...Array.from(control.querySelectorAll?.('*') || [])].forEach((element) => {
+    (element.getAttributeNames?.() || []).forEach((name) => {
+      const value = element.getAttribute?.(name);
+      if (typeof value === 'string' && value.includes('cc-draft-role-asset-')) element.setAttribute(name, substitute(value));
+    });
+  });
+  control.querySelectorAll?.('legend')?.forEach?.((legend) => {
+    legend.textContent = substitute(legend.textContent ?? '');
+  });
+  const select = control.querySelector?.(`select[${RELEASE_ASSETS_DRAFT_ROLE_SELECT_ATTRIBUTE}]`);
+  return select && releaseAssetsRoleSelectAssetId(select) === assetId ? { control, select } : null;
+}
+
+function createReleaseAssetsDraftRoleControl(form, assetId, filename, role) {
+  const created = instantiateReleaseAssetsDraftRoleControl(releaseAssetsDraftRoleTemplate(form), assetId, filename);
+  if (created && releaseAssetsRoleChoices(created.select).includes(role)) {
+    dropReleaseAssetsDraftRolePrompt(created.control, created.select);
+  }
+  return created;
+}
+
+// Grid: the card's top action row, before the details link (as releaseGridRole).
+// List: the Role column's value, in place of the unselected dash.
+function placeReleaseAssetsDraftRoleControl(document, card, control) {
+  const listCell = card.querySelector?.('.asset-list-cell--role dd');
+  if (listCell) {
+    control.setAttribute(RELEASE_ASSETS_DRAFT_ROLE_RESTORED_ATTRIBUTE, '');
+    listCell.replaceChildren(control);
+    return true;
+  }
+  const top = card.querySelector?.('.asset-card-top');
+  if (!top) return false;
+  const wrapper = document.createElement('div');
+  wrapper.setAttribute('class', 'release-asset-grid-role');
+  wrapper.setAttribute(RELEASE_ASSETS_DRAFT_ROLE_RESTORED_ATTRIBUTE, '');
+  const label = document.createElement('span');
+  label.setAttribute('class', 'release-asset-grid-role-label');
+  label.textContent = 'Role';
+  wrapper.appendChild(label);
+  wrapper.appendChild(control);
+  const details = Array.from(top.children || []).find((child) => child.matches?.('.asset-details-link'));
+  if (details) top.insertBefore(wrapper, details);
+  else top.appendChild(wrapper);
+  return true;
+}
+
+function removeReleaseAssetsDraftRoleControls(document, card) {
+  card.querySelectorAll?.(`[${RELEASE_ASSETS_DRAFT_ROLE_RESTORED_ATTRIBUTE}]`)?.forEach?.((node) => {
+    const listCell = node.parentNode;
+    if (node.matches?.('.release-asset-role-form') && listCell?.matches?.('.asset-list-cell--role dd')) {
+      const dash = document.createElement('span');
+      dash.setAttribute('class', 'dashboard-muted');
+      dash.textContent = '—';
+      listCell.replaceChildren(dash);
+    } else {
+      node.remove?.();
+    }
+  });
+}
+
+function restoreReleaseAssetsDraftRoleControls(state, region) {
+  const document = state.document;
+  const form = document?.querySelector?.(RELEASE_ASSETS_SELECTION_FORM_SELECTOR);
+  const input = releaseAssetsRoleOrderInput(document);
+  if (!form || !input || !region) return;
+  const entries = readReleaseAssetsRoleOrder(input);
+  const restored = [];
+  region.querySelectorAll?.(RELEASE_ASSETS_SELECTION_CHECKBOX_SELECTOR)?.forEach?.((checkbox) => {
+    const assetId = releaseAssetId(checkbox);
+    const card = checkbox.closest?.('[data-asset-id]');
+    if (!assetId || !card || String(card.getAttribute?.('data-asset-id') ?? '') !== assetId) return;
+    const entry = entries ? entries.find(([entryId]) => String(entryId) === assetId) : null;
+    if (!checkbox.checked || !entry) {
+      removeReleaseAssetsDraftRoleControls(document, card);
+      return;
+    }
+    // A server-rendered (converted) control or one restored earlier stays.
+    if (card.querySelector?.(RELEASE_ASSETS_ROLE_SELECT_SELECTOR)) return;
+    const role = String(entry[1]);
+    const filename = String(checkbox.getAttribute?.('data-release-asset-filename') ?? '') || `asset ${assetId}`;
+    const created = createReleaseAssetsDraftRoleControl(form, assetId, filename, role);
+    if (!created || !placeReleaseAssetsDraftRoleControl(document, card, created.control)) return;
+    restored.push([created.select, role]);
+  });
+  if (restored.length === 0) return;
+  enhanceAssetViewerFilterDisclosures(document);
+  enhanceDropdowns(document);
+  restored.forEach(([select, role]) => showReleaseAssetsDraftRole(select, role));
+}
+
+function bindReleaseAssetsDraftRoles(state) {
+  if (!releaseAssetsRoleOrderInput(state.document)) return;
+  state.document.addEventListener?.('change', (event) => {
+    const select = event.target;
+    if (select?.matches?.(`select[${RELEASE_ASSETS_DRAFT_ROLE_SELECT_ATTRIBUTE}]`)) {
+      recordReleaseAssetsDraftRole(state, select);
+    }
+  });
+}
+
+/*
+ * WP16: Manage Assets has two entry points to ONE page size — the Filter
+ * dialog's Page size and the Assets per page control beside pagination. The
+ * installed response stays the authority for both (the dialog form is
+ * reconciled from it and the pagination control is inside the region), so
+ * between installs a page-size choice is recorded as the latest intent:
+ *   - the other control mirrors it at once, so a following filter change, a
+ *     failed GET or a reopened dialog never resubmits the older size;
+ *   - a pagination-control submission carries the dialog's current filter
+ *     intent (a debounced Search or failed filter is not dropped), with its
+ *     own size;
+ *   - a live link (pagination, Grid/List, Clear) followed before the size
+ *     installed carries the intended size instead of the rendered one.
+ * Only a successful install clears the intent; R5: any newer GET's own size
+ * replaces it when that GET starts (syncReleaseAssetsRequestedPageSize).
+ * Nothing here touches the
+ * membership draft or sends anything but a GET.
+ */
+const RELEASE_ASSETS_PAGE_SIZE_CONTROL_SELECTOR = 'select[name="pageSize"][data-release-assets-live-page-size]';
+
+function recordReleaseAssetsPageSizeIntent(state, source) {
+  if (!source?.matches?.(RELEASE_ASSETS_PAGE_SIZE_CONTROL_SELECTOR)) return;
+  const value = String(source.value ?? '');
+  if (value === '') return;
+  state.releaseAssetsPageSizeIntent = value;
+  Array.from(state.document?.querySelectorAll?.(RELEASE_ASSETS_PAGE_SIZE_CONTROL_SELECTOR) || [])
+    .forEach((control) => {
+      if (control === source || control.value === value) return;
+      control.value = value;
+      syncCreatorCrateDropdownFromNative(control);
+    });
+}
+
+function releaseAssetsPageSizeFormParams(params, form) {
+  if (!form?.matches?.(RELEASE_ASSETS_PAGE_SIZE_FORM_SELECTOR)) return;
+  const document = form.ownerDocument;
+  const filter = document?.querySelector?.(RELEASE_ASSETS_LIVE_FILTER_SELECTOR);
+  const windowObject = liveRegionWindow(document);
+  if (!filter || typeof windowObject?.FormData !== 'function') return;
+  const intent = new windowObject.URLSearchParams(new windowObject.FormData(filter));
+  // The form's own canonical order and View are kept; only the filter values
+  // follow the dialog, so nothing changes while no filter intent is pending.
+  const rendered = new windowObject.URLSearchParams(params.toString());
+  Array.from(new Set(params.keys())).forEach((key) => params.delete(key));
+  const keep = (key, value) => {
+    if (value !== null && value !== '') params.set(key, value);
+  };
+  keep('pageSize', rendered.get('pageSize'));
+  ['search', 'extension', 'category'].forEach((key) => {
+    keep(key, intent.has(key) ? intent.get(key) : rendered.get(key));
+  });
+  const selection = intent.has('selection') ? intent.get('selection') : rendered.get('selection');
+  // 'selected' (saved membership) is the default Selection and stays implicit.
+  if (selection === 'all') params.set('selection', 'all');
+  // R3: View follows the dialog's hidden View (synced to every requested
+  // GET), so a pending Grid/List choice is not reverted; Grid stays implicit
+  // as in the rendered form.
+  const view = intent.has('view') ? intent.get('view') : rendered.get('view');
+  if (view === 'list') params.set('view', 'list');
+  rendered.forEach((value, key) => {
+    if (!['pageSize', 'search', 'extension', 'category', 'selection', 'view'].includes(key)) {
+      params.append(key, value);
+    }
+  });
+}
+
+/*
+ * R3: Grid/List, pagination and Clear links are rendered against the
+ * installed response, so they know nothing of a filter or page-size change
+ * that is still debounced, in flight or failed. The latest intended
+ * destination is read from the engine's own load state, in R1's precedence:
+ *   - a debounced Search not yet requested: the Filter dialog form;
+ *   - an in-flight or failed GET: the URL it requested (or its Retry URL);
+ *   - otherwise (idle): the link's own canonical address.
+ * Only the clicked dimension then overrides that intent:
+ *   - Grid/List: `view` (Grid stays implicit) and, as rendered View links
+ *     already do, page one;
+ *   - pagination: `page` (page one stays implicit);
+ *   - Clear keeps its explicit filter reset from the link and takes only the
+ *     intended View and page size, so it never resurrects a pending filter.
+ * The membership draft lives outside the URL and is never touched here.
+ */
+function releaseAssetsIntendedUrl(state) {
+  if (state.timer) {
+    const form = releaseAssetsLiveEngine.getForm(releaseAssetsLiveEngine.getRegion(state.document));
+    return form ? releaseAssetsLiveEngine.url(form, state.window) : null;
+  }
+  if (state.controller && state.requestedUrl) return state.requestedUrl;
+  if (state.loadFailure) return state.loadFailure.url || state.requestedUrl || null;
+  return null;
+}
+
+function releaseAssetsCopyParam(destination, source, key) {
+  const value = source.searchParams.get(key);
+  destination.searchParams.delete(key);
+  if (value !== null && value !== '') destination.searchParams.set(key, value);
+}
+
+/*
+ * R8: Clear replaces Search, Selection, Extension and Category at once, so
+ * the address it requests is marked here (the engine starts the load
+ * synchronously after this hook) and onLoadStart then brings the dialog's
+ * filter controls to that destination before it installs, as R5 does for
+ * Back/Forward. A filter edited while Clear is held or failed then changes
+ * only its own dimension instead of reserializing the cleared restrictions.
+ */
+function releaseAssetsLinkDestination(state, link, url) {
+  const clear = Boolean(link?.matches?.('[data-release-assets-reset]'));
+  // The link's own address stands if no newer intent is readable.
+  state.releaseAssetsClearHref = clear ? url.href : null;
+  const destination = releaseAssetsIntendedLinkDestination(state, link, url);
+  if (clear) state.releaseAssetsClearHref = destination.href;
+  return destination;
+}
+
+function releaseAssetsIntendedLinkDestination(state, link, url) {
+  let destination = url;
+  const base = releaseAssetsIntendedUrl(state);
+  const intended = base ? new URL(base.href, state.window.location?.href || base.href) : null;
+  if (intended && intended.pathname === url.pathname) {
+    if (link?.matches?.('[data-release-assets-reset]')) {
+      destination = new URL(url.href);
+      releaseAssetsCopyParam(destination, intended, 'view');
+      releaseAssetsCopyParam(destination, intended, 'pageSize');
+    } else if (link?.closest?.('nav.view-switcher')) {
+      destination = intended;
+      destination.searchParams.delete('page');
+      releaseAssetsCopyParam(destination, url, 'view');
+    } else if (link?.closest?.('.pagination')) {
+      destination = intended;
+      releaseAssetsCopyParam(destination, url, 'page');
+    }
+    destination.hash = '';
+    // 25 is the service fallback and stays implicit, as in rendered links.
+    if (destination !== url && destination.searchParams.get('pageSize') === '25') {
+      destination.searchParams.delete('pageSize');
+    }
+  }
+
+  const intendedSize = state.releaseAssetsPageSizeIntent;
+  if (!intendedSize || (destination.searchParams.get('pageSize') || '25') === intendedSize) return destination;
+  if (destination === url) destination = new URL(url.href);
+  // 25 is the service fallback and stays implicit, as in rendered links.
+  if (intendedSize === '25') destination.searchParams.delete('pageSize');
+  else destination.searchParams.set('pageSize', intendedSize);
+  return destination;
+}
+
+// R3: the Filter dialog's hidden View follows every requested GET (a View
+// link, Back/Forward, Retry), so a Search typed while a View GET is pending
+// or failed composes with that View instead of the installed one. A
+// successful install reconciles the form from the response as before.
+function syncReleaseAssetsRequestedView(state, url) {
+  const input = state.document?.querySelector?.(`${RELEASE_ASSETS_LIVE_FILTER_SELECTOR} input[type="hidden"][name="view"]`);
+  if (!input || !url?.searchParams) return;
+  const view = url.searchParams.get('view') === 'list' ? 'list' : 'grid';
+  if (input.value !== view) input.value = view;
+}
+
+/*
+ * R5: every GET that starts (a page-size or filter change, a live link,
+ * Back/Forward, Retry) is the newest intended navigation, so its own page
+ * size replaces any earlier, now abandoned, page-size intent the moment it
+ * starts, not when it installs. Both page-size controls are set to it without
+ * a change event (no extra GET), so a following View/Clear/pagination link,
+ * filter change, failed GET or reopened dialog composes with the requested
+ * size. An omitted pageSize is the service default 25. P3-C4: the server
+ * honours only the sizes the controls offer and renders any other value
+ * (7, 201, abc, ALL, ...) at that same default 25, so such a request's
+ * effective size is 25 and is recorded as such — an unsupported historic
+ * value never survives as intent or keeps an older size on the controls.
+ * With no page-size control rendered (read-only), no intent is recorded.
+ * A later explicit size choice is recorded by onFormChange as before and
+ * starts its own GET, so it still wins.
+ */
+function releaseAssetsPageSizeControlOffers(control, value) {
+  return Array.from(control?.querySelectorAll?.('option') || [])
+    .some((option) => String(option.value ?? option.getAttribute?.('value') ?? '') === value);
+}
+
+function syncReleaseAssetsRequestedPageSize(state, url) {
+  if (!url?.searchParams) return;
+  // A repeated pageSize is never one supported value to the server either.
+  const sizes = url.searchParams.getAll('pageSize');
+  const requested = sizes.length === 1 && sizes[0] !== '' ? sizes[0] : '25';
+  const controls = Array.from(state.document?.querySelectorAll?.(RELEASE_ASSETS_PAGE_SIZE_CONTROL_SELECTOR) || []);
+  const offered = (value) => controls.some((control) => releaseAssetsPageSizeControlOffers(control, value));
+  const value = offered(requested) ? requested : '25';
+  if (!offered(value)) {
+    state.releaseAssetsPageSizeIntent = null;
+    return;
+  }
+  state.releaseAssetsPageSizeIntent = value;
+  controls.forEach((control) => {
+    if (control.value === value || !releaseAssetsPageSizeControlOffers(control, value)) return;
+    control.value = value;
+    syncCreatorCrateDropdownFromNative(control);
+  });
+}
+
+/*
+ * R5: Back/Forward (and the Retry of a failed one, the engine's only
+ * 'replace' loads here) replaces the whole intended navigation with the
+ * history entry. The Filter dialog's Search/Selection/Extension/Category
+ * still show the installed (or an abandoned pending) state, so they follow
+ * the entry at once; a filter changed before the entry installs then composes
+ * with it instead of resubmitting the abandoned values. Nothing is
+ * dispatched, and an option the dialog does not render is left unchanged.
+ * R8: a Clear GET is synchronized the same way when it starts.
+ */
+function syncReleaseAssetsHistoryFilters(state, url) {
+  const form = state.document?.querySelector?.(RELEASE_ASSETS_LIVE_FILTER_SELECTOR);
+  if (!form || !url?.searchParams) return;
+  const search = form.querySelector?.(RELEASE_ASSETS_LIVE_SEARCH_SELECTOR);
+  const searchValue = url.searchParams.get('search') || '';
+  if (search && search.value !== searchValue) search.value = searchValue;
+  const values = {
+    selection: url.searchParams.get('selection') === 'all' ? 'all' : 'selected',
+    extension: url.searchParams.get('extension') || '',
+    category: url.searchParams.get('category') || '',
+  };
+  Object.entries(values).forEach(([name, value]) => {
+    const radios = Array.from(form.querySelectorAll?.(`input[type="radio"][name="${name}"]`) || []);
+    const target = radios.find((radio) => String(radio.value ?? '') === value);
+    if (!target || target.checked) return;
+    radios.forEach((radio) => { radio.checked = radio === target; });
+    const dropdown = target.closest?.(CC_DROPDOWN_SELECTOR);
+    if (dropdown) initializeCreatorCrateDropdown(dropdown);
+  });
+}
+
 function enhanceReleaseAssetsLiveRegion(region) {
   enhancePreviewMedia(region);
   enhanceAssetViewerInfoCards(region);
@@ -2309,6 +2805,7 @@ function enhanceReleaseAssetsLiveRegion(region) {
   enhanceAssetSelection(liveRegionDocument(region));
   enhanceAssetGridSize(region);
   enhanceAssetListSize(region);
+  syncReleaseAssetsDraftRoleControls(region);
   enhanceAutoSubmit(region);
   enhanceAssetViewerFilterDisclosures(region);
   enhanceDropdowns(liveRegionDocument(region));
@@ -2321,6 +2818,8 @@ const releaseAssetsLiveEngine = createLiveRegionEngine({
   formScope: 'document',
   linkSelector: 'nav.view-switcher a, .pagination a, [data-release-assets-reset]',
   linkScope: 'document',
+  linkDestination: releaseAssetsLinkDestination,
+  transformParams: releaseAssetsPageSizeFormParams,
   searchSelector: RELEASE_ASSETS_LIVE_SEARCH_SELECTOR,
   changeSelector: RELEASE_ASSETS_LIVE_FILTER_CONTROL_SELECTOR,
   debounceMs: RELEASE_ASSETS_LIVE_DEBOUNCE_MS,
@@ -2338,6 +2837,19 @@ const releaseAssetsLiveEngine = createLiveRegionEngine({
     enhanceDropdowns(state.document);
     enhanceAssetViewerFilterDisclosures(state.document);
     bindReleaseAssetsDraftMembership(state);
+    bindReleaseAssetsDraftRoles(state);
+  },
+  onFormChange(state, _form, event) {
+    recordReleaseAssetsPageSizeIntent(state, event?.target);
+  },
+  onLoadStart(state, _generation, url, historyMode) {
+    syncReleaseAssetsRequestedView(state, url);
+    // R5: the requested GET owns page size (and, for history, the filters).
+    syncReleaseAssetsRequestedPageSize(state, url);
+    // R8: a Clear GET owns the filters the same way, from the moment it starts.
+    const clearHref = state.releaseAssetsClearHref;
+    state.releaseAssetsClearHref = null;
+    if (historyMode === 'replace' || clearHref === url.href) syncReleaseAssetsHistoryFilters(state, url);
   },
   onResponseParsed(state, parsed, nextRegion) {
     reconcileExternalFilterForm(state, parsed, RELEASE_ASSETS_LIVE_FILTER_SELECTOR);
@@ -2345,6 +2857,8 @@ const releaseAssetsLiveEngine = createLiveRegionEngine({
     updateReleaseAssetsAuthoritativeMembership(state, parsed, nextRegion);
   },
   onRegionReplaced(state, region) {
+    // The installed response now owns both page-size controls.
+    state.releaseAssetsPageSizeIntent = null;
     syncReleaseAssetsSelectionFormAction(state);
     reconcileReleaseAssetsSelection(state, region);
     // Only a current response reaches this point. An open image viewer

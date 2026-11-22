@@ -7,6 +7,7 @@ import {
 } from './asset-picker-pagination.js';
 import { pathKey } from '../services/asset-processing-contracts.js';
 import { classifyComicAsset } from '../services/asset-metadata.js';
+import { JS_LOWER_SQL_FUNCTION, registerSqlFunctions } from '../db.js';
 
 /**
  * Asset repository — SQL operations for the assets table.
@@ -158,6 +159,159 @@ const AUTO_RENAME_CATEGORY_COLUMNS = [
 
 function escapeLike(value) {
   return value.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+}
+
+// ─── Release Manage Assets bounded pagination ───────────────────────────
+
+/** Numeric Manage Assets page sizes (WP16 catalogue); 'all' is View All. */
+export const MANAGE_ASSETS_PAGE_SIZES = Object.freeze([10, 25, 50, 100, 150, 200]);
+export const MANAGE_ASSETS_DEFAULT_PAGE_SIZE = 25;
+const MANAGE_ASSETS_PAGE_SIZE_TEXT = new Map([
+  ...MANAGE_ASSETS_PAGE_SIZES.map((size) => [String(size), size]),
+  ['all', 'all'],
+]);
+
+/**
+ * One effective Manage Assets page size. Only an exact supported number, its
+ * exact decimal string, or the exact string 'all' is honoured; anything else
+ * (unsupported/oversized/negative/decimal numbers, 'ALL', repeated arrays,
+ * missing) is the default 25 — never a custom size and never View All.
+ * @param {unknown} value
+ * @returns {number|'all'}
+ */
+export function normalizeManageAssetsPageSize(value) {
+  if (typeof value === 'number') {
+    return MANAGE_ASSETS_PAGE_SIZES.includes(value) ? value : MANAGE_ASSETS_DEFAULT_PAGE_SIZE;
+  }
+  if (typeof value === 'string' && MANAGE_ASSETS_PAGE_SIZE_TEXT.has(value)) {
+    return MANAGE_ASSETS_PAGE_SIZE_TEXT.get(value);
+  }
+  return MANAGE_ASSETS_DEFAULT_PAGE_SIZE;
+}
+
+/**
+ * Requested page number before clamping. Malformed values are page 1; a
+ * well-formed positive integer beyond the safe-integer range saturates so it
+ * clamps to the last page rather than overflowing the OFFSET arithmetic.
+ * @param {unknown} value
+ * @returns {number}
+ */
+function normalizeManageAssetsRequestedPage(value) {
+  if (typeof value === 'number') {
+    if (!Number.isInteger(value) || value < 1) return 1;
+    return Number.isSafeInteger(value) ? value : Number.MAX_SAFE_INTEGER;
+  }
+  if (typeof value === 'string' && /^[1-9]\d*$/.test(value)) {
+    const page = Number(value);
+    return Number.isSafeInteger(page) ? page : Number.MAX_SAFE_INTEGER;
+  }
+  return 1;
+}
+
+function isPositiveSafeInteger(value) {
+  return Number.isSafeInteger(value) && value > 0;
+}
+
+/**
+ * Normalize the Manage Assets filter input with the existing service rules:
+ * Search is a trimmed scalar string (blank/non-string is unrestricted);
+ * Extension is a trimmed, lowercased scalar matching [a-z0-9._-]+ (anything
+ * else is unrestricted); Selection is 'all' only for the exact scalar 'all'.
+ * Category must already be validated by the service: null/undefined means all
+ * categories, a positive safe integer restricts, anything else is a caller
+ * error (never silently widened to all categories).
+ */
+function normalizeManageAssetsQuery(options) {
+  const {
+    releaseId, projectId, search, extension, categoryId, selection, page, pageSize,
+  } = options ?? {};
+
+  let normalizedCategoryId = null;
+  if (categoryId !== undefined && categoryId !== null) {
+    if (!isPositiveSafeInteger(categoryId)) {
+      throw new TypeError('Manage Assets categoryId must be null or a positive safe integer.');
+    }
+    normalizedCategoryId = categoryId;
+  }
+
+  let normalizedExtension = null;
+  if (typeof extension === 'string' && extension.trim() !== '') {
+    const trimmed = extension.trim().toLowerCase();
+    if (/^[a-z0-9._-]+$/.test(trimmed)) normalizedExtension = trimmed;
+  }
+
+  return {
+    valid: isPositiveSafeInteger(releaseId) && isPositiveSafeInteger(projectId),
+    releaseId,
+    projectId,
+    search: typeof search === 'string' && search.trim() !== '' ? search.trim() : null,
+    extension: normalizedExtension,
+    categoryId: normalizedCategoryId,
+    selection: selection === 'all' ? 'all' : 'selected',
+    requestedPage: normalizeManageAssetsRequestedPage(page),
+    pageSize: normalizeManageAssetsPageSize(pageSize),
+  };
+}
+
+/**
+ * Fixed Manage Assets row source. The release row is joined by ID AND by the
+ * caller's project ID, and assets are joined through the release's own
+ * project, so a foreign or mismatched release/project pair yields no rows.
+ * The membership join is on the (release_id, asset_id) primary key, so it can
+ * match at most one row per asset and never duplicates an asset.
+ */
+const MANAGE_ASSETS_FROM = `
+  FROM releases r
+  JOIN assets a ON a.project_id = r.project_id
+  LEFT JOIN release_assets ra ON ra.release_id = r.id AND ra.asset_id = a.id`;
+
+const MANAGE_ASSETS_SCOPE = 'r.id = ? AND r.project_id = ? AND a.project_id = ?';
+
+const MANAGE_ASSETS_ORDER = 'ORDER BY a.filename COLLATE NOCASE ASC, a.id ASC';
+
+/**
+ * The one authoritative Manage Assets predicate, shared by the filtered count
+ * and the page/View All row reads. Only fixed internal fragments are composed;
+ * every external value is a bound parameter.
+ *
+ * - Selected mode keeps saved members only (saved membership, not a draft).
+ * - A saved member whose is_present is not 1 is always included (it can be
+ *   retained or removed) even when Search/Category/Extension do not match.
+ * - Every other row must be present AND satisfy every active filter, so a
+ *   missing non-member is always excluded.
+ * - Search is a literal, case-insensitive filename substring: the lowered
+ *   term is compared with instr() against the JavaScript-lowercased filename
+ *   (no LIKE, so %, _ and backslash are literal).
+ *
+ * @returns {{ where: string, params: Array<number|string> }}
+ */
+function buildManageAssetsPredicate(query) {
+  const conditions = [MANAGE_ASSETS_SCOPE];
+  const params = [query.releaseId, query.projectId, query.projectId];
+
+  if (query.selection === 'selected') {
+    conditions.push('ra.asset_id IS NOT NULL');
+  }
+
+  const presentFilters = ['a.is_present = 1'];
+  if (query.categoryId !== null) {
+    presentFilters.push('a.category_id = ?');
+    params.push(query.categoryId);
+  }
+  if (query.extension !== null) {
+    presentFilters.push(`${JS_LOWER_SQL_FUNCTION}(a.extension) = ?`);
+    params.push(query.extension);
+  }
+  if (query.search !== null) {
+    presentFilters.push(`instr(${JS_LOWER_SQL_FUNCTION}(a.filename), ?) > 0`);
+    params.push(query.search.toLowerCase());
+  }
+
+  conditions.push(
+    `((ra.asset_id IS NOT NULL AND a.is_present IS NOT 1) OR (${presentFilters.join(' AND ')}))`,
+  );
+
+  return { where: conditions.join(' AND '), params };
 }
 
 function buildSharedAssetBrowserConditions(filters = {}) {
@@ -398,6 +552,11 @@ function isGeneratedArtifactPathUniqueConstraintError(err) {
  * @param {import('better-sqlite3').Database} db
  */
 export function createAssetRepository(db) {
+  // Manage Assets Search needs JavaScript-identical lowercasing; ensure the
+  // function exists on this connection even when it was not opened through
+  // openDatabase(). Idempotent per connection.
+  registerSqlFunctions(db);
+
   const findByProjectStmt = db.prepare(`
     SELECT ${ASSET_COLUMNS.join(', ')}
     FROM assets
@@ -1477,6 +1636,24 @@ export function createAssetRepository(db) {
       const unique = [...new Set(ids)];
       const placeholders = unique.map(() => '?').join(',');
       const sql = `SELECT ${ASSET_COLUMNS.join(', ')} FROM assets WHERE id IN (${placeholders})`;
+      return db.prepare(sql).all(...unique);
+    },
+
+    /**
+     * Release Save validation lookup: only the ownership and presence columns
+     * for the given IDs, in one bound-parameter statement. Returns no file
+     * metadata, so classifying a foreign-project ID never loads that
+     * project's asset details. Rows come back in no particular order and
+     * unmatched IDs are absent; callers correlate by `id` and bound `ids`
+     * (the release service batches at 500).
+     * @param {number[]} ids
+     * @returns {Array<{id: number, project_id: number, is_present: number}>}
+     */
+    findSelectionStatesByIds(ids) {
+      if (!Array.isArray(ids) || ids.length === 0) return [];
+      const unique = [...new Set(ids)];
+      const placeholders = unique.map(() => '?').join(',');
+      const sql = `SELECT id, project_id, is_present FROM assets WHERE id IN (${placeholders})`;
       return db.prepare(sql).all(...unique);
     },
 
@@ -2615,6 +2792,149 @@ export function createAssetRepository(db) {
         ${buildAssetBrowserOrderClause(sort, order, { includeProjectSort: true })}
       `;
       return db.prepare(sql).all(...params);
+    },
+
+    /**
+     * Bounded Release Manage Assets collection read.
+     *
+     * Issues one filtered COUNT statement and, when anything matched, one row
+     * statement built from the same predicate. A numeric page reads at most
+     * `pageSize` asset rows through SQL LIMIT/OFFSET after clamping the
+     * requested page to `max(1, ceil(total / pageSize))`; only the exact
+     * string 'all' is View All, which returns every matching row as page 1
+     * of 1. Rows are ordered by filename (NOCASE) then asset ID.
+     *
+     * Both statements run inside one `db.transaction`, so they share a read
+     * snapshot; inside a caller's outer transaction this nests as a
+     * savepoint and joins the caller's snapshot.
+     *
+     * The caller (service) still owns release authorization, raw query
+     * normalization and category existence/ownership validation; this read
+     * re-enforces the release/project relationship in SQL regardless.
+     *
+     * @param {object} options
+     * @param {number} options.releaseId
+     * @param {number} options.projectId - must be the release's project
+     * @param {string|null} [options.search]
+     * @param {string|null} [options.extension]
+     * @param {number|null} [options.categoryId] - validated project category ID
+     * @param {'selected'|'all'|unknown} [options.selection] - exact 'all' only
+     * @param {number|string} [options.page]
+     * @param {number|string} [options.pageSize]
+     * @returns {{
+     *   rows: Array<AssetRecord & { is_saved_member: 0|1 }>,
+     *   total: number,
+     *   candidateTotal: number,
+     *   page: number,
+     *   pageCount: number,
+     *   pageSize: number|'all',
+     *   selection: 'selected'|'all',
+     * }}
+     */
+    getManageAssetsPage(options = {}) {
+      const query = normalizeManageAssetsQuery(options);
+      const empty = {
+        rows: [], total: 0, candidateTotal: 0, page: 1, pageCount: 1,
+        pageSize: query.pageSize, selection: query.selection,
+      };
+      if (!query.valid) return empty;
+
+      const { where, params } = buildManageAssetsPredicate(query);
+      const read = db.transaction(() => {
+        // candidateTotal: matching rows that are not saved members. Missing
+        // non-members never match, so these are present eligible candidates.
+        const counts = db.prepare(`
+          SELECT
+            COUNT(*) AS total,
+            COALESCE(SUM(CASE WHEN ra.asset_id IS NULL THEN 1 ELSE 0 END), 0) AS candidate_total
+          ${MANAGE_ASSETS_FROM}
+          WHERE ${where}
+        `).get(...params);
+
+        const total = counts.total;
+        if (total === 0) return empty;
+
+        const columns = `${ASSET_COLUMNS.map((column) => `a.${column}`).join(', ')},
+          CASE WHEN ra.asset_id IS NULL THEN 0 ELSE 1 END AS is_saved_member`;
+
+        if (query.pageSize === 'all') {
+          const rows = db.prepare(`
+            SELECT ${columns}
+            ${MANAGE_ASSETS_FROM}
+            WHERE ${where}
+            ${MANAGE_ASSETS_ORDER}
+          `).all(...params);
+          return {
+            rows, total, candidateTotal: counts.candidate_total, page: 1, pageCount: 1,
+            pageSize: 'all', selection: query.selection,
+          };
+        }
+
+        const pageCount = Math.max(1, Math.ceil(total / query.pageSize));
+        const page = Math.min(query.requestedPage, pageCount);
+        const offset = (page - 1) * query.pageSize;
+        const rows = db.prepare(`
+          SELECT ${columns}
+          ${MANAGE_ASSETS_FROM}
+          WHERE ${where}
+          ${MANAGE_ASSETS_ORDER}
+          LIMIT ? OFFSET ?
+        `).all(...params, query.pageSize, offset);
+
+        return {
+          rows, total, candidateTotal: counts.candidate_total, page, pageCount,
+          pageSize: query.pageSize, selection: query.selection,
+        };
+      });
+      return read();
+    },
+
+    /**
+     * Whole-project Manage Assets aggregates in one grouped statement:
+     * category navigation counts (present and missing assets both count, as
+     * on the project asset browser; uncategorized is its own bucket) and the
+     * eligible present-asset totals. Independent of Search/Extension/
+     * Category/Selection/page. Zero-count catalogue categories are absent
+     * from `byCategoryId`; callers render them from the category catalogue
+     * with 0. A mismatched release/project pair contributes nothing.
+     *
+     * @param {{ releaseId: number, projectId: number }} options
+     * @returns {{
+     *   categoryNavigation: { totalCount: number, uncategorizedCount: number, byCategoryId: Object<number, number> },
+     *   eligibleAssetCount: number,
+     *   eligibleCandidateCount: number,
+     * }}
+     */
+    getManageAssetsAggregates({ releaseId, projectId } = {}) {
+      const result = {
+        categoryNavigation: { totalCount: 0, uncategorizedCount: 0, byCategoryId: {} },
+        eligibleAssetCount: 0,
+        eligibleCandidateCount: 0,
+      };
+      if (!isPositiveSafeInteger(releaseId) || !isPositiveSafeInteger(projectId)) return result;
+
+      const rows = db.prepare(`
+        SELECT
+          a.category_id AS category_id,
+          COUNT(*) AS total,
+          SUM(CASE WHEN a.is_present = 1 THEN 1 ELSE 0 END) AS present,
+          SUM(CASE WHEN a.is_present = 1 AND ra.asset_id IS NULL THEN 1 ELSE 0 END) AS present_candidates
+        ${MANAGE_ASSETS_FROM}
+        WHERE ${MANAGE_ASSETS_SCOPE}
+        GROUP BY a.category_id
+      `).all(releaseId, projectId, projectId);
+
+      for (const row of rows) {
+        result.categoryNavigation.totalCount += row.total;
+        result.eligibleAssetCount += row.present;
+        result.eligibleCandidateCount += row.present_candidates;
+        if (row.category_id === null) {
+          result.categoryNavigation.uncategorizedCount = row.total;
+        } else {
+          result.categoryNavigation.byCategoryId[row.category_id] = row.total;
+        }
+      }
+      return result;
     },
   };
 }

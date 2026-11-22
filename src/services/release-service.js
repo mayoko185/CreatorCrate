@@ -228,6 +228,30 @@ function parseStrictPositiveInt(value) {
   return num;
 }
 
+/**
+ * Manage Assets page-size catalogue (WP16): the exact values both page-size
+ * controls offer. 'all' is View All.
+ */
+const RELEASE_ASSET_PAGE_SIZE_VALUES = Object.freeze([10, 25, 50, 100, 150, 200, 'all']);
+const RELEASE_ASSET_DEFAULT_PAGE_SIZE = 25;
+const RELEASE_ASSET_PAGE_SIZE_TEXT = new Map(RELEASE_ASSET_PAGE_SIZE_VALUES.map((value) => [String(value), value]));
+
+/**
+ * P3-C4: the one effective Manage Assets page size. A value is honoured only
+ * when it is exactly one supported catalogue string; anything else (an
+ * unsupported or oversized number, zero, negative, decimal, leading-zero,
+ * malformed or differently-cased All, empty, missing or repeated) is the
+ * default 25 — never rounded to a neighbouring size and never View All.
+ * @param {unknown} value
+ * @returns {number|'all'}
+ */
+function normalizeReleaseAssetPageSize(value) {
+  if (typeof value !== 'string') return RELEASE_ASSET_DEFAULT_PAGE_SIZE;
+  return RELEASE_ASSET_PAGE_SIZE_TEXT.has(value)
+    ? RELEASE_ASSET_PAGE_SIZE_TEXT.get(value)
+    : RELEASE_ASSET_DEFAULT_PAGE_SIZE;
+}
+
 function normalizeOptionalCategoryId(value) {
   if (value === undefined || value === null || value === '') return null;
 
@@ -263,18 +287,19 @@ function readCategoryFilter(rawQuery) {
   return undefined;
 }
 
-function matchesReleaseAssetFilters(asset, filters, categoryId) {
-  if (categoryId !== null && asset.category_id !== categoryId) return false;
+/**
+ * Batch size for the project-scoped metadata lookup of submitted off-page
+ * asset IDs (Save validation recovery). Keeps every statement well under
+ * SQLite's bound-parameter limit without one query per ID.
+ */
+const SUBMITTED_ASSET_LOOKUP_CHUNK_SIZE = 500;
 
-  if (filters.extension && String(asset.extension || '').toLowerCase() !== filters.extension) {
-    return false;
-  }
-
-  if (filters.search && !String(asset.filename || '').toLowerCase().includes(filters.search.toLowerCase())) {
-    return false;
-  }
-
-  return true;
+/**
+ * Manage Assets is read-only for published or archived releases and for any
+ * release under an archived project — the same rule the template applies.
+ */
+function isReleaseAssetManagementReadOnly(release, project) {
+  return Boolean(release?.published_date) || Boolean(release?.archived_at) || isProjectArchived(project);
 }
 
 export function createReleaseService({
@@ -291,6 +316,77 @@ export function createReleaseService({
   const projectRepository = createProjectRepository(db);
   const assetRepository = createAssetRepository(db);
   const assetCategoryRepository = createAssetCategoryRepository(db);
+
+  /**
+   * Pure presentation of one Manage Assets snapshot (no database access).
+   * Visible cards come only from the bounded SQL page rows; saved role and
+   * order come from the complete persisted membership of the same snapshot.
+   */
+  function buildReleaseAssetManagementViewModel(snapshot, clockFormat = '24h') {
+    const {
+      release, project, readOnly, categories, activeCategoryId, assetFilters,
+      releaseAssets, aggregates, pageResult, assetExtensions,
+    } = snapshot;
+    const assetPage = pageResult.rows;
+    const savedIds = new Set(releaseAssets.map((member) => member.asset_id));
+    const pageCandidates = assetPage.filter((row) => !savedIds.has(row.id));
+
+    let selectedAssets = releaseAssets;
+    if (!readOnly) {
+      const pageRowsById = new Map(assetPage.map((row) => [row.id, row]));
+      selectedAssets = releaseAssets
+        .filter((member) => pageRowsById.has(member.asset_id))
+        .map((member) => ({
+          ...pageRowsById.get(member.asset_id),
+          asset_id: member.asset_id,
+          role: member.role,
+          sort_order: member.sort_order,
+        }));
+    }
+
+    const assetPresentation = buildReleaseAssetPagePresentation({
+      policyFingerprint: imageFingerprint(),
+      selectedAssets,
+      assets: assetPage,
+      candidateAssets: pageCandidates,
+      categories,
+      clockFormat,
+    });
+
+    return {
+      release,
+      project,
+      readOnly,
+      releaseAssets,
+      categories,
+      categoryNavigation: aggregates.categoryNavigation,
+      activeCategoryId,
+      assetPage,
+      assetTotal: pageResult.total,
+      assetPageNumber: pageResult.page,
+      assetPageSize: pageResult.pageSize,
+      assetPageCount: pageResult.pageCount,
+      assetFilters: {
+        search: assetFilters.search,
+        extension: assetFilters.extension,
+        selection: pageResult.selection,
+      },
+      assetExtensions,
+      candidates: pageCandidates,
+      candidateTotal: pageResult.candidateTotal,
+      candidatePage: pageResult.page,
+      candidatePageSize: pageResult.pageSize,
+      candidatePageCount: pageResult.pageCount,
+      candidateFilters: {
+        search: assetFilters.search,
+        extension: assetFilters.extension,
+      },
+      candidateExtensions: assetExtensions,
+      eligibleAssetCount: aggregates.eligibleAssetCount,
+      eligibleCandidateCount: aggregates.eligibleCandidateCount,
+      assetPresentation,
+    };
+  }
 
   function validateSelectedPlatforms(input, releaseId = null) {
     if (!Object.hasOwn(input, 'selectedPlatforms')) return null;
@@ -1242,11 +1338,26 @@ export function createReleaseService({
         existingReleaseAssets.filter((e) => e.is_present === 0).map((e) => e.asset_id)
       );
 
+      // Read ownership/presence for every submitted ID in bounded batches
+      // (one statement per SUBMITTED_ASSET_LOOKUP_CHUNK_SIZE IDs, never one
+      // per ID). validateSelections has already rejected malformed and
+      // duplicate IDs, so every lookup ID is a positive integer bound as a
+      // parameter. Rows are keyed by ID; the check below walks the submitted
+      // sequence, so error precedence never depends on SQL row order.
+      const assetStateById = new Map();
+      const lookupIds = [...new Set(assetIds)];
+      for (let i = 0; i < lookupIds.length; i += SUBMITTED_ASSET_LOOKUP_CHUNK_SIZE) {
+        const batch = lookupIds.slice(i, i + SUBMITTED_ASSET_LOOKUP_CHUNK_SIZE);
+        for (const row of assetRepository.findSelectionStatesByIds(batch)) {
+          assetStateById.set(row.id, row);
+        }
+      }
+
       // Single pass: verify ownership, presence, and gather errors
       // Allow re-selecting already-selected missing assets (for preservation), but reject new missing assets
       const errors = {};
       for (const { assetId } of cleaned) {
-        const asset = assetRepository.findById(assetId);
+        const asset = assetStateById.get(assetId);
         if (!asset) {
           throw new AssetNotFoundError(assetId);
         }
@@ -1759,9 +1870,10 @@ export function createReleaseService({
       const pageRaw = parseStrictPositiveInt(raw.page);
       const page = pageRaw !== null ? pageRaw : 1;
 
-      const pageSizeRaw = parseStrictPositiveInt(raw.pageSize);
-      let pageSize = raw.pageSize === 'all' ? 'all' : (pageSizeRaw !== null ? pageSizeRaw : 25);
-      if (pageSize !== 'all' && pageSize > 200) pageSize = 200;
+      // P3-C4: only the sizes both page-size controls offer are honoured; any
+      // other value (unsupported number, malformed, repeated) falls back to
+      // the default 25 so the query, pagination and controls agree on one size.
+      const pageSize = normalizeReleaseAssetPageSize(raw.pageSize);
 
       // Selection: saved selected assets by default; only an explicit 'all'
       // shows the whole eligible project collection.
@@ -1771,166 +1883,236 @@ export function createReleaseService({
     },
 
     /**
+     * Read every database fact one Manage Assets page model needs inside ONE
+     * short synchronous read transaction on the shared connection, so the
+     * release, parent project, category catalogue, extension choices, saved
+     * membership, whole-project aggregates and the filtered COUNT + page rows
+     * all come from the same snapshot. The repository page read nests as a
+     * savepoint inside this transaction. No presentation work happens here.
+     *
+     * Raw request values are normalized HERE (the service is the input
+     * authority) before any repository call; the repository only receives
+     * normalized values.
+     *
+     * Editable releases read the complete saved membership through the
+     * lightweight membership API (IDs, roles, order, presence — no asset
+     * metadata) and only the bounded SQL page of asset metadata rows. Read-only
+     * releases additionally need the complete saved collection WITH metadata
+     * for display, so they read the existing complete saved-asset API (bounded
+     * by the release's membership, never by the project's asset count).
+     *
+     * `hydrateAssetIds` (Save validation recovery only) are submitted asset
+     * IDs whose metadata is needed; those not already on the page are looked
+     * up project-scoped and in batches, so a foreign ID never yields metadata.
+     *
+     * @param {number} releaseId
+     * @param {Object} rawQuery
+     * @param {{ hydrateAssetIds?: number[] }} [options]
+     */
+    readReleaseAssetManagementSnapshot(releaseId, rawQuery = {}, { hydrateAssetIds = [] } = {}) {
+      const read = db.transaction(() => {
+        const release = repository.findById(releaseId);
+        if (!release) {
+          throw new ReleaseNotFoundError(releaseId);
+        }
+
+        const project = projectRepository.findById(release.project_id);
+        if (!project) {
+          const err = new Error(`Project ${release.project_id} not found`);
+          err.status = 404;
+          throw err;
+        }
+
+        // Invalid category syntax is 422; a well-formed ID that is unknown or
+        // owned by another project is 404. Category access is never widened.
+        const activeCategoryId = normalizeOptionalCategoryId(readCategoryFilter(rawQuery));
+        const categories = assetCategoryRepository.listProjectCategories(release.project_id);
+        if (
+          activeCategoryId !== null
+          && !assetCategoryRepository.findProjectCategoryById(release.project_id, activeCategoryId)
+        ) {
+          throw new AssetCategoryNotFoundError(activeCategoryId);
+        }
+
+        const assetFilters = this.normalizeCandidateQuery(rawQuery);
+        const readOnly = isReleaseAssetManagementReadOnly(release, project);
+
+        // Complete saved membership in stored order (sort_order, asset_id),
+        // including missing and off-page members.
+        const releaseAssets = readOnly
+          ? repository.listReleaseAssets(releaseId)
+          : repository.listReleaseAssetMembership(releaseId, { projectId: release.project_id });
+
+        const aggregates = assetRepository.getManageAssetsAggregates({
+          releaseId,
+          projectId: release.project_id,
+        });
+
+        // Editable: the one authoritative filtered predicate, COUNT and
+        // bounded page (LIMIT/OFFSET; only the exact normalized 'all' is View
+        // All). Read-only (B-F1): the display is the complete saved collection
+        // above and the template renders no editable page, page count, total
+        // or pagination, so the editable page is never queried. The empty
+        // page is one unpaginated page carrying the normalized size and
+        // selection for URL preservation; filtered totals are not computed
+        // (null) rather than replaced with invented values.
+        const pageResult = readOnly
+          ? {
+            rows: [],
+            total: null,
+            candidateTotal: null,
+            page: 1,
+            pageCount: 1,
+            pageSize: assetFilters.pageSize,
+            selection: assetFilters.selection,
+          }
+          : assetRepository.getManageAssetsPage({
+            releaseId,
+            projectId: release.project_id,
+            search: assetFilters.search,
+            extension: assetFilters.extension,
+            categoryId: activeCategoryId,
+            selection: assetFilters.selection,
+            page: assetFilters.page,
+            pageSize: assetFilters.pageSize,
+          });
+
+        const assetExtensions = assetRepository.getExtensions(release.project_id);
+
+        const knownIds = new Set(pageResult.rows.map((row) => row.id));
+        if (readOnly) {
+          for (const row of releaseAssets) knownIds.add(row.asset_id);
+        }
+        // Read-only pages display only the persisted saved collection, so a
+        // rejected Save's submitted IDs are never hydrated there (B-F4).
+        const lookupIds = readOnly ? [] : [...new Set((Array.isArray(hydrateAssetIds) ? hydrateAssetIds : [])
+          .filter((id) => Number.isSafeInteger(id) && id > 0 && !knownIds.has(id)))];
+        const hydratedAssets = [];
+        for (let i = 0; i < lookupIds.length; i += SUBMITTED_ASSET_LOOKUP_CHUNK_SIZE) {
+          hydratedAssets.push(...assetRepository.findProjectAssetsByIdsInBrowserOrder(
+            release.project_id,
+            lookupIds.slice(i, i + SUBMITTED_ASSET_LOOKUP_CHUNK_SIZE),
+          ));
+        }
+
+        return {
+          release,
+          project,
+          readOnly,
+          categories,
+          activeCategoryId,
+          assetFilters,
+          releaseAssets,
+          aggregates,
+          pageResult,
+          assetExtensions,
+          hydratedAssets,
+        };
+      });
+      return read();
+    },
+
+    /**
      * Compose the release asset-management page view-model.
      *
      * Returns:
      *   - release
      *   - project
-     *   - releaseAssets — complete selected assets (unpaginated, includes missing)
-     *   - assets — complete project asset list used for eligibility states
+     *   - readOnly — published/archived release or archived parent project
+     *   - releaseAssets — complete saved membership in stored order, including
+     *     missing and off-page members. Editable: lightweight records
+     *     { asset_id, role, sort_order, is_present }. Read-only: complete saved
+     *     asset rows with metadata (the read-only display collection).
      *   - categories — all project-owned categories for the filter control
      *   - categoryNavigation — whole-project category counts for the disclosure
      *   - activeCategoryId — selected project category ID, or null
-     *   - assetPage — current filtered/page project asset collection
+     *   - assetPage — current filtered page rows (SQL LIMIT/OFFSET; every
+     *     filtered row only for explicit View All)
      *   - assetTotal — total filtered project asset collection
-     *   - assetPage — current page number
-     *   - assetPageSize — page size
+     *   - assetPageNumber — clamped page number
+     *   - assetPageSize — effective page size (a supported number or 'all')
      *   - assetPageCount — total pages
      *   - assetFilters — normalized filter values; selection is 'selected'
      *     (saved membership, the default) or 'all'
      *   - assetExtensions — available project extension values
+     *   - candidateTotal — filtered rows that are not saved members
+     *     Read-only: the editable page is not queried, so assetPage and
+     *     candidates are empty, page/pageCount are 1, the size and selection
+     *     are the normalized request values and assetTotal/candidateTotal
+     *     are null (not computed; the read-only page renders none of them).
      *   - eligibleAssetCount — present project assets, selected or not
      *   - eligibleCandidateCount — present project assets not selected
-     *   - assetPresentation — selected assets plus merged page asset views
+     *   - assetPresentation — `assets` (page cards merged with saved
+     *     role/order), `candidates` (page non-members) and `selected`.
+     *     Read-only: `selected` is the complete saved collection (the
+     *     display). Editable: `selected` holds only the saved members on the
+     *     current page, in saved order; the complete saved base is
+     *     `releaseAssets`.
+     *
+     * There is no whole-project asset array: no consumer may assume one.
      *
      * @param {number} releaseId
      * @param {Object} rawQuery - raw query parameters for candidate filters
-     * @returns {{
-     *   release: object,
-     *   project: object,
-     *   releaseAssets: Array,
-     *   assets: Array,
-     *   categories: Array,
-     *   activeCategoryId: number|null,
-     *   assetPage: Array,
-     *   assetTotal: number,
-     *   assetPageNumber: number,
-     *   assetPageSize: number,
-     *   assetPageCount: number,
-     *   assetFilters: { search: string|null, extension: string|null, selection: 'selected'|'all' },
-     *   assetExtensions: string[],
-     *   assetPresentation: { selected: Array, candidates: Array, assets: Array },
-     * }}
+     * @param {'12h'|'24h'} [clockFormat]
      */
     getReleaseAssetManagementPage(releaseId, rawQuery = {}, clockFormat = '24h') {
-      const release = repository.findById(releaseId);
-      if (!release) {
-        throw new ReleaseNotFoundError(releaseId);
-      }
+      const snapshot = this.readReleaseAssetManagementSnapshot(releaseId, rawQuery);
+      return buildReleaseAssetManagementViewModel(snapshot, clockFormat);
+    },
 
-      const project = projectRepository.findById(release.project_id);
-      if (!project) {
-        const err = new Error(`Project ${release.project_id} not found`);
-        err.status = 404;
-        throw err;
-      }
-
-       // Complete selected assets (unpaginated, includes missing).
-       const releaseAssets = repository.listReleaseAssets(releaseId);
-
-      const activeCategoryId = normalizeOptionalCategoryId(readCategoryFilter(rawQuery));
-      const categories = assetCategoryRepository.listProjectCategories(release.project_id);
-      if (
-        activeCategoryId !== null
-        && !assetCategoryRepository.findProjectCategoryById(release.project_id, activeCategoryId)
-      ) {
-        throw new AssetCategoryNotFoundError(activeCategoryId);
-      }
-
-      const assets = this.findProjectAssets(release.project_id);
-
-      // Whole-project category counts for the filter disclosure, computed from
-      // the already-loaded complete project asset collection — never one query
-      // per category. Present and missing assets both contribute, matching the
-      // project asset browser's navigation semantics. Zero-count categories
-      // render with 0, as on the reference page.
-      const categoryCounts = {};
-      let uncategorizedCount = 0;
-      for (const asset of assets) {
-        if (asset.category_id === null || asset.category_id === undefined) {
-          uncategorizedCount += 1;
-        } else {
-          categoryCounts[asset.category_id] = (categoryCounts[asset.category_id] || 0) + 1;
-        }
-      }
-      const categoryNavigation = {
-        totalCount: assets.length,
-        uncategorizedCount,
-        byCategoryId: categoryCounts,
-      };
-      const selectedAssetIds = new Set(releaseAssets.map((asset) => asset.asset_id));
-      const eligibleAssetCount = assets.filter((asset) => asset.is_present === 1).length;
-      const eligibleCandidateCount = assets.filter(
-        (asset) => asset.is_present === 1 && !selectedAssetIds.has(asset.id),
-      ).length;
-
-      // The editable page is one project-asset collection. Present assets are
-      // eligible for selection; selected missing assets remain in the same
-      // collection as an explicit exception so they can be retained or removed.
-      // The Selection filter narrows by SAVED membership, never the client's
-      // unsaved draft, so server-side counts and pagination stay authoritative.
-      const assetFilters = this.normalizeCandidateQuery(rawQuery);
-      const selectedOnly = assetFilters.selection === 'selected';
-      const filteredAssets = assets.filter((asset) => {
-        if (selectedOnly && !selectedAssetIds.has(asset.id)) return false;
-        const selectedMissing = selectedAssetIds.has(asset.id) && asset.is_present !== 1;
-        return selectedMissing || (asset.is_present === 1
-          && matchesReleaseAssetFilters(asset, assetFilters, activeCategoryId));
+    /**
+     * Manage Assets view-model for a rejected Save (422). The page, counts
+     * and persisted membership are the same snapshot as a normal GET; the
+     * SUBMITTED selection (IDs, roles, relative order — including off-page
+     * additions/removals and hidden selections) is kept separate from the
+     * persisted membership and presented with metadata from the visible page
+     * rows plus one batched, project-scoped lookup of the remaining submitted
+     * IDs. A foreign or unknown submitted ID keeps only its submitted fields.
+     *
+     * @param {number} releaseId
+     * @param {Object} rawQuery
+     * @param {Array<{ asset_id: number, role: string, sort_order: number }>} submittedAssets
+     * @param {'12h'|'24h'} [clockFormat]
+     */
+    getReleaseAssetSaveErrorPage(releaseId, rawQuery = {}, submittedAssets = [], clockFormat = '24h') {
+      const submitted = Array.isArray(submittedAssets) ? submittedAssets : [];
+      const snapshot = this.readReleaseAssetManagementSnapshot(releaseId, rawQuery, {
+        hydrateAssetIds: submitted.map((entry) => entry?.asset_id),
       });
-      const assetTotal = filteredAssets.length;
-      const showAll = assetFilters.pageSize === 'all';
-      const assetPageCount = showAll ? 1 : Math.max(1, Math.ceil(assetTotal / assetFilters.pageSize));
-      const assetPageNumber = showAll ? 1 : Math.min(assetFilters.page, assetPageCount);
-      const assetPage = showAll
-        ? filteredAssets
-        : filteredAssets.slice(
-          (assetPageNumber - 1) * assetFilters.pageSize,
-          assetPageNumber * assetFilters.pageSize,
-        );
-      const pageCandidates = assetPage.filter((asset) => !selectedAssetIds.has(asset.id));
-      const candidateTotal = filteredAssets.filter((asset) => !selectedAssetIds.has(asset.id)).length;
-      const assetExtensions = assetRepository.getExtensions(release.project_id);
-      const assetPresentation = buildReleaseAssetPagePresentation({
-        policyFingerprint: imageFingerprint(),
-        selectedAssets: releaseAssets,
-        assets: assetPage,
-        candidateAssets: pageCandidates,
-        categories,
-        clockFormat,
+      const viewModel = buildReleaseAssetManagementViewModel(snapshot, clockFormat);
+
+      const sourceById = new Map();
+      const projectId = snapshot.release.project_id;
+      for (const row of [
+        ...snapshot.pageResult.rows,
+        ...(snapshot.readOnly ? snapshot.releaseAssets : []),
+        ...snapshot.hydratedAssets,
+      ]) {
+        const id = row?.asset_id ?? row?.id;
+        // Defence in depth: only same-project rows may supply metadata.
+        if (id !== undefined && id !== null && row.project_id === projectId) sourceById.set(String(id), row);
+      }
+
+      const selectedAssets = submitted.map((entry) => {
+        const source = sourceById.get(String(entry.asset_id));
+        return source
+          ? { ...source, asset_id: entry.asset_id, role: entry.role, sort_order: entry.sort_order }
+          : entry;
       });
+      const selectedIds = new Set(selectedAssets.map((asset) => String(asset.asset_id)));
+      const assetPage = snapshot.pageResult.rows;
 
       return {
-        release,
-        project,
-         releaseAssets,
-         assets,
-         categories,
-         categoryNavigation,
-         activeCategoryId,
-         assetPage,
-         assetTotal,
-         assetPageNumber,
-         assetPageSize: assetFilters.pageSize,
-         assetPageCount,
-         assetFilters: {
-           search: assetFilters.search,
-           extension: assetFilters.extension,
-           selection: assetFilters.selection,
-         },
-         assetExtensions,
-         candidates: pageCandidates,
-         candidateTotal,
-         candidatePage: assetPageNumber,
-         candidatePageSize: assetFilters.pageSize,
-         candidatePageCount: assetPageCount,
-         candidateFilters: {
-           search: assetFilters.search,
-           extension: assetFilters.extension,
-         },
-         candidateExtensions: assetExtensions,
-         eligibleAssetCount,
-         eligibleCandidateCount,
-         assetPresentation,
+        ...viewModel,
+        submittedReleaseAssets: submitted,
+        submittedAssetPresentation: buildReleaseAssetPagePresentation({
+          policyFingerprint: imageFingerprint(),
+          selectedAssets,
+          assets: assetPage,
+          candidateAssets: assetPage.filter((asset) => !selectedIds.has(String(asset.id))),
+          categories: snapshot.categories,
+          clockFormat,
+        }),
       };
     },
 

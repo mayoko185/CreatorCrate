@@ -3,10 +3,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
+import Database from 'better-sqlite3';
+import {
+  openDatabase, runMigrations, closeDatabase, registerSqlFunctions, JS_LOWER_SQL_FUNCTION,
+} from '../src/db.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
 import { createTagRepository } from '../src/data/tag-repository.js';
+import { createReleaseRepository } from '../src/data/release-repository.js';
 import { buildAssetRevisionToken } from '../src/services/preview-service.js';
 import slugify from '@sindresorhus/slugify';
 
@@ -3859,4 +3863,847 @@ describe('asset repository', () => {
     });
   });
 
+});
+
+// ─── Release Manage Assets bounded SQL pagination (Package A) ─────────────
+
+describe('asset repository — Manage Assets bounded pagination', () => {
+  let tmpDir;
+  let dbPath;
+  let db;
+  let assetRepo;
+  let projectRepo;
+  let releaseRepo;
+  let pathCounter;
+  const extraConnections = [];
+
+  function createProject(title) {
+    return projectRepo.create({
+      title,
+      slug: slugify(title, { lowercase: true }),
+      description: '',
+      notes: '',
+      status: 'tbd',
+      projectType: 'images',
+      priority: 'normal',
+      plannedDate: null,
+      publishedDate: null,
+      patreonUrl: null,
+    });
+  }
+
+  function createRelease(projectId, title = 'Release') {
+    return releaseRepo.create({
+      projectId, title, description: '', notes: '', plannedDate: null, patreonUrl: null,
+    });
+  }
+
+  function createCategory(projectId, slug) {
+    return db.prepare(`
+      INSERT INTO project_asset_categories (project_id, display_name, directory_slug, display_order, enabled)
+      VALUES (?, ?, ?, 0, 1)
+      RETURNING id
+    `).get(projectId, slug, slug).id;
+  }
+
+  /** Insert one asset row; returns a plain fixture record held in JS. */
+  function insertAsset(projectId, {
+    filename, extension = 'png', categoryId = null, isPresent = 1,
+  }) {
+    pathCounter += 1;
+    const id = db.prepare(`
+      INSERT INTO assets (project_id, category_id, relative_path, filename, extension, is_present)
+      VALUES (?, ?, ?, ?, ?, ?)
+      RETURNING id
+    `).get(projectId, categoryId, `fixture-${pathCounter}/${filename}`, filename, extension, isPresent).id;
+    return { id, projectId, filename, extension, categoryId, isPresent };
+  }
+
+  /** Bulk-insert `count` present ASCII-named assets in one transaction. */
+  function seedBulk(projectId, count, { prefix = 'bulk', every = null } = {}) {
+    const stmt = db.prepare(`
+      INSERT INTO assets (project_id, relative_path, filename, extension, is_present)
+      VALUES (?, ?, ?, 'png', ?)
+      RETURNING id
+    `);
+    const records = [];
+    db.transaction(() => {
+      for (let i = 0; i < count; i += 1) {
+        const filename = `${prefix}-${String(count - i).padStart(6, '0')}.png`;
+        const isPresent = every && i % every === 0 ? 0 : 1;
+        const { id } = stmt.get(projectId, `${prefix}/${i}/${filename}`, filename, isPresent);
+        records.push({ id, projectId, filename, extension: 'png', categoryId: null, isPresent });
+      }
+    })();
+    return records;
+  }
+
+  function addMember(releaseId, assetId, sortOrder = 0, role = 'attachment') {
+    db.prepare(`
+      INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)
+    `).run(releaseId, assetId, role, sortOrder);
+  }
+
+  // Independent reference model of the existing service filter (written from
+  // the contract, not from the repository SQL).
+  function asciiFold(value) {
+    return value.replace(/[A-Z]/g, (ch) => ch.toLowerCase());
+  }
+  function nocaseThenId(a, b) {
+    const fa = asciiFold(a.filename);
+    const fb = asciiFold(b.filename);
+    if (fa < fb) return -1;
+    if (fa > fb) return 1;
+    return a.id - b.id;
+  }
+  function expectedIds(records, savedIds, {
+    search = null, extension = null, categoryId = null, selection = 'selected',
+  } = {}) {
+    return records
+      .filter((asset) => {
+        const saved = savedIds.has(asset.id);
+        if (selection !== 'all' && !saved) return false;
+        if (saved && asset.isPresent !== 1) return true;
+        if (asset.isPresent !== 1) return false;
+        if (categoryId !== null && asset.categoryId !== categoryId) return false;
+        if (extension && String(asset.extension).toLowerCase() !== extension) return false;
+        if (search && !asset.filename.toLowerCase().includes(search.toLowerCase())) return false;
+        return true;
+      })
+      .sort(nocaseThenId)
+      .map((asset) => asset.id);
+  }
+
+  /**
+   * Open a second, instrumented connection to the same database file. Every
+   * statement it prepares is wrapped so the test records the executed SQL,
+   * its bound arguments and the number of rows actually returned to
+   * JavaScript. The connection is opened with plain `new Database` (not
+   * openDatabase) and `verbose`, so this also proves the repository factory
+   * registers the JavaScript-lowercase function on any connection.
+   */
+  function openInstrumented({ afterStatement = null } = {}) {
+    const executed = [];
+    const verboseLog = [];
+    const conn = new Database(dbPath, { verbose: (sql) => verboseLog.push(String(sql)) });
+    extraConnections.push(conn);
+    const prepare = conn.prepare.bind(conn);
+    conn.prepare = (sql) => {
+      const stmt = prepare(sql);
+      return new Proxy(stmt, {
+        get(target, prop) {
+          const value = target[prop];
+          if (prop === 'all' || prop === 'get') {
+            return (...args) => {
+              const result = value.apply(target, args);
+              const rowCount = prop === 'all' ? result.length : (result === undefined ? 0 : 1);
+              executed.push({ sql, args, method: prop, rowCount });
+              if (afterStatement) afterStatement({ sql, args, method: prop });
+              return result;
+            };
+          }
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+    };
+    const repo = createAssetRepository(conn);
+    // Only statements issued by the call under test are of interest.
+    executed.length = 0;
+    verboseLog.length = 0;
+    return { conn, repo, executed, verboseLog };
+  }
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-manage-assets-'));
+    dbPath = path.join(tmpDir, 'test.db');
+    db = openDatabase(dbPath);
+    runMigrations(db, MIGRATIONS_DIR);
+    assetRepo = createAssetRepository(db);
+    projectRepo = createProjectRepository(db);
+    releaseRepo = createReleaseRepository(db);
+    pathCounter = 0;
+  });
+
+  afterEach(() => {
+    while (extraConnections.length > 0) extraConnections.pop().close();
+    closeDatabase(db);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function pageIds(result) {
+    return result.rows.map((row) => row.id);
+  }
+
+  function readAllPages(scope, pageSize) {
+    const first = assetRepo.getManageAssetsPage({ ...scope, page: 1, pageSize });
+    const ids = [...pageIds(first)];
+    for (let page = 2; page <= first.pageCount; page += 1) {
+      ids.push(...pageIds(assetRepo.getManageAssetsPage({ ...scope, page, pageSize })));
+    }
+    return { first, ids };
+  }
+
+  describe('A–C scale fixtures (25 / 250 / 2,000 assets)', () => {
+    for (const size of [25, 250, 2000]) {
+      it(`pages ${size} assets with accurate totals and exact IDs`, () => {
+        const project = createProject(`Scale ${size}`);
+        const release = createRelease(project.id);
+        const records = seedBulk(project.id, size, { every: 9 });
+        const saved = new Set();
+        records.forEach((asset, index) => {
+          if (index % 5 === 0) {
+            addMember(release.id, asset.id, index);
+            saved.add(asset.id);
+          }
+        });
+        const scope = { releaseId: release.id, projectId: project.id, selection: 'all' };
+        const expected = expectedIds(records, saved, { selection: 'all' });
+        const expectedCandidates = expected.filter((id) => !saved.has(id)).length;
+
+        const { first, ids } = readAllPages(scope, '50');
+        expect(first.total).toBe(expected.length);
+        expect(first.candidateTotal).toBe(expectedCandidates);
+        expect(first.pageCount).toBe(Math.max(1, Math.ceil(expected.length / 50)));
+        expect(ids).toEqual(expected);
+
+        const selected = assetRepo.getManageAssetsPage({ ...scope, selection: undefined, pageSize: 'all' });
+        expect(pageIds(selected)).toEqual(expectedIds(records, saved));
+        expect(selected.candidateTotal).toBe(0);
+      });
+    }
+  });
+
+  describe('E–H saved/unsaved and present/missing membership rules', () => {
+    let project;
+    let release;
+    let category;
+    let otherCategory;
+    let records;
+    let saved;
+    let byName;
+
+    beforeEach(() => {
+      project = createProject('Membership Project');
+      release = createRelease(project.id);
+      category = createCategory(project.id, 'source');
+      otherCategory = createCategory(project.id, 'other');
+      records = [
+        insertAsset(project.id, { filename: 'alpha.png', categoryId: category }),
+        insertAsset(project.id, { filename: 'beta.jpg', extension: 'jpg', categoryId: otherCategory }),
+        insertAsset(project.id, { filename: 'gamma.png' }),
+        insertAsset(project.id, { filename: 'zzz-saved-missing.webp', extension: 'webp', isPresent: 0, categoryId: otherCategory }),
+        insertAsset(project.id, { filename: 'alpha-missing-nonmember.png', isPresent: 0, categoryId: category }),
+        insertAsset(project.id, { filename: 'delta-saved.png', categoryId: category }),
+        insertAsset(project.id, { filename: 'epsilon-saved.jpg', extension: 'jpg' }),
+      ];
+      byName = Object.fromEntries(records.map((asset) => [asset.filename, asset.id]));
+      saved = new Set([byName['zzz-saved-missing.webp'], byName['delta-saved.png'], byName['epsilon-saved.jpg']]);
+      let order = 0;
+      for (const id of saved) addMember(release.id, id, order++);
+    });
+
+    function read(filters) {
+      return assetRepo.getManageAssetsPage({
+        releaseId: release.id, projectId: project.id, pageSize: 'all', ...filters,
+      });
+    }
+
+    it('E/O: saved-selected is the default; exact "all" adds unsaved present assets', () => {
+      expect(pageIds(read({}))).toEqual([
+        byName['delta-saved.png'], byName['epsilon-saved.jpg'], byName['zzz-saved-missing.webp'],
+      ]);
+      const all = read({ selection: 'all' });
+      expect(pageIds(all)).toEqual(expectedIds(records, saved, { selection: 'all' }));
+      expect(pageIds(all)).toEqual([
+        byName['alpha.png'], byName['beta.jpg'], byName['delta-saved.png'],
+        byName['epsilon-saved.jpg'], byName['gamma.png'], byName['zzz-saved-missing.webp'],
+      ]);
+      expect(all.total).toBe(6);
+      expect(all.candidateTotal).toBe(3);
+      expect(all.rows.map((row) => row.is_saved_member)).toEqual([0, 0, 1, 1, 0, 1]);
+    });
+
+    it('O: only the exact scalar "all" selects All assets', () => {
+      for (const selection of ['ALL', 'All', ' all', ['all'], ['all', 'all'], 1, null, 'selected']) {
+        const result = read({ selection });
+        expect(result.selection).toBe('selected');
+        expect(pageIds(result)).toEqual(expectedIds(records, saved));
+      }
+    });
+
+    it('F/G: a saved missing asset bypasses Search, Category and Extension', () => {
+      const filters = { search: 'alpha', categoryId: category, extension: 'png' };
+      for (const selection of ['all', 'selected']) {
+        const ids = pageIds(read({ ...filters, selection }));
+        expect(ids).toEqual(expectedIds(records, saved, { ...filters, selection }));
+        expect(ids).toContain(byName['zzz-saved-missing.webp']);
+      }
+      expect(pageIds(read({ ...filters, selection: 'all' }))).toEqual([
+        byName['alpha.png'], byName['zzz-saved-missing.webp'],
+      ]);
+    });
+
+    it('H: a missing non-member is excluded even with no filters and when it matches', () => {
+      const ids = pageIds(read({ selection: 'all', search: 'missing-nonmember' }));
+      expect(ids).toEqual([byName['zzz-saved-missing.webp']]);
+      expect(pageIds(read({ selection: 'all' }))).not.toContain(byName['alpha-missing-nonmember.png']);
+    });
+
+    it('saved present members still have to satisfy the filters', () => {
+      const ids = pageIds(read({ selection: 'selected', extension: 'png' }));
+      expect(ids).toEqual([byName['delta-saved.png'], byName['zzz-saved-missing.webp']]);
+    });
+
+    it('M: combined Search/Category/Extension narrow present rows together', () => {
+      const filters = { search: 'A', categoryId: category, extension: 'PNG' };
+      const result = read({ ...filters, selection: 'all' });
+      expect(pageIds(result)).toEqual(expectedIds(records, saved, {
+        search: 'A', categoryId: category, extension: 'png', selection: 'all',
+      }));
+      expect(pageIds(result)).toEqual([
+        byName['alpha.png'], byName['delta-saved.png'], byName['zzz-saved-missing.webp'],
+      ]);
+      expect(result.candidateTotal).toBe(1);
+    });
+
+    it('N: no category includes uncategorized assets; a category matches exactly', () => {
+      const all = pageIds(read({ selection: 'all' }));
+      expect(all).toContain(byName['gamma.png']);
+      expect(pageIds(read({ selection: 'all', categoryId: otherCategory }))).toEqual([
+        byName['beta.jpg'], byName['zzz-saved-missing.webp'],
+      ]);
+      expect(pageIds(read({ selection: 'all', categoryId: null }))).toEqual(all);
+    });
+
+    it('rejects an unvalidated category instead of widening to all categories', () => {
+      for (const categoryId of ['1', 0, -1, 1.5, Number.NaN, [category], { id: category }]) {
+        expect(() => read({ categoryId })).toThrow(TypeError);
+      }
+    });
+  });
+
+  describe('I–L Search and Extension semantics', () => {
+    let project;
+    let release;
+    let records;
+    let byName;
+
+    beforeEach(() => {
+      project = createProject('Search Project');
+      release = createRelease(project.id);
+      records = [
+        'MixedCase.PNG', 'mixedcase-two.png', 'Église.png', 'église-lower.png', 'eglise-plain.png',
+        'KELVIN-K.png', 'kite.png', '100%_done.png', 'a_b.png', 'axb.png', 'back\\slash.png',
+        'percent.png', 'tar.gz.png',
+      ].map((filename) => insertAsset(project.id, { filename }));
+      records.push(insertAsset(project.id, { filename: 'upper-ext.PNG', extension: 'PNG' }));
+      records.push(insertAsset(project.id, { filename: 'archive.png.bak', extension: 'png.bak' }));
+      records.push(insertAsset(project.id, { filename: 'noext', extension: '' }));
+      byName = Object.fromEntries(records.map((asset) => [asset.filename, asset.id]));
+    });
+
+    function searchIds(search, extra = {}) {
+      return pageIds(assetRepo.getManageAssetsPage({
+        releaseId: release.id, projectId: project.id, selection: 'all', pageSize: 'all', search, ...extra,
+      }));
+    }
+
+    function expectedSearch(search, extra = {}) {
+      return expectedIds(records, new Set(), {
+        selection: 'all', search: typeof search === 'string' && search.trim() ? search.trim() : null, ...extra,
+      });
+    }
+
+    it('I: ASCII search is a case-insensitive substring and is trimmed', () => {
+      // NOCASE order: "mixedcase-" sorts before "mixedcase." ('-' < '.').
+      expect(searchIds('mixedcase')).toEqual([byName['mixedcase-two.png'], byName['MixedCase.PNG']]);
+      expect(searchIds('mixedcase')).toEqual(expectedSearch('mixedcase'));
+      expect(searchIds('  MIXEDCASE  ')).toEqual(searchIds('mixedcase'));
+      expect(searchIds('MiXeDcAsE-TWO')).toEqual([byName['mixedcase-two.png']]);
+    });
+
+    it('I: blank, repeated and non-string searches are unrestricted', () => {
+      const unrestricted = searchIds(null);
+      expect(unrestricted).toHaveLength(records.length);
+      for (const search of ['', '   ', ['mixed'], ['mixed', 'kite'], 42, { q: 'kite' }, undefined]) {
+        expect(searchIds(search)).toEqual(unrestricted);
+      }
+    });
+
+    it('J: Unicode search follows JavaScript toLowerCase(), not SQLite LOWER()', () => {
+      // SQLite's built-in LOWER() only folds ASCII; prove the divergence.
+      expect(db.prepare("SELECT lower('É') AS v").get().v).toBe('É');
+      expect(db.prepare("SELECT lower('K') AS v").get().v).toBe('K');
+      expect('K'.toLowerCase()).toBe('k');
+
+      // NOCASE does not fold non-ASCII, so 'É' (U+00C9) sorts before 'é' (U+00E9).
+      expect(searchIds('ÉGLISE')).toEqual([byName['Église.png'], byName['église-lower.png']]);
+      expect(searchIds('ÉGLISE')).toEqual(expectedSearch('ÉGLISE'));
+      expect(searchIds('église')).toEqual(expectedSearch('église'));
+      expect(searchIds('église')).not.toContain(byName['eglise-plain.png']);
+      // Kelvin sign lowercases to ASCII "k" in JavaScript.
+      expect(searchIds('kelvin-k')).toEqual([byName['KELVIN-K.png']]);
+      expect(searchIds('K')).toEqual(expectedSearch('K'));
+      expect(searchIds('K')).toEqual(expect.arrayContaining([byName['kite.png'], byName['KELVIN-K.png']]));
+    });
+
+    it('K: %, _ and backslash are literal characters', () => {
+      expect(searchIds('%')).toEqual([byName['100%_done.png']]);
+      expect(searchIds('_')).toEqual(expectedSearch('_'));
+      expect(searchIds('_')).toEqual([byName['100%_done.png'], byName['a_b.png']]);
+      expect(searchIds('a_b')).toEqual([byName['a_b.png']]);
+      expect(searchIds('\\')).toEqual([byName['back\\slash.png']]);
+      expect(searchIds('%_')).toEqual([byName['100%_done.png']]);
+      expect(searchIds('a%b')).toEqual([]);
+    });
+
+    it('L: extension matches the whole normalized stored extension only', () => {
+      const png = searchIds(null, { extension: 'png' });
+      expect(png).toEqual(expectedSearch(null, { extension: 'png' }));
+      expect(png).toContain(byName['upper-ext.PNG']);
+      expect(png).not.toContain(byName['archive.png.bak']);
+      expect(searchIds(null, { extension: ' PNG ' })).toEqual(png);
+      expect(searchIds(null, { extension: 'pn' })).toEqual([]);
+      expect(searchIds(null, { extension: 'png.bak' })).toEqual([byName['archive.png.bak']]);
+    });
+
+    it('L: invalid, blank, repeated or non-string extensions are unrestricted', () => {
+      const unrestricted = searchIds(null);
+      for (const extension of ['', '  ', 'p ng', 'png;', '%', ['png'], ['png', 'jpg'], 7, null]) {
+        expect(searchIds(null, { extension })).toEqual(unrestricted);
+      }
+    });
+  });
+
+  describe('P/Y release/project isolation', () => {
+    it('never returns or counts rows for a foreign or mismatched release/project', () => {
+      const projectA = createProject('Isolation A');
+      const projectB = createProject('Isolation B');
+      const releaseA = createRelease(projectA.id);
+      const releaseB = createRelease(projectB.id);
+      const a1 = insertAsset(projectA.id, { filename: 'a1.png' });
+      const b1 = insertAsset(projectB.id, { filename: 'b1.png' });
+      const bMissing = insertAsset(projectB.id, { filename: 'b-missing.png', isPresent: 0 });
+      addMember(releaseA.id, a1.id, 0);
+      // Malformed cross-project junction rows inserted directly (bypassing the
+      // repository's ownership-aware insert) must never leak.
+      addMember(releaseA.id, b1.id, 1);
+      addMember(releaseA.id, bMissing.id, 2);
+
+      const own = assetRepo.getManageAssetsPage({
+        releaseId: releaseA.id, projectId: projectA.id, selection: 'all', pageSize: 'all',
+      });
+      expect(pageIds(own)).toEqual([a1.id]);
+      expect(own.total).toBe(1);
+      expect(own.candidateTotal).toBe(0);
+
+      const mismatches = [
+        { releaseId: releaseA.id, projectId: projectB.id },
+        { releaseId: releaseB.id, projectId: projectA.id },
+        { releaseId: 999999, projectId: projectA.id },
+        { releaseId: releaseA.id, projectId: 999999 },
+      ];
+      for (const scope of mismatches) {
+        for (const selection of ['all', 'selected']) {
+          const result = assetRepo.getManageAssetsPage({ ...scope, selection, pageSize: '10' });
+          expect(result).toEqual({
+            rows: [], total: 0, candidateTotal: 0, page: 1, pageCount: 1, pageSize: 10, selection,
+          });
+        }
+        expect(assetRepo.getManageAssetsAggregates(scope)).toEqual({
+          categoryNavigation: { totalCount: 0, uncategorizedCount: 0, byCategoryId: {} },
+          eligibleAssetCount: 0,
+          eligibleCandidateCount: 0,
+        });
+      }
+
+      const aggregates = assetRepo.getManageAssetsAggregates({ releaseId: releaseA.id, projectId: projectA.id });
+      expect(aggregates.categoryNavigation.totalCount).toBe(1);
+      expect(aggregates.eligibleCandidateCount).toBe(0);
+    });
+
+    it('returns the empty shape without SQL for invalid identifiers', () => {
+      const { repo, executed } = openInstrumented();
+      for (const scope of [
+        {}, { releaseId: '1', projectId: 1 }, { releaseId: 1, projectId: '1' },
+        { releaseId: 0, projectId: 1 }, { releaseId: 1.5, projectId: 1 }, { releaseId: 1, projectId: -1 },
+      ]) {
+        expect(repo.getManageAssetsPage(scope)).toEqual({
+          rows: [], total: 0, candidateTotal: 0, page: 1, pageCount: 1, pageSize: 25, selection: 'selected',
+        });
+        expect(repo.getManageAssetsAggregates(scope).categoryNavigation.totalCount).toBe(0);
+      }
+      expect(executed).toEqual([]);
+    });
+  });
+
+  describe('Q stable ordering with filename ties', () => {
+    it('breaks NOCASE filename ties by asset ID across page boundaries', () => {
+      const project = createProject('Tie Project');
+      const release = createRelease(project.id);
+      const records = [];
+      records.push(insertAsset(project.id, { filename: 'aaa.png' }));
+      for (let i = 0; i < 12; i += 1) {
+        const variants = ['tie.png', 'TIE.png', 'Tie.png'];
+        records.push(insertAsset(project.id, { filename: variants[i % 3] }));
+      }
+      records.push(insertAsset(project.id, { filename: 'zzz.png' }));
+      records.push(insertAsset(project.id, { filename: 'Bbb.png' }));
+      const scope = { releaseId: release.id, projectId: project.id, selection: 'all' };
+
+      const expected = expectedIds(records, new Set(), { selection: 'all' });
+      const tieIds = records.filter((asset) => asciiFold(asset.filename) === 'tie.png').map((asset) => asset.id);
+      // Expected order: aaa, Bbb, the 12 ties in ascending ID order, zzz.
+      expect(expected).toEqual([records[0].id, records[14].id, ...tieIds, records[13].id]);
+
+      const { first, ids } = readAllPages(scope, '10');
+      expect(first.pageCount).toBe(2);
+      expect(ids).toEqual(expected);
+      expect(new Set(ids).size).toBe(ids.length);
+      // The tie group straddles the boundary: page 1 ends and page 2 starts inside it.
+      const page2 = pageIds(assetRepo.getManageAssetsPage({ ...scope, page: 2, pageSize: '10' }));
+      expect(tieIds).toContain(first.rows[9].id);
+      expect(tieIds).toContain(page2[0]);
+
+      for (let repeat = 0; repeat < 3; repeat += 1) {
+        expect(readAllPages(scope, '10').ids).toEqual(expected);
+      }
+    });
+  });
+
+  describe('R–T page clamping and page-size normalization', () => {
+    let project;
+    let release;
+    let records;
+    let scope;
+
+    beforeEach(() => {
+      project = createProject('Paging Project');
+      release = createRelease(project.id);
+      records = seedBulk(project.id, 23);
+      scope = { releaseId: release.id, projectId: project.id, selection: 'all' };
+    });
+
+    it('R: empty collection is page 1 of 1 with total 0', () => {
+      const emptyProject = createProject('Empty Project');
+      const emptyRelease = createRelease(emptyProject.id);
+      expect(assetRepo.getManageAssetsPage({
+        releaseId: emptyRelease.id, projectId: emptyProject.id, selection: 'all', page: '7', pageSize: '50',
+      })).toEqual({ rows: [], total: 0, candidateTotal: 0, page: 1, pageCount: 1, pageSize: 50, selection: 'all' });
+    });
+
+    it('R: the last page holds the remainder', () => {
+      const expected = expectedIds(records, new Set(), { selection: 'all' });
+      const last = assetRepo.getManageAssetsPage({ ...scope, page: '3', pageSize: '10' });
+      expect(last.page).toBe(3);
+      expect(last.pageCount).toBe(3);
+      expect(pageIds(last)).toEqual(expected.slice(20));
+    });
+
+    it('S: huge or malformed page numbers clamp before OFFSET is computed', () => {
+      const expected = expectedIds(records, new Set(), { selection: 'all' });
+      for (const page of ['999999999999999999999999', 1e300, Number.MAX_SAFE_INTEGER, '4', 4]) {
+        const result = assetRepo.getManageAssetsPage({ ...scope, page, pageSize: '10' });
+        expect(result.page).toBe(3);
+        expect(pageIds(result)).toEqual(expected.slice(20));
+      }
+      for (const page of [0, -1, '0', '-2', '1.5', 2.5, 'abc', '+2', ' 2', ['2'], Number.NaN, Infinity, null]) {
+        const result = assetRepo.getManageAssetsPage({ ...scope, page, pageSize: '10' });
+        expect(result.page).toBe(1);
+        expect(pageIds(result)).toEqual(expected.slice(0, 10));
+      }
+    });
+
+    it('T: only supported sizes are honoured; everything else is 25', () => {
+      const fifty = seedBulk(project.id, 40, { prefix: 'more' });
+      const all = expectedIds([...records, ...fifty], new Set(), { selection: 'all' });
+      for (const [pageSize, effective] of [
+        ['10', 10], [10, 10], ['25', 25], ['50', 50], [50, 50], ['100', 100], ['150', 150], ['200', 200], [200, 200],
+      ]) {
+        const result = assetRepo.getManageAssetsPage({ ...scope, pageSize });
+        expect(result.pageSize).toBe(effective);
+        expect(pageIds(result)).toEqual(all.slice(0, effective));
+      }
+      for (const pageSize of [
+        '30', 30, '0', 0, '-10', '25.0', '010', '1000', 1000, 1e9, Infinity, Number.NaN,
+        ['25', '50'], ['all'], ['all', 'all'], ['all', '10'], 'ALL', 'All', ' all', 'all ', '', null, undefined,
+      ]) {
+        const result = assetRepo.getManageAssetsPage({ ...scope, pageSize });
+        expect(result.pageSize).toBe(25);
+        expect(result.rows).toHaveLength(25);
+        expect(pageIds(result)).toEqual(all.slice(0, 25));
+      }
+    });
+  });
+
+  describe('U explicit View All', () => {
+    it('returns every matching row (beyond 200) as page 1 of 1 in stable order', () => {
+      const project = createProject('View All Project');
+      const release = createRelease(project.id);
+      const records = seedBulk(project.id, 250, { every: 10 });
+      const saved = new Set([records[0].id, records[5].id]);
+      addMember(release.id, records[0].id, 0);
+      addMember(release.id, records[5].id, 1);
+      const expected = expectedIds(records, saved, { selection: 'all' });
+      expect(expected.length).toBeGreaterThan(200);
+
+      const result = assetRepo.getManageAssetsPage({
+        releaseId: release.id, projectId: project.id, selection: 'all', page: '9', pageSize: 'all',
+      });
+      expect(result.page).toBe(1);
+      expect(result.pageCount).toBe(1);
+      expect(result.pageSize).toBe('all');
+      expect(result.total).toBe(expected.length);
+      expect(pageIds(result)).toEqual(expected);
+    });
+  });
+
+  describe('X grouped category aggregates', () => {
+    it('counts present and missing rows per category plus eligible totals in one statement', () => {
+      const project = createProject('Aggregate Project');
+      const other = createProject('Aggregate Other');
+      const release = createRelease(project.id);
+      const source = createCategory(project.id, 'source');
+      const renders = createCategory(project.id, 'renders');
+      const empty = createCategory(project.id, 'empty');
+      const s1 = insertAsset(project.id, { filename: 's1.png', categoryId: source });
+      insertAsset(project.id, { filename: 's2.png', categoryId: source, isPresent: 0 });
+      insertAsset(project.id, { filename: 'r1.png', categoryId: renders });
+      insertAsset(project.id, { filename: 'u1.png' });
+      const uMissing = insertAsset(project.id, { filename: 'u2.png', isPresent: 0 });
+      insertAsset(project.id, { filename: 'u3.png' });
+      const foreign = insertAsset(other.id, { filename: 'foreign.png' });
+      addMember(release.id, s1.id, 0);
+      addMember(release.id, uMissing.id, 1);
+      addMember(release.id, foreign.id, 2);
+
+      const { repo, executed } = openInstrumented();
+      const aggregates = repo.getManageAssetsAggregates({ releaseId: release.id, projectId: project.id });
+      expect(aggregates).toEqual({
+        categoryNavigation: {
+          totalCount: 6,
+          uncategorizedCount: 3,
+          byCategoryId: { [source]: 2, [renders]: 1 },
+        },
+        eligibleAssetCount: 4,
+        eligibleCandidateCount: 3,
+      });
+      expect(aggregates.categoryNavigation.byCategoryId).not.toHaveProperty(String(empty));
+      expect(executed).toHaveLength(1);
+      expect(executed[0].sql).toMatch(/GROUP BY a\.category_id/);
+      expect(executed[0].rowCount).toBeLessThanOrEqual(3);
+
+      // Parity with the existing project navigation helper.
+      const navigation = assetRepo.getProjectAssetNavigationCounts(project.id);
+      expect(aggregates.categoryNavigation.totalCount).toBe(navigation.total);
+      expect(aggregates.categoryNavigation.uncategorizedCount).toBe(navigation.uncategorized);
+      expect(aggregates.categoryNavigation.byCategoryId).toEqual(navigation.byCategoryId);
+    });
+  });
+
+  describe('SQL bounds instrumentation', () => {
+    const NUMERIC_SIZES = [10, 25, 50, 100, 150, 200];
+
+    function assertBoundedRead(executed, { pageSize, offset }) {
+      expect(executed).toHaveLength(2);
+      const [count, page] = executed;
+      expect(count.method).toBe('get');
+      expect(count.sql).toMatch(/SELECT\s+COUNT\(\*\) AS total/);
+      expect(count.sql).not.toMatch(/LIMIT/);
+      expect(page.method).toBe('all');
+      expect(page.sql).toMatch(/LIMIT \? OFFSET \?\s*$/);
+      // The ID tie-breaker must be explicit: an index scan on
+      // (project_id, filename NOCASE, id) can otherwise mask its absence.
+      expect(page.sql).toMatch(/ORDER BY a\.filename COLLATE NOCASE ASC, a\.id ASC\s+LIMIT/);
+      expect(page.args.slice(-2)).toEqual([pageSize, offset]);
+      expect(page.rowCount).toBeLessThanOrEqual(pageSize);
+      // No whole-project full-asset SELECT: every statement touching assets
+      // is either the aggregate COUNT or the LIMITed page read.
+      for (const statement of executed) {
+        expect(statement.sql.includes('COUNT(*)') || /LIMIT \? OFFSET \?/.test(statement.sql)).toBe(true);
+      }
+    }
+
+    it('B–D: statement count and transferred rows stay fixed as the project grows', () => {
+      const project = createProject('Bounds Project');
+      const release = createRelease(project.id);
+      const sizes = [25, 250, 2000, 10000];
+      let seeded = [];
+      const observations = [];
+      for (const target of sizes) {
+        seeded = seeded.concat(seedBulk(project.id, target - seeded.length, { prefix: `grow${target}`, every: 11 }));
+        const saved = new Set(seeded.filter((_, index) => index % 13 === 0).map((asset) => asset.id));
+        db.prepare('DELETE FROM release_assets WHERE release_id = ?').run(release.id);
+        let order = 0;
+        db.transaction(() => { for (const id of saved) addMember(release.id, id, order++); })();
+        const expected = expectedIds(seeded, saved, { selection: 'all' });
+
+        const { repo, executed, verboseLog } = openInstrumented();
+        const result = repo.getManageAssetsPage({
+          releaseId: release.id, projectId: project.id, selection: 'all', page: '2', pageSize: '10',
+        });
+        assertBoundedRead(executed, { pageSize: 10, offset: 10 });
+        expect(result.total).toBe(expected.length);
+        expect(result.candidateTotal).toBe(expected.filter((id) => !saved.has(id)).length);
+        expect(pageIds(result)).toEqual(expected.slice(10, 20));
+        // better-sqlite3 verbose logs the executed SQL with bound values expanded.
+        // Both statements run inside one transaction (one read snapshot).
+        expect(verboseLog[0]).toBe('BEGIN');
+        expect(verboseLog.at(-1)).toBe('COMMIT');
+        expect(verboseLog.filter((sql) => !/^(BEGIN|COMMIT)$/.test(sql))).toHaveLength(2);
+        expect(verboseLog.filter((sql) => /LIMIT 10(\.0)? OFFSET 10(\.0)?\s*$/.test(sql))).toHaveLength(1);
+        observations.push({
+          target, statements: executed.length, rowsReturned: executed.map((statement) => statement.rowCount),
+        });
+      }
+      expect(observations).toEqual(sizes.map((target) => ({ target, statements: 2, rowsReturned: [1, 10] })));
+    });
+
+    it('every numeric size reads at most pageSize rows from a 2,000-asset project (deep and last pages)', () => {
+      const project = createProject('Sizes Project');
+      const release = createRelease(project.id);
+      const records = seedBulk(project.id, 2000);
+      const expected = expectedIds(records, new Set(), { selection: 'all' });
+      for (const pageSize of NUMERIC_SIZES) {
+        const pageCount = Math.ceil(2000 / pageSize);
+        for (const page of [1, Math.ceil(pageCount / 2), pageCount, pageCount + 50]) {
+          const { repo, executed } = openInstrumented();
+          const result = repo.getManageAssetsPage({
+            releaseId: release.id, projectId: project.id, selection: 'all', page, pageSize: String(pageSize),
+          });
+          const effectivePage = Math.min(page, pageCount);
+          assertBoundedRead(executed, { pageSize, offset: (effectivePage - 1) * pageSize });
+          expect(result.page).toBe(effectivePage);
+          expect(pageIds(result)).toEqual(expected.slice((effectivePage - 1) * pageSize, effectivePage * pageSize));
+        }
+      }
+    });
+
+    it('filtered numeric reads stay bounded and the count matches the reference model', () => {
+      const project = createProject('Filtered Bounds');
+      const release = createRelease(project.id);
+      const records = seedBulk(project.id, 2000, { every: 7 });
+      const saved = new Set(records.filter((_, index) => index % 3 === 0).map((asset) => asset.id));
+      let order = 0;
+      db.transaction(() => { for (const id of saved) addMember(release.id, id, order++); })();
+      for (const selection of ['all', 'selected']) {
+        const { repo, executed } = openInstrumented();
+        const result = repo.getManageAssetsPage({
+          releaseId: release.id, projectId: project.id, selection, search: '-0001', page: '2', pageSize: '10',
+        });
+        const expected = expectedIds(records, saved, { selection, search: '-0001' });
+        assertBoundedRead(executed, { pageSize: 10, offset: 10 });
+        expect(result.total).toBe(expected.length);
+        expect(pageIds(result)).toEqual(expected.slice(10, 20));
+      }
+    });
+
+    it('View All is the only unbounded read and is not LIMITed', () => {
+      const project = createProject('All Bounds');
+      const release = createRelease(project.id);
+      seedBulk(project.id, 300);
+      const { repo, executed } = openInstrumented();
+      const result = repo.getManageAssetsPage({
+        releaseId: release.id, projectId: project.id, selection: 'all', pageSize: 'all',
+      });
+      expect(executed).toHaveLength(2);
+      expect(executed[1].sql).not.toMatch(/LIMIT/);
+      expect(executed[1].rowCount).toBe(300);
+      expect(result.rows).toHaveLength(300);
+    });
+
+    it('an empty match issues only the count statement', () => {
+      const project = createProject('Empty Bounds');
+      const release = createRelease(project.id);
+      seedBulk(project.id, 50);
+      const { repo, executed } = openInstrumented();
+      const result = repo.getManageAssetsPage({
+        releaseId: release.id, projectId: project.id, selection: 'all', search: 'no-such-file',
+      });
+      expect(result.total).toBe(0);
+      expect(executed).toHaveLength(1);
+      expect(executed[0].rowCount).toBe(1);
+    });
+  });
+
+  describe('read consistency', () => {
+    it('count and page read share one snapshot even if a write lands between them', () => {
+      const project = createProject('Snapshot Project');
+      const release = createRelease(project.id);
+      const records = seedBulk(project.id, 30);
+      const expected = expectedIds(records, new Set(), { selection: 'all' });
+      let injected = false;
+      const { repo } = openInstrumented({
+        afterStatement: ({ sql }) => {
+          if (injected || !sql.includes('COUNT(*)')) return;
+          injected = true;
+          // A concurrent writer (separate connection) adds a row that sorts
+          // first and would shift page 1 if the page read saw it.
+          db.prepare(`
+            INSERT INTO assets (project_id, relative_path, filename, extension, is_present)
+            VALUES (?, 'late/0.png', '0-late.png', 'png', 1)
+          `).run(project.id);
+        },
+      });
+      const result = repo.getManageAssetsPage({
+        releaseId: release.id, projectId: project.id, selection: 'all', page: '1', pageSize: '10',
+      });
+      expect(injected).toBe(true);
+      expect(result.total).toBe(30);
+      expect(pageIds(result)).toEqual(expected.slice(0, 10));
+      // The write is visible to the next read.
+      expect(repo.getManageAssetsPage({
+        releaseId: release.id, projectId: project.id, selection: 'all', page: '1', pageSize: '10',
+      }).total).toBe(31);
+    });
+
+    it('participates in a caller-owned outer transaction without nesting conflicts', () => {
+      const project = createProject('Outer Tx Project');
+      const release = createRelease(project.id);
+      const records = seedBulk(project.id, 12);
+      addMember(release.id, records[0].id, 0);
+      const snapshot = db.transaction(() => {
+        expect(db.inTransaction).toBe(true);
+        const membership = releaseRepo.listReleaseAssetMembership(release.id, { projectId: project.id });
+        const aggregates = assetRepo.getManageAssetsAggregates({ releaseId: release.id, projectId: project.id });
+        const page = assetRepo.getManageAssetsPage({
+          releaseId: release.id, projectId: project.id, selection: 'all', pageSize: '10',
+        });
+        expect(db.inTransaction).toBe(true);
+        return { membership, aggregates, page };
+      })();
+      expect(db.inTransaction).toBe(false);
+      expect(snapshot.membership.map((row) => row.asset_id)).toEqual([records[0].id]);
+      expect(snapshot.aggregates.eligibleCandidateCount).toBe(11);
+      expect(snapshot.page.total).toBe(12);
+      expect(snapshot.page.rows).toHaveLength(10);
+    });
+  });
+
+  describe('JavaScript lowercase SQL function registration', () => {
+    it('is registered by openDatabase and idempotently by the repository factory', () => {
+      expect(db.prepare(`SELECT ${JS_LOWER_SQL_FUNCTION}('ÉK') AS v`).get().v).toBe('ék');
+      expect(db.prepare(`SELECT ${JS_LOWER_SQL_FUNCTION}(NULL) AS v`).get().v).toBeNull();
+      // A second factory on the same connection must not re-register it.
+      expect(() => createAssetRepository(db)).not.toThrow();
+      expect(registerSqlFunctions(db)).toBe(db);
+
+      const raw = new Database(dbPath);
+      extraConnections.push(raw);
+      expect(() => raw.prepare(`SELECT ${JS_LOWER_SQL_FUNCTION}('A')`).get()).toThrow(/no such function/);
+      createAssetRepository(raw);
+      expect(raw.prepare(`SELECT ${JS_LOWER_SQL_FUNCTION}('Ä') AS v`).get().v).toBe('ä');
+    });
+  });
+
+  describe('existing generic reads are unchanged', () => {
+    it('findByProjectId still returns the whole project collection', () => {
+      const project = createProject('Generic Project');
+      const records = seedBulk(project.id, 60, { every: 6 });
+      const rows = assetRepo.findByProjectId(project.id, { sortBy: 'filename', order: 'asc' });
+      expect(rows).toHaveLength(60);
+      expect(rows[0]).not.toHaveProperty('is_saved_member');
+      expect(new Set(rows.map((row) => row.id))).toEqual(new Set(records.map((asset) => asset.id)));
+    });
+  });
 });

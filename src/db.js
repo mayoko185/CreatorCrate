@@ -21,11 +21,45 @@ function readMigrations(migrationsDir) {
     }));
 }
 
+/**
+ * SQL name of the deterministic lowercase function that reproduces
+ * JavaScript `String.prototype.toLowerCase()` exactly. SQLite's built-in
+ * LOWER() folds ASCII only (e.g. it leaves `É` and the Kelvin sign `K`
+ * unchanged), so filename searches that must match the JavaScript filter
+ * semantics use this function instead.
+ */
+export const JS_LOWER_SQL_FUNCTION = 'cc_js_lower';
+
+// Connections that already carry the application SQL functions. Keyed weakly
+// by connection so closed connections are released; it holds no query state.
+const sqlFunctionConnections = new WeakSet();
+
+/**
+ * Register the application's deterministic SQL functions on a connection.
+ * Idempotent per connection: a second call is a no-op, so repository
+ * factories may call it defensively without re-registering a function while
+ * statements are active.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @returns {import('better-sqlite3').Database}
+ */
+export function registerSqlFunctions(db) {
+  if (!db || typeof db.function !== 'function' || sqlFunctionConnections.has(db)) return db;
+  db.function(
+    JS_LOWER_SQL_FUNCTION,
+    { deterministic: true },
+    (value) => (value === null || value === undefined ? null : String(value).toLowerCase()),
+  );
+  sqlFunctionConnections.add(db);
+  return db;
+}
+
 export function openDatabase(databasePath) {
   try {
     const db = new Database(databasePath);
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');
+    registerSqlFunctions(db);
     return db;
   } catch (err) {
     throw new DatabaseError(`Failed to open database at "${databasePath}".`, { cause: err });

@@ -144,15 +144,24 @@ describe('intentional asset-browser parity: releases vs projects', () => {
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
-    const [projectGrid, releaseGrid, projectList, releaseList, projectCategory, projectPaged, releasePaged] = await Promise.all([
+    const [projectGrid, releaseGrid, projectList, releaseList, projectCategory, projectPaged] = await Promise.all([
       agent.get(`/projects/${projectId}/assets`).expect(200),
       agent.get(`${releaseLocation}/assets?selection=all`).expect(200),
       agent.get(`/projects/${projectId}/assets?view=list`).expect(200),
       agent.get(`${releaseLocation}/assets?selection=all&view=list`).expect(200),
       agent.get(`/projects/${projectId}/assets?category=${category.id}`).expect(200),
       agent.get(`/projects/${projectId}/assets?pageSize=1`).expect(200),
-      agent.get(`${releaseLocation}/assets?selection=all&pageSize=1`).expect(200),
     ]);
+    // P3-C4: Manage Assets honours only its supported sizes (smallest 10), so
+    // its paged view is taken after enough extra assets exist to paginate.
+    for (let index = 0; index < 10; index++) {
+      fs.writeFileSync(path.join(projectDir, `zz-pad-${String(index).padStart(2, '0')}.png`), 'png');
+    }
+    await agent
+      .post(`/projects/${projectId}/scan`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+    const releasePaged = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=10`).expect(200);
     pages = {
       projectGrid: projectGrid.text,
       releaseGrid: releaseGrid.text,

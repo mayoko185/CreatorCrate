@@ -71,6 +71,7 @@ function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } =
     },
     getAttribute(name) { return attributes.get(name) ?? null; },
     hasAttribute(name) { return attributes.has(name); },
+    getAttributeNames() { return [...attributes.keys()]; },
     removeAttribute(name) {
       attributes.delete(name);
       if (name === 'hidden') this.hidden = false;
@@ -371,6 +372,7 @@ function makeReleaseAssetsPage({
   dialogOpen = false, assets = [{ id: '99', selected: true }], offPageSelectedIds = [],
   persistedSelectedIds = [...assets.filter((asset) => asset.selected).map((asset) => String(asset.id)), ...offPageSelectedIds],
   readOnly = false, reEnhancementSurface = false, roleAutosubmit = false, selectionFilter = null,
+  roleOrder = null,
 } = {}) {
   const document = makeNode({ tagName: 'document' });
   document.nodeType = 9;
@@ -433,6 +435,15 @@ function makeReleaseAssetsPage({
     tagName: 'input', attrs: { type: 'hidden', 'data-release-assets-persisted-id': '', value: String(assetId) }, value: String(assetId),
   })));
   selection.appendChild(persistedMembership);
+  // B7-F1: only a recoverable rejected legacy Save renders this carrier.
+  const roleOrderInput = roleOrder === null ? null : makeNode({
+    tagName: 'input', attrs: { type: 'hidden', name: 'roleOrder' }, value: roleOrder,
+  });
+  if (roleOrderInput) {
+    const carrier = makeNode({ tagName: 'span', attrs: { 'data-release-assets-submitted-role-order': '' } });
+    carrier.appendChild(roleOrderInput);
+    selection.appendChild(carrier);
+  }
   const disclosure = makeNode({
     tagName: 'details',
     attrs: { id: 'release-extension-filter', 'data-asset-viewer-filter-disclosure': '' },
@@ -566,7 +577,7 @@ function makeReleaseAssetsPage({
     searchInput, extensionAll, extensionPng, extensionJpg, categoryAll, categoryThree, categoryFour, selection, viewNav,
     grid, list, pagination, next, pageSizeForm, reset, hiddenMembership, membershipCheckboxes,
     assetGrid, assetList, gridSizeSlider, listSizeSlider, infoCard, preview, roleForm,
-    selectionSelected, selectionAll, selectionNotice,
+    selectionSelected, selectionAll, selectionNotice, roleOrderInput,
   };
 }
 
@@ -1850,5 +1861,2290 @@ describe('Releases live filtering enhancement', () => {
     expect(retryWindow.fetch.mock.calls[0][1].method).toBe('GET');
     expect(failed.document.querySelector('[data-releases-live-region]')).toBe(recovered.region);
     expect(liveFailureNotice(failed.document)).toBeNull();
+  });
+});
+
+describe('WP16 Release Manage Assets page-size entry points', () => {
+  beforeEach(() => { vi.useRealTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  function deferredFetch(windowObject) {
+    const requests = [];
+    windowObject.fetch.mockImplementation((url, options) => new Promise((resolve, reject) => {
+      requests.push({ url, options, resolve, reject });
+    }));
+    return requests;
+  }
+
+  function assetsWindow(document, pages = new Map(), href = 'http://creatorcrate.test/releases/7/assets?pageSize=50') {
+    const windowObject = makeWindow(document, pages);
+    windowObject.location.href = href;
+    windowObject.location.pathname = '/releases/7/assets';
+    windowObject.location.assign = vi.fn();
+    return windowObject;
+  }
+
+  it('mirrors a pagination-side size into the dialog and keeps it through failed GETs, a filter change and Clear', async () => {
+    const initial = makeReleaseAssetsPage({ pageSize: '50', search: 'needle', dialogOpen: true });
+    const cleared = makeReleaseAssetsPage({ pageSize: '100', extension: '', category: '' });
+    const windowObject = assetsWindow(initial.document, new Map([['cleared', cleared.document]]));
+    windowObject.fetch
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(responseFor('cleared', 'http://creatorcrate.test/releases/7/assets?view=grid&pageSize=100'));
+    const regionBefore = initial.region;
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    initial.pageSize.value = '100';
+    initial.pageSizeForm.dispatch('change', { target: initial.pageSize });
+    await flush();
+
+    expect(initial.filterPageSize.value).toBe('100');
+    let requested = new URL(windowObject.fetch.mock.calls[0][0]);
+    expect(requested.searchParams.get('pageSize')).toBe('100');
+    expect(requested.searchParams.get('search')).toBe('needle');
+    expect(requested.searchParams.has('page')).toBe(false);
+    expect(initial.document.querySelector('[data-release-assets-live-region]')).toBe(regionBefore);
+    expect(liveFailureRetries(initial.document)).toHaveLength(1);
+    // The failed request's controls stay as chosen: both show the new size.
+    expect(initial.pageSize.value).toBe('100');
+
+    initial.categoryThree.checked = false;
+    initial.categoryFour.checked = true;
+    initial.filter.dispatch('change', { target: initial.categoryFour });
+    await flush();
+
+    requested = new URL(windowObject.fetch.mock.calls[1][0]);
+    expect(requested.searchParams.get('pageSize')).toBe('100');
+    expect(requested.searchParams.get('category')).toBe('4');
+    expect(requested.searchParams.has('page')).toBe(false);
+
+    // Clear was rendered for the older size; it follows the newer intent.
+    expect(initial.reset.getAttribute('href')).toContain('pageSize=50');
+    initial.reset.dispatch('click');
+    await flush();
+
+    requested = new URL(windowObject.fetch.mock.calls[2][0]);
+    expect(requested.searchParams.get('pageSize')).toBe('100');
+    expect(requested.searchParams.has('search')).toBe(false);
+    expect(requested.searchParams.has('extension')).toBe(false);
+    expect(requested.searchParams.has('category')).toBe(false);
+    expect(requested.searchParams.has('page')).toBe(false);
+    expect(initial.document.querySelector('[data-release-assets-live-region]')).toBe(cleared.region);
+    expect(windowObject.fetch.mock.calls.every(([, options]) => options.method === 'GET' && options.body === undefined))
+      .toBe(true);
+    expect(windowObject.location.assign).not.toHaveBeenCalled();
+  });
+
+  it('mirrors a dialog size into the pagination-side control and returns to page 1', async () => {
+    const initial = makeReleaseAssetsPage({ pageSize: '50', dialogOpen: true });
+    const windowObject = assetsWindow(initial.document, new Map(), 'http://creatorcrate.test/releases/7/assets?pageSize=50&page=3');
+    const requests = deferredFetch(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    initial.filterPageSize.value = 'all';
+    initial.filter.dispatch('change', { target: initial.filterPageSize });
+    await flush();
+
+    expect(initial.pageSize.value).toBe('all');
+    expect(requests).toHaveLength(1);
+    const requested = new URL(requests[0].url);
+    expect(requested.searchParams.get('pageSize')).toBe('all');
+    expect(requested.searchParams.has('page')).toBe(false);
+    expect(requested.searchParams.has('selectedAssetIds')).toBe(false);
+  });
+
+  it('carries a debounced dialog Search into a pagination-side size submission', async () => {
+    vi.useFakeTimers();
+    const initial = makeReleaseAssetsPage({ pageSize: '50', extension: 'png', category: '3' });
+    const windowObject = assetsWindow(initial.document);
+    const requests = deferredFetch(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    initial.searchInput.value = 'needle';
+    initial.filter.dispatch('input', { target: initial.searchInput });
+    vi.advanceTimersByTime(100);
+    initial.pageSize.value = '10';
+    initial.pageSizeForm.dispatch('change', { target: initial.pageSize });
+    await flush();
+    vi.advanceTimersByTime(1000);
+    await flush();
+
+    // One request: the size change superseded the debounce but kept its Search.
+    expect(requests).toHaveLength(1);
+    const requested = new URL(requests[0].url);
+    expect([...requested.searchParams.entries()]).toEqual([
+      ['pageSize', '10'], ['search', 'needle'], ['extension', 'png'], ['category', '3'],
+    ]);
+    expect(initial.filterPageSize.value).toBe('10');
+  });
+
+  it('follows pagination with a pending size, ignores the stale response and lets Back own the size again', async () => {
+    const initial = makeReleaseAssetsPage({ pageSize: '50' });
+    const stale = makeReleaseAssetsPage({ pageSize: '100' });
+    const paged = makeReleaseAssetsPage({ pageSize: '100' });
+    const back = makeReleaseAssetsPage({ pageSize: '50' });
+    const windowObject = assetsWindow(initial.document, new Map([
+      ['stale', stale.document], ['paged', paged.document], ['back', back.document],
+    ]));
+    const requests = deferredFetch(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    initial.pageSize.value = '100';
+    initial.pageSizeForm.dispatch('change', { target: initial.pageSize });
+    await flush();
+    expect(new URL(requests[0].url).searchParams.get('pageSize')).toBe('100');
+
+    // Next was rendered for size 50; following it before the size installs
+    // keeps the newer size rather than reverting to the rendered one.
+    expect(initial.next.getAttribute('href')).toContain('pageSize=50');
+    initial.next.dispatch('click');
+    await flush();
+    const followed = new URL(requests[1].url);
+    expect(followed.searchParams.get('pageSize')).toBe('100');
+    expect(followed.searchParams.get('page')).toBe('2');
+    expect(followed.searchParams.get('extension')).toBe('png');
+    expect(followed.searchParams.get('category')).toBe('3');
+
+    requests[1].resolve(responseFor('paged', followed.href));
+    await flush();
+    requests[0].resolve(responseFor('stale', requests[0].url));
+    await flush();
+    expect(initial.document.querySelector('[data-release-assets-live-region]')).toBe(paged.region);
+    expect(paged.pageSize.value).toBe('100');
+
+    windowObject.location.href = 'http://creatorcrate.test/releases/7/assets?pageSize=50';
+    windowObject.dispatch('popstate');
+    await flush();
+    requests[2].resolve(responseFor('back', requests[2].url));
+    await flush();
+    expect(initial.document.querySelector('[data-release-assets-live-region]')).toBe(back.region);
+
+    // The installed Back response owns the size: a rendered link is followed as is.
+    back.grid.dispatch('click');
+    await flush();
+    expect(requests[3].url).toBe(new URL(back.grid.getAttribute('href'), windowObject.location.href).href);
+    expect(new URL(requests[3].url).searchParams.get('pageSize')).toBe('50');
+  });
+
+  it('never changes the membership draft or Save payload when the size changes', async () => {
+    const initial = makeReleaseAssetsPage({
+      pageSize: '50', assets: [{ id: '1', selected: false }, { id: '2', selected: true }], offPageSelectedIds: ['9'],
+    });
+    const resized = makeReleaseAssetsPage({
+      pageSize: '10', assets: [{ id: '3', selected: false }], offPageSelectedIds: ['2', '9'], persistedSelectedIds: ['2', '9'],
+    });
+    const windowObject = assetsWindow(initial.document, new Map([['resized', resized.document]]));
+    windowObject.fetch.mockResolvedValueOnce(responseFor('resized', 'http://creatorcrate.test/releases/7/assets?pageSize=10'));
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    const [assetOne, assetTwo] = initial.membershipCheckboxes;
+    assetOne.checked = true;
+    initial.document.dispatch('change', { target: assetOne });
+    assetTwo.checked = false;
+    initial.document.dispatch('change', { target: assetTwo });
+    expect(releaseMembershipPayload(windowObject, initial.selection).sort()).toEqual(['1', '9']);
+
+    initial.pageSize.value = '10';
+    initial.pageSizeForm.dispatch('change', { target: initial.pageSize });
+    await flush();
+
+    expect(initial.document.querySelector('[data-release-assets-live-region]')).toBe(resized.region);
+    expect(windowObject.fetch).toHaveBeenCalledTimes(1);
+    expect(windowObject.fetch.mock.calls[0][1].method).toBe('GET');
+    // Off-page draft addition 1 and removal 2 survive; saved 9 is kept.
+    expect(releaseHiddenMembership(initial.selection).sort()).toEqual(['1', '9']);
+    expect(releaseMembershipPayload(windowObject, initial.selection).sort()).toEqual(['1', '9']);
+  });
+
+  // C4b: in Chromium the engine aborts the older fetch, so its response never
+  // reaches the client. This mock ignores the abort signal and delivers the
+  // older GET's successful response AFTER the newer one has installed, which
+  // isolates the generation check from cancellation.
+  it('C4b: an older GET that still succeeds after the newer one installed changes neither region, URL, history nor the off-page draft', async () => {
+    const initial = makeReleaseAssetsPage({
+      pageSize: '50', assets: [{ id: '1', selected: false }, { id: '2', selected: true }],
+      offPageSelectedIds: ['9'], persistedSelectedIds: ['2', '9'],
+    });
+    // Older (page 2): a different visible page whose server carrier is the
+    // saved membership. Newer (jpg filter): asset 3 only; saved 2 and 9 off-page.
+    const older = makeReleaseAssetsPage({
+      pageSize: '50', assets: [{ id: '4', selected: false }, { id: '5', selected: false }],
+      offPageSelectedIds: ['2', '9'], persistedSelectedIds: ['2', '9'],
+    });
+    const newer = makeReleaseAssetsPage({
+      pageSize: '50', extension: 'jpg', assets: [{ id: '3', selected: false }],
+      offPageSelectedIds: ['2', '9'], persistedSelectedIds: ['2', '9'],
+    });
+    const windowObject = assetsWindow(initial.document, new Map([['older', older.document], ['newer', newer.document]]));
+    const requests = deferredFetch(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    // Unsaved draft: add 1, remove saved 2; saved 9 stays off-page.
+    const [assetOne, assetTwo] = initial.membershipCheckboxes;
+    assetOne.checked = true;
+    initial.document.dispatch('change', { target: assetOne });
+    assetTwo.checked = false;
+    initial.document.dispatch('change', { target: assetTwo });
+    expect(releaseMembershipPayload(windowObject, initial.selection).sort()).toEqual(['1', '9']);
+
+    // GET A: page 2, held. GET B: the jpg filter, started while A is pending.
+    initial.next.dispatch('click');
+    await flush();
+    expect(requests).toHaveLength(1);
+    expect(new URL(requests[0].url).searchParams.get('page')).toBe('2');
+    initial.extensionPng.checked = false;
+    initial.extensionJpg.checked = true;
+    initial.filter.dispatch('change', { target: initial.extensionJpg });
+    await flush();
+    expect(requests).toHaveLength(2);
+    expect(requests[0].options.signal.aborted).toBe(true);
+    expect(requests[1].options.signal.aborted).toBe(false);
+    const newerUrl = new URL(requests[1].url);
+    expect(newerUrl.searchParams.get('extension')).toBe('jpg');
+
+    // B completes and installs first.
+    const newerHref = `http://creatorcrate.test/releases/7/assets?pageSize=50&extension=jpg&category=3`;
+    requests[1].resolve(responseFor('newer', newerHref));
+    await flush();
+    expect(initial.document.querySelector('[data-release-assets-live-region]')).toBe(newer.region);
+    expect(windowObject.location.href).toBe(newerHref);
+    expect(windowObject.history.pushes.map(({ url }) => String(url))).toEqual([newerHref]);
+    expect(releaseHiddenMembership(initial.selection).sort()).toEqual(['1', '9']);
+
+    // A then completes SUCCESSFULLY (the mock ignored the abort). The client
+    // receives it but never reads its body or installs it.
+    const olderResponse = responseFor('older', 'http://creatorcrate.test/releases/7/assets?pageSize=50&page=2');
+    requests[0].resolve(olderResponse);
+    await flush();
+    expect(olderResponse.text).not.toHaveBeenCalled();
+    expect(initial.document.querySelector('[data-release-assets-live-region]')).toBe(newer.region);
+    expect(initial.document.querySelector('[data-release-assets-live-region]')).not.toBe(older.region);
+    expect(windowObject.location.href).toBe(newerHref);
+    expect(windowObject.history.pushes).toHaveLength(1);
+    expect(windowObject.history.replaces).toEqual([]);
+    expect(newer.region.getAttribute('aria-busy')).toBeNull();
+
+    // The draft (on-page addition now off-page, removal of saved 2, saved 9)
+    // is intact in the hidden carrier and the Save payload, each ID once.
+    const hidden = releaseHiddenMembership(initial.selection);
+    expect(hidden.sort()).toEqual(['1', '9']);
+    expect(new Set(hidden).size).toBe(hidden.length);
+    const payload = releaseMembershipPayload(windowObject, initial.selection);
+    expect(payload.sort()).toEqual(['1', '9']);
+    expect(new Set(payload).size).toBe(payload.length);
+    expect(newer.membershipCheckboxes.map((box) => [box.value, box.checked])).toEqual([['3', false]]);
+
+    // Only the two GETs: nothing was saved.
+    expect(windowObject.fetch).toHaveBeenCalledTimes(2);
+    expect(windowObject.fetch.mock.calls.map(([, options]) => options.method)).toEqual(['GET', 'GET']);
+  });
+  // C4c: the C4b case above releases the older GET before its body is read.
+  // Here the older GET's headers arrive and its body read begins BEFORE the
+  // newer GET supersedes it; the body then completes after the newer page has
+  // installed. Release Manage Assets has no followResponse continuation, so
+  // only the engine's post-body generation check can refuse the late body.
+  // The mock body ignores the abort signal (a browser would reject the read).
+  it('C4c: an older GET whose body read began before the newer GET installs nothing when that body completes late', async () => {
+    const initial = makeReleaseAssetsPage({
+      pageSize: '50', assets: [{ id: '1', selected: false }, { id: '2', selected: true }],
+      offPageSelectedIds: ['9'], persistedSelectedIds: ['2', '9'],
+    });
+    const older = makeReleaseAssetsPage({
+      pageSize: '50', assets: [{ id: '4', selected: false }, { id: '5', selected: false }],
+      offPageSelectedIds: ['2', '9'], persistedSelectedIds: ['2', '9'],
+    });
+    const newer = makeReleaseAssetsPage({
+      pageSize: '50', extension: 'jpg', assets: [{ id: '3', selected: false }],
+      offPageSelectedIds: ['2', '9'], persistedSelectedIds: ['2', '9'],
+    });
+    const windowObject = assetsWindow(initial.document, new Map([['older', older.document], ['newer', newer.document]]));
+    const requests = deferredFetch(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    // Unsaved draft: add 1, remove saved 2; saved 9 stays off-page.
+    const [assetOne, assetTwo] = initial.membershipCheckboxes;
+    assetOne.checked = true;
+    initial.document.dispatch('change', { target: assetOne });
+    assetTwo.checked = false;
+    initial.document.dispatch('change', { target: assetTwo });
+    expect(releaseMembershipPayload(windowObject, initial.selection).sort()).toEqual(['1', '9']);
+
+    // GET A (page 2): its headers arrive and its body read starts, held open.
+    initial.next.dispatch('click');
+    await flush();
+    expect(requests).toHaveLength(1);
+    expect(new URL(requests[0].url).searchParams.get('page')).toBe('2');
+    let releaseOlderBody;
+    const olderBody = new Promise((resolve) => { releaseOlderBody = resolve; });
+    const olderResponse = {
+      ok: true, url: 'http://creatorcrate.test/releases/7/assets?pageSize=50&page=2', text: vi.fn(() => olderBody),
+    };
+    requests[0].resolve(olderResponse);
+    await flush();
+    expect(olderResponse.text).toHaveBeenCalledTimes(1);
+    expect(initial.document.querySelector('[data-release-assets-live-region]')).toBe(initial.region);
+
+    // GET B (the jpg filter) supersedes A while A's body is still pending.
+    initial.extensionPng.checked = false;
+    initial.extensionJpg.checked = true;
+    initial.filter.dispatch('change', { target: initial.extensionJpg });
+    await flush();
+    expect(requests).toHaveLength(2);
+    expect(requests[0].options.signal.aborted).toBe(true);
+    expect(new URL(requests[1].url).searchParams.get('extension')).toBe('jpg');
+
+    // B completes and installs.
+    const newerHref = 'http://creatorcrate.test/releases/7/assets?pageSize=50&extension=jpg&category=3';
+    requests[1].resolve(responseFor('newer', newerHref));
+    await flush();
+    expect(initial.document.querySelector('[data-release-assets-live-region]')).toBe(newer.region);
+    expect(windowObject.location.href).toBe(newerHref);
+    expect(windowObject.history.pushes.map(({ url }) => String(url))).toEqual([newerHref]);
+
+    // A's body now completes successfully: nothing it carries is installed.
+    releaseOlderBody('older');
+    await flush();
+    expect(initial.document.querySelector('[data-release-assets-live-region]')).toBe(newer.region);
+    expect(initial.document.querySelector('[data-release-assets-live-region]')).not.toBe(older.region);
+    expect(windowObject.location.href).toBe(newerHref);
+    expect(windowObject.history.pushes).toHaveLength(1);
+    expect(windowObject.history.replaces).toEqual([]);
+    expect(newer.region.getAttribute('aria-busy')).toBeNull();
+    expect(liveFailureNotice(initial.document)).toBeNull();
+
+    // The draft is intact in the hidden carrier and the Save payload, once each.
+    const hidden = releaseHiddenMembership(initial.selection);
+    expect(hidden.sort()).toEqual(['1', '9']);
+    expect(new Set(hidden).size).toBe(hidden.length);
+    const payload = releaseMembershipPayload(windowObject, initial.selection);
+    expect(payload.sort()).toEqual(['1', '9']);
+    expect(new Set(payload).size).toBe(payload.length);
+    expect(newer.membershipCheckboxes.map((box) => [box.value, box.checked])).toEqual([['3', false]]);
+    expect(windowObject.fetch.mock.calls.map(([, options]) => options.method)).toEqual(['GET', 'GET']);
+  });
+});
+
+function heldRequests(windowObject) {
+  const requests = [];
+  windowObject.fetch.mockImplementation((url, init) => new Promise((resolve, reject) => {
+    requests.push({ url: new URL(url), init, resolve, reject });
+  }));
+  return requests;
+}
+
+/*
+ * R3: Manage Assets Grid/List, pagination and Clear links are rendered for
+ * the installed response. A click while a Search / Selection / page-size
+ * change is debounced, held or failed must compose the clicked dimension with
+ * that latest intent, and never touch the membership draft.
+ */
+describe('R3 Release Manage Assets View navigation keeps pending filter intent', () => {
+  beforeEach(() => { vi.useRealTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  const ASSETS = [{ id: '1', selected: true }, { id: '2', selected: false }, { id: '3', selected: false }];
+
+  function r3Window(document, pages = new Map(), href = 'http://creatorcrate.test/releases/7/assets?selection=all') {
+    const windowObject = makeWindow(document, pages);
+    windowObject.location.href = href;
+    windowObject.location.pathname = '/releases/7/assets';
+    windowObject.location.assign = vi.fn();
+    return windowObject;
+  }
+
+  function r3Page(options = {}) {
+    return makeReleaseAssetsPage({
+      pageSize: '25', extension: '', category: '', selectionFilter: 'all',
+      assets: ASSETS, offPageSelectedIds: ['9'], ...options,
+    });
+  }
+
+  // Unsaved draft: add 2 and 3, remove saved 1; saved 9 is off page.
+  function editDraft(page) {
+    const [one, two, three] = page.membershipCheckboxes;
+    one.checked = false;
+    page.document.dispatch('change', { target: one });
+    two.checked = true;
+    page.document.dispatch('change', { target: two });
+    three.checked = true;
+    page.document.dispatch('change', { target: three });
+  }
+
+  const regionOf = (page) => page.document.querySelector('[data-release-assets-live-region]');
+  const query = (request) => request.url.searchParams;
+  const onlyGets = (windowObject) => windowObject.fetch.mock.calls
+    .every(([, init]) => init.method === 'GET' && init.body === undefined);
+
+  function searchThenPageSizeTen(page, windowObject) {
+    page.searchInput.value = 'needle';
+    page.filter.dispatch('input', { target: page.searchInput });
+    vi.advanceTimersByTime(100);
+    page.pageSize.value = '10';
+    page.pageSizeForm.dispatch('change', { target: page.pageSize });
+  }
+
+  it('reviewer reproduction: Grid -> List during a held Search + page-size GET keeps Search, Selection and size', async () => {
+    vi.useFakeTimers();
+    const initial = r3Page();
+    const listed = r3Page({
+      view: 'list', search: 'needle', pageSize: '10',
+      assets: [{ id: '1', selected: true }, { id: '2', selected: false }], persistedSelectedIds: ['1', '9'],
+    });
+    const stale = r3Page({ search: 'needle', pageSize: '10', assets: [{ id: '1', selected: true }] });
+    const windowObject = r3Window(initial.document, new Map([['listed', listed.document], ['stale', stale.document]]));
+    const requests = heldRequests(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+    editDraft(initial);
+    expect(releaseMembershipPayload(windowObject, initial.selection).sort()).toEqual(['2', '3', '9']);
+
+    searchThenPageSizeTen(initial, windowObject);
+    expect(requests).toHaveLength(1);
+    expect(query(requests[0]).get('pageSize')).toBe('10');
+    expect(query(requests[0]).get('search')).toBe('needle');
+    expect(query(requests[0]).get('selection')).toBe('all');
+    expect(initial.filterPageSize.value).toBe('10');
+
+    // The List link was rendered without the pending Search.
+    expect(initial.list.getAttribute('href')).not.toContain('needle');
+    const click = initial.list.dispatch('click');
+    expect(click.defaultPrevented).toBe(true);
+    expect(requests).toHaveLength(2);
+    const composed = requests[1].url;
+    expect(composed.pathname).toBe('/releases/7/assets');
+    expect(composed.searchParams.get('search')).toBe('needle');
+    expect(composed.searchParams.get('pageSize')).toBe('10');
+    expect(composed.searchParams.get('selection')).toBe('all');
+    expect(composed.searchParams.get('view')).toBe('list');
+    expect(composed.searchParams.has('page')).toBe(false);
+    expect(requests[0].init.signal.aborted).toBe(true);
+    // The dialog's View follows the requested GET at once.
+    expect(initial.view.value).toBe('list');
+
+    requests[1].resolve(responseFor('listed', composed.href));
+    await flush();
+    expect(regionOf(initial)).toBe(listed.region);
+    const shown = new URL(windowObject.location.href);
+    expect(shown.searchParams.get('search')).toBe('needle');
+    expect(shown.searchParams.get('view')).toBe('list');
+    expect(windowObject.history.pushes).toHaveLength(1);
+
+    // The older Search/page-size response delivered last installs nothing.
+    requests[0].resolve(responseFor('stale', requests[0].url.href));
+    await flush();
+    expect(regionOf(initial)).toBe(listed.region);
+    expect(windowObject.location.href).toBe(shown.href);
+    expect(listed.pageSize.value).toBe('10');
+    expect(initial.filter.contains(listed.searchInput)).toBe(true);
+    expect(listed.searchInput.value).toBe('needle');
+    expect(listed.filterPageSize.value).toBe('10');
+    expect(listed.selectionAll.checked).toBe(true);
+
+    // Draft membership survives: 1 still removed, 2 still added, 3 added but
+    // hidden by the Search, off-page saved 9 kept.
+    expect(listed.membershipCheckboxes[0].checked).toBe(false);
+    expect(listed.membershipCheckboxes[1].checked).toBe(true);
+    expect(releaseHiddenMembership(initial.selection).sort()).toEqual(['3', '9']);
+    expect(releaseMembershipPayload(windowObject, initial.selection).sort()).toEqual(['2', '3', '9']);
+    expect(onlyGets(windowObject)).toBe(true);
+    expect(windowObject.location.assign).not.toHaveBeenCalled();
+  });
+
+  it('List -> Grid during a held Search GET keeps the Search and requests Grid', async () => {
+    vi.useFakeTimers();
+    const initial = r3Page({ view: 'list' });
+    const windowObject = r3Window(initial.document, new Map(), 'http://creatorcrate.test/releases/7/assets?selection=all&view=list');
+    const requests = heldRequests(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    initial.searchInput.value = 'needle';
+    initial.filter.dispatch('input', { target: initial.searchInput });
+    vi.advanceTimersByTime(1000);
+    expect(requests).toHaveLength(1);
+    expect(query(requests[0]).get('view')).toBe('list');
+
+    initial.grid.dispatch('click');
+    expect(requests).toHaveLength(2);
+    expect(query(requests[1]).get('search')).toBe('needle');
+    expect(query(requests[1]).get('selection')).toBe('all');
+    expect(query(requests[1]).get('view')).toBe('grid');
+    expect(initial.view.value).toBe('grid');
+  });
+
+  it('composes a Search still in its debounce interval with the clicked View, as one GET', async () => {
+    vi.useFakeTimers();
+    const initial = r3Page();
+    const windowObject = r3Window(initial.document);
+    const requests = heldRequests(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    initial.searchInput.value = 'needle';
+    initial.filter.dispatch('input', { target: initial.searchInput });
+    vi.advanceTimersByTime(100);
+    expect(requests).toHaveLength(0);
+    initial.list.dispatch('click');
+    vi.advanceTimersByTime(1000);
+    expect(requests).toHaveLength(1);
+    expect(query(requests[0]).get('search')).toBe('needle');
+    expect(query(requests[0]).get('selection')).toBe('all');
+    expect(query(requests[0]).get('view')).toBe('list');
+  });
+
+  it('keeps a pending View when the page size or Search changes before it installs', async () => {
+    vi.useFakeTimers();
+    const initial = r3Page({ search: 'needle' });
+    const windowObject = r3Window(initial.document);
+    const requests = heldRequests(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    initial.list.dispatch('click');
+    expect(query(requests[0]).get('view')).toBe('list');
+
+    initial.pageSize.value = '50';
+    initial.pageSizeForm.dispatch('change', { target: initial.pageSize });
+    expect(requests).toHaveLength(2);
+    expect(query(requests[1]).get('view')).toBe('list');
+    expect(query(requests[1]).get('pageSize')).toBe('50');
+    expect(query(requests[1]).get('search')).toBe('needle');
+
+    initial.searchInput.value = 'needles';
+    initial.filter.dispatch('input', { target: initial.searchInput });
+    vi.advanceTimersByTime(1000);
+    expect(requests).toHaveLength(3);
+    expect(query(requests[2]).get('view')).toBe('list');
+    expect(query(requests[2]).get('pageSize')).toBe('50');
+    expect(query(requests[2]).get('search')).toBe('needles');
+    expect(query(requests[2]).get('selection')).toBe('all');
+  });
+
+  it('applies pagination to a held combined Search + page-size GET', async () => {
+    vi.useFakeTimers();
+    const initial = r3Page({ extension: 'png', category: '3' });
+    const windowObject = r3Window(initial.document);
+    const requests = heldRequests(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    searchThenPageSizeTen(initial, windowObject);
+    initial.next.dispatch('click');
+    expect(requests).toHaveLength(2);
+    const paged = query(requests[1]);
+    expect(paged.get('page')).toBe('2');
+    expect(paged.get('search')).toBe('needle');
+    expect(paged.get('pageSize')).toBe('10');
+    expect(paged.get('selection')).toBe('all');
+    expect(paged.get('extension')).toBe('png');
+    expect(paged.get('category')).toBe('3');
+    // Grid stays implicit, as in the rendered page-size form.
+    expect(paged.has('view')).toBe(false);
+  });
+
+  it('keeps View All with a pending Search through a View change', async () => {
+    vi.useFakeTimers();
+    const initial = r3Page({ dialogOpen: true });
+    const windowObject = r3Window(initial.document);
+    const requests = heldRequests(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    initial.searchInput.value = 'needle';
+    initial.filter.dispatch('input', { target: initial.searchInput });
+    initial.filterPageSize.value = 'all';
+    initial.filter.dispatch('change', { target: initial.filterPageSize });
+    expect(initial.pageSize.value).toBe('all');
+    expect(query(requests[0]).get('pageSize')).toBe('all');
+
+    initial.list.dispatch('click');
+    expect(query(requests[1]).get('pageSize')).toBe('all');
+    expect(query(requests[1]).get('search')).toBe('needle');
+    expect(query(requests[1]).get('view')).toBe('list');
+  });
+
+  it('composes a View change after a failed filter GET and Retry repeats only that GET', async () => {
+    vi.useFakeTimers();
+    const initial = r3Page();
+    const windowObject = r3Window(initial.document);
+    windowObject.fetch.mockRejectedValue(new Error('offline'));
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+    editDraft(initial);
+
+    searchThenPageSizeTen(initial, windowObject);
+    await flush();
+    expect(liveFailureRetries(initial.document)).toHaveLength(1);
+    expect(regionOf(initial)).toBe(initial.region);
+
+    initial.list.dispatch('click');
+    await flush();
+    expect(windowObject.fetch).toHaveBeenCalledTimes(2);
+    const composed = new URL(windowObject.fetch.mock.calls[1][0]);
+    expect(composed.searchParams.get('search')).toBe('needle');
+    expect(composed.searchParams.get('pageSize')).toBe('10');
+    expect(composed.searchParams.get('selection')).toBe('all');
+    expect(composed.searchParams.get('view')).toBe('list');
+
+    liveFailureRetries(initial.document)[0].dispatch('click');
+    await flush();
+    expect(windowObject.fetch).toHaveBeenCalledTimes(3);
+    expect(windowObject.fetch.mock.calls[2][0]).toBe(composed.href);
+    expect(onlyGets(windowObject)).toBe(true);
+    expect(releaseMembershipPayload(windowObject, initial.selection).sort()).toEqual(['2', '3', '9']);
+  });
+
+  it('Clear with a pending Search and a held View GET resets filters only, keeping View and size', async () => {
+    vi.useFakeTimers();
+    const initial = r3Page({ extension: 'png', category: '3', pageSize: '10' });
+    const cleared = makeReleaseAssetsPage({
+      view: 'list', pageSize: '10', extension: '', category: '', selectionFilter: 'selected',
+      assets: [{ id: '1', selected: true }], offPageSelectedIds: ['9'], persistedSelectedIds: ['1', '9'],
+    });
+    const windowObject = r3Window(initial.document, new Map([['cleared', cleared.document]]));
+    const requests = heldRequests(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+    editDraft(initial);
+
+    initial.list.dispatch('click');
+    initial.searchInput.value = 'needle';
+    initial.filter.dispatch('input', { target: initial.searchInput });
+    initial.reset.dispatch('click');
+    vi.advanceTimersByTime(1000);
+    expect(requests).toHaveLength(2);
+    const clearUrl = query(requests[1]);
+    expect(clearUrl.has('search')).toBe(false);
+    expect(clearUrl.has('extension')).toBe(false);
+    expect(clearUrl.has('category')).toBe(false);
+    expect(clearUrl.has('selection')).toBe(false);
+    expect(clearUrl.has('page')).toBe(false);
+    expect(clearUrl.get('view')).toBe('list');
+    expect(clearUrl.get('pageSize')).toBe('10');
+
+    requests[1].resolve(responseFor('cleared', requests[1].url.href));
+    await flush();
+    expect(regionOf(initial)).toBe(cleared.region);
+    expect(releaseMembershipPayload(windowObject, initial.selection).sort()).toEqual(['2', '3', '9']);
+    expect(onlyGets(windowObject)).toBe(true);
+  });
+
+  it('Back during loading owns the destination; a View click then composes with the history address', async () => {
+    vi.useFakeTimers();
+    const initial = r3Page({ search: 'needle', pageSize: '10' });
+    const windowObject = r3Window(initial.document);
+    const requests = heldRequests(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    initial.list.dispatch('click');
+    expect(initial.view.value).toBe('list');
+    const historyHref = 'http://creatorcrate.test/releases/7/assets?search=older&pageSize=50';
+    windowObject.location.href = historyHref;
+    windowObject.dispatch('popstate');
+    expect(requests).toHaveLength(2);
+    expect(requests[1].url.href).toBe(historyHref);
+    expect(initial.view.value).toBe('grid');
+
+    initial.list.dispatch('click');
+    expect(requests).toHaveLength(3);
+    expect(query(requests[2]).get('search')).toBe('older');
+    expect(query(requests[2]).get('pageSize')).toBe('50');
+    expect(query(requests[2]).get('view')).toBe('list');
+    expect(query(requests[2]).has('selection')).toBe(false);
+    expect(windowObject.history.pushes).toHaveLength(0);
+  });
+
+  it('follows an idle View link unchanged', async () => {
+    const initial = r3Page();
+    const windowObject = r3Window(initial.document);
+    const requests = heldRequests(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    initial.list.dispatch('click');
+    expect(requests[0].url.href).toBe(new URL(initial.list.getAttribute('href'), windowObject.location.href).href);
+  });
+});
+
+/*
+ * R5: a Back/Forward that starts while an earlier page-size (or filter) GET
+ * is still pending replaces that abandoned intent the moment it starts. Its
+ * own page size (implicit 25 included) and filters then own every following
+ * View, Clear or filter action until a newer explicit choice is made.
+ */
+describe('R5 Release Manage Assets history owns page size and filters', () => {
+  beforeEach(() => { vi.useRealTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  const ASSETS = [{ id: '1', selected: true }, { id: '2', selected: false }, { id: '3', selected: false }];
+  const BASE = 'http://creatorcrate.test/releases/7/assets';
+
+  function r5Window(document, pages = new Map(), href = `${BASE}?selection=all&pageSize=50`) {
+    const windowObject = makeWindow(document, pages);
+    windowObject.location.href = href;
+    windowObject.location.pathname = '/releases/7/assets';
+    windowObject.location.assign = vi.fn();
+    return windowObject;
+  }
+
+  function r5Page(options = {}) {
+    return makeReleaseAssetsPage({
+      pageSize: '50', extension: '', category: '', selectionFilter: 'all',
+      assets: ASSETS, offPageSelectedIds: ['9'], ...options,
+    });
+  }
+
+  // Unsaved draft: add 2 and 3, remove saved 1; saved 9 is off page.
+  function editDraft(page) {
+    const [one, two, three] = page.membershipCheckboxes;
+    one.checked = false;
+    page.document.dispatch('change', { target: one });
+    two.checked = true;
+    page.document.dispatch('change', { target: two });
+    three.checked = true;
+    page.document.dispatch('change', { target: three });
+  }
+
+  const regionOf = (page) => page.document.querySelector('[data-release-assets-live-region]');
+  const query = (request) => request.url.searchParams;
+  const onlyGets = (windowObject) => windowObject.fetch.mock.calls
+    .every(([, init]) => init.method === 'GET' && init.body === undefined);
+  const sizeControls = (page) => page.document
+    .querySelectorAll('select[name="pageSize"][data-release-assets-live-page-size]').map((control) => control.value);
+
+  function choosePaginationSize(page, value) {
+    page.pageSize.value = value;
+    page.pageSizeForm.dispatch('change', { target: page.pageSize });
+  }
+
+  function historyTo(windowObject, href) {
+    windowObject.location.href = href;
+    windowObject.dispatch('popstate');
+  }
+
+  it('reviewer reproduction: size 25 held -> Back to size 10 held -> List keeps size 10, Selection=all', async () => {
+    const initial = r5Page();
+    const listed = r5Page({
+      view: 'list', pageSize: '10', assets: [{ id: '1', selected: true }, { id: '2', selected: false }],
+      persistedSelectedIds: ['1', '9'],
+    });
+    const back = r5Page({ pageSize: '10', assets: [{ id: '1', selected: true }] });
+    const windowObject = r5Window(initial.document, new Map([['listed', listed.document], ['back', back.document]]));
+    const requests = heldRequests(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+    editDraft(initial);
+
+    choosePaginationSize(initial, '25');
+    expect(requests).toHaveLength(1);
+    expect(query(requests[0]).get('pageSize')).toBe('25');
+    expect(sizeControls(initial)).toEqual(['25', '25']);
+
+    historyTo(windowObject, `${BASE}?selection=all&pageSize=10`);
+    expect(requests).toHaveLength(2);
+    expect(requests[0].init.signal.aborted).toBe(true);
+    expect(requests[1].url.href).toBe(`${BASE}?selection=all&pageSize=10`);
+    // Both controls follow the history destination before it installs.
+    expect(sizeControls(initial)).toEqual(['10', '10']);
+
+    initial.list.dispatch('click');
+    expect(requests).toHaveLength(3);
+    expect(requests[1].init.signal.aborted).toBe(true);
+    const composed = requests[2].url;
+    expect(composed.pathname).toBe('/releases/7/assets');
+    expect(composed.searchParams.get('pageSize')).toBe('10');
+    expect(composed.searchParams.get('view')).toBe('list');
+    expect(composed.searchParams.get('selection')).toBe('all');
+    expect(composed.searchParams.has('page')).toBe(false);
+    expect(sizeControls(initial)).toEqual(['10', '10']);
+
+    requests[2].resolve(responseFor('listed', composed.href));
+    await flush();
+    expect(regionOf(initial)).toBe(listed.region);
+    const shown = windowObject.location.href;
+    expect(new URL(shown).searchParams.get('pageSize')).toBe('10');
+    expect(windowObject.history.pushes).toHaveLength(1);
+    expect(windowObject.history.pushes[0].url).toBe(composed.href);
+    expect(windowObject.history.replaces).toHaveLength(0);
+
+    // The abandoned Back answer and the size-25 failure delivered last change
+    // nothing, and the older failure raises no notice.
+    requests[1].resolve(responseFor('back', requests[1].url.href));
+    await flush();
+    requests[0].reject(new Error('offline'));
+    await flush();
+    expect(regionOf(initial)).toBe(listed.region);
+    expect(windowObject.location.href).toBe(shown);
+    expect(liveFailureNotice(initial.document)).toBeNull();
+    expect(sizeControls(initial)).toEqual(['10', '10']);
+    expect(listed.selectionAll.checked).toBe(true);
+    expect(listed.view.value).toBe('list');
+
+    // Draft membership: 1 removed, 2 added, hidden 3 added, off-page 9 kept.
+    expect(releaseMembershipPayload(windowObject, initial.selection).sort()).toEqual(['2', '3', '9']);
+    expect(onlyGets(windowObject)).toBe(true);
+    expect(windowObject.location.assign).not.toHaveBeenCalled();
+  });
+
+  it('Forward during a held View All composes List -> Grid with the forward entry', async () => {
+    const initial = r5Page({ view: 'list', pageSize: '10' });
+    const windowObject = r5Window(initial.document, new Map(), `${BASE}?selection=all&pageSize=10&view=list`);
+    const requests = heldRequests(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    initial.filterPageSize.value = 'all';
+    initial.filter.dispatch('change', { target: initial.filterPageSize });
+    expect(query(requests[0]).get('pageSize')).toBe('all');
+    expect(sizeControls(initial)).toEqual(['all', 'all']);
+
+    historyTo(windowObject, `${BASE}?selection=all&search=fwd&extension=jpg&category=4&pageSize=50&view=list`);
+    expect(sizeControls(initial)).toEqual(['50', '50']);
+    expect(initial.searchInput.value).toBe('fwd');
+    expect(initial.view.value).toBe('list');
+
+    initial.grid.dispatch('click');
+    expect(requests).toHaveLength(3);
+    const composed = query(requests[2]);
+    expect(composed.get('pageSize')).toBe('50');
+    expect(composed.get('search')).toBe('fwd');
+    expect(composed.get('selection')).toBe('all');
+    expect(composed.get('extension')).toBe('jpg');
+    expect(composed.get('category')).toBe('4');
+    // Only View changes, as the rendered Grid link spells it.
+    expect(composed.get('view')).toBe(new URL(initial.grid.getAttribute('href'), BASE).searchParams.get('view'));
+    expect(composed.get('view')).not.toBe('list');
+    expect(composed.has('page')).toBe(false);
+  });
+
+  it('Back -> Clear keeps the history size, clears the filters and keeps the draft', async () => {
+    const initial = r5Page({ extension: 'png', category: '3', search: 'needle' });
+    const cleared = makeReleaseAssetsPage({
+      pageSize: '10', extension: '', category: '', selectionFilter: 'selected',
+      assets: [{ id: '1', selected: true }], offPageSelectedIds: ['9'], persistedSelectedIds: ['1', '9'],
+    });
+    const windowObject = r5Window(initial.document, new Map([['cleared', cleared.document]]),
+      `${BASE}?selection=all&search=needle&extension=png&category=3&pageSize=50`);
+    const requests = heldRequests(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+    editDraft(initial);
+
+    choosePaginationSize(initial, '25');
+    historyTo(windowObject, `${BASE}?selection=all&extension=png&category=3&pageSize=10`);
+    initial.reset.dispatch('click');
+    expect(requests).toHaveLength(3);
+    const clearUrl = query(requests[2]);
+    expect(clearUrl.get('pageSize')).toBe('10');
+    expect(clearUrl.has('search')).toBe(false);
+    expect(clearUrl.has('extension')).toBe(false);
+    expect(clearUrl.has('category')).toBe(false);
+    expect(clearUrl.has('selection')).toBe(false);
+    expect(clearUrl.has('page')).toBe(false);
+    expect(clearUrl.get('view')).not.toBe('list');
+
+    requests[2].resolve(responseFor('cleared', requests[2].url.href));
+    await flush();
+    requests[0].resolve(responseFor('cleared', requests[0].url.href));
+    await flush();
+    expect(regionOf(initial)).toBe(cleared.region);
+    expect(sizeControls(initial)).toEqual(['10', '10']);
+    expect(releaseMembershipPayload(windowObject, initial.selection).sort()).toEqual(['2', '3', '9']);
+    expect(onlyGets(windowObject)).toBe(true);
+  });
+
+  it('Back -> Category composes the change with the history size and filters, not the abandoned ones', async () => {
+    const initial = r5Page({ search: 'needle', extension: 'png', category: '3' });
+    const windowObject = r5Window(initial.document, new Map(),
+      `${BASE}?selection=all&search=needle&extension=png&category=3&pageSize=50`);
+    const requests = heldRequests(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    choosePaginationSize(initial, '25');
+    historyTo(windowObject, `${BASE}?selection=all&pageSize=10`);
+    // The dialog follows the history entry, without a change event or GET.
+    expect(requests).toHaveLength(2);
+    expect(initial.searchInput.value).toBe('');
+    expect(initial.extensionAll.checked).toBe(true);
+    expect(initial.categoryAll.checked).toBe(true);
+    expect(initial.selectionAll.checked).toBe(true);
+
+    initial.categoryAll.checked = false;
+    initial.categoryFour.checked = true;
+    initial.filter.dispatch('change', { target: initial.categoryFour });
+    expect(requests).toHaveLength(3);
+    const changed = query(requests[2]);
+    expect(changed.get('pageSize')).toBe('10');
+    expect(changed.get('category')).toBe('4');
+    expect(changed.get('selection')).toBe('all');
+    expect(changed.has('search')).toBe(false);
+    expect(changed.has('extension')).toBe(false);
+    expect(changed.get('view')).not.toBe('list');
+  });
+
+  it('Back -> Search and Back -> Selection compose with the history entry', async () => {
+    vi.useFakeTimers();
+    const initial = r5Page({ category: '3' });
+    const windowObject = r5Window(initial.document, new Map(), `${BASE}?selection=all&category=3&pageSize=50`);
+    const requests = heldRequests(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    choosePaginationSize(initial, 'all');
+    historyTo(windowObject, `${BASE}?category=4&pageSize=10`);
+    expect(initial.selectionSelected.checked).toBe(true);
+    expect(initial.categoryFour.checked).toBe(true);
+
+    initial.searchInput.value = 'typed';
+    initial.filter.dispatch('input', { target: initial.searchInput });
+    vi.advanceTimersByTime(1000);
+    expect(requests).toHaveLength(3);
+    const searched = query(requests[2]);
+    expect(searched.get('search')).toBe('typed');
+    expect(searched.get('pageSize')).toBe('10');
+    expect(searched.get('category')).toBe('4');
+    // The history entry's default Selection, not the abandoned 'all'.
+    expect(searched.get('selection') || 'selected').toBe('selected');
+
+    historyTo(windowObject, `${BASE}?category=4&pageSize=10`);
+    expect(initial.searchInput.value).toBe('');
+    initial.selectionSelected.checked = false;
+    initial.selectionAll.checked = true;
+    initial.filter.dispatch('change', { target: initial.selectionAll });
+    expect(requests).toHaveLength(5);
+    const selected = query(requests[4]);
+    expect(selected.get('selection')).toBe('all');
+    expect(selected.get('pageSize')).toBe('10');
+    expect(selected.get('category')).toBe('4');
+    expect(selected.has('search')).toBe(false);
+  });
+
+  it('a new explicit size chosen after Back wins over the history size', async () => {
+    const initial = r5Page();
+    const windowObject = r5Window(initial.document);
+    const requests = heldRequests(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    choosePaginationSize(initial, '25');
+    historyTo(windowObject, `${BASE}?selection=all&pageSize=10`);
+    initial.filterPageSize.value = '200';
+    initial.filter.dispatch('change', { target: initial.filterPageSize });
+    expect(query(requests[2]).get('pageSize')).toBe('200');
+    expect(sizeControls(initial)).toEqual(['200', '200']);
+
+    initial.list.dispatch('click');
+    expect(query(requests[3]).get('pageSize')).toBe('200');
+    expect(query(requests[3]).get('view')).toBe('list');
+    expect(query(requests[3]).get('selection')).toBe('all');
+  });
+
+  it('size 50 pending -> Back to the implicit default 25 -> Grid keeps 25 implicit', async () => {
+    const initial = r5Page({ view: 'list', pageSize: '10' });
+    const windowObject = r5Window(initial.document, new Map(), `${BASE}?selection=all&pageSize=10&view=list`);
+    const requests = heldRequests(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    choosePaginationSize(initial, '50');
+    historyTo(windowObject, `${BASE}?selection=all&view=list`);
+    expect(sizeControls(initial)).toEqual(['25', '25']);
+
+    initial.grid.dispatch('click');
+    expect(query(requests[2]).has('pageSize')).toBe(false);
+    expect(query(requests[2]).get('selection')).toBe('all');
+    expect(query(requests[2]).get('view')).not.toBe('list');
+  });
+
+  it('View All pending -> Back to size 10 -> List requests size 10', async () => {
+    const initial = r5Page();
+    const windowObject = r5Window(initial.document);
+    const requests = heldRequests(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    choosePaginationSize(initial, 'all');
+    expect(query(requests[0]).get('pageSize')).toBe('all');
+    historyTo(windowObject, `${BASE}?selection=all&pageSize=10`);
+    expect(sizeControls(initial)).toEqual(['10', '10']);
+    initial.list.dispatch('click');
+    expect(query(requests[2]).get('pageSize')).toBe('10');
+    expect(query(requests[2]).get('view')).toBe('list');
+  });
+
+  it('a failed Back keeps its size for a View change; Retry repeats only the latest GET', async () => {
+    const initial = r5Page();
+    const windowObject = r5Window(initial.document);
+    const requests = heldRequests(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+    editDraft(initial);
+
+    choosePaginationSize(initial, '25');
+    historyTo(windowObject, `${BASE}?selection=all&pageSize=10`);
+    requests[1].reject(new Error('offline'));
+    await flush();
+    expect(liveFailureRetries(initial.document)).toHaveLength(1);
+    expect(regionOf(initial)).toBe(initial.region);
+    expect(sizeControls(initial)).toEqual(['10', '10']);
+
+    // Retry repeats the failed Back.
+    liveFailureRetries(initial.document)[0].dispatch('click');
+    expect(requests).toHaveLength(3);
+    expect(requests[2].url.href).toBe(`${BASE}?selection=all&pageSize=10`);
+    requests[2].reject(new Error('offline'));
+    await flush();
+    expect(sizeControls(initial)).toEqual(['10', '10']);
+
+    initial.list.dispatch('click');
+    expect(requests).toHaveLength(4);
+    expect(query(requests[3]).get('pageSize')).toBe('10');
+    expect(query(requests[3]).get('view')).toBe('list');
+    expect(query(requests[3]).get('selection')).toBe('all');
+    requests[3].reject(new Error('offline'));
+    await flush();
+
+    liveFailureRetries(initial.document)[0].dispatch('click');
+    expect(requests).toHaveLength(5);
+    expect(requests[4].url.href).toBe(requests[3].url.href);
+    // The abandoned size-25 failure arrives last and restores nothing.
+    requests[0].reject(new Error('offline'));
+    await flush();
+    expect(sizeControls(initial)).toEqual(['10', '10']);
+    expect(onlyGets(windowObject)).toBe(true);
+    expect(releaseMembershipPayload(windowObject, initial.selection).sort()).toEqual(['2', '3', '9']);
+  });
+
+  it('a failed size GET followed by Back lets Back own the size', async () => {
+    const initial = r5Page();
+    const windowObject = r5Window(initial.document);
+    const requests = heldRequests(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    choosePaginationSize(initial, '100');
+    requests[0].reject(new Error('offline'));
+    await flush();
+    expect(sizeControls(initial)).toEqual(['100', '100']);
+
+    historyTo(windowObject, `${BASE}?selection=all&pageSize=10`);
+    expect(liveFailureRetries(initial.document)).toHaveLength(0);
+    expect(sizeControls(initial)).toEqual(['10', '10']);
+    initial.reset.dispatch('click');
+    expect(query(requests[2]).get('pageSize')).toBe('10');
+  });
+
+  it('three overlapping actions: only the newest response installs', async () => {
+    const initial = r5Page();
+    const newest = r5Page({ view: 'list', pageSize: '10', category: '4', assets: [{ id: '2', selected: false }] });
+    const older = r5Page({ pageSize: '25', assets: [{ id: '3', selected: false }] });
+    const windowObject = r5Window(initial.document, new Map([['newest', newest.document], ['older', older.document]]));
+    const requests = heldRequests(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    choosePaginationSize(initial, '25');
+    historyTo(windowObject, `${BASE}?selection=all&pageSize=10&view=list`);
+    initial.categoryAll.checked = false;
+    initial.categoryFour.checked = true;
+    initial.filter.dispatch('change', { target: initial.categoryFour });
+    expect(requests).toHaveLength(3);
+    expect(query(requests[2]).get('pageSize')).toBe('10');
+    expect(query(requests[2]).get('view')).toBe('list');
+    expect(query(requests[2]).get('category')).toBe('4');
+    expect(query(requests[2]).get('selection')).toBe('all');
+
+    requests[2].resolve(responseFor('newest', requests[2].url.href));
+    await flush();
+    requests[1].resolve(responseFor('older', requests[1].url.href));
+    requests[0].resolve(responseFor('older', requests[0].url.href));
+    await flush();
+    expect(regionOf(initial)).toBe(newest.region);
+    expect(windowObject.location.href).toBe(requests[2].url.href);
+    expect(sizeControls(initial)).toEqual(['10', '10']);
+    expect(newest.categoryFour.checked).toBe(true);
+    expect(windowObject.history.pushes).toHaveLength(1);
+  });
+
+  it('a read-only release gains no controls from Back', async () => {
+    const initial = r5Page({ readOnly: true });
+    const windowObject = r5Window(initial.document);
+    const requests = heldRequests(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    historyTo(windowObject, `${BASE}?selection=all&pageSize=10`);
+    expect(requests).toHaveLength(1);
+    expect(sizeControls(initial)).toEqual([]);
+    expect(initial.document.querySelectorAll('input[type="checkbox"][name="selectedAssetIds"]')).toHaveLength(0);
+  });
+});
+
+/*
+ * R8: Clear filters is authoritative for Search, Selection, Extension and
+ * Category from the moment its GET starts. The dialog's controls follow the
+ * Clear destination before it installs, so a later filter, View, page-size or
+ * pagination action held, debounced or after a failed Clear changes only its
+ * own dimension and never reserializes the restrictions Clear removed.
+ */
+describe('R8 Release Manage Assets Clear owns the filters a later edit composes with', () => {
+  beforeEach(() => { vi.useRealTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  const BASE = 'http://creatorcrate.test/releases/7/assets';
+  const INSTALLED = `${BASE}?view=list&pageSize=10&search=asset&extension=png&category=3&selection=all`;
+  const ASSETS = [{ id: '1', selected: true }, { id: '2', selected: false }, { id: '3', selected: false }];
+
+  function r8Window(document, pages = new Map(), href = INSTALLED) {
+    const windowObject = makeWindow(document, pages);
+    windowObject.location.href = href;
+    windowObject.location.pathname = '/releases/7/assets';
+    windowObject.location.assign = vi.fn();
+    return windowObject;
+  }
+
+  // Installed: List, size 10, Search=asset, Extension=png, Category=3, All assets.
+  function r8Page(options = {}) {
+    return makeReleaseAssetsPage({
+      view: 'list', pageSize: '10', search: 'asset', extension: 'png', category: '3', selectionFilter: 'all',
+      assets: ASSETS, offPageSelectedIds: ['9'], ...options,
+    });
+  }
+
+  function clearedPage(options = {}) {
+    return makeReleaseAssetsPage({
+      view: 'list', pageSize: '10', search: '', extension: '', category: '', selectionFilter: 'selected',
+      assets: [{ id: '1', selected: true }], offPageSelectedIds: ['9'], persistedSelectedIds: ['1', '9'], ...options,
+    });
+  }
+
+  // Unsaved draft: add 2 and 3, remove saved 1; saved 9 is off page.
+  function editDraft(page) {
+    const [one, two, three] = page.membershipCheckboxes;
+    one.checked = false;
+    page.document.dispatch('change', { target: one });
+    two.checked = true;
+    page.document.dispatch('change', { target: two });
+    three.checked = true;
+    page.document.dispatch('change', { target: three });
+  }
+
+  const regionOf = (page) => page.document.querySelector('[data-release-assets-live-region]');
+  // The filter form spells the default Selection and Grid explicitly where the
+  // rendered links leave them implicit; both spellings mean the same intent.
+  const params = (request) => Array.from(request.url.searchParams.entries())
+    .filter(([key, value]) => !(key === 'selection' && value === 'selected') && !(key === 'view' && value === 'grid'))
+    .sort(([left], [right]) => left.localeCompare(right));
+  const onlyGets = (windowObject) => windowObject.fetch.mock.calls
+    .every(([, init]) => init.method === 'GET' && init.body === undefined);
+  const sizeControls = (page) => page.document
+    .querySelectorAll('select[name="pageSize"][data-release-assets-live-page-size]').map((control) => control.value);
+
+  function expectClearedControls(page) {
+    expect(page.searchInput.value).toBe('');
+    expect(page.selectionSelected.checked).toBe(true);
+    expect(page.selectionAll.checked).toBe(false);
+    expect(page.extensionAll.checked).toBe(true);
+    expect(page.extensionPng.checked).toBe(false);
+    expect(page.categoryAll.checked).toBe(true);
+    expect(page.categoryThree.checked).toBe(false);
+  }
+
+  function choose(page, all, target) {
+    all.forEach((radio) => { radio.checked = radio === target; });
+    page.filter.dispatch('change', { target });
+  }
+
+  // The installed dialog's controls live in the original filter form.
+  function typeSearch(page, value, form = page.filter) {
+    page.searchInput.value = value;
+    form.dispatch('input', { target: page.searchInput });
+  }
+
+  function historyTo(windowObject, href) {
+    windowObject.location.href = href;
+    windowObject.dispatch('popstate');
+  }
+
+  it('reviewer reproduction: Clear held -> Search=asset-01 composes with Clear, not the installed filters', async () => {
+    vi.useFakeTimers();
+    const initial = r8Page();
+    const searched = makeReleaseAssetsPage({
+      view: 'list', pageSize: '10', search: 'asset-01', extension: '', category: '', selectionFilter: 'selected',
+      assets: [], offPageSelectedIds: ['1', '9'],
+    });
+    const stale = clearedPage();
+    const windowObject = r8Window(initial.document, new Map([['searched', searched.document], ['stale', stale.document]]));
+    const requests = heldRequests(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+    editDraft(initial);
+    expect(releaseMembershipPayload(windowObject, initial.selection).sort()).toEqual(['2', '3', '9']);
+
+    const click = initial.reset.dispatch('click');
+    expect(click.defaultPrevented).toBe(true);
+    expect(requests).toHaveLength(1);
+    // Clear's destination keeps only View and page size.
+    expect(params(requests[0])).toEqual([['pageSize', '10'], ['view', 'list']]);
+    // The dialog follows Clear before it installs, without another GET.
+    expectClearedControls(initial);
+    expect(initial.view.value).toBe('list');
+    expect(sizeControls(initial)).toEqual(['10', '10']);
+    expect(requests).toHaveLength(1);
+
+    typeSearch(initial, 'asset-01');
+    vi.advanceTimersByTime(1000);
+    expect(requests).toHaveLength(2);
+    expect(requests[0].init.signal.aborted).toBe(true);
+    expect(params(requests[1])).toEqual([['pageSize', '10'], ['search', 'asset-01'], ['view', 'list']]);
+
+    requests[1].resolve(responseFor('searched', requests[1].url.href));
+    await flush();
+    expect(regionOf(initial)).toBe(searched.region);
+    const shown = windowObject.location.href;
+    expect(shown).toBe(requests[1].url.href);
+    expect(windowObject.history.pushes).toHaveLength(1);
+
+    // The original Clear answer delivered last installs nothing.
+    requests[0].resolve(responseFor('stale', requests[0].url.href));
+    await flush();
+    expect(regionOf(initial)).toBe(searched.region);
+    expect(windowObject.location.href).toBe(shown);
+    expect(windowObject.history.pushes).toHaveLength(1);
+    expect(liveFailureNotice(initial.document)).toBeNull();
+
+    // Final dialog matches the URL; zero matching assets are rendered.
+    expect(initial.filter.contains(searched.searchInput)).toBe(true);
+    expect(searched.searchInput.value).toBe('asset-01');
+    expect(searched.selectionSelected.checked).toBe(true);
+    expect(searched.extensionAll.checked).toBe(true);
+    expect(searched.categoryAll.checked).toBe(true);
+    expect(searched.view.value).toBe('list');
+    expect(sizeControls(initial)).toEqual(['10', '10']);
+    expect(regionOf(initial).querySelectorAll('input[type="checkbox"][name="selectedAssetIds"]')).toHaveLength(0);
+
+    // Draft: 1 removed, 2 and 3 added (now hidden), 9 kept.
+    expect(releaseMembershipPayload(windowObject, initial.selection).sort()).toEqual(['2', '3', '9']);
+    expect(onlyGets(windowObject)).toBe(true);
+    expect(windowObject.location.assign).not.toHaveBeenCalled();
+  });
+
+  it('Clear held -> Category, Extension or Selection changes only that dimension', async () => {
+    const edits = [
+      [(page) => choose(page, [page.categoryAll, page.categoryThree, page.categoryFour], page.categoryFour), ['category', '4']],
+      [(page) => choose(page, [page.extensionAll, page.extensionPng, page.extensionJpg], page.extensionJpg), ['extension', 'jpg']],
+      [(page) => choose(page, [page.selectionSelected, page.selectionAll], page.selectionAll), ['selection', 'all']],
+    ];
+    for (const [edit, expected] of edits) {
+      const initial = r8Page();
+      const windowObject = r8Window(initial.document);
+      const requests = heldRequests(windowObject);
+      enhanceReleaseAssetsLiveFiltering(initial.document);
+
+      initial.reset.dispatch('click');
+      edit(initial);
+      expect(requests).toHaveLength(2);
+      expect(requests[0].init.signal.aborted).toBe(true);
+      expect(params(requests[1])).toEqual([expected, ['pageSize', '10'], ['view', 'list']]
+        .sort(([left], [right]) => left.localeCompare(right)));
+      expect(initial.searchInput.value).toBe('');
+      expect(onlyGets(windowObject)).toBe(true);
+    }
+  });
+
+  it('Clear held -> View, page size, pagination or another Clear keep the cleared filters', async () => {
+    const run = (act) => {
+      const initial = r8Page();
+      const windowObject = r8Window(initial.document);
+      const requests = heldRequests(windowObject);
+      enhanceReleaseAssetsLiveFiltering(initial.document);
+      initial.reset.dispatch('click');
+      act(initial);
+      expect(requests).toHaveLength(2);
+      expect(onlyGets(windowObject)).toBe(true);
+      return { initial, request: requests[1], clear: requests[0] };
+    };
+
+    const grid = run((page) => page.grid.dispatch('click'));
+    expect(params(grid.request)).toEqual([['pageSize', '10']]);
+    expect(grid.request.url.searchParams.get('view')).toBe('grid');
+    expect(grid.initial.view.value).toBe('grid');
+
+    const sized = run((page) => {
+      page.pageSize.value = '50';
+      page.pageSizeForm.dispatch('change', { target: page.pageSize });
+    });
+    expect(params(sized.request)).toEqual([['pageSize', '50'], ['view', 'list']]);
+    expect(sizeControls(sized.initial)).toEqual(['50', '50']);
+
+    const dialogSized = run((page) => {
+      page.filterPageSize.value = 'all';
+      page.filter.dispatch('change', { target: page.filterPageSize });
+    });
+    expect(params(dialogSized.request)).toEqual([['pageSize', 'all'], ['view', 'list']]);
+
+    const paged = run((page) => page.next.dispatch('click'));
+    expect(params(paged.request)).toEqual([['page', '2'], ['pageSize', '10'], ['view', 'list']]);
+
+    const again = run((page) => page.reset.dispatch('click'));
+    expect(again.request.url.href).toBe(again.clear.url.href);
+    expectClearedControls(again.initial);
+  });
+
+  it('debounced Search: an older timer cannot fire after Clear and only the latest Search is sent', async () => {
+    vi.useFakeTimers();
+    const initial = r8Page();
+    const windowObject = r8Window(initial.document);
+    const requests = heldRequests(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    // A Search still debouncing when Clear is clicked is cleared with it.
+    typeSearch(initial, 'pending');
+    vi.advanceTimersByTime(100);
+    initial.reset.dispatch('click');
+    expect(requests).toHaveLength(1);
+    expect(params(requests[0])).toEqual([['pageSize', '10'], ['view', 'list']]);
+    expectClearedControls(initial);
+    vi.advanceTimersByTime(1000);
+    expect(requests).toHaveLength(1);
+
+    // Two rapid edits after Clear: one GET with the latest value.
+    typeSearch(initial, 'a');
+    vi.advanceTimersByTime(100);
+    typeSearch(initial, 'asset-01');
+    vi.advanceTimersByTime(1000);
+    expect(requests).toHaveLength(2);
+    expect(params(requests[1])).toEqual([['pageSize', '10'], ['search', 'asset-01'], ['view', 'list']]);
+
+    // A View change during a later debounce composes as one GET.
+    typeSearch(initial, 'x');
+    vi.advanceTimersByTime(100);
+    initial.grid.dispatch('click');
+    vi.advanceTimersByTime(1000);
+    expect(requests).toHaveLength(3);
+    expect(params(requests[2])).toEqual([['pageSize', '10'], ['search', 'x']]);
+    expect(requests[2].url.searchParams.get('view')).toBe('grid');
+    expect(onlyGets(windowObject)).toBe(true);
+  });
+
+  it('a failed Clear stays the latest intent: Search, Category, View and Retry compose with it', async () => {
+    vi.useFakeTimers();
+    const initial = r8Page();
+    const windowObject = r8Window(initial.document);
+    const requests = heldRequests(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+    editDraft(initial);
+
+    initial.reset.dispatch('click');
+    requests[0].reject(new Error('offline'));
+    await flush();
+    expect(liveFailureRetries(initial.document)).toHaveLength(1);
+    expect(regionOf(initial)).toBe(initial.region);
+    expectClearedControls(initial);
+
+    // Retry repeats only the failed Clear GET.
+    liveFailureRetries(initial.document)[0].dispatch('click');
+    expect(requests).toHaveLength(2);
+    expect(requests[1].url.href).toBe(requests[0].url.href);
+    requests[1].reject(new Error('offline'));
+    await flush();
+    expectClearedControls(initial);
+
+    typeSearch(initial, 'asset-01');
+    vi.advanceTimersByTime(1000);
+    expect(requests).toHaveLength(3);
+    expect(params(requests[2])).toEqual([['pageSize', '10'], ['search', 'asset-01'], ['view', 'list']]);
+    requests[2].reject(new Error('offline'));
+    await flush();
+
+    choose(initial, [initial.categoryAll, initial.categoryThree, initial.categoryFour], initial.categoryFour);
+    expect(params(requests[3])).toEqual([['category', '4'], ['pageSize', '10'], ['search', 'asset-01'], ['view', 'list']]);
+    requests[3].reject(new Error('offline'));
+    await flush();
+
+    initial.grid.dispatch('click');
+    expect(params(requests[4])).toEqual([['category', '4'], ['pageSize', '10'], ['search', 'asset-01']]);
+    expect(requests[4].url.searchParams.get('view')).toBe('grid');
+    requests[4].reject(new Error('offline'));
+    await flush();
+
+    // Another Clear after the failures clears again.
+    initial.reset.dispatch('click');
+    expect(params(requests[5])).toEqual([['pageSize', '10']]);
+    expectClearedControls(initial);
+    expect(onlyGets(windowObject)).toBe(true);
+    expect(releaseMembershipPayload(windowObject, initial.selection).sort()).toEqual(['2', '3', '9']);
+    expect(windowObject.location.assign).not.toHaveBeenCalled();
+  });
+
+  it('stale answers: a pre-Clear Search response or failure arriving last installs nothing', async () => {
+    vi.useFakeTimers();
+    const initial = r8Page();
+    const cleared = clearedPage();
+    const older = r8Page({ search: 'needle', assets: [{ id: '3', selected: false }] });
+    const windowObject = r8Window(initial.document, new Map([['cleared', cleared.document], ['older', older.document]]));
+    const requests = heldRequests(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    typeSearch(initial, 'needle');
+    vi.advanceTimersByTime(1000);
+    initial.grid.dispatch('click');
+    initial.reset.dispatch('click');
+    expect(requests).toHaveLength(3);
+    expect(params(requests[2])).toEqual([['pageSize', '10']]);
+
+    requests[2].resolve(responseFor('cleared', requests[2].url.href));
+    await flush();
+    requests[0].resolve(responseFor('older', requests[0].url.href));
+    requests[1].reject(new Error('offline'));
+    await flush();
+    expect(regionOf(initial)).toBe(cleared.region);
+    expect(windowObject.location.href).toBe(requests[2].url.href);
+    expect(liveFailureNotice(initial.document)).toBeNull();
+    expect(cleared.searchInput.value).toBe('');
+    expect(cleared.selectionSelected.checked).toBe(true);
+    expect(windowObject.history.pushes).toHaveLength(1);
+  });
+
+  it('a closed and reopened dialog still shows the pending Clear destination', async () => {
+    const initial = r8Page({ dialogOpen: true });
+    const windowObject = r8Window(initial.document);
+    const requests = heldRequests(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    initial.reset.dispatch('click');
+    initial.dialog.open = false;
+    initial.dialog.open = true;
+    expectClearedControls(initial);
+    choose(initial, [initial.extensionAll, initial.extensionPng, initial.extensionJpg], initial.extensionJpg);
+    expect(params(requests[1])).toEqual([['extension', 'jpg'], ['pageSize', '10'], ['view', 'list']]);
+  });
+
+  it('history: Clear pending -> Back owns the filters; Back pending -> Clear clears them', async () => {
+    const initial = r8Page();
+    const windowObject = r8Window(initial.document);
+    const requests = heldRequests(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    initial.reset.dispatch('click');
+    historyTo(windowObject, `${BASE}?selection=all&extension=jpg&pageSize=50`);
+    expect(requests).toHaveLength(2);
+    expect(initial.selectionAll.checked).toBe(true);
+    expect(initial.extensionJpg.checked).toBe(true);
+    expect(sizeControls(initial)).toEqual(['50', '50']);
+    choose(initial, [initial.categoryAll, initial.categoryThree, initial.categoryFour], initial.categoryFour);
+    expect(params(requests[2])).toEqual([
+      ['category', '4'], ['extension', 'jpg'], ['pageSize', '50'], ['selection', 'all'],
+    ]);
+
+    historyTo(windowObject, `${BASE}?search=older&extension=jpg&pageSize=50`);
+    expect(initial.searchInput.value).toBe('older');
+    initial.reset.dispatch('click');
+    expect(params(requests[4])).toEqual([['pageSize', '50']]);
+    expectClearedControls(initial);
+    expect(windowObject.history.pushes).toHaveLength(0);
+  });
+
+  it('history: Clear installs -> Back -> Forward to the Clear entry -> Search composes with Clear', async () => {
+    vi.useFakeTimers();
+    const initial = r8Page();
+    const cleared = clearedPage();
+    const windowObject = r8Window(initial.document, new Map([['cleared', cleared.document]]));
+    const requests = heldRequests(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    initial.reset.dispatch('click');
+    const clearHref = requests[0].url.href;
+    requests[0].resolve(responseFor('cleared', clearHref));
+    await flush();
+    expect(regionOf(initial)).toBe(cleared.region);
+    expect(windowObject.history.pushes).toHaveLength(1);
+
+    historyTo(windowObject, INSTALLED);
+    expect(cleared.searchInput.value).toBe('asset');
+    expect(cleared.selectionAll.checked).toBe(true);
+    expect(cleared.extensionPng.checked).toBe(true);
+    expect(cleared.categoryThree.checked).toBe(true);
+
+    historyTo(windowObject, clearHref);
+    expectClearedControls(cleared);
+    typeSearch(cleared, 'asset-01', initial.filter);
+    vi.advanceTimersByTime(1000);
+    expect(requests).toHaveLength(4);
+    expect(params(requests[3])).toEqual([['pageSize', '10'], ['search', 'asset-01'], ['view', 'list']]);
+    // One Clear produced one history entry.
+    expect(windowObject.history.pushes).toHaveLength(1);
+  });
+
+  it('membership draft survives Search -> Extension -> Selection -> held Clear -> Search -> View -> size -> page', async () => {
+    vi.useFakeTimers();
+    const initial = r8Page({ search: '', extension: '', category: '', selectionFilter: 'selected', view: 'grid' });
+    const windowObject = r8Window(initial.document, new Map(), `${BASE}?pageSize=10`);
+    const requests = heldRequests(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+    editDraft(initial);
+
+    typeSearch(initial, 'asset');
+    vi.advanceTimersByTime(1000);
+    choose(initial, [initial.extensionAll, initial.extensionPng, initial.extensionJpg], initial.extensionPng);
+    choose(initial, [initial.selectionSelected, initial.selectionAll], initial.selectionAll);
+    expect(params(requests[2])).toEqual([
+      ['extension', 'png'], ['pageSize', '10'], ['search', 'asset'], ['selection', 'all'],
+    ]);
+    initial.reset.dispatch('click');
+    typeSearch(initial, 'asset-01');
+    vi.advanceTimersByTime(1000);
+    initial.list.dispatch('click');
+    initial.pageSize.value = '25';
+    initial.pageSizeForm.dispatch('change', { target: initial.pageSize });
+    initial.next.dispatch('click');
+    expect(requests).toHaveLength(8);
+    expect(params(requests[7])).toEqual([['page', '2'], ['search', 'asset-01'], ['view', 'list']]);
+
+    expect(releaseMembershipPayload(windowObject, initial.selection).sort()).toEqual(['2', '3', '9']);
+    expect(new Set(releaseMembershipPayload(windowObject, initial.selection)).size).toBe(3);
+    expect(onlyGets(windowObject)).toBe(true);
+    expect(windowObject.location.assign).not.toHaveBeenCalled();
+  });
+});
+
+/*
+ * P3 correction 4: Manage Assets honours only the page sizes its two controls
+ * offer. The server renders any other pageSize (7, 15, 201, abc, ALL, a
+ * repeated value, ...) at the default 25, so a history entry or request
+ * carrying one is effective size 25 on both controls and in every request
+ * composed from it - never the unsupported raw value and never an older size.
+ */
+describe('P3-C4 Release Manage Assets unsupported page size is the effective 25', () => {
+  beforeEach(() => { vi.useRealTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  const BASE = 'http://creatorcrate.test/releases/7/assets';
+  const ASSETS = [{ id: '1', selected: true }, { id: '2', selected: false }, { id: '3', selected: false }];
+
+  function c4Window(document, pages = new Map(), href = `${BASE}?selection=all&pageSize=50`) {
+    const windowObject = makeWindow(document, pages);
+    windowObject.location.href = href;
+    windowObject.location.pathname = '/releases/7/assets';
+    windowObject.location.assign = vi.fn();
+    return windowObject;
+  }
+
+  function c4Page(options = {}) {
+    return makeReleaseAssetsPage({
+      pageSize: '50', extension: '', category: '', selectionFilter: 'all',
+      assets: ASSETS, offPageSelectedIds: ['9'], ...options,
+    });
+  }
+
+  // Unsaved draft: add 2 and 3, remove saved 1; saved 9 is off page.
+  function editDraft(page) {
+    const [one, two, three] = page.membershipCheckboxes;
+    one.checked = false;
+    page.document.dispatch('change', { target: one });
+    two.checked = true;
+    page.document.dispatch('change', { target: two });
+    three.checked = true;
+    page.document.dispatch('change', { target: three });
+  }
+
+  const regionOf = (page) => page.document.querySelector('[data-release-assets-live-region]');
+  // 25 is the service default; a request may spell it or leave it implicit.
+  const sizeOf = (url) => url.searchParams.get('pageSize') || '25';
+  const onlyGets = (windowObject) => windowObject.fetch.mock.calls
+    .every(([, init]) => init.method === 'GET' && init.body === undefined);
+  const sizeControls = (page) => page.document
+    .querySelectorAll('select[name="pageSize"][data-release-assets-live-page-size]').map((control) => control.value);
+
+  function historyTo(windowObject, href) {
+    windowObject.location.href = href;
+    windowObject.dispatch('popstate');
+  }
+
+  function typeSearch(page, value) {
+    page.searchInput.value = value;
+    page.filter.dispatch('input', { target: page.searchInput });
+  }
+
+  const UNSUPPORTED = ['7', '11', '15', '24', '26', '201', '999999', '0', '-1', 'abc', '1.5', '010', 'ALL', 'All', ''];
+
+  for (const raw of UNSUPPORTED) {
+    it(`Back to pageSize=${JSON.stringify(raw)} sets both controls to 25 and a List link composes 25`, () => {
+      const initial = c4Page();
+      const windowObject = c4Window(initial.document);
+      const requests = heldRequests(windowObject);
+      enhanceReleaseAssetsLiveFiltering(initial.document);
+      expect(sizeControls(initial)).toEqual(['50', '50']);
+
+      historyTo(windowObject, `${BASE}?selection=all&pageSize=${encodeURIComponent(raw)}`);
+      expect(requests).toHaveLength(1);
+      expect(sizeControls(initial)).toEqual(['25', '25']);
+
+      initial.list.dispatch('click');
+      expect(requests).toHaveLength(2);
+      expect(sizeOf(requests[1].url)).toBe('25');
+      expect(requests[1].url.searchParams.get('view')).toBe('list');
+      expect(requests[1].url.searchParams.get('selection')).toBe('all');
+      expect(onlyGets(windowObject)).toBe(true);
+    });
+  }
+
+  it('a repeated or mixed pageSize in history is the effective 25, never its first value', () => {
+    for (const repeated of ['pageSize=50&pageSize=10', 'pageSize=100&pageSize=abc', 'pageSize=all&pageSize=all']) {
+      const initial = c4Page({ pageSize: '10' });
+      const windowObject = c4Window(initial.document, new Map(), `${BASE}?selection=all&pageSize=10`);
+      const requests = heldRequests(windowObject);
+      enhanceReleaseAssetsLiveFiltering(initial.document);
+
+      historyTo(windowObject, `${BASE}?selection=all&${repeated}`);
+      expect(sizeControls(initial)).toEqual(['25', '25']);
+      initial.grid.dispatch('click');
+      expect(sizeOf(requests[1].url)).toBe('25');
+      expect(requests[1].url.searchParams.getAll('pageSize').length).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('every supported history size is kept on both controls and composed as is', () => {
+    for (const size of ['10', '25', '50', '100', '150', '200', 'all']) {
+      const initial = c4Page({ pageSize: size === '50' ? '10' : '50' });
+      const windowObject = c4Window(initial.document);
+      const requests = heldRequests(windowObject);
+      enhanceReleaseAssetsLiveFiltering(initial.document);
+
+      historyTo(windowObject, `${BASE}?selection=all&pageSize=${size}`);
+      expect(sizeControls(initial)).toEqual([size, size]);
+      initial.list.dispatch('click');
+      expect(sizeOf(requests[1].url)).toBe(size);
+    }
+  });
+
+  for (const raw of ['7', '15']) {
+    it(`reviewer reproduction (pageSize=${raw}): direct load rendered at 25 -> Search submits 25; Back never restores ${raw}`, async () => {
+      vi.useFakeTimers();
+      // The server rendered the unsupported request at its effective size 25.
+      const initial = c4Page({ pageSize: '25' });
+      const searched = c4Page({ pageSize: '25', search: 'asset', assets: [{ id: '1', selected: true }] });
+      const back = c4Page({ pageSize: '25' });
+      const windowObject = c4Window(initial.document,
+        new Map([['searched', searched.document], ['back', back.document]]), `${BASE}?selection=all&pageSize=${raw}`);
+      const requests = heldRequests(windowObject);
+      enhanceReleaseAssetsLiveFiltering(initial.document);
+      editDraft(initial);
+      expect(sizeControls(initial)).toEqual(['25', '25']);
+
+      typeSearch(initial, 'asset');
+      vi.advanceTimersByTime(1000);
+      expect(requests).toHaveLength(1);
+      expect(sizeOf(requests[0].url)).toBe('25');
+      expect(requests[0].url.searchParams.get('search')).toBe('asset');
+      expect(requests[0].url.searchParams.get('selection')).toBe('all');
+      requests[0].resolve(responseFor('searched', requests[0].url.href));
+      await flush();
+      expect(regionOf(initial)).toBe(searched.region);
+      expect(sizeOf(new URL(windowObject.location.href))).toBe('25');
+
+      // Back to the unsupported direct-load entry: effective 25 at once and
+      // after it installs; a later List link still composes 25.
+      historyTo(windowObject, `${BASE}?selection=all&pageSize=${raw}`);
+      expect(requests).toHaveLength(2);
+      expect(sizeControls(initial)).toEqual(['25', '25']);
+      requests[1].resolve(responseFor('back', requests[1].url.href));
+      await flush();
+      expect(regionOf(initial)).toBe(back.region);
+      expect(sizeControls(initial)).toEqual(['25', '25']);
+
+      initial.list.dispatch('click');
+      expect(sizeOf(requests[2].url)).toBe('25');
+      expect(requests[2].url.searchParams.getAll('pageSize')).not.toContain(raw);
+
+      expect(releaseMembershipPayload(windowObject, initial.selection).sort()).toEqual(['2', '3', '9']);
+      expect(onlyGets(windowObject)).toBe(true);
+      expect(windowObject.location.assign).not.toHaveBeenCalled();
+    });
+  }
+
+  it('pending unsupported Back -> a new supported size wins; the old answer delivered last changes nothing', async () => {
+    const initial = c4Page();
+    const sized = c4Page({ pageSize: '100', view: 'list' });
+    const stale = c4Page({ pageSize: '25' });
+    const windowObject = c4Window(initial.document, new Map([['sized', sized.document], ['stale', stale.document]]));
+    const requests = heldRequests(windowObject);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+    editDraft(initial);
+
+    historyTo(windowObject, `${BASE}?selection=all&pageSize=7`);
+    expect(sizeControls(initial)).toEqual(['25', '25']);
+
+    initial.filterPageSize.value = '100';
+    initial.filter.dispatch('change', { target: initial.filterPageSize });
+    expect(requests).toHaveLength(2);
+    expect(requests[0].init.signal.aborted).toBe(true);
+    expect(sizeOf(requests[1].url)).toBe('100');
+    expect(sizeControls(initial)).toEqual(['100', '100']);
+
+    // A Grid/List link while the new size is held keeps 100, not 25 or 7.
+    initial.list.dispatch('click');
+    expect(sizeOf(requests[2].url)).toBe('100');
+
+    requests[2].resolve(responseFor('sized', requests[2].url.href));
+    await flush();
+    requests[0].resolve(responseFor('stale', requests[0].url.href));
+    await flush();
+    expect(regionOf(initial)).toBe(sized.region);
+    expect(sizeControls(initial)).toEqual(['100', '100']);
+    expect(new URL(windowObject.location.href).searchParams.get('pageSize')).toBe('100');
+    expect(releaseMembershipPayload(windowObject, initial.selection).sort()).toEqual(['2', '3', '9']);
+    expect(onlyGets(windowObject)).toBe(true);
+  });
+
+  it('failed unsupported Back -> Search composes 25 and Retry repeats only a GET', async () => {
+    vi.useFakeTimers();
+    const initial = c4Page();
+    const windowObject = c4Window(initial.document);
+    windowObject.fetch.mockRejectedValue(new Error('offline'));
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+    editDraft(initial);
+
+    historyTo(windowObject, `${BASE}?selection=all&pageSize=15`);
+    await flush();
+    expect(liveFailureRetries(initial.document)).toHaveLength(1);
+    expect(sizeControls(initial)).toEqual(['25', '25']);
+
+    typeSearch(initial, 'needle');
+    vi.advanceTimersByTime(1000);
+    await flush();
+    expect(windowObject.fetch).toHaveBeenCalledTimes(2);
+    const searched = new URL(windowObject.fetch.mock.calls[1][0]);
+    expect(sizeOf(searched)).toBe('25');
+    expect(searched.searchParams.get('search')).toBe('needle');
+
+    liveFailureRetries(initial.document)[0].dispatch('click');
+    await flush();
+    expect(windowObject.fetch).toHaveBeenCalledTimes(3);
+    expect(windowObject.fetch.mock.calls[2][0]).toBe(searched.href);
+    expect(sizeControls(initial)).toEqual(['25', '25']);
+    expect(releaseMembershipPayload(windowObject, initial.selection).sort()).toEqual(['2', '3', '9']);
+    expect(onlyGets(windowObject)).toBe(true);
+  });
+
+  it('unsupported Back -> Clear and pagination keep the effective 25, not the abandoned size', () => {
+    for (const link of ['reset', 'next']) {
+      const initial = c4Page({ search: 'needle', extension: 'png', category: '3' });
+      const windowObject = c4Window(initial.document, new Map(),
+        `${BASE}?selection=all&search=needle&extension=png&category=3&pageSize=50`);
+      const requests = heldRequests(windowObject);
+      enhanceReleaseAssetsLiveFiltering(initial.document);
+
+      historyTo(windowObject, `${BASE}?selection=all&search=needle&pageSize=999999`);
+      initial[link].dispatch('click');
+      expect(requests).toHaveLength(2);
+      const destination = requests[1].url;
+      expect(sizeOf(destination)).toBe('25');
+      if (link === 'reset') {
+        expect(destination.searchParams.has('search')).toBe(false);
+        expect(destination.searchParams.has('page')).toBe(false);
+      } else {
+        expect(destination.searchParams.get('page')).toBe('2');
+        expect(destination.searchParams.get('search')).toBe('needle');
+      }
+      expect(onlyGets(windowObject)).toBe(true);
+    }
+  });
+});
+
+// B7-F1: a recoverable rejected legacy Save (the only page that renders the
+// roleOrder carrier) edits draft roles in the carrier; normal pages keep the
+// per-asset role autosubmit.
+describe('B7-F1 Release Manage Assets recoverable draft roles', () => {
+  const CARRIER = [[1, 'primary', 0], [3, 'bogus', 1], [2, 'preview', 2], [20, 'attachment', 3], [22, 'attachment', 4]];
+
+  // The server-rendered recovery Role control (assets.njk): no form, no
+  // autosubmit; an invalid carried role selects the correction prompt.
+  function appendDraftRole(region, assetId, selected) {
+    const wrapper = makeNode({ attrs: { class: 'inline-form release-asset-role-form', 'data-release-asset-draft-role': '' } });
+    const options = selected === '' ? ['', 'primary', 'preview', 'attachment'] : ['primary', 'preview', 'attachment'];
+    const select = makeSelect({
+      id: `role-${assetId}`, name: 'role', 'data-release-asset-draft-role-select': String(assetId),
+      ...(selected === '' ? { 'aria-invalid': 'true' } : {}),
+    }, options, selected);
+    wrapper.appendChild(select);
+    region.appendChild(wrapper);
+    return select;
+  }
+
+  function recoveryPage(options = {}) {
+    const page = makeReleaseAssetsPage({
+      assets: [{ id: '1', selected: true }, { id: '3', selected: true }, { id: '5' }],
+      persistedSelectedIds: ['1', '2', '20', '21'],
+      offPageSelectedIds: ['2', '20', '22'],
+      selectionFilter: 'all',
+      roleOrder: JSON.stringify(CARRIER),
+      ...options,
+    });
+    return page;
+  }
+
+  let originalFetch;
+  let originalFormData;
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+    originalFormData = globalThis.FormData;
+  });
+  afterEach(() => {
+    vi.stubGlobal('fetch', originalFetch);
+    vi.stubGlobal('FormData', originalFormData);
+  });
+
+  it('shows an invalid carried role as needing correction and writes a chosen valid role into that entry only', async () => {
+    const initial = recoveryPage();
+    const invalid = appendDraftRole(initial.region, 3, '');
+    const primary = appendDraftRole(initial.region, 1, 'primary');
+    const windowObject = makeWindow(initial.document);
+    vi.stubGlobal('fetch', windowObject.fetch);
+    vi.stubGlobal('FormData', windowObject.FormData);
+    initial.selection.requestSubmit = vi.fn();
+    initial.selection.submit = vi.fn();
+    const before = initial.roleOrderInput.value;
+
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+    // Rendering never coerces the invalid role or rewrites the carrier.
+    expect(invalid.value).toBe('');
+    expect(invalid.getAttribute('aria-invalid')).toBe('true');
+    expect(primary.value).toBe('primary');
+    expect(primary.hasAttribute('aria-invalid')).toBe(false);
+    expect(initial.roleOrderInput.value).toBe(before);
+    const membership = releaseMembershipPayload(windowObject, initial.selection);
+
+    invalid.value = 'attachment';
+    invalid.dispatch('change');
+    await flush();
+
+    expect(JSON.parse(initial.roleOrderInput.value)).toEqual([
+      [1, 'primary', 0], [3, 'attachment', 1], [2, 'preview', 2], [20, 'attachment', 3], [22, 'attachment', 4],
+    ]);
+    expect(invalid.value).toBe('attachment');
+    expect(invalid.hasAttribute('aria-invalid')).toBe(false);
+    // Nothing is persisted or submitted; the membership draft is untouched.
+    expect(windowObject.fetch).not.toHaveBeenCalled();
+    expect(initial.selection.requestSubmit).not.toHaveBeenCalled();
+    expect(initial.selection.submit).not.toHaveBeenCalled();
+    expect(releaseMembershipPayload(windowObject, initial.selection)).toEqual(membership);
+    expect(releaseHiddenMembership(initial.selection)).toEqual(expect.arrayContaining(['2', '20', '22']));
+
+    // Choosing the correction prompt keeps the carried (corrected) role.
+    invalid.value = '';
+    invalid.dispatch('change');
+    expect(invalid.value).toBe('attachment');
+    expect(JSON.parse(initial.roleOrderInput.value)[1]).toEqual([3, 'attachment', 1]);
+
+    // Another asset's change edits only its own entry.
+    primary.value = 'preview';
+    primary.dispatch('change');
+    expect(JSON.parse(initial.roleOrderInput.value)).toEqual([
+      [1, 'preview', 0], [3, 'attachment', 1], [2, 'preview', 2], [20, 'attachment', 3], [22, 'attachment', 4],
+    ]);
+    expect(windowObject.fetch).not.toHaveBeenCalled();
+  });
+
+  it('turns an installed saved-member role form into a draft control showing the carried role', async () => {
+    const initial = recoveryPage({ roleOrder: JSON.stringify([[99, 'primary', 0], [3, 'bogus', 1]]) });
+    const replacement = makeReleaseAssetsPage({ roleAutosubmit: true, selectionFilter: 'all' });
+    const windowObject = makeWindow(initial.document, new Map([['next', replacement.document]]));
+    windowObject.location.href = 'http://creatorcrate.test/releases/7/assets?selection=all';
+    windowObject.location.pathname = '/releases/7/assets';
+    windowObject.fetch.mockResolvedValueOnce(responseFor('next', 'http://creatorcrate.test/releases/7/assets?selection=all&page=2'));
+    vi.stubGlobal('fetch', windowObject.fetch);
+    vi.stubGlobal('FormData', windowObject.FormData);
+
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+    initial.next.dispatch('click');
+    await flush();
+
+    const installed = initial.document.querySelector('select[name="role"]');
+    expect(installed).not.toBeNull();
+    expect(installed.hasAttribute('data-autosubmit')).toBe(false);
+    expect(installed.getAttribute('data-release-asset-draft-role-select')).toBe('99');
+    // The response rendered the saved role (attachment); the draft holds primary.
+    expect(installed.value).toBe('primary');
+
+    installed.value = 'attachment';
+    installed.dispatch('change');
+    await flush();
+    expect(JSON.parse(initial.roleOrderInput.value)).toEqual([[99, 'attachment', 0], [3, 'bogus', 1]]);
+    // Only the region GET was fetched: no role POST.
+    expect(windowObject.fetch).toHaveBeenCalledTimes(1);
+    expect(windowObject.fetch.mock.calls[0][1]?.method ?? 'GET').not.toBe('POST');
+  });
+
+  it('marks an installed control invalid for an invalid carried role and disables one outside the draft', async () => {
+    for (const [carrier, expectation] of [
+      [[[99, 'bogus', 0]], 'invalid'],
+      [[[3, 'primary', 0]], 'disabled'],
+    ]) {
+      const initial = recoveryPage({ roleOrder: JSON.stringify(carrier) });
+      const replacement = makeReleaseAssetsPage({ roleAutosubmit: true, selectionFilter: 'all' });
+      const windowObject = makeWindow(initial.document, new Map([['next', replacement.document]]));
+      windowObject.location.href = 'http://creatorcrate.test/releases/7/assets?selection=all';
+      windowObject.location.pathname = '/releases/7/assets';
+      windowObject.fetch.mockResolvedValueOnce(responseFor('next', 'http://creatorcrate.test/releases/7/assets?selection=all&page=2'));
+      vi.stubGlobal('fetch', windowObject.fetch);
+      vi.stubGlobal('FormData', windowObject.FormData);
+      enhanceReleaseAssetsLiveFiltering(initial.document);
+      initial.next.dispatch('click');
+      await flush();
+
+      const installed = initial.document.querySelector('select[name="role"]');
+      expect(installed.hasAttribute('data-autosubmit')).toBe(false);
+      if (expectation === 'invalid') {
+        expect(installed.getAttribute('aria-invalid')).toBe('true');
+        expect(installed.disabled).toBe(false);
+      } else {
+        expect(installed.disabled).toBe(true);
+        expect(installed.hasAttribute('aria-invalid')).toBe(false);
+        installed.dispatch('change');
+        await flush();
+      }
+      expect(JSON.parse(initial.roleOrderInput.value)).toEqual(carrier);
+      expect(windowObject.fetch).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('leaves normal Manage Assets role forms autosubmitting', async () => {
+    const initial = makeReleaseAssetsPage({ roleAutosubmit: true, selectionFilter: 'all' });
+    const windowObject = makeWindow(initial.document);
+    windowObject.fetch.mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', windowObject.fetch);
+    vi.stubGlobal('FormData', windowObject.FormData);
+
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+    const role = initial.region.querySelector('select[name="role"]');
+    expect(role.hasAttribute('data-autosubmit')).toBe(true);
+    expect(role.hasAttribute('data-release-asset-draft-role-select')).toBe(false);
+    expect(role.disabled).toBe(false);
+  });
+});
+
+// B7-F2: a live GET renders Role controls only for saved members. On a
+// recoverable rejected Save, a selected draft member that is not saved (so its
+// server-rendered editor is gone after navigation) gets a recovery Role control
+// cloned from the page's inert template, keyed to its asset ID and showing the
+// carried role; it edits only that carrier entry and never posts.
+describe('B7-F2 Release Manage Assets draft Role controls after live navigation', () => {
+  const ID_TOKEN = 'cc-draft-role-asset-id';
+  const NAME_TOKEN = 'cc-draft-role-asset-filename';
+  const ROLE_ORDER = [[1, 'primary', 0], [3, 'bogus', 1], [20, 'attachment', 2], [22, 'attachment', 3]];
+
+  // Mirrors assets.njk's draft releaseRoleControl: no form, no autosubmit; the
+  // invalid variant carries the correction prompt option.
+  function draftRoleControl(assetId, filename, { invalid = false, selected = 'primary' } = {}) {
+    const wrapper = makeNode({ attrs: { class: 'inline-form release-asset-role-form', 'data-release-asset-draft-role': '' } });
+    const field = makeNode({
+      tagName: 'fieldset',
+      attrs: { class: `field asset-filter-multiselect-field release-asset-role-field${invalid ? ' field-error' : ''}` },
+    });
+    const legend = makeNode({ tagName: 'legend', attrs: { class: 'sr-only' } });
+    legend.textContent = `Role for ${filename}`;
+    const select = makeSelect({
+      id: `role-${assetId}`, name: 'role', 'aria-label': `Role for ${filename}`,
+      'data-release-asset-draft-role-select': String(assetId),
+      ...(invalid ? { 'aria-invalid': 'true' } : {}),
+    }, invalid ? ['', 'primary', 'preview', 'attachment'] : ['primary', 'preview', 'attachment'], invalid ? '' : selected);
+    field.appendChild(legend);
+    field.appendChild(select);
+    wrapper.appendChild(field);
+    return { wrapper, select };
+  }
+
+  // The template is rendered on the correction prompt, never a chosen role.
+  function appendDraftRoleTemplates(selection) {
+    const clones = [];
+    const template = makeNode({ tagName: 'template', attrs: { 'data-release-asset-draft-role-template': '' } });
+    template.content = {
+      cloneNode() {
+        const fragment = makeNode({ tagName: 'fragment' });
+        fragment.appendChild(draftRoleControl(ID_TOKEN, NAME_TOKEN, { invalid: true }).wrapper);
+        clones.push('template');
+        return fragment;
+      },
+    };
+    selection.appendChild(template);
+    return clones;
+  }
+
+  function selectionCheckbox(id, filename, checked) {
+    return makeNode({
+      tagName: 'input',
+      attrs: {
+        type: 'checkbox', name: 'selectedAssetIds', value: String(id), form: 'release-assets-form',
+        'data-release-asset-filename': filename,
+      },
+      value: String(id),
+      checked,
+    });
+  }
+
+  function appendGridCard(region, { id, filename, checked = false, role = null }) {
+    const card = makeNode({ tagName: 'article', attrs: { class: 'asset-card asset-card--release', 'data-asset-id': String(id) } });
+    const top = makeNode({ attrs: { class: 'asset-card-top' } });
+    const checkbox = selectionCheckbox(id, filename, checked);
+    top.appendChild(checkbox);
+    if (role) top.appendChild(role);
+    const details = makeNode({ tagName: 'a', attrs: { class: 'asset-details-link', href: `/assets/${id}` } });
+    top.appendChild(details);
+    card.appendChild(top);
+    region.appendChild(card);
+    return { card, top, checkbox, details };
+  }
+
+  function appendListCard(region, { id, filename, checked = false, role = null }) {
+    const card = makeNode({ tagName: 'article', attrs: { class: 'asset-list-card asset-list-card--release', 'data-asset-id': String(id) } });
+    const select = makeNode({ attrs: { class: 'asset-list-cell asset-list-cell--select' } });
+    const checkbox = selectionCheckbox(id, filename, checked);
+    select.appendChild(checkbox);
+    const roleCell = makeNode({ tagName: 'dl', attrs: { class: 'asset-list-cell asset-list-cell--role asset-list-card-meta' } });
+    const value = makeNode({ tagName: 'dd' });
+    if (role) {
+      value.appendChild(role);
+    } else {
+      const dash = makeNode({ tagName: 'span', attrs: { class: 'dashboard-muted' } });
+      dash.textContent = '—';
+      value.appendChild(dash);
+    }
+    roleCell.appendChild(value);
+    card.appendChild(select);
+    card.appendChild(roleCell);
+    region.appendChild(card);
+    return { card, checkbox, value };
+  }
+
+  // A saved member's normal per-asset role form, as a live GET renders it.
+  function savedRoleForm(assetId, role) {
+    const form = makeNode({
+      tagName: 'form',
+      attrs: { action: `/releases/7/assets/${assetId}/role`, method: 'post', class: 'inline-form release-asset-role-form' },
+    });
+    form.appendChild(makeSelect({ id: `role-${assetId}`, name: 'role', 'data-autosubmit': '' }, ['primary', 'preview', 'attachment'], role));
+    return form;
+  }
+
+  // The GET response for a page: saved membership 1, 20, 21; 3 and 5 unsaved.
+  function getResponse(cards, view = 'grid') {
+    const page = makeReleaseAssetsPage({
+      assets: [], persistedSelectedIds: ['1', '20', '21'], selectionFilter: 'all', view,
+    });
+    const append = view === 'list' ? appendListCard : appendGridCard;
+    const rendered = cards.map((card) => append(page.region, card));
+    return { page, rendered };
+  }
+
+  function draftRoleSelects(card) {
+    return card.querySelectorAll('.release-asset-role-form select[name="role"]');
+  }
+
+  // The rejected Save's page 1: 1 saved Primary, 3 newly selected with bogus,
+  // 5 unselected; 20 and 22 are off-page draft members, saved 21 is removed.
+  function recoveryPage() {
+    const page = makeReleaseAssetsPage({
+      assets: [], persistedSelectedIds: ['1', '20', '21'], offPageSelectedIds: ['20', '22'],
+      selectionFilter: 'all', roleOrder: JSON.stringify(ROLE_ORDER),
+    });
+    const clones = appendDraftRoleTemplates(page.selection);
+    const cards = {
+      1: appendGridCard(page.region, { id: 1, filename: '01-image.txt', checked: true, role: draftRoleControl(1, '01-image.txt').wrapper }),
+      3: appendGridCard(page.region, { id: 3, filename: '03-image.txt', checked: true, role: draftRoleControl(3, '03-image.txt', { invalid: true }).wrapper }),
+      5: appendGridCard(page.region, { id: 5, filename: '05-image.txt' }),
+    };
+    return { ...page, cards, clones };
+  }
+
+  function navigationWindow(initial, responses) {
+    const windowObject = makeWindow(initial.document, new Map(responses.map(([key, response]) => [key, response.page.document])));
+    windowObject.location.href = 'http://creatorcrate.test/releases/7/assets?selection=all';
+    windowObject.location.pathname = '/releases/7/assets';
+    responses.forEach(([key], index) => {
+      windowObject.fetch.mockResolvedValueOnce(responseFor(key, `http://creatorcrate.test/releases/7/assets?selection=all&page=${index + 2}`));
+    });
+    vi.stubGlobal('fetch', windowObject.fetch);
+    vi.stubGlobal('FormData', windowObject.FormData);
+    initial.selection.requestSubmit = vi.fn();
+    initial.selection.submit = vi.fn();
+    return windowObject;
+  }
+
+  const carrier = (page) => JSON.parse(page.roleOrderInput.value);
+  const onlyGets = (windowObject) => windowObject.fetch.mock.calls.every(([, init]) => (init?.method ?? 'GET') === 'GET');
+
+  let originalFetch;
+  let originalFormData;
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+    originalFormData = globalThis.FormData;
+  });
+  afterEach(() => {
+    vi.stubGlobal('fetch', originalFetch);
+    vi.stubGlobal('FormData', originalFormData);
+  });
+
+  it('restores an invalid newly selected member\'s Role control after navigation and edits only its carrier entry', async () => {
+    const initial = recoveryPage();
+    const page2 = getResponse([{ id: 11, filename: '11-image.txt' }]);
+    // Back on page 1 the GET knows only saved membership: 3 has no editor.
+    const page1 = getResponse([
+      { id: 1, filename: '01-image.txt', checked: true, role: savedRoleForm(1, 'primary') },
+      { id: 3, filename: '03-image.txt' },
+      { id: 5, filename: '05-image.txt' },
+    ]);
+    const windowObject = navigationWindow(initial, [['page-2', page2], ['page-1', page1]]);
+
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+    // The server rendered every submitted visible member's editor: none is cloned.
+    expect(initial.clones).toEqual([]);
+    expect(draftRoleSelects(initial.cards[3].card)).toHaveLength(1);
+    const membership = releaseMembershipPayload(windowObject, initial.selection);
+
+    initial.next.dispatch('click');
+    await flush();
+    page2.page.next.dispatch('click');
+    await flush();
+
+    const card3 = page1.rendered[1];
+    expect(card3.checkbox.checked).toBe(true);
+    // The original server-rendered editor was replaced with the region.
+    expect(initial.document.querySelectorAll('[data-asset-id="3"]')).toEqual([card3.card]);
+    const restored = draftRoleSelects(card3.card);
+    expect(restored).toHaveLength(1);
+    const [role3] = restored;
+    expect(role3.id).toBe('role-3');
+    expect(role3.getAttribute('data-release-asset-draft-role-select')).toBe('3');
+    expect(role3.getAttribute('aria-label')).toBe('Role for 03-image.txt');
+    expect(role3.closest('fieldset').querySelector('legend').textContent).toBe('Role for 03-image.txt');
+    expect(role3.hasAttribute('data-autosubmit')).toBe(false);
+    expect(role3.closest('form')).toBeNull();
+    // Grid: in the top action row, before the details link, labelled Role.
+    const wrapper = role3.closest('.release-asset-grid-role');
+    expect(wrapper.parentNode).toBe(card3.top);
+    expect(card3.top.children.indexOf(wrapper)).toBe(card3.top.children.indexOf(card3.details) - 1);
+    expect(wrapper.querySelector('.release-asset-grid-role-label').textContent).toBe('Role');
+    // Still visibly invalid: never coerced to a valid role.
+    expect(role3.value).toBe('');
+    expect(role3.getAttribute('aria-invalid')).toBe('true');
+    expect(role3.querySelectorAll('option').map((option) => option.getAttribute('value')))
+      .toEqual(['', 'primary', 'preview', 'attachment']);
+    expect(role3.closest('.release-asset-role-field').getAttribute('class')).toMatch(/\bfield-error\b/);
+    // Unselected 5 has no editor; saved 1 keeps one converted control.
+    expect(draftRoleSelects(page1.rendered[2].card)).toHaveLength(0);
+    expect(draftRoleSelects(page1.rendered[0].card)).toHaveLength(1);
+    expect(page1.rendered[0].card.querySelector('select[name="role"]').hasAttribute('data-autosubmit')).toBe(false);
+    expect(carrier(initial)).toEqual(ROLE_ORDER);
+
+    role3.value = 'attachment';
+    role3.dispatch('change');
+    await flush();
+
+    expect(carrier(initial)).toEqual([[1, 'primary', 0], [3, 'attachment', 1], [20, 'attachment', 2], [22, 'attachment', 3]]);
+    expect(role3.value).toBe('attachment');
+    expect(role3.hasAttribute('aria-invalid')).toBe(false);
+    // Only the two region GETs: no role POST, no Save.
+    expect(windowObject.fetch).toHaveBeenCalledTimes(2);
+    expect(onlyGets(windowObject)).toBe(true);
+    expect(initial.selection.requestSubmit).not.toHaveBeenCalled();
+    expect(initial.selection.submit).not.toHaveBeenCalled();
+    // Membership, including the off-page members, is unchanged.
+    expect(releaseMembershipPayload(windowObject, initial.selection).sort()).toEqual(membership.sort());
+    expect(releaseHiddenMembership(initial.selection)).toEqual(expect.arrayContaining(['20', '22']));
+  });
+
+  it('keeps a role corrected before navigation editable in List and Grid, idempotent across reconciliation and selection', async () => {
+    const initial = recoveryPage();
+    const listPage1 = getResponse([
+      { id: 1, filename: '01-image.txt', checked: true, role: savedRoleForm(1, 'primary') },
+      { id: 3, filename: '03-image.txt' },
+    ], 'list');
+    const gridPage1 = getResponse([
+      { id: 3, filename: '03-image.txt' },
+      { id: 5, filename: '05-image.txt' },
+    ]);
+    const windowObject = navigationWindow(initial, [['list-1', listPage1], ['grid-1', gridPage1]]);
+
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+    const before = initial.cards[3].card.querySelector('select[name="role"]');
+    before.value = 'attachment';
+    before.dispatch('change');
+    expect(carrier(initial)[1]).toEqual([3, 'attachment', 1]);
+
+    initial.next.dispatch('click');
+    await flush();
+
+    // List: the Role column's value, in place of the unselected dash.
+    const row3 = listPage1.rendered[1];
+    const [listRole] = draftRoleSelects(row3.card);
+    expect(draftRoleSelects(row3.card)).toHaveLength(1);
+    expect(listRole.closest('dd')).toBe(row3.value);
+    expect(row3.value.querySelector('.dashboard-muted')).toBeNull();
+    expect(listRole.value).toBe('attachment');
+    expect(listRole.hasAttribute('aria-invalid')).toBe(false);
+    // A valid carried role drops the correction prompt option.
+    expect(listRole.querySelectorAll('option').map((option) => option.getAttribute('value')))
+      .toEqual(['primary', 'preview', 'attachment']);
+    expect(initial.clones).toEqual(['template']);
+
+    // Revised again: the same entry, order kept.
+    listRole.value = 'preview';
+    listRole.dispatch('change');
+    expect(carrier(initial)).toEqual([[1, 'primary', 0], [3, 'preview', 1], [20, 'attachment', 2], [22, 'attachment', 3]]);
+
+    // A membership change elsewhere reconciles again without a duplicate.
+    const row1 = listPage1.rendered[0];
+    row1.checkbox.checked = false;
+    row1.checkbox.dispatch('change');
+    row1.checkbox.checked = true;
+    row1.checkbox.dispatch('change');
+    expect(draftRoleSelects(row3.card)).toHaveLength(1);
+    expect(draftRoleSelects(row3.card)[0]).toBe(listRole);
+    expect(initial.clones).toEqual(['template']);
+
+    // Deselected: no editor for an unselected asset; the entry is kept.
+    row3.checkbox.checked = false;
+    row3.checkbox.dispatch('change');
+    expect(draftRoleSelects(row3.card)).toHaveLength(0);
+    expect(row3.value.querySelector('.dashboard-muted').textContent).toBe('—');
+    expect(releaseMembershipPayload(windowObject, initial.selection)).not.toContain('3');
+    expect(carrier(initial)[1]).toEqual([3, 'preview', 1]);
+    // Reselected: the carried role is back on a fresh editor.
+    row3.checkbox.checked = true;
+    row3.checkbox.dispatch('change');
+    const [reselected] = draftRoleSelects(row3.card);
+    expect(reselected.value).toBe('preview');
+    expect(releaseMembershipPayload(windowObject, initial.selection)).toContain('3');
+
+    // Back to Grid: the revised role still shows and stays editable.
+    listPage1.page.next.dispatch('click');
+    await flush();
+    const [gridRole] = draftRoleSelects(gridPage1.rendered[0].card);
+    expect(draftRoleSelects(gridPage1.rendered[0].card)).toHaveLength(1);
+    expect(gridRole.value).toBe('preview');
+    gridRole.value = 'primary';
+    gridRole.dispatch('change');
+    expect(carrier(initial)).toEqual([[1, 'primary', 0], [3, 'primary', 1], [20, 'attachment', 2], [22, 'attachment', 3]]);
+    expect(windowObject.fetch).toHaveBeenCalledTimes(2);
+    expect(onlyGets(windowObject)).toBe(true);
+    expect(initial.selection.requestSubmit).not.toHaveBeenCalled();
+  });
+
+  it('creates no Role control for a selected asset outside the carrier or on a normal page', async () => {
+    // Recovery page: 5 is selected in the draft but the rejected Save did not
+    // carry it, so there is no role to edit.
+    const initial = recoveryPage();
+    const page1 = getResponse([{ id: 5, filename: '05-image.txt' }]);
+    navigationWindow(initial, [['page-1', page1]]);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+    initial.cards[5].checkbox.checked = true;
+    initial.cards[5].checkbox.dispatch('change');
+    expect(draftRoleSelects(initial.cards[5].card)).toHaveLength(0);
+    initial.next.dispatch('click');
+    await flush();
+    expect(page1.rendered[0].checkbox.checked).toBe(true);
+    expect(draftRoleSelects(page1.rendered[0].card)).toHaveLength(0);
+    expect(initial.clones).toEqual([]);
+
+    // Normal page: no carrier, so a newly checked asset gets no draft editor
+    // and a saved member keeps its autosubmitting role form.
+    const normal = getResponse([
+      { id: 1, filename: '01-image.txt', checked: true, role: savedRoleForm(1, 'primary') },
+      { id: 3, filename: '03-image.txt' },
+    ]);
+    const normalClones = appendDraftRoleTemplates(normal.page.selection);
+    const windowObject = makeWindow(normal.page.document);
+    vi.stubGlobal('fetch', windowObject.fetch);
+    vi.stubGlobal('FormData', windowObject.FormData);
+    enhanceReleaseAssetsLiveFiltering(normal.page.document);
+    normal.rendered[1].checkbox.checked = true;
+    normal.rendered[1].checkbox.dispatch('change');
+    expect(draftRoleSelects(normal.rendered[1].card)).toHaveLength(0);
+    expect(normalClones).toEqual([]);
+    const saved = normal.rendered[0].card.querySelector('select[name="role"]');
+    expect(saved.hasAttribute('data-autosubmit')).toBe(true);
+    expect(saved.hasAttribute('data-release-asset-draft-role-select')).toBe(false);
+    expect(windowObject.fetch).not.toHaveBeenCalled();
   });
 });

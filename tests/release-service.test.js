@@ -16,6 +16,10 @@ import { AssetCategoryValidationError } from '../src/services/asset-category-val
 import { getLocalTodayIso } from '../src/util/date.js';
 import { createApplicationLogger } from '../src/services/application-logger.js';
 import { createApplicationLogRepository } from '../src/data/application-log-repository.js';
+import { createAppMetaRepository } from '../src/data/app-meta-repository.js';
+import { createProjectImageSettingsService } from '../src/services/project-image-settings-service.js';
+import { projectImagePresentationPolicy } from '../src/services/project-image-policy.js';
+import { buildReleaseAssetPagePresentation } from '../src/services/release-asset-presenter.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -1015,6 +1019,368 @@ describe('release service', () => {
     });
   });
 
+  // ─── B-F3: Save validation reads asset state in bounded batches ────────────
+  //
+  // selectAssets validates ownership and presence for every submitted ID. It
+  // must read that state with one bound-parameter statement per 500 unique
+  // IDs, never one lookup per ID, while keeping the existing outcomes and the
+  // existing sequence-based error precedence:
+  //   1. validateSelections (malformed ID / role / sortOrder / duplicate)
+  //      rejects before any asset read;
+  //   2. the first unknown ID in submitted order throws AssetNotFoundError,
+  //      whatever earlier entries reported;
+  //   3. otherwise errors.assets carries the LAST offending entry in submitted
+  //      order (foreign project or newly selected missing asset).
+  describe('selectAssets bounded validation reads (B-F3)', () => {
+    const BATCH = 500;
+    const VALIDATION_LOOKUP = /^SELECT id, project_id, is_present FROM assets WHERE id IN \(/;
+    // Any SELECT that reads one asset row by ID (the pre-B-F3 findById loop).
+    const PER_ID_ASSET_READ = /^SELECT\b(?=.*\bFROM assets\b)(?=.*\bWHERE (?:a\.)?id = \?)/;
+    const MEMBERSHIP_WRITE = /^(?:INSERT|UPDATE|DELETE)\b.*\brelease_assets\b/;
+
+    let svc;
+    let sqlLog;
+    let restorePrepare;
+
+    // Record every prepared-statement execution (SQL, method, rows returned,
+    // bound parameter count). Installed before the service is created so the
+    // repositories' construction-time statements are wrapped too.
+    function instrument(targetDb) {
+      const originalPrepare = targetDb.prepare.bind(targetDb);
+      const log = [];
+      targetDb.prepare = (sql, ...args) => {
+        const statement = originalPrepare(sql, ...args);
+        const text = String(sql).replace(/\s+/g, ' ').trim();
+        return new Proxy(statement, {
+          get(target, prop, receiver) {
+            if (prop === 'get' || prop === 'all' || prop === 'run') {
+              return (...params) => {
+                const result = target[prop](...params);
+                const rows = prop === 'all' ? result.length : (prop === 'get' ? (result ? 1 : 0) : 0);
+                log.push({ sql: text, method: prop, rows, params: params.length });
+                return result;
+              };
+            }
+            const value = Reflect.get(target, prop, receiver);
+            return typeof value === 'function' ? value.bind(target) : value;
+          },
+        });
+      };
+      return { log, restore: () => { targetDb.prepare = originalPrepare; } };
+    }
+
+    function measure(fn) {
+      sqlLog.length = 0;
+      let error = null;
+      try {
+        fn();
+      } catch (err) {
+        error = err;
+      }
+      const entries = [...sqlLog];
+      const validation = entries.filter((entry) => VALIDATION_LOOKUP.test(entry.sql));
+      return {
+        error,
+        validation: validation.length,
+        validationRows: validation.reduce((sum, entry) => sum + entry.rows, 0),
+        maxValidationParams: Math.max(0, ...validation.map((entry) => entry.params)),
+        perIdAssetReads: entries.filter((entry) => PER_ID_ASSET_READ.test(entry.sql)).length,
+        membershipWrites: entries.filter((entry) => MEMBERSHIP_WRITE.test(entry.sql)).length,
+        total: entries.length,
+      };
+    }
+
+    function seedAssets(targetProjectId, count, prefix = 'a') {
+      const rows = Array.from({ length: count }, (_, index) => {
+        const filename = `${prefix}-${String(index).padStart(4, '0')}.png`;
+        return { relativePath: filename, filename, extension: 'png', mimeType: 'image/png', sizeBytes: 10, modifiedAt: '2025-01-01T00:00:00Z' };
+      });
+      return assetRepo.upsertMany(targetProjectId, rows).map((asset) => asset.id);
+    }
+
+    function membership(releaseId) {
+      return db.prepare('SELECT asset_id, role, sort_order FROM release_assets WHERE release_id = ? ORDER BY sort_order, asset_id')
+        .all(releaseId)
+        .map((row) => [row.asset_id, row.role, row.sort_order]);
+    }
+
+    function markMissing(assetId) {
+      db.prepare("UPDATE assets SET is_present = 0, missing_since = '2025-02-01T00:00:00Z' WHERE id = ?").run(assetId);
+    }
+
+    function unknownIds(count) {
+      const max = db.prepare('SELECT MAX(id) AS max FROM assets').get().max;
+      return Array.from({ length: count }, (_, index) => max + 1000 + index);
+    }
+
+    let ids;
+    let foreignIds;
+    let release;
+
+    beforeEach(() => {
+      ids = seedAssets(projectId, 1000);
+      const foreignProject = projectRepo.create(sampleProject({ title: 'B-F3 Foreign' }));
+      foreignIds = seedAssets(foreignProject.id, 3, 'foreign');
+      const instrumented = instrument(db);
+      sqlLog = instrumented.log;
+      restorePrepare = instrumented.restore;
+      svc = createReleaseService({ db });
+      release = svc.createRelease(projectId, validInput({ title: 'B-F3 Release' }));
+    });
+
+    afterEach(() => {
+      restorePrepare();
+    });
+
+    it.each([0, 1, 2, 25, 250, 499, 500, 501, 517, 1000])(
+      'validates a %i-ID membership Save with ceil(n / 500) lookups and no per-ID reads',
+      (n) => {
+        const submitted = ids.slice(0, n);
+        const result = measure(() => svc.selectAssets(release.id, submitted.map((assetId) => ({ assetId })), { membershipOnly: true }));
+
+        expect(result.error).toBeNull();
+        expect(result.validation).toBe(Math.ceil(n / BATCH));
+        expect(result.validationRows).toBe(n);
+        expect(result.maxValidationParams).toBeLessThanOrEqual(BATCH);
+        expect(result.perIdAssetReads).toBe(0);
+        // One DELETE plus one guarded INSERT per persisted row: the existing
+        // atomic replace, unchanged by B-F3.
+        expect(result.membershipWrites).toBe(1 + n);
+        // Everything else is exactly four fixed statements at every size:
+        // release lookup, parent project guard, membership before and after.
+        expect(result.total - result.validation - result.membershipWrites).toBe(4);
+        expect(membership(release.id)).toEqual(submitted.map((assetId, index) => [assetId, 'attachment', index]));
+      },
+    );
+
+    it('keeps a 517-ID legacy Save role/order associations and submitted sequence', () => {
+      const submitted = ids.slice(0, 517).reverse().map((assetId, index) => ({
+        assetId,
+        role: index === 3 ? 'primary' : (index % 50 === 7 ? 'preview' : 'attachment'),
+        sortOrder: 1000 - index,
+      }));
+      const result = measure(() => svc.selectAssets(release.id, submitted));
+
+      expect(result.error).toBeNull();
+      expect(result.validation).toBe(2);
+      expect(result.perIdAssetReads).toBe(0);
+      const expected = submitted
+        .map(({ assetId, role, sortOrder }) => [assetId, role, sortOrder])
+        .sort((a, b) => a[2] - b[2] || a[0] - b[0]);
+      expect(membership(release.id)).toEqual(expected);
+      expect(membership(release.id).filter(([, role]) => role === 'primary')).toEqual([[submitted[3].assetId, 'primary', 997]]);
+    });
+
+    it('preserves saved roles, relative order, off-page removals and appends for a membership-only Save', () => {
+      // Saved: 600 members (roles on two of them), in an order unlike ID order.
+      const saved = ids.slice(0, 600).reverse();
+      svc.selectAssets(release.id, saved.map((assetId, index) => ({
+        assetId,
+        role: index === 0 ? 'primary' : (index === 550 ? 'preview' : 'attachment'),
+        sortOrder: index,
+      })));
+      const removed = new Set([saved[1], saved[300], saved[599]]);
+      const additions = [ids[900], ids[650], ids[999]];
+      // Draft order differs from saved order; saved members keep their saved
+      // relative order and roles, new IDs append in submitted order.
+      const draft = [...additions.slice(0, 1), ...saved.filter((id) => !removed.has(id)).reverse(), ...additions.slice(1)];
+
+      const result = measure(() => svc.selectAssets(release.id, draft.map((assetId) => ({ assetId })), { membershipOnly: true }));
+
+      expect(result.error).toBeNull();
+      expect(result.validation).toBe(2);
+      expect(result.validationRows).toBe(600);
+      expect(result.perIdAssetReads).toBe(0);
+      const kept = saved.filter((id) => !removed.has(id));
+      expect(membership(release.id)).toEqual([
+        ...kept.map((assetId, index) => [assetId, assetId === saved[0] ? 'primary' : (assetId === saved[550] ? 'preview' : 'attachment'), index]),
+        ...additions.map((assetId, index) => [assetId, 'attachment', kept.length + index]),
+      ]);
+    });
+
+    it('rejects a 517-ID Save containing a foreign-project ID with bounded reads and no mutation', () => {
+      svc.selectAssets(release.id, ids.slice(0, 3).map((assetId) => ({ assetId })), { membershipOnly: true });
+      const before = membership(release.id);
+      const submitted = [...ids.slice(0, 300), foreignIds[0], ...ids.slice(300, 516)];
+
+      const result = measure(() => svc.selectAssets(release.id, submitted.map((assetId) => ({ assetId })), { membershipOnly: true }));
+
+      expect(result.error).toBeInstanceOf(ReleaseValidationError);
+      expect(result.error.errors).toEqual({ assets: `Asset ${foreignIds[0]} does not belong to the release's project.` });
+      expect(result.validation).toBe(2);
+      expect(result.validationRows).toBe(517);
+      expect(result.perIdAssetReads).toBe(0);
+      expect(result.membershipWrites).toBe(0);
+      expect(membership(release.id)).toEqual(before);
+    });
+
+    it('reads only ownership and presence columns, so foreign metadata is never loaded', () => {
+      measure(() => svc.selectAssets(release.id, [{ assetId: foreignIds[1] }], { membershipOnly: true }));
+      const lookup = sqlLog.find((entry) => VALIDATION_LOOKUP.test(entry.sql));
+      expect(lookup.sql).toBe('SELECT id, project_id, is_present FROM assets WHERE id IN (?)');
+      expect(assetRepo.findSelectionStatesByIds([foreignIds[1], ids[0], 987654321])
+        .sort((a, b) => a.id - b.id))
+        .toEqual([
+          { id: ids[0], project_id: projectId, is_present: 1 },
+          { id: foreignIds[1], project_id: expect.any(Number), is_present: 1 },
+        ]);
+      expect(assetRepo.findSelectionStatesByIds([])).toEqual([]);
+    });
+
+    it('rejects an unknown ID with AssetNotFoundError after bounded reads and no mutation', () => {
+      const [unknown] = unknownIds(1);
+      const result = measure(() => svc.selectAssets(release.id, [...ids.slice(0, 510), unknown, ...ids.slice(510, 516)].map((assetId) => ({ assetId })), { membershipOnly: true }));
+
+      expect(result.error).toBeInstanceOf(AssetNotFoundError);
+      expect(result.error.message).toBe(`Asset ${unknown} not found`);
+      expect(result.error.status).toBe(404);
+      expect(result.validation).toBe(2);
+      expect(result.perIdAssetReads).toBe(0);
+      expect(result.membershipWrites).toBe(0);
+      expect(membership(release.id)).toEqual([]);
+    });
+
+    it.each([
+      ['foreign before unknown', (u) => [ids[0], foreignIds[0], ...ids.slice(1, 520), u]],
+      ['unknown before foreign', (u) => [ids[0], u, ...ids.slice(1, 520), foreignIds[0]]],
+    ])('%s: the unknown ID wins (AssetNotFoundError)', (_label, build) => {
+      const [unknown] = unknownIds(1);
+      const result = measure(() => svc.selectAssets(release.id, build(unknown).map((assetId) => ({ assetId })), { membershipOnly: true }));
+      expect(result.error).toBeInstanceOf(AssetNotFoundError);
+      expect(result.error.message).toBe(`Asset ${unknown} not found`);
+      expect(result.validation).toBe(2);
+      expect(membership(release.id)).toEqual([]);
+    });
+
+    it('reports the first unknown ID in submitted order, not SQL or ID order', () => {
+      const [lower, higher] = unknownIds(2);
+      const result = measure(() => svc.selectAssets(release.id, [ids[0], higher, ...ids.slice(1, 600), lower].map((assetId) => ({ assetId })), { membershipOnly: true }));
+      expect(result.error).toBeInstanceOf(AssetNotFoundError);
+      expect(result.error.message).toBe(`Asset ${higher} not found`);
+    });
+
+    it.each([
+      ['foreign then missing new (across the batch boundary)', 'foreignFirst'],
+      ['missing new then foreign (across the batch boundary)', 'missingFirst'],
+    ])('%s: the last offending entry in submitted order is reported', (_label, orderName) => {
+      const missingNew = ids[700];
+      markMissing(missingNew);
+      const foreign = foreignIds[2];
+      const [first, second] = orderName === 'foreignFirst' ? [foreign, missingNew] : [missingNew, foreign];
+      const submitted = [...ids.slice(0, 10), first, ...ids.slice(10, 505), second, ...ids.slice(505, 510)];
+
+      const result = measure(() => svc.selectAssets(release.id, submitted.map((assetId) => ({ assetId })), { membershipOnly: true }));
+
+      expect(result.error).toBeInstanceOf(ReleaseValidationError);
+      expect(result.error.errors).toEqual({
+        assets: second === foreign
+          ? `Asset ${foreign} does not belong to the release's project.`
+          : `Asset ${missingNew} is currently missing and cannot be selected.`,
+      });
+      expect(result.validation).toBe(2);
+      expect(result.membershipWrites).toBe(0);
+    });
+
+    it('rejects a valid-surrounded foreign entry and leaves saved membership unchanged', () => {
+      svc.selectAssets(release.id, [{ assetId: ids[5], role: 'primary', sortOrder: 0 }, { assetId: ids[6], role: 'preview', sortOrder: 1 }]);
+      const before = membership(release.id);
+      const result = measure(() => svc.selectAssets(release.id, [ids[5], foreignIds[0], ids[6]].map((assetId) => ({ assetId })), { membershipOnly: true }));
+      expect(result.error.errors).toEqual({ assets: `Asset ${foreignIds[0]} does not belong to the release's project.` });
+      expect(result.validation).toBe(1);
+      expect(membership(release.id)).toEqual(before);
+    });
+
+    it.each([
+      ['missing new asset before invalid role', (missing) => [{ assetId: missing, role: 'attachment' }, { assetId: ids[1], role: 'bogus' }]],
+      ['invalid role before missing new asset', (missing) => [{ assetId: ids[1], role: 'bogus' }, { assetId: missing, role: 'attachment' }]],
+    ])('%s: the role error is reported before any asset read', (_label, build) => {
+      const missing = ids[2];
+      markMissing(missing);
+      const result = measure(() => svc.selectAssets(release.id, build(missing)));
+      expect(result.error).toBeInstanceOf(ReleaseValidationError);
+      expect(Object.keys(result.error.errors)).toEqual([expect.stringMatching(/^selections\[\d\]\.role$/)]);
+      expect(result.validation).toBe(0);
+      expect(result.membershipWrites).toBe(0);
+    });
+
+    it('rejects a duplicate spread across the batch boundary before any asset read, despite a later foreign ID', () => {
+      const submitted = [...ids.slice(0, 499), ids[10], ...ids.slice(499, 520), foreignIds[0]];
+      expect(submitted.indexOf(ids[10])).toBe(10);
+      expect(submitted.lastIndexOf(ids[10])).toBe(499);
+      const result = measure(() => svc.selectAssets(release.id, submitted.map((assetId) => ({ assetId })), { membershipOnly: true }));
+      expect(result.error).toBeInstanceOf(ReleaseValidationError);
+      expect(result.error.errors).toEqual({ assets: 'Duplicate asset IDs are not allowed.' });
+      expect(result.validation).toBe(0);
+      expect(result.membershipWrites).toBe(0);
+      expect(membership(release.id)).toEqual([]);
+    });
+
+    it.each([
+      ['invalid numeric ID', [{ assetId: 1.5 }], 'selections[0].assetId'],
+      ['negative sortOrder', [{ assetId: 1, sortOrder: -1 }], 'selections[0].sortOrder'],
+    ])('rejects an %s before any asset read', (_label, selections, key) => {
+      const result = measure(() => svc.selectAssets(release.id, selections));
+      expect(result.error).toBeInstanceOf(ReleaseValidationError);
+      expect(Object.keys(result.error.errors)).toEqual([key]);
+      expect(result.validation).toBe(0);
+    });
+
+    it('keeps an already-saved missing member and rejects a newly selected missing asset', () => {
+      svc.selectAssets(release.id, [{ assetId: ids[0], role: 'primary', sortOrder: 0 }, { assetId: ids[1], role: 'preview', sortOrder: 1 }]);
+      markMissing(ids[1]);
+      markMissing(ids[800]);
+
+      const kept = measure(() => svc.selectAssets(release.id, [...ids.slice(0, 2), ...ids.slice(2, 510)].map((assetId) => ({ assetId })), { membershipOnly: true }));
+      expect(kept.error).toBeNull();
+      expect(kept.validation).toBe(2);
+      expect(membership(release.id).slice(0, 2)).toEqual([[ids[0], 'primary', 0], [ids[1], 'preview', 1]]);
+      const afterKept = membership(release.id);
+
+      const rejected = measure(() => svc.selectAssets(release.id, [...ids.slice(0, 510), ids[800]].map((assetId) => ({ assetId })), { membershipOnly: true }));
+      expect(rejected.error.errors).toEqual({ assets: `Asset ${ids[800]} is currently missing and cannot be selected.` });
+      expect(rejected.validation).toBe(2);
+      expect(rejected.membershipWrites).toBe(0);
+      expect(membership(release.id)).toEqual(afterKept);
+    });
+
+    it('clears membership on an empty Save with no asset reads', () => {
+      svc.selectAssets(release.id, ids.slice(0, 2).map((assetId) => ({ assetId })), { membershipOnly: true });
+      const result = measure(() => svc.selectAssets(release.id, [], { membershipOnly: true }));
+      expect(result.error).toBeNull();
+      expect(result.validation).toBe(0);
+      expect(membership(release.id)).toEqual([]);
+    });
+
+    it.each([
+      ['published release', () => db.prepare("UPDATE releases SET published_date = '2025-01-01' WHERE id = ?").run(release.id), ReleasePublishedError],
+      ['archived release', () => svc.archiveRelease(release.id), ReleaseArchivedError],
+      ['archived parent project', () => projectRepo.archive(projectId), ReleaseParentArchivedError],
+    ])('refuses a 517-ID Save to a %s before any asset read', (_label, lock, ErrorClass) => {
+      svc.selectAssets(release.id, [{ assetId: ids[0], role: 'primary', sortOrder: 0 }]);
+      lock();
+      const before = membership(release.id);
+      const result = measure(() => svc.selectAssets(release.id, ids.slice(0, 517).map((assetId) => ({ assetId })), { membershipOnly: true }));
+      expect(result.error).toBeInstanceOf(ErrorClass);
+      expect(result.validation).toBe(0);
+      expect(result.membershipWrites).toBe(0);
+      expect(membership(release.id)).toEqual(before);
+    });
+
+    it('rolls back the whole 517-row replace when a late insert fails', () => {
+      svc.selectAssets(release.id, [{ assetId: ids[900], role: 'primary', sortOrder: 0 }, { assetId: ids[901], role: 'preview', sortOrder: 1 }]);
+      const before = membership(release.id);
+      db.exec(`CREATE TRIGGER b_f3_fail BEFORE INSERT ON release_assets WHEN NEW.asset_id = ${ids[516]} BEGIN SELECT RAISE(ABORT, 'b-f3 forced failure'); END`);
+      try {
+        const result = measure(() => svc.selectAssets(release.id, ids.slice(0, 517).map((assetId) => ({ assetId })), { membershipOnly: true }));
+        expect(result.error?.message).toMatch(/b-f3 forced failure/);
+        expect(result.validation).toBe(2);
+        expect(membership(release.id)).toEqual(before);
+      } finally {
+        db.exec('DROP TRIGGER b_f3_fail');
+      }
+    });
+  });
+
   describe('addAssetToRelease', () => {
     it('adds a single asset to a release', () => {
       const release = service.createRelease(projectId, validInput());
@@ -1269,7 +1635,12 @@ describe('release service', () => {
 
       const page = service.getReleaseAssetManagementPage(release.id, { selection: 'all' });
 
-      expect(page.assets.map((asset) => asset.id)).toEqual([categorized.id, uncategorized.id]);
+      // Package B: no whole-project asset array; project-wide totals come from
+      // the category aggregates instead.
+      expect(page).not.toHaveProperty('assets');
+      expect(page.categoryNavigation).toEqual({
+        totalCount: 2, uncategorizedCount: 1, byCategoryId: { [source.id]: 1 },
+      });
       expect(page.categories.map((category) => category.id)).toEqual([source.id]);
       expect(page.activeCategoryId).toBeNull();
       expect(page.assetPage.map((asset) => asset.id)).toEqual([categorized.id, uncategorized.id]);
@@ -1299,7 +1670,8 @@ describe('release service', () => {
       const secondPage = service.getReleaseAssetManagementPage(secondRelease.id, { category: source.id, selection: 'all' });
 
       expect(firstPage.activeCategoryId).toBe(source.id);
-      expect(firstPage.assets.map((asset) => asset.id)).toEqual([first.id, second.id, unselectedSource.id, otherAsset.id]);
+      expect(firstPage).not.toHaveProperty('assets');
+      expect(firstPage.categoryNavigation.totalCount).toBe(4);
       expect(firstPage.assetPage.map((asset) => asset.id)).toEqual([first.id, second.id, unselectedSource.id]);
       expect(firstPage.assetTotal).toBe(3);
       expect(firstPage.candidates.map((asset) => asset.id)).toEqual([unselectedSource.id]);
@@ -1335,18 +1707,19 @@ describe('release service', () => {
         false,
       ]);
 
-      expect(secondPage.assets.map((asset) => asset.id)).toEqual([first.id, second.id, unselectedSource.id, otherAsset.id]);
+      expect(secondPage).not.toHaveProperty('assets');
+      expect(secondPage.categoryNavigation.byCategoryId).toEqual({ [source.id]: 3, [other.id]: 1 });
       expect(secondPage.releaseAssets.map((asset) => asset.asset_id)).toEqual([first.id]);
       expect(secondPage.assetPage.map((asset) => asset.id)).toEqual([
         first.id,
         second.id,
         unselectedSource.id,
       ]);
-      expect(firstPage.assets.map((asset) => asset.id)).toContain(otherAsset.id);
+      expect(firstPage.assetPage.map((asset) => asset.id)).not.toContain(otherAsset.id);
       expect(firstPage.categories.map((category) => category.id)).toEqual([source.id, other.id]);
     });
 
-    it('returns complete assets and an empty merged page for a valid empty category', () => {
+    it('returns project-wide counts and an empty merged page for a valid empty category', () => {
       const empty = addCategory(projectId, 'Empty', 'empty');
       const release = service.createRelease(projectId, validInput());
       const uncategorized = addAsset('uncategorized.txt');
@@ -1354,7 +1727,8 @@ describe('release service', () => {
       const page = service.getReleaseAssetManagementPage(release.id, { category: String(empty.id) });
 
       expect(page.activeCategoryId).toBe(empty.id);
-      expect(page.assets.map((asset) => asset.id)).toEqual([uncategorized.id]);
+      expect(page).not.toHaveProperty('assets');
+      expect(page.categoryNavigation).toEqual({ totalCount: 1, uncategorizedCount: 1, byCategoryId: {} });
       expect(page.assetPage).toEqual([]);
       expect(page.assetTotal).toBe(0);
       expect(page.assetPresentation.assets).toEqual([]);
@@ -1410,16 +1784,68 @@ describe('release service', () => {
       expect(malformed.assetPageCount).toBe(2);
     });
 
-    it('normalizes requested release-asset page sizes without changing strict numeric semantics', () => {
-      expect(service.normalizeCandidateQuery({ pageSize: '150' }).pageSize).toBe(150);
-      expect(service.normalizeCandidateQuery({ pageSize: '200' }).pageSize).toBe(200);
-      expect(service.normalizeCandidateQuery({ pageSize: 'all' }).pageSize).toBe('all');
-      expect(service.normalizeCandidateQuery({ pageSize: '201' }).pageSize).toBe(200);
-      expect(service.normalizeCandidateQuery({ pageSize: '37' }).pageSize).toBe(37);
+    it('normalizes requested release-asset page sizes to the supported catalogue (P3-C4)', () => {
+      const supported = [['10', 10], ['25', 25], ['50', 50], ['100', 100], ['150', 150], ['200', 200], ['all', 'all']];
+      for (const [pageSize, expected] of supported) {
+        expect(service.normalizeCandidateQuery({ pageSize }).pageSize).toBe(expected);
+      }
 
-      for (const pageSize of ['1junk', '2.5', '1e2', '+2', '-2', '0', '']) {
+      // Any value neither control offers is the default 25: never kept as a
+      // custom size, never rounded to a neighbour, never View All.
+      const unsupported = [
+        '7', '11', '15', '24', '26', '37', '201', '999999', '0', '-1', 'abc', '1.5', '010',
+        '1junk', '2.5', '1e2', '+2', '-2', '', ' 25', '25 ', 'ALL', 'All', ' all',
+      ];
+      for (const pageSize of unsupported) {
         expect(service.normalizeCandidateQuery({ pageSize }).pageSize).toBe(25);
       }
+      for (const pageSize of [undefined, null, 50, ['50'], ['50', '10'], ['all', 'all'], ['10', 'abc'], { all: '1' }]) {
+        expect(service.normalizeCandidateQuery({ pageSize }).pageSize).toBe(25);
+      }
+      expect(service.normalizeCandidateQuery({}).pageSize).toBe(25);
+    });
+
+    it('queries, slices and paginates an unsupported page size at the effective 25 (P3-C4)', () => {
+      const ids = [];
+      for (let index = 0; index < 60; index++) {
+        ids.push(addAsset(`asset-${String(index).padStart(2, '0')}.txt`).id);
+      }
+      const release = service.createRelease(projectId, validInput());
+      const reference = service.getReleaseAssetManagementPage(release.id, { selection: 'all', pageSize: 'all' });
+      const ordered = reference.assetPage.map((asset) => asset.id);
+      expect(ordered).toHaveLength(60);
+      expect([...ordered].sort((a, b) => a - b)).toEqual([...ids].sort((a, b) => a - b));
+
+      for (const pageSize of ['7', '15', '11', '24', '26', '201', '999999', '0', '-1', 'abc', '1.5', '010', 'ALL', ['50', '10']]) {
+        const first = service.getReleaseAssetManagementPage(release.id, { selection: 'all', pageSize });
+        expect(first.assetPageSize).toBe(25);
+        expect(first.candidatePageSize).toBe(25);
+        expect(first.assetPageCount).toBe(3);
+        expect(first.assetTotal).toBe(60);
+        expect(first.assetPage.map((asset) => asset.id)).toEqual(ordered.slice(0, 25));
+
+        const third = service.getReleaseAssetManagementPage(release.id, { selection: 'all', pageSize, page: '3' });
+        expect(third.assetPageNumber).toBe(3);
+        expect(third.assetPage.map((asset) => asset.id)).toEqual(ordered.slice(50, 60));
+
+        // A page past the end clamps against the effective size, not the raw one.
+        const clamped = service.getReleaseAssetManagementPage(release.id, { selection: 'all', pageSize, page: '9' });
+        expect(clamped.assetPageNumber).toBe(3);
+        expect(clamped.assetPage.map((asset) => asset.id)).toEqual(ordered.slice(50, 60));
+      }
+
+      for (const [pageSize, size, pages] of [['10', 10, 6], ['25', 25, 3], ['50', 50, 2], ['100', 100, 1], ['150', 150, 1], ['200', 200, 1]]) {
+        const sized = service.getReleaseAssetManagementPage(release.id, { selection: 'all', pageSize, page: '2' });
+        expect(sized.assetPageSize).toBe(size);
+        expect(sized.assetPageCount).toBe(pages);
+        const page = Math.min(2, pages);
+        expect(sized.assetPageNumber).toBe(page);
+        expect(sized.assetPage.map((asset) => asset.id)).toEqual(ordered.slice((page - 1) * size, page * size));
+      }
+      const all = service.getReleaseAssetManagementPage(release.id, { selection: 'all', pageSize: 'all', page: '2' });
+      expect(all.assetPageSize).toBe('all');
+      expect(all.assetPageCount).toBe(1);
+      expect(all.assetPage.map((asset) => asset.id)).toEqual(ordered);
     });
 
     it('uses category validation for malformed IDs and not-found for missing or cross-project IDs', () => {
@@ -1470,31 +1896,33 @@ describe('release service', () => {
         });
         const source = addCategory(projectId, 'Source', 'source');
         const assets = [];
-        for (let index = 0; index < 12; index++) {
+        // P3-C4: enough shots to paginate at the supported size 10.
+        for (let index = 0; index < 32; index++) {
           assets.push(addAsset(`shot-${String(index).padStart(2, '0')}.png`, index % 2 === 0 ? source.id : null));
         }
         const doc = addAsset('shot-doc.txt', source.id);
         addAsset('other.png', source.id);
         const release = service.createRelease(projectId, validInput());
-        // Saved: even (Source) shots 0..10 plus the doc; odd shots unselected.
+        // Saved: even (Source) shots 0..30 plus the doc; odd shots unselected.
         service.selectAssets(release.id, [
           ...assets.filter((_, index) => index % 2 === 0).map((asset) => ({ assetId: asset.id })),
           { assetId: doc.id },
         ], { membershipOnly: true });
 
         const page2 = service.getReleaseAssetManagementPage(release.id, {
-          search: 'shot', extension: 'png', category: String(source.id), pageSize: '4', page: '2',
+          search: 'shot', extension: 'png', category: String(source.id), pageSize: '10', page: '2',
         });
-        expect(page2.assetTotal).toBe(6);
+        expect(page2.assetTotal).toBe(16);
         expect(page2.assetPageCount).toBe(2);
         expect(page2.assetPageNumber).toBe(2);
-        expect(page2.assetPage.map((asset) => asset.filename)).toEqual(['shot-08.png', 'shot-10.png']);
+        expect(page2.assetPage.map((asset) => asset.filename))
+          .toEqual(['shot-20.png', 'shot-22.png', 'shot-24.png', 'shot-26.png', 'shot-28.png', 'shot-30.png']);
 
         const allMode = service.getReleaseAssetManagementPage(release.id, {
-          search: 'shot', extension: 'png', selection: 'all', pageSize: '4',
+          search: 'shot', extension: 'png', selection: 'all', pageSize: '10',
         });
-        expect(allMode.assetTotal).toBe(12);
-        expect(allMode.assetPageCount).toBe(3);
+        expect(allMode.assetTotal).toBe(32);
+        expect(allMode.assetPageCount).toBe(4);
 
         // Extension options and category counts stay whole-project.
         expect(page2.assetExtensions).toEqual(allMode.assetExtensions);
@@ -3264,11 +3692,12 @@ describe('release service', () => {
       // The execution count must be identical regardless of candidate count
       expect(execWith5).toBe(execWith3);
 
-      // Document the baseline — a fixed small number of executions
-      // (release lookup + project lookup + list selected + count candidates +
-      //  page query + extensions query ≈ 6-10 executions)
+      // Document the baseline — a fixed small number of executions:
+      // release + project + categories + saved membership + aggregates +
+      // filtered COUNT (+ page rows when anything matches) + extensions,
+      // plus the image-policy app_meta reads (6) = 13-14 executions.
       expect(execWith3).toBeGreaterThan(0);
-      expect(execWith3).toBeLessThanOrEqual(12);
+      expect(execWith3).toBeLessThanOrEqual(14);
     });
 
     it('execution count does not grow per-candidate for ownership checks', () => {
@@ -4102,5 +4531,1017 @@ describe('scheduleRelease', () => {
 
     expect(schedule(release.id, '2026-10-13').changed).toBe(true);
     expect(service.findRelease(release.id).planned_date).toBe('2026-10-13');
+  });
+});
+
+// ─── Manage Assets bounded SQL pagination — Package B service integration ──
+//
+// Expected IDs and counts are computed independently in JavaScript from the
+// rows each test creates (filenames are unique, zero-padded ASCII so the
+// canonical filename-then-ID order is plain string order), never from the
+// Package A repository APIs under test.
+
+describe('Manage Assets bounded SQL integration (Package B)', () => {
+  let tmpDir;
+  let dbPath;
+  let db;
+  let service;
+  let projectRepo;
+  let assetRepo;
+  let categoryRepo;
+  let projectId;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-release-pkgb-'));
+    dbPath = path.join(tmpDir, 'test.db');
+    db = openDatabase(dbPath);
+    runMigrations(db, MIGRATIONS_DIR);
+    service = createReleaseService({ db });
+    projectRepo = createProjectRepository(db);
+    assetRepo = createAssetRepository(db);
+    categoryRepo = createAssetCategoryRepository(db);
+    projectId = projectRepo.create(sampleProject({ title: 'Package B Project' })).id;
+  });
+
+  afterEach(() => {
+    closeDatabase(db);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function addAssets(count, {
+    prefix = 'asset', extension = 'txt', categoryId = null, project = projectId, start = 0,
+  } = {}) {
+    const rows = [];
+    db.transaction(() => {
+      for (let i = start; i < start + count; i++) {
+        const filename = `${prefix}-${String(i).padStart(5, '0')}.${extension}`;
+        const data = sampleAsset(project, { relativePath: filename, filename, extension });
+        data.categoryId = categoryId;
+        rows.push(assetRepo.upsert(project, filename, data));
+      }
+    })();
+    return rows;
+  }
+
+  function addCategory(displayName, directorySlug, project = projectId) {
+    return categoryRepo.addProjectCategory({
+      projectId: project, displayName, directorySlug, displayOrder: 0, enabled: true,
+    });
+  }
+
+  function markMissing(ids) {
+    const stmt = db.prepare("UPDATE assets SET is_present = 0, missing_since = '2025-02-01T00:00:00Z' WHERE id = ?");
+    for (const id of ids) stmt.run(id);
+  }
+
+  // Persist membership directly (it may include missing assets, which Save
+  // would refuse to newly select). entries: [{ id, role, sortOrder }].
+  function persistMembership(releaseId, entries) {
+    db.prepare('DELETE FROM release_assets WHERE release_id = ?').run(releaseId);
+    const insert = db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)');
+    for (const entry of entries) insert.run(releaseId, entry.id, entry.role ?? 'attachment', entry.sortOrder);
+  }
+
+  function byFilename(rows) {
+    return [...rows].sort((a, b) => (a.filename < b.filename ? -1 : a.filename > b.filename ? 1 : a.id - b.id));
+  }
+
+  function ids(rows) {
+    return rows.map((row) => row.id);
+  }
+
+  /**
+   * Patch db.prepare (BEFORE the measured service is created, so repository
+   * statements prepared at construction are included) to record every
+   * execution: SQL, bound args, rows returned, whether rows carried asset
+   * metadata, and whether the connection was inside a transaction.
+   */
+  function instrumentStatements(targetDb, { onExecute = null } = {}) {
+    const log = [];
+    const original = targetDb.prepare;
+    targetDb.prepare = function prepare(sql) {
+      const stmt = original.call(this, sql);
+      const text = sql.replace(/\s+/g, ' ').trim();
+      for (const method of ['all', 'get', 'run', 'iterate']) {
+        const fn = stmt[method];
+        stmt[method] = function execute(...args) {
+          const entry = { sql: text, method, args, inTransaction: targetDb.inTransaction };
+          onExecute?.(entry, 'before');
+          const result = fn.apply(this, args);
+          const rows = method === 'all' ? result : (method === 'get' && result ? [result] : []);
+          entry.rows = rows.length;
+          entry.metadataRows = rows.filter((row) => row && typeof row === 'object' && 'filename' in row).length;
+          log.push(entry);
+          onExecute?.(entry, 'after');
+          return result;
+        };
+      }
+      return stmt;
+    };
+    return { log, restore: () => { targetDb.prepare = original; } };
+  }
+
+  const isPageRowsSql = (entry) => entry.sql.includes('is_saved_member') && entry.sql.includes('LIMIT ? OFFSET ?');
+  const isViewAllRowsSql = (entry) => entry.sql.includes('is_saved_member') && !entry.sql.includes('LIMIT');
+  const isFilteredCountSql = (entry) => entry.sql.includes('AS candidate_total');
+  const isAggregateSql = (entry) => entry.sql.includes('present_candidates') && entry.sql.includes('GROUP BY a.category_id');
+  const isMembershipSql = (entry) => entry.sql.startsWith('SELECT ra.asset_id, ra.role, ra.sort_order, a.is_present');
+  const isAppMetaSql = (entry) => entry.sql.includes('FROM app_meta');
+
+  function buildScaleFixture(assetCount, project = projectId) {
+    const category = addCategory('Scale', 'scale', project);
+    const assets = addAssets(assetCount, { categoryId: category.id, project });
+    const release = service.createRelease(project, validInput({ title: `Scale ${assetCount}` }));
+    // 40 saved members spread across the project, stored order reversed
+    // relative to filename so saved order and browse order differ.
+    const step = Math.floor(assetCount / 40);
+    const members = Array.from({ length: 40 }, (_, i) => assets[i * step]);
+    persistMembership(release.id, members.map((asset, index) => ({
+      id: asset.id,
+      role: index === 0 ? 'primary' : index === 1 ? 'preview' : 'attachment',
+      sortOrder: members.length - 1 - index,
+    })));
+    // Two saved members and three non-members go missing.
+    const missingSaved = [members[3], members[7]];
+    const missingNonMembers = [assets[1], assets[2], assets[3]];
+    markMissing([...missingSaved, ...missingNonMembers].map((asset) => asset.id));
+    return { category, assets, release, members, missingSaved, missingNonMembers };
+  }
+
+  describe('real integration at scale', () => {
+    const SCALES = [250, 2000, 10000];
+
+    // Build one deterministic scale fixture in `project`, measure a single
+    // Manage Assets page read with a freshly constructed (instrumented)
+    // service, verify the page and its statement shape, and return this
+    // scale's statement counts. Returns a fresh value per call; nothing is
+    // shared between tests.
+    function measureScale(assetCount, project = projectId) {
+      const fixture = buildScaleFixture(assetCount, project);
+      const missingIds = new Set([...fixture.missingSaved, ...fixture.missingNonMembers].map((a) => a.id));
+      const memberIds = new Set(fixture.members.map((a) => a.id));
+
+      const { log, restore } = instrumentStatements(db);
+      let page;
+      try {
+        const measured = createReleaseService({ db });
+        log.length = 0;
+        page = measured.getReleaseAssetManagementPage(fixture.release.id, { selection: 'all', page: '3', pageSize: '25' });
+      } finally {
+        restore();
+      }
+
+      // Independent expectation: present assets plus saved-missing ones,
+      // filename order, page 3 of 25.
+      const eligible = byFilename(fixture.assets.filter((a) => !missingIds.has(a.id) || memberIds.has(a.id)));
+      expect(page.assetTotal).toBe(assetCount - 3);
+      expect(eligible).toHaveLength(assetCount - 3);
+      expect(ids(page.assetPage)).toEqual(ids(eligible.slice(50, 75)));
+      expect(page.assetPageNumber).toBe(3);
+      expect(page.assetPageSize).toBe(25);
+      expect(page.assetPageCount).toBe(Math.ceil((assetCount - 3) / 25));
+      expect(page.candidateTotal).toBe(assetCount - 3 - 40);
+      expect(page.eligibleAssetCount).toBe(assetCount - 5);
+      expect(page.eligibleCandidateCount).toBe(assetCount - 5 - 38);
+      expect(page.categoryNavigation).toEqual({
+        totalCount: assetCount, uncategorizedCount: 0, byCategoryId: { [fixture.category.id]: assetCount },
+      });
+
+      // Complete saved membership independently of the page.
+      const expectedSaved = [...fixture.members].reverse();
+      expect(page.releaseAssets.map((m) => m.asset_id)).toEqual(ids(expectedSaved));
+      expect(page.releaseAssets[page.releaseAssets.length - 1].role).toBe('primary');
+      expect(page.releaseAssets[page.releaseAssets.length - 2].role).toBe('preview');
+
+      // Statement evidence.
+      const pageRows = log.filter(isPageRowsSql);
+      expect(pageRows).toHaveLength(1);
+      expect(pageRows[0].args.slice(-2)).toEqual([25, 50]); // LIMIT 25 OFFSET 50
+      expect(pageRows[0].rows).toBe(25);
+      expect(log.filter(isFilteredCountSql)).toHaveLength(1);
+      expect(log.filter(isViewAllRowsSql)).toHaveLength(0);
+      const membership = log.filter(isMembershipSql);
+      expect(membership).toHaveLength(1);
+      expect(membership[0].rows).toBe(40);
+      expect(membership[0].metadataRows).toBe(0);
+      const aggregates = log.filter(isAggregateSql);
+      expect(aggregates).toHaveLength(1);
+      expect(aggregates[0].rows).toBe(1);
+      // No statement returned more asset-metadata rows than the page size,
+      // and in total only the 25 page rows carried asset metadata.
+      expect(Math.max(...log.map((e) => e.metadataRows))).toBe(25);
+      expect(log.reduce((sum, e) => sum + e.metadataRows, 0)).toBe(25);
+      // No unbounded asset read of any shape.
+      expect(log.filter((e) => /FROM assets\b/.test(e.sql) && !/LIMIT|GROUP BY|DISTINCT/.test(e.sql))).toEqual([]);
+
+      return { assetCount, statements: log.length, nonMeta: log.filter((e) => !isAppMetaSql(e)).length };
+    }
+
+    for (const assetCount of SCALES) {
+      it(`reads one bounded SQL page for pageSize=25 with ${assetCount} assets and no whole-project read`, () => {
+        measureScale(assetCount);
+      }, 120000);
+    }
+
+    it('keeps the statement count constant across 250, 2,000 and 10,000 assets', () => {
+      // Self-contained: every scale is built and measured here, each in its
+      // own project inside this test's database, so the test never depends
+      // on the per-scale tests above having run.
+      const results = SCALES.map((assetCount) => measureScale(
+        assetCount,
+        projectRepo.create(sampleProject({ title: `Scale ${assetCount} Project` })).id,
+      ));
+      expect(results).toHaveLength(3);
+      expect(results.every((r) => r.statements > 0)).toBe(true);
+      expect(results.map((r) => r.assetCount)).toEqual([250, 2000, 10000]);
+      expect(new Set(results.map((r) => r.statements)).size).toBe(1);
+      // release, project, categories, membership, aggregates, COUNT, page
+      // rows, extensions — plus the image-policy app_meta reads.
+      expect(results[0].nonMeta).toBe(8);
+    }, 120000);
+  });
+
+  describe('read snapshot', () => {
+    it('runs every database read of the page model inside one transaction', () => {
+      const fixture = buildScaleFixture(250);
+      const { log, restore } = instrumentStatements(db);
+      const measured = createReleaseService({ db });
+      log.length = 0;
+      measured.getReleaseAssetManagementPage(fixture.release.id, { selection: 'all' });
+      restore();
+
+      const dataReads = log.filter((e) => !isAppMetaSql(e));
+      expect(dataReads).toHaveLength(8);
+      expect(dataReads.every((e) => e.inTransaction)).toBe(true);
+      expect(db.inTransaction).toBe(false);
+    });
+
+    it('is not affected by a write committed by another connection mid-read', () => {
+      const fixture = buildScaleFixture(250);
+      const other = openDatabase(dbPath);
+      try {
+        let wrote = false;
+        let newAssetId = null;
+        const { restore } = instrumentStatements(db, {
+          onExecute(entry, phase) {
+            // Just after the saved membership is read (snapshot established),
+            // another connection adds an asset, saves it and deletes a member.
+            if (phase !== 'after' || wrote || !isMembershipSql(entry)) return;
+            wrote = true;
+            const otherAssets = createAssetRepository(other);
+            const filename = 'aaa-concurrent.txt';
+            newAssetId = otherAssets.upsert(projectId, filename,
+              { ...sampleAsset(projectId, { relativePath: filename, filename }), categoryId: fixture.category.id }).id;
+            other.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)')
+              .run(fixture.release.id, newAssetId, 'attachment', 99);
+            other.prepare('DELETE FROM release_assets WHERE release_id = ? AND asset_id = ?')
+              .run(fixture.release.id, fixture.members[10].id);
+          },
+        });
+        const measured = createReleaseService({ db });
+        const page = measured.getReleaseAssetManagementPage(fixture.release.id, { selection: 'selected', pageSize: 'all' });
+        restore();
+        expect(wrote).toBe(true);
+
+        // Everything reflects the pre-write snapshot.
+        expect(page.releaseAssets).toHaveLength(40);
+        expect(page.assetTotal).toBe(40);
+        expect(ids(page.assetPage)).toEqual(ids(byFilename(fixture.members)));
+        expect(page.categoryNavigation.totalCount).toBe(250);
+        expect(page.eligibleCandidateCount).toBe(250 - 5 - 38);
+        expect(ids(page.assetPage)).not.toContain(newAssetId);
+
+        // A later read sees the committed change coherently.
+        const after = service.getReleaseAssetManagementPage(fixture.release.id, { selection: 'selected', pageSize: 'all' });
+        expect(after.releaseAssets).toHaveLength(40);
+        expect(after.assetTotal).toBe(40);
+        expect(ids(after.assetPage)).toContain(newAssetId);
+        expect(ids(after.assetPage)).not.toContain(fixture.members[10].id);
+        expect(after.categoryNavigation.totalCount).toBe(251);
+      } finally {
+        closeDatabase(other);
+      }
+    });
+
+    it('rolls back cleanly and writes nothing when a SQL read fails', () => {
+      const fixture = buildScaleFixture(250);
+      const changesBefore = db.prepare('SELECT total_changes() AS c').get().c;
+      const { restore } = instrumentStatements(db, {
+        onExecute(entry, phase) {
+          if (phase === 'before' && isFilteredCountSql(entry)) throw new Error('simulated SQL failure');
+        },
+      });
+      const measured = createReleaseService({ db });
+      expect(() => measured.getReleaseAssetManagementPage(fixture.release.id, { selection: 'all' }))
+        .toThrow('simulated SQL failure');
+      restore();
+      expect(db.inTransaction).toBe(false);
+      expect(db.prepare('SELECT total_changes() AS c').get().c).toBe(changesBefore);
+      // The connection remains usable.
+      expect(service.getReleaseAssetManagementPage(fixture.release.id, { selection: 'all' }).assetTotal).toBe(247);
+    });
+
+    it('leaves no open transaction after category validation errors', () => {
+      const release = service.createRelease(projectId, validInput());
+      expect(() => service.getReleaseAssetManagementPage(release.id, { category: 'abc' }))
+        .toThrow(AssetCategoryValidationError);
+      expect(db.inTransaction).toBe(false);
+      expect(() => service.getReleaseAssetManagementPage(release.id, { category: '999999' }))
+        .toThrow(AssetCategoryNotFoundError);
+      expect(db.inTransaction).toBe(false);
+    });
+  });
+
+  describe('page size, page and filter normalization', () => {
+    let assets;
+    let release;
+
+    beforeEach(() => {
+      assets = byFilename(addAssets(237));
+      release = service.createRelease(projectId, validInput());
+    });
+
+    it('defaults to 25 and honours every supported numeric size', () => {
+      const def = service.getReleaseAssetManagementPage(release.id, { selection: 'all' });
+      expect(def.assetPageSize).toBe(25);
+      expect(ids(def.assetPage)).toEqual(ids(assets.slice(0, 25)));
+      for (const size of [10, 25, 50, 100, 150, 200]) {
+        const page = service.getReleaseAssetManagementPage(release.id, { selection: 'all', pageSize: String(size) });
+        expect(page.assetPageSize).toBe(size);
+        expect(page.assetPageCount).toBe(Math.ceil(237 / size));
+        expect(ids(page.assetPage)).toEqual(ids(assets.slice(0, size)));
+      }
+    });
+
+    it('returns every filtered row for explicit View All without a cap', () => {
+      const page = service.getReleaseAssetManagementPage(release.id, { selection: 'all', pageSize: 'all', page: '4' });
+      expect(page.assetPageSize).toBe('all');
+      expect(page.assetPageNumber).toBe(1);
+      expect(page.assetPageCount).toBe(1);
+      expect(ids(page.assetPage)).toEqual(ids(assets));
+    });
+
+    it.each([
+      ['unsupported 7', '7'],
+      ['unsupported 15', '15'],
+      ['repeated sizes', ['10', '50']],
+      ['single-element array', ['50']],
+      ['differently-cased All', 'ALL'],
+      ['leading zero', '025'],
+      ['empty', ''],
+    ])('falls back to 25 for %s (never View All or a custom size)', (_label, pageSize) => {
+      const page = service.getReleaseAssetManagementPage(release.id, { selection: 'all', pageSize, page: '2' });
+      expect(page.assetPageSize).toBe(25);
+      expect(page.assetPageNumber).toBe(2);
+      expect(ids(page.assetPage)).toEqual(ids(assets.slice(25, 50)));
+    });
+
+    it('serves first, middle and last pages and clamps beyond the end', () => {
+      const expectPage = (raw, number, slice) => {
+        const page = service.getReleaseAssetManagementPage(release.id, { selection: 'all', pageSize: '50', page: raw });
+        expect(page.assetPageNumber).toBe(number);
+        expect(page.assetPageCount).toBe(5);
+        expect(ids(page.assetPage)).toEqual(ids(slice));
+      };
+      expectPage('1', 1, assets.slice(0, 50));
+      expectPage('3', 3, assets.slice(100, 150));
+      expectPage('5', 5, assets.slice(200, 237));
+      expectPage('6', 5, assets.slice(200, 237));
+      expectPage('99999999999999999999', 5, assets.slice(200, 237));
+    });
+
+    it('preserves the service page normalization before calling the repository', () => {
+      const pageOf = (raw) => service.getReleaseAssetManagementPage(release.id, { selection: 'all', page: raw }).assetPageNumber;
+      // Service-level coercion: a single-element array is its string value.
+      expect(pageOf(['3'])).toBe(3);
+      for (const malformed of [['3', '3'], '1e2', '2.5', '-1', '0', '', '+2', 'abc', `9${'9'.repeat(400)}`]) {
+        expect(pageOf(malformed)).toBe(1);
+      }
+    });
+
+    it('returns a valid empty model for an empty filtered result', () => {
+      const page = service.getReleaseAssetManagementPage(release.id, { selection: 'all', search: 'no-such-file', page: '3' });
+      expect(page.assetPage).toEqual([]);
+      expect(page.assetTotal).toBe(0);
+      expect(page.candidateTotal).toBe(0);
+      expect(page.assetPageNumber).toBe(1);
+      expect(page.assetPageCount).toBe(1);
+      expect(page.assetPresentation.assets).toEqual([]);
+    });
+  });
+
+  describe('filter semantics and counts', () => {
+    it('applies Search/Category/Extension with the saved-missing bypass and missing non-member exclusion', () => {
+      const art = addCategory('Art', 'art');
+      const artPng = addAssets(6, { prefix: 'art', extension: 'png', categoryId: art.id });
+      const artTxt = addAssets(4, { prefix: 'art', extension: 'txt', categoryId: art.id, start: 100 });
+      const loose = addAssets(5, { prefix: 'loose', extension: 'png' });
+      const release = service.createRelease(projectId, validInput());
+      // Saved: artPng[0] (primary), loose[0] (missing; matches nothing below),
+      // artTxt[0] (preview). Missing non-member: artPng[5].
+      persistMembership(release.id, [
+        { id: artPng[0].id, role: 'primary', sortOrder: 0 },
+        { id: loose[0].id, sortOrder: 1 },
+        { id: artTxt[0].id, role: 'preview', sortOrder: 2 },
+      ]);
+      markMissing([loose[0].id, artPng[5].id]);
+
+      const query = { selection: 'all', category: String(art.id), extension: 'PNG', search: '  ART-0000  ' };
+      const page = service.getReleaseAssetManagementPage(release.id, query);
+      // Present art png whose filename contains "art-0000" → art-00000..art-00004 (00005 missing),
+      // plus the saved missing loose[0] (bypass).
+      const expected = byFilename([...artPng.slice(0, 5), loose[0]]);
+      expect(ids(page.assetPage)).toEqual(ids(expected));
+      expect(page.assetFilters).toEqual({ search: 'ART-0000', extension: 'png', selection: 'all' });
+      expect(page.activeCategoryId).toBe(art.id);
+      expect(page.assetTotal).toBe(6);
+      expect(page.candidateTotal).toBe(4);
+      expect(ids(page.assetPage)).not.toContain(artPng[5].id);
+
+      const selected = service.getReleaseAssetManagementPage(release.id, { ...query, selection: 'selected' });
+      expect(ids(selected.assetPage)).toEqual(ids(byFilename([artPng[0], loose[0]])));
+      expect(selected.candidateTotal).toBe(0);
+
+      // Category navigation is project-wide and independent of filters.
+      expect(page.categoryNavigation).toEqual({ totalCount: 15, uncategorizedCount: 5, byCategoryId: { [art.id]: 10 } });
+      expect(page.eligibleAssetCount).toBe(13);
+      expect(page.eligibleCandidateCount).toBe(11);
+    });
+
+    it('treats NULL category as Uncategorized in navigation and presentation', () => {
+      const art = addCategory('Art', 'art');
+      addCategory('Empty', 'empty');
+      const categorized = addAssets(2, { prefix: 'c', categoryId: art.id });
+      const uncategorized = addAssets(3, { prefix: 'u' });
+      const release = service.createRelease(projectId, validInput());
+      const page = service.getReleaseAssetManagementPage(release.id, { selection: 'all' });
+      expect(page.categoryNavigation).toEqual({ totalCount: 5, uncategorizedCount: 3, byCategoryId: { [art.id]: 2 } });
+      expect(page.categories.map((c) => c.display_name)).toEqual(['Art', 'Empty']);
+      const labels = Object.fromEntries(page.assetPresentation.assets.map((a) => [a.id, a.categoryLabel]));
+      for (const asset of uncategorized) expect(labels[asset.id]).toBe('Uncategorized');
+      for (const asset of categorized) expect(labels[asset.id]).toBe('Art');
+    });
+
+    it('does not count unsaved draft membership: only persisted membership drives counts', () => {
+      const assets = byFilename(addAssets(30));
+      const release = service.createRelease(projectId, validInput());
+      persistMembership(release.id, [{ id: assets[29].id, sortOrder: 0 }]);
+      const page = service.getReleaseAssetManagementPage(release.id, { selectedAssetIds: [assets[0].id] });
+      expect(ids(page.assetPage)).toEqual([assets[29].id]);
+      expect(page.assetTotal).toBe(1);
+    });
+
+    it('rejects invalid Category syntax with 422 and unknown/foreign Category with 404', () => {
+      const foreignProject = projectRepo.create(sampleProject({ title: 'Foreign Project' }));
+      const foreignCategory = addCategory('Foreign', 'foreign', foreignProject.id);
+      const release = service.createRelease(projectId, validInput());
+      for (const bad of ['abc', '1.5', '-2', '0']) {
+        let error;
+        try { service.getReleaseAssetManagementPage(release.id, { category: bad }); } catch (err) { error = err; }
+        expect(error).toBeInstanceOf(AssetCategoryValidationError);
+        expect(error.status).toBe(422);
+      }
+      expect(() => service.getReleaseAssetManagementPage(release.id, { category: String(foreignCategory.id) }))
+        .toThrow(AssetCategoryNotFoundError);
+      expect(() => service.getReleaseAssetManagementPage(release.id, { categoryId: '999999' }))
+        .toThrow(AssetCategoryNotFoundError);
+      // Accepted coercion: surrounding whitespace.
+      const own = addCategory('Own', 'own');
+      expect(service.getReleaseAssetManagementPage(release.id, { category: ` ${own.id} ` }).activeCategoryId).toBe(own.id);
+    });
+
+    it('isolates releases and projects', () => {
+      const foreignProject = projectRepo.create(sampleProject({ title: 'Other Project' }));
+      const own = addAssets(3, { prefix: 'own' });
+      const foreign = addAssets(4, { prefix: 'foreign', project: foreignProject.id });
+      const release = service.createRelease(projectId, validInput());
+      const otherRelease = service.createRelease(projectId, validInput({ title: 'Other release' }));
+      const foreignRelease = service.createRelease(foreignProject.id, validInput({ title: 'Foreign release' }));
+      persistMembership(otherRelease.id, [{ id: own[0].id, sortOrder: 0 }]);
+      persistMembership(foreignRelease.id, [{ id: foreign[0].id, sortOrder: 0 }]);
+      // A junction row pointing at a foreign-project asset is never shown.
+      persistMembership(release.id, [{ id: own[1].id, sortOrder: 0 }, { id: foreign[1].id, sortOrder: 1 }]);
+
+      const page = service.getReleaseAssetManagementPage(release.id, { selection: 'all' });
+      expect(ids(page.assetPage)).toEqual(ids(byFilename(own)));
+      expect(page.releaseAssets.map((m) => m.asset_id)).toEqual([own[1].id]);
+      expect(page.categoryNavigation.totalCount).toBe(3);
+      expect(page.candidateTotal).toBe(2);
+      expect(() => service.getReleaseAssetManagementPage(999999, {})).toThrow(ReleaseNotFoundError);
+    });
+  });
+
+  describe('saved membership and presentation', () => {
+    it('keeps the complete saved base (off-page, missing, roles, order) while rendering only the page', () => {
+      const assets = byFilename(addAssets(120));
+      const release = service.createRelease(projectId, validInput());
+      const saved = [assets[100], assets[5], assets[60], assets[110]];
+      persistMembership(release.id, [
+        { id: saved[0].id, role: 'primary', sortOrder: 0 },
+        { id: saved[1].id, role: 'preview', sortOrder: 1 },
+        { id: saved[2].id, sortOrder: 2 },
+        { id: saved[3].id, sortOrder: 3 },
+      ]);
+      markMissing([saved[3].id]);
+
+      const page = service.getReleaseAssetManagementPage(release.id, { selection: 'all', pageSize: '10' });
+      expect(page.releaseAssets).toEqual([
+        { asset_id: saved[0].id, role: 'primary', sort_order: 0, is_present: 1 },
+        { asset_id: saved[1].id, role: 'preview', sort_order: 1, is_present: 1 },
+        { asset_id: saved[2].id, role: 'attachment', sort_order: 2, is_present: 1 },
+        { asset_id: saved[3].id, role: 'attachment', sort_order: 3, is_present: 0 },
+      ]);
+      expect(ids(page.assetPage)).toEqual(ids(assets.slice(0, 10)));
+      const card = page.assetPresentation.assets.find((a) => a.id === saved[1].id);
+      expect(card.releaseContext).toEqual({ selected: true, role: 'preview', sortOrder: 1 });
+      expect(page.assetPresentation.selected.map((a) => a.id)).toEqual([saved[1].id]);
+      expect(page.candidates.map((a) => a.id)).not.toContain(saved[1].id);
+      expect(page.candidates).toHaveLength(9);
+    });
+
+    it('presents editable page cards identically to an independent full-read presentation', () => {
+      const category = addCategory('Images', 'images');
+      const assets = byFilename([
+        ...addAssets(20, { prefix: 'img', extension: 'png', categoryId: category.id }),
+        ...addAssets(8, { prefix: 'doc', extension: 'txt' }),
+      ]);
+      db.prepare('UPDATE assets SET source_animated = 1, source_generation = 3 WHERE id = ?').run(assets[2].id);
+      const release = service.createRelease(projectId, validInput());
+      persistMembership(release.id, [
+        { id: assets[4].id, role: 'primary', sortOrder: 0 },
+        { id: assets[1].id, role: 'preview', sortOrder: 1 },
+      ]);
+      markMissing([assets[1].id]);
+
+      const page = service.getReleaseAssetManagementPage(release.id, { selection: 'all', pageSize: '10', page: '1' }, '12h');
+
+      const settings = createProjectImageSettingsService({ appMetaRepository: createAppMetaRepository(db) });
+      const fingerprint = settings.getPresentationPolicy?.() ?? projectImagePresentationPolicy(settings.getPolicy());
+      const full = assetRepo.findByProjectId(projectId, { sortBy: 'filename', order: 'asc' });
+      const savedRows = createReleaseRepository(db).listReleaseAssets(release.id);
+      const savedIds = new Set(savedRows.map((r) => r.asset_id));
+      const oldPage = full.filter((a) => a.is_present === 1 || savedIds.has(a.id)).slice(0, 10);
+      const expected = buildReleaseAssetPagePresentation({
+        policyFingerprint: fingerprint,
+        selectedAssets: savedRows,
+        assets: oldPage,
+        candidateAssets: oldPage.filter((a) => !savedIds.has(a.id)),
+        categories: categoryRepo.listProjectCategories(projectId),
+        clockFormat: '12h',
+      });
+      expect(page.assetPresentation.assets).toEqual(expected.assets);
+      expect(page.assetPresentation.candidates).toEqual(expected.candidates);
+    });
+
+    it.each([
+      ['published release', (release) => db.prepare("UPDATE releases SET published_date = '2026-01-01' WHERE id = ?").run(release.id)],
+      ['archived release', (release) => db.prepare("UPDATE releases SET archived_at = '2026-01-01T00:00:00Z' WHERE id = ?").run(release.id)],
+      ['archived parent project', () => db.prepare("UPDATE projects SET archived_at = '2026-01-01T00:00:00Z' WHERE id = ?").run(projectId)],
+    ])('read-only %s displays the complete saved selection with metadata in stored order', (_label, makeReadOnly) => {
+      const assets = byFilename(addAssets(80));
+      const release = service.createRelease(projectId, validInput());
+      const saved = Array.from({ length: 60 }, (_, i) => assets[79 - i]);
+      persistMembership(release.id, saved.map((asset, index) => ({
+        id: asset.id, role: index === 0 ? 'primary' : index === 1 ? 'preview' : 'attachment', sortOrder: index,
+      })));
+      markMissing([saved[30].id]);
+      makeReadOnly(release);
+
+      const page = service.getReleaseAssetManagementPage(release.id, { pageSize: '10' });
+      expect(page.readOnly).toBe(true);
+      expect(page.releaseAssets.map((r) => r.asset_id)).toEqual(ids(saved));
+      expect(page.assetPresentation.selected.map((a) => a.id)).toEqual(ids(saved));
+      expect(page.assetPresentation.selected.map((a) => a.filename)).toEqual(saved.map((a) => a.filename));
+      expect(page.assetPresentation.selected[0].releaseContext).toEqual({ selected: true, role: 'primary', sortOrder: 0 });
+      expect(page.assetPresentation.selected[1].releaseContext).toEqual({ selected: true, role: 'preview', sortOrder: 1 });
+      expect(page.assetPresentation.selected[30].presence_state).toBe('missing');
+    });
+  });
+
+  describe('read-only query contract (B-F1)', () => {
+    const READ_ONLY_STATES = [
+      ['published release', (release) => db.prepare("UPDATE releases SET published_date = '2026-01-01' WHERE id = ?").run(release.id)],
+      ['archived release', (release) => db.prepare("UPDATE releases SET archived_at = '2026-01-01T00:00:00Z' WHERE id = ?").run(release.id)],
+      ['archived parent project', () => db.prepare("UPDATE projects SET archived_at = '2026-01-01T00:00:00Z' WHERE id = ?").run(projectId)],
+    ];
+    const EXPECTED_SIZE = { 10: 10, 25: 25, 200: 200, all: 'all', 7: 25, 15: 25 };
+
+    const isEditablePageSql = (entry) => isPageRowsSql(entry) || isViewAllRowsSql(entry) || isFilteredCountSql(entry);
+    const isSavedCollectionSql = (entry) => entry.sql.startsWith('SELECT ra.release_id, ra.asset_id, ra.role, ra.sort_order, ra.created_at, a.project_id');
+
+    // 3,000 assets (1,500 categorized PNG + 1,500 uncategorized TXT) and 120
+    // saved members spread across the project, stored in an order that is
+    // neither filename nor ID order. The saved IDs are known independently.
+    function buildReadOnlyFixture() {
+      const category = addCategory('Scale', 'scale');
+      const pngs = addAssets(1500, { prefix: 'img', extension: 'png', categoryId: category.id });
+      const txts = addAssets(1500, { prefix: 'doc', extension: 'txt' });
+      const assets = byFilename([...pngs, ...txts]);
+      const release = service.createRelease(projectId, validInput({ title: 'Read-only scale' }));
+      const picked = Array.from({ length: 120 }, (_, i) => assets[i * 25]);
+      const saved = picked.map((_, i) => (i % 2 === 0 ? picked[i / 2] : picked[119 - (i - 1) / 2]));
+      persistMembership(release.id, saved.map((asset, index) => ({
+        id: asset.id, role: index === 0 ? 'primary' : index === 1 ? 'preview' : 'attachment', sortOrder: index,
+      })));
+      db.prepare('UPDATE assets SET source_animated = 1, source_generation = 3 WHERE id = ?').run(saved[3].id);
+      const missingSaved = saved[5];
+      const missingNonMember = assets[1];
+      markMissing([missingSaved.id, missingNonMember.id]);
+      return { category, assets, release, saved, missingSaved, nonMember: assets[2] };
+    }
+
+    function queryCases(categoryId) {
+      return [
+        { pageSize: '10' },
+        { pageSize: '25', selection: 'all' },
+        { pageSize: '200', view: 'list' },
+        { pageSize: 'all', selection: 'all' },
+        { pageSize: 'all', view: 'grid' },
+        { pageSize: '7' },
+        { pageSize: '15', selection: 'all', page: '4' },
+        { pageSize: '10', selection: 'all', search: 'img-0', extension: 'PNG', category: String(categoryId), view: 'list', page: '2' },
+        { pageSize: 'all', selection: 'all', search: 'doc', extension: 'txt', view: 'grid' },
+      ];
+    }
+
+    function measure(fn) {
+      const changesBefore = db.prepare('SELECT total_changes() AS c').get().c;
+      const { log, restore } = instrumentStatements(db);
+      const measured = createReleaseService({ db });
+      log.length = 0;
+      let result;
+      try { result = fn(measured); } finally { restore(); }
+      const changesAfter = db.prepare('SELECT total_changes() AS c').get().c;
+      return { result, log, changed: changesAfter - changesBefore };
+    }
+
+    function expectedSavedPresentation(releaseId) {
+      // The approved saved-asset path, presented exactly as the read-only page
+      // presents it: the pre-correction read-only display collection.
+      const settings = createProjectImageSettingsService({ appMetaRepository: createAppMetaRepository(db) });
+      const fingerprint = settings.getPresentationPolicy?.() ?? projectImagePresentationPolicy(settings.getPolicy());
+      return buildReleaseAssetPagePresentation({
+        policyFingerprint: fingerprint,
+        selectedAssets: createReleaseRepository(db).listReleaseAssets(releaseId),
+        assets: [],
+        candidateAssets: [],
+        categories: categoryRepo.listProjectCategories(projectId),
+        clockFormat: '24h',
+      }).selected;
+    }
+
+    it.each(READ_ONLY_STATES)('%s renders the complete saved collection with zero editable page reads', (_label, makeReadOnly) => {
+      const f = buildReadOnlyFixture();
+      makeReadOnly(f.release);
+      const savedIds = f.saved.map((asset) => asset.id);
+      const expectedSelected = expectedSavedPresentation(f.release.id);
+      const membershipBefore = db.prepare('SELECT * FROM release_assets WHERE release_id = ? ORDER BY asset_id').all(f.release.id);
+
+      for (const query of queryCases(f.category.id)) {
+        const context = JSON.stringify(query);
+        const { result: page, log, changed } = measure((measured) => measured.getReleaseAssetManagementPage(f.release.id, query, '24h'));
+
+        expect(page.readOnly, context).toBe(true);
+        // L. No database mutation.
+        expect(changed, context).toBe(0);
+        expect(log.filter((entry) => entry.method === 'run'), context).toEqual([]);
+        // I. Zero editable page reads: no filtered COUNT, numeric page or View All rows.
+        expect(log.filter(isEditablePageSql).map((entry) => entry.sql), context).toEqual([]);
+        // J/K. Full metadata comes only from ONE saved-collection statement
+        // whose rows are exactly the saved members: no whole-project read and
+        // no per-member lookup.
+        const metadataStatements = log.filter((entry) => entry.metadataRows > 0);
+        expect(metadataStatements, context).toHaveLength(1);
+        expect(isSavedCollectionSql(metadataStatements[0]), context).toBe(true);
+        expect(metadataStatements[0].metadataRows, context).toBe(savedIds.length);
+        expect(Math.max(...log.map((entry) => entry.rows)), context).toBeLessThanOrEqual(savedIds.length);
+        // Coherent snapshot: every database read but the image policy runs
+        // inside the one read transaction.
+        expect(log.filter((entry) => !isAppMetaSql(entry) && !entry.inTransaction), context).toEqual([]);
+
+        // D/E. Complete saved selection, exact IDs, stored order, no duplicates.
+        const selected = page.assetPresentation.selected;
+        expect(selected.map((asset) => asset.id), context).toEqual(savedIds);
+        expect(new Set(selected.map((asset) => asset.id)).size).toBe(savedIds.length);
+        expect(page.releaseAssets.map((row) => row.asset_id), context).toEqual(savedIds);
+        expect(selected.map((asset) => asset.releaseContext.sortOrder)).toEqual(savedIds.map((_, index) => index));
+        // G. Primary and Preview roles.
+        expect(selected[0].releaseContext).toEqual({ selected: true, role: 'primary', sortOrder: 0 });
+        expect(selected[1].releaseContext).toEqual({ selected: true, role: 'preview', sortOrder: 1 });
+        expect(selected.slice(2).every((asset) => asset.releaseContext.role === 'attachment')).toBe(true);
+        // F. Missing saved member stays in place.
+        expect(selected.filter((asset) => asset.presence_state === 'missing').map((asset) => asset.id)).toEqual([f.missingSaved.id]);
+        expect(selected[5].id).toBe(f.missingSaved.id);
+        // H. Full saved metadata.
+        expect(selected.map((asset) => asset.filename)).toEqual(f.saved.map((asset) => asset.filename));
+        expect(selected.map((asset) => asset.extension)).toEqual(f.saved.map((asset) => asset.extension));
+        // Generated/animated metadata reaches the presenter from the saved rows.
+        expect(page.releaseAssets[3]).toMatchObject({ asset_id: f.saved[3].id, source_animated: 1, source_generation: 3 });
+        expect(page.releaseAssets.every((row) => typeof row.filename === 'string' && row.relative_path)).toBe(true);
+        for (const asset of selected) {
+          expect(asset.categoryLabel).toBe(asset.extension === 'png' ? 'Scale' : 'Uncategorized');
+        }
+        expect(selected, context).toEqual(expectedSelected);
+
+        // No editable page is exposed; size/selection stay normalized for URLs.
+        expect(page.assetPage).toEqual([]);
+        expect(page.candidates).toEqual([]);
+        expect(page.assetPresentation.assets).toEqual([]);
+        expect(page.assetPresentation.candidates).toEqual([]);
+        expect(page.assetPageNumber).toBe(1);
+        expect(page.assetPageCount).toBe(1);
+        expect(page.assetPageSize, context).toBe(EXPECTED_SIZE[query.pageSize]);
+        expect(page.candidatePageSize).toBe(EXPECTED_SIZE[query.pageSize]);
+        expect(page.assetTotal).toBeNull();
+        expect(page.candidateTotal).toBeNull();
+        expect(page.assetFilters.selection).toBe(query.selection === 'all' ? 'all' : 'selected');
+        // Category and eligibility aggregates are unchanged.
+        expect(page.categoryNavigation).toEqual({ totalCount: 3000, uncategorizedCount: 1500, byCategoryId: { [f.category.id]: 1500 } });
+        expect(page.eligibleAssetCount).toBe(2998);
+        expect(page.eligibleCandidateCount).toBe(2998 - 119);
+        expect(page.assetExtensions).toEqual(['png', 'txt']);
+        expect(page.activeCategoryId).toBe(query.category ? f.category.id : null);
+      }
+
+      expect(db.prepare('SELECT * FROM release_assets WHERE release_id = ? ORDER BY asset_id').all(f.release.id))
+        .toEqual(membershipBefore);
+    });
+
+    it.each(READ_ONLY_STATES)('%s keeps category validation (422 syntax, 404 foreign) without editable reads', (_label, makeReadOnly) => {
+      const release = service.createRelease(projectId, validInput());
+      addAssets(5);
+      const foreignProject = projectRepo.create(sampleProject({ title: 'Foreign RO Project' }));
+      const foreignCategory = addCategory('Foreign', 'foreign', foreignProject.id);
+      makeReadOnly(release);
+      let error;
+      try { service.getReleaseAssetManagementPage(release.id, { category: 'abc' }); } catch (err) { error = err; }
+      expect(error).toBeInstanceOf(AssetCategoryValidationError);
+      expect(error.status).toBe(422);
+      expect(() => service.getReleaseAssetManagementPage(release.id, { category: String(foreignCategory.id) }))
+        .toThrow(AssetCategoryNotFoundError);
+    });
+
+    it('editable control: the same fixture still reads one bounded page of 25 and View All reads every eligible row', () => {
+      const f = buildReadOnlyFixture();
+      const numeric = measure((measured) => measured.getReleaseAssetManagementPage(f.release.id, { selection: 'all', pageSize: '25', page: '3' }));
+      expect(numeric.result.readOnly).toBe(false);
+      expect(numeric.log.filter(isFilteredCountSql)).toHaveLength(1);
+      const pageRows = numeric.log.filter(isPageRowsSql);
+      expect(pageRows).toHaveLength(1);
+      expect(pageRows[0].metadataRows).toBe(25);
+      expect(numeric.log.reduce((sum, entry) => sum + entry.metadataRows, 0)).toBe(25);
+      expect(numeric.result.assetTotal).toBe(2999);
+      expect(numeric.result.assetPageNumber).toBe(3);
+      expect(numeric.result.assetPageCount).toBe(120);
+      expect(numeric.result.candidateTotal).toBe(2999 - 120);
+      expect(numeric.changed).toBe(0);
+
+      const viewAll = measure((measured) => measured.getReleaseAssetManagementPage(f.release.id, { selection: 'all', pageSize: 'all' }));
+      expect(viewAll.log.filter(isViewAllRowsSql)[0].metadataRows).toBe(2999);
+      expect(viewAll.result.assetPage).toHaveLength(2999);
+      expect(viewAll.result.assetPageSize).toBe('all');
+    });
+
+    // B-F4: a read-only page displays only the persisted saved collection, so
+    // a rejected Save's submitted IDs are never hydrated there; persisted and
+    // submitted membership stay distinct in the model.
+    it.each(READ_ONLY_STATES)('%s rejected Save reads only the saved collection: no editable page, no submitted-ID hydration', (_label, makeReadOnly) => {
+      const f = buildReadOnlyFixture();
+      makeReadOnly(f.release);
+      const savedIds = f.saved.map((asset) => asset.id);
+      const submitted = [
+        { asset_id: f.saved[1].id, role: 'primary', sort_order: 0 },
+        { asset_id: f.nonMember.id, role: 'attachment', sort_order: 1 },
+      ];
+      const { result: model, log, changed } = measure((measured) => measured.getReleaseAssetSaveErrorPage(
+        f.release.id, { selection: 'all', pageSize: '25' }, submitted, '24h',
+      ));
+      expect(changed).toBe(0);
+      expect(log.filter((entry) => entry.method === 'run')).toEqual([]);
+      expect(log.filter(isEditablePageSql)).toEqual([]);
+      expect(log.filter((entry) => entry.sql.includes('a.project_id = ? AND a.id IN ('))).toEqual([]);
+      expect(model.readOnly).toBe(true);
+
+      // Persisted display: complete saved collection, stored order, roles,
+      // missing member and metadata.
+      const selected = model.assetPresentation.selected;
+      expect(selected.map((asset) => asset.id)).toEqual(savedIds);
+      expect(model.releaseAssets.map((row) => row.asset_id)).toEqual(savedIds);
+      expect(selected[0].releaseContext).toEqual({ selected: true, role: 'primary', sortOrder: 0 });
+      expect(selected[1].releaseContext).toEqual({ selected: true, role: 'preview', sortOrder: 1 });
+      expect(selected.filter((asset) => asset.presence_state === 'missing').map((asset) => asset.id)).toEqual([f.missingSaved.id]);
+      expect(selected.map((asset) => asset.filename)).toEqual(f.saved.map((asset) => asset.filename));
+      expect(model.releaseAssets[3]).toMatchObject({ source_animated: 1, source_generation: 3 });
+
+      // Submitted draft kept separate; the non-member gains no metadata.
+      expect(model.submittedReleaseAssets).toEqual(submitted);
+      expect(model.submittedAssetPresentation.selected.map((asset) => asset.filename))
+        .toEqual([f.saved[1].filename, '']);
+
+      // Only metadata read: the one saved-collection statement.
+      const metadataStatements = log.filter((entry) => entry.metadataRows > 0);
+      expect(metadataStatements).toHaveLength(1);
+      expect(isSavedCollectionSql(metadataStatements[0])).toBe(true);
+      expect(metadataStatements[0].metadataRows).toBe(savedIds.length);
+    });
+  });
+
+  describe('Save validation-error recovery', () => {
+    function buildSaveFixture() {
+      const assets = byFilename([
+        ...addAssets(60, { prefix: 'a', extension: 'txt' }),
+        ...addAssets(1, { prefix: 'z-hidden', extension: 'png' }),
+      ]);
+      const hidden = assets.find((a) => a.extension === 'png');
+      const release = service.createRelease(projectId, validInput());
+      const primary = assets[0];
+      const preview = assets[1];
+      const offPageRemoval = assets[40];
+      persistMembership(release.id, [
+        { id: primary.id, role: 'primary', sortOrder: 0 },
+        { id: preview.id, role: 'preview', sortOrder: 1 },
+        { id: hidden.id, sortOrder: 2 },
+        { id: offPageRemoval.id, sortOrder: 3 },
+      ]);
+      const foreignProject = projectRepo.create(sampleProject({ title: 'Foreign Save Project' }));
+      const [foreign] = addAssets(1, { prefix: 'foreign', project: foreignProject.id });
+      return { assets, hidden, release, primary, preview, offPageRemoval, offPageAddition: assets[50], foreign };
+    }
+
+    it('retains the submitted selection with project-scoped batched metadata and no mutation', () => {
+      const f = buildSaveFixture();
+      const rawQuery = { selection: 'all', extension: 'txt', pageSize: '10', page: '1' };
+      // Submitted draft: keep Primary/Preview/hidden, add an off-page asset,
+      // drop the off-page saved asset, and an invalid role triggers 422.
+      const submitted = [
+        { asset_id: f.preview.id, role: 'preview', sort_order: 0 },
+        { asset_id: f.primary.id, role: 'primary', sort_order: 1 },
+        { asset_id: f.hidden.id, role: 'attachment', sort_order: 2 },
+        { asset_id: f.offPageAddition.id, role: 'attachment', sort_order: 3 },
+        { asset_id: f.assets[2].id, role: 'bogus', sort_order: 4 },
+        { asset_id: f.foreign.id, role: 'attachment', sort_order: 5 },
+      ];
+      const membershipBefore = db.prepare('SELECT * FROM release_assets WHERE release_id = ? ORDER BY asset_id').all(f.release.id);
+      expect(() => service.selectAssets(f.release.id, submitted.map((s) => ({
+        assetId: s.asset_id, role: s.role, sortOrder: s.sort_order,
+      })))).toThrow(ReleaseValidationError);
+
+      const changesBefore = db.prepare('SELECT total_changes() AS c').get().c;
+      const { log, restore } = instrumentStatements(db);
+      const measured = createReleaseService({ db });
+      log.length = 0;
+      const model = measured.getReleaseAssetSaveErrorPage(f.release.id, rawQuery, submitted, '24h');
+      restore();
+
+      expect(db.prepare('SELECT total_changes() AS c').get().c).toBe(changesBefore);
+      expect(db.prepare('SELECT * FROM release_assets WHERE release_id = ? ORDER BY asset_id').all(f.release.id))
+        .toEqual(membershipBefore);
+
+      // Submitted and persisted membership stay distinct.
+      expect(model.submittedReleaseAssets).toEqual(submitted);
+      expect(model.releaseAssets.map((m) => [m.asset_id, m.role, m.sort_order])).toEqual([
+        [f.primary.id, 'primary', 0], [f.preview.id, 'preview', 1], [f.hidden.id, 'attachment', 2],
+        [f.offPageRemoval.id, 'attachment', 3],
+      ]);
+
+      // Draft presentation: exact IDs, order and roles; off-page and hidden
+      // submitted assets hydrated; the foreign ID gets no metadata.
+      const selected = model.submittedAssetPresentation.selected;
+      expect(selected.map((a) => a.id)).toEqual(submitted.map((s) => s.asset_id));
+      expect(selected.map((a) => a.releaseContext.role)).toEqual(submitted.map((s) => s.role));
+      expect(selected.map((a) => a.releaseContext.sortOrder)).toEqual(submitted.map((s) => s.sort_order));
+      expect(selected[2].filename).toBe(f.hidden.filename);
+      expect(selected[3].filename).toBe(f.offPageAddition.filename);
+      expect(selected[5]).toMatchObject({ id: f.foreign.id, filename: '', project_id: null, relative_path: null });
+      expect(selected.map((a) => a.id)).not.toContain(f.offPageRemoval.id);
+
+      // Visible page is the bounded page with draft membership applied.
+      expect(ids(model.assetPage)).toEqual(ids(f.assets.filter((a) => a.extension === 'txt').slice(0, 10)));
+      const cards = Object.fromEntries(model.submittedAssetPresentation.assets.map((a) => [a.id, a.releaseContext]));
+      expect(cards[f.primary.id]).toEqual({ selected: true, role: 'primary', sortOrder: 1 });
+      expect(cards[f.assets[3].id].selected).toBe(false);
+
+      // One batched project-scoped lookup of only the off-page project IDs.
+      const lookups = log.filter((e) => e.sql.includes('a.project_id = ? AND a.id IN ('));
+      expect(lookups).toHaveLength(1);
+      expect(lookups[0].args[0]).toBe(projectId);
+      expect(lookups[0].args.slice(1).sort((x, y) => x - y))
+        .toEqual([f.hidden.id, f.offPageAddition.id, f.foreign.id].sort((x, y) => x - y));
+      expect(lookups[0].rows).toBe(2);
+      expect(log.reduce((sum, e) => sum + e.metadataRows, 0)).toBe(12);
+      expect(log.filter((e) => /FROM assets\b/.test(e.sql) && !/LIMIT|GROUP BY|DISTINCT|IN \(/.test(e.sql))).toEqual([]);
+    });
+
+    it('never lets a foreign submitted ID supply presentation metadata', () => {
+      const f = buildSaveFixture();
+      const model = service.getReleaseAssetSaveErrorPage(f.release.id, { selection: 'all' }, [
+        { asset_id: f.foreign.id, role: 'primary', sort_order: 0 },
+      ]);
+      expect(model.submittedAssetPresentation.selected).toHaveLength(1);
+      expect(model.submittedAssetPresentation.selected[0]).toMatchObject({
+        id: f.foreign.id, filename: '', project_id: null, relative_path: null,
+      });
+      expect(model.submittedAssetPresentation.assets.map((a) => a.id)).not.toContain(f.foreign.id);
+    });
+
+    // C4b: recovery hydration has two layers — the project-scoped batched
+    // lookup and the same-project filter on metadata sources. The second is
+    // proved on its own by rewriting the lookup to ignore the project (a
+    // simulated repository regression) and checking that the foreign row is
+    // actually returned yet still supplies no rendering metadata.
+    it('C4b: a foreign submitted ID never hydrates filename, path, category or project into the recovery model, even if the lookup returns its row', () => {
+      const f = buildSaveFixture();
+      const foreignProject = projectRepo.create(sampleProject({ title: 'Quokka Isolation Project' }));
+      const foreignCategory = addCategory('Quokka Vault Category', 'quokka-vault', foreignProject.id);
+      const [foreign] = addAssets(1, { prefix: 'quokka-secret', extension: 'png', project: foreignProject.id, categoryId: foreignCategory.id });
+      const FOREIGN_STRINGS = [foreign.filename, foreign.relative_path, 'Quokka', 'quokka'];
+      expect(foreign.filename).toContain('quokka-secret');
+      const rawQuery = { selection: 'all', extension: 'txt', pageSize: '10', page: '1' };
+      const submitted = [
+        { asset_id: f.primary.id, role: 'primary', sort_order: 0 },
+        { asset_id: f.offPageAddition.id, role: 'attachment', sort_order: 1 },
+        { asset_id: foreign.id, role: 'preview', sort_order: 2 },
+        { asset_id: f.hidden.id, role: 'attachment', sort_order: 3 },
+      ];
+      const membershipBefore = db.prepare('SELECT * FROM release_assets WHERE release_id = ? ORDER BY asset_id').all(f.release.id);
+
+      // The foreign ID cannot persist as membership (membership-only Save).
+      let refusal = null;
+      try {
+        service.selectAssets(f.release.id, submitted.map((s) => ({ assetId: s.asset_id })), { membershipOnly: true });
+      } catch (err) {
+        refusal = err;
+      }
+      expect(refusal).toBeInstanceOf(ReleaseValidationError);
+      expect(refusal.errors).toEqual({ assets: `Asset ${foreign.id} does not belong to the release's project.` });
+      expect(db.prepare('SELECT * FROM release_assets WHERE release_id = ? ORDER BY asset_id').all(f.release.id))
+        .toEqual(membershipBefore);
+
+      // Every string reachable from the model, for a leak scan.
+      const strings = (value, out = []) => {
+        if (typeof value === 'string') out.push(value);
+        else if (Array.isArray(value)) value.forEach((item) => strings(item, out));
+        else if (value && typeof value === 'object') Object.values(value).forEach((item) => strings(item, out));
+        return out;
+      };
+      const objects = (value, out = []) => {
+        if (Array.isArray(value)) value.forEach((item) => objects(item, out));
+        else if (value && typeof value === 'object') { out.push(value); Object.values(value).forEach((item) => objects(item, out)); }
+        return out;
+      };
+      const expectIsolated = (model, label) => {
+        const leaked = strings(model).filter((text) => FOREIGN_STRINGS.some((needle) => text.includes(needle)));
+        expect(leaked, label).toEqual([]);
+        expect(objects(model).filter((o) => o.project_id === foreignProject.id || o.category_id === foreignCategory.id), label).toEqual([]);
+        // The foreign entry keeps only its submitted ID, role and order.
+        const presentation = model.submittedAssetPresentation;
+        const entry = presentation.selected.find((asset) => asset.id === foreign.id);
+        expect(entry, label).toMatchObject({ id: foreign.id, filename: '', project_id: null, relative_path: null });
+        expect(entry.releaseContext, label).toEqual({ selected: true, role: 'preview', sortOrder: 2 });
+        expect([...presentation.assets, ...presentation.candidates].map((asset) => asset.id), label).not.toContain(foreign.id);
+        expect(model.submittedReleaseAssets, label).toEqual(submitted);
+        // Local recovery metadata stays intact: on-page, off-page and hidden.
+        const byId = new Map(presentation.selected.map((asset) => [asset.id, asset]));
+        expect(byId.get(f.primary.id).filename, label).toBe(f.primary.filename);
+        expect(byId.get(f.offPageAddition.id).filename, label).toBe(f.offPageAddition.filename);
+        expect(byId.get(f.hidden.id).filename, label).toBe(f.hidden.filename);
+        expect(byId.get(f.hidden.id).relative_path, label).toBe(f.hidden.relative_path);
+      };
+
+      // 1. Real service, all layers.
+      expectIsolated(service.getReleaseAssetSaveErrorPage(f.release.id, rawQuery, submitted, '24h'), 'all layers');
+
+      // 2. Project scope removed from the recovery lookup only.
+      const LOOKUP = 'WHERE a.project_id = ? AND a.id IN (';
+      const lookupRows = [];
+      const original = db.prepare;
+      db.prepare = function prepare(sql) {
+        if (!sql.includes(LOOKUP)) return original.call(this, sql);
+        const stmt = original.call(this, sql.replace(LOOKUP, 'WHERE (a.project_id = ? OR 1) AND a.id IN ('));
+        const all = stmt.all;
+        stmt.all = function execute(...args) {
+          const rows = all.apply(this, args);
+          lookupRows.push(...rows);
+          return rows;
+        };
+        return stmt;
+      };
+      let unscoped;
+      try {
+        unscoped = createReleaseService({ db }).getReleaseAssetSaveErrorPage(f.release.id, rawQuery, submitted, '24h');
+      } finally {
+        db.prepare = original;
+      }
+      // The simulated regression really returned the foreign row ...
+      expect(lookupRows.map((row) => row.id).sort((x, y) => x - y))
+        .toEqual([f.hidden.id, f.offPageAddition.id, foreign.id].sort((x, y) => x - y));
+      expect(lookupRows.find((row) => row.id === foreign.id)).toMatchObject({
+        project_id: foreignProject.id, filename: foreign.filename, category_display_name: 'Quokka Vault Category',
+      });
+      // ... and the same-project filter still keeps it out of the model.
+      expectIsolated(unscoped, 'unscoped lookup');
+      expect(db.prepare('SELECT * FROM release_assets WHERE release_id = ? ORDER BY asset_id').all(f.release.id))
+        .toEqual(membershipBefore);
+    });
   });
 });

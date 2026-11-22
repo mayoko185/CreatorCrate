@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import express from 'express';
 import { getLocalTodayIso } from '../util/date.js';
 import {
@@ -11,15 +12,13 @@ import {
   ReleaseValidationError,
   ReleaseNotFoundError,
 } from '../services/release-service.js';
-import { buildReleaseAssetPagePresentation } from '../services/release-asset-presenter.js';
-import { projectImagePresentationPolicy } from '../services/project-image-policy.js';
 import { RELEASE_ASSET_ROLES } from '../data/release-repository.js';
 import { buildSocialContent } from '../services/social-content-builder.js';
 import { buildReleaseSocialPrepPresentation } from '../services/release-social-prep-presenter.js';
 import { isProjectArchived } from '../services/project-state.js';
 import { presentProjectOptionCatalogue } from '../services/project-option-presenter.js';
 import { ARCHIVED_PROJECT_STATUS } from '../data/project-repository.js';
-import { isSafeRedirectTarget } from '../middleware/auth.js';
+import { isSafeRedirectTarget, parseCookies } from '../middleware/auth.js';
 import {
   buildPageDefaultsDialogModel,
   handlePageDefaultsPost,
@@ -97,8 +96,38 @@ function buildReleaseEditDeepLink(releaseId) {
 
 export { handleReleaseList, buildPageUrl };
 
+/**
+ * Raw URL-encoded Manage Assets Save bodies, keyed by request. Express's
+ * extended parser (qs) compacts sparse indexed fields — `roles[1]=preview`
+ * alone parses as `roles: ['preview']`, i.e. index 0 — so the parsed body can
+ * no longer say which asset a role or order was submitted for. The existing
+ * application parser retains the exact bytes it already read (same stream,
+ * limits and CSRF chain) for this one route only, and the Save reads the
+ * original field indices from them; see readReleaseAssetSaveFields.
+ * @type {WeakMap<object, string>}
+ */
+const releaseAssetSaveRawBodies = new WeakMap();
+const RELEASE_ASSET_SAVE_PATH = /^\/releases\/[^/]+\/assets\/?$/i;
+
+/**
+ * `verify` hook for the application's `express.urlencoded` parser: keeps the
+ * raw body of a Manage Assets Save POST (already bounded by the parser's body
+ * limit) and nothing for any other request.
+ * @param {import('express').Request} req
+ * @param {unknown} _res
+ * @param {Buffer} buf
+ * @param {string} [encoding]
+ */
+export function retainReleaseAssetSaveRawBody(req, _res, buf, encoding) {
+  if (req.method === 'POST' && RELEASE_ASSET_SAVE_PATH.test(req.path)) {
+    releaseAssetSaveRawBodies.set(req, buf.toString(encoding || 'utf8'));
+  }
+}
+
 export function createReleasesRouter({ appName, db, releaseService, projectService, workflowQueryService }) {
   const router = express.Router();
+  // Pending one-time Manage Assets Save confirmations, owned by this router.
+  const assetsSavedConfirmations = createReleaseAssetsSavedConfirmations();
 
   // GET /releases — release-record list.
   router.get('/', (req, res, next) => {
@@ -440,15 +469,19 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
 
     const project = projectService.findById(release.project_id);
     const releaseAssets = releaseService.listReleaseAssets(id);
+    const assetsSaved = consumeReleaseAssetsSavedConfirmation(req, res, id, assetsSavedConfirmations);
 
-    res.render('releases/detail.njk', buildReleaseDetailRenderModel({
-      appName,
-      releaseService,
-      release,
-      project,
-      releaseAssets,
-      req,
-    }));
+    res.render('releases/detail.njk', {
+      ...buildReleaseDetailRenderModel({
+        appName,
+        releaseService,
+        release,
+        project,
+        releaseAssets,
+        req,
+      }),
+      assetsSavedNotice: assetsSaved ? RELEASE_ASSETS_SAVED_MESSAGE : null,
+    });
   });
 
   // GET /releases/:id/edit — Edit form, or the editable release model for JSON clients
@@ -855,81 +888,106 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
       return next(createNotFound());
     }
 
+    // The Save form posts application/x-www-form-urlencoded, the only body
+    // whose draft this route can read. Any other media type (JSON, which the
+    // application parser also accepts; text/plain, octet-stream, multipart or
+    // none, which leave req.body empty) is refused before the draft is read,
+    // so an uninterpreted body is never a full or partial membership
+    // replacement. CSRF has already run.
+    if (!isReleaseAssetSaveFormRequest(req)) {
+      return next(createUnsupportedReleaseAssetSaveMediaType());
+    }
+
     try {
       // The unified picker submits only selectedAssetIds[]. Keep accepting the
       // legacy role/order fields for compatibility with older clients and
-      // direct integrations, but do not make membership depend on them.
-      // Note: express urlencoded with extended:true parses foo[1]=bar as object { '1': 'bar' }
-      // But for arrays, selectedAssetIds[] becomes ['1', '2', ...] and roles/sortOrder indices are 0-based
-      // to match the array position, NOT the asset ID. We use positional matching.
-      //
-      // When a role or sortOrder field is missing (e.g. disabled in a no-JS browser
-       // submission for a newly-checked row), default to safe values rather than
-       // rejecting the submission. The browser will not submit disabled controls, so
-       // the server must treat them as "use default".
-      // Normalize to array: handle both single-value (selectedAssetIds=5) and
-      // array (selectedAssetIds[]=5&selectedAssetIds[]=6) form submissions.
-      const normalized = normalizeSelectedAssetIds(req.body.selectedAssetIds);
+      // direct integrations, but do not make membership depend on them. See
+      // readReleaseAssetSaveDraft for the accepted payload shapes.
+      const draft = readReleaseAssetSaveDraft(req.body, readReleaseAssetSaveFields(req));
 
       // Reject malformed input shapes — never treat them as an intentional clear.
-      if (!normalized.valid) {
-        throw new ReleaseValidationError({ general: 'Invalid asset selection format.' });
+      if (!draft.valid) {
+        throw new ReleaseValidationError({
+          general: draft.invalidOrder ? RELEASE_ASSET_INVALID_ORDER_MESSAGE : 'Invalid asset selection format.',
+        });
+      }
+      if (draft.entries.some((entry) => entry.assetId === null)) {
+        throw new ReleaseValidationError({ general: 'Invalid asset selection.' });
       }
 
-      const selections = [];
-      const membershipOnly = req.body.roles === undefined && req.body.sortOrder === undefined;
-
-      if (membershipOnly) {
-        for (const rawAssetId of normalized.ids) {
-          const assetId = parseStrictInt(rawAssetId);
-          if (assetId === null) {
-            throw new ReleaseValidationError({ general: 'Invalid asset selection.' });
-          }
-          selections.push({ assetId });
-        }
-      } else {
-        // Express parses roles[1]=primary as { '0': 'primary' } (0-indexed to
-        // match the array position). Legacy submissions retain their explicit
-        // role/order behavior.
-        const roles = req.body.roles || {};
-        const sortOrders = req.body.sortOrder || {};
-        for (let i = 0; i < normalized.ids.length; i++) {
-          const rawAssetId = normalized.ids[i];
-          const assetId = parseStrictInt(rawAssetId);
-          if (assetId === null) {
-            throw new ReleaseValidationError({ general: 'Invalid asset selection.' });
-          }
-
-          const role = typeof roles[i] === 'string' && roles[i].trim() !== ''
-            ? roles[i].trim().toLowerCase()
-            : 'attachment';
-          const sortOrderRaw = sortOrders[i];
-          const sortOrder = parseNonNegativeInt(sortOrderRaw) ?? 0;
-          selections.push({ assetId, role, sortOrder });
-        }
-      }
+      const { membershipOnly } = draft;
+      const selections = draft.entries.map(({ assetId, role, sortOrder }) => (
+        membershipOnly ? { assetId } : { assetId, role, sortOrder }
+      ));
 
       releaseService.selectAssets(id, selections, { membershipOnly });
-      res.redirect(`/releases/${id}`);
+      // Only a completed Save reaches here, so only it is issued a ticket.
+      res.redirect(buildReleaseAssetsSavedLocation(id, assetsSavedConfirmations.issue(id)));
     } catch (err) {
       if (err instanceof ReleaseNotFoundError) {
         return next(createNotFound());
       }
       if (err instanceof ReleaseValidationError) {
-        const viewModel = releaseService.getReleaseAssetManagementPage(id, req.query, res.locals.clockFormat);
         // Render the SUBMITTED selections so the user does not lose input.
-        // Do NOT load persisted releaseAssets here — that would clobber the
-        // user's changes after a validation failure.
-        const submittedAssets = buildSubmittedReleaseAssets(req);
+        // Do NOT render persisted releaseAssets as the draft — that would
+        // clobber the user's changes after a validation failure. The service
+        // keeps submitted and persisted membership separate and hydrates
+        // off-page submitted IDs with one batched project-scoped lookup.
+        const submitted = buildSubmittedReleaseAssets(req);
+        const viewModel = releaseService.getReleaseAssetSaveErrorPage(
+          id,
+          req.query,
+          submitted.assets,
+          res.locals.clockFormat,
+        );
+        const errors = err.errors || { general: err.message };
+        // A malformed draft is refused here before selectAssets reaches its
+        // read-only guards. A read-only page (server-side release / parent
+        // project state, never request data) has no draft to recover: it
+        // keeps displaying the complete persisted saved collection with the
+        // refusal, and renders no retry carrier.
+        if (viewModel.readOnly) {
+          res.status(422).render('releases/assets.njk', {
+            appName,
+            ...buildAssetPageRenderModel(id, req, viewModel, { errors }),
+            roles: RELEASE_ASSET_ROLES,
+            selectionErrorMessages: describeReleaseAssetSelectionErrors(errors, []),
+          });
+          return;
+        }
+        // An editable page whose submitted draft cannot be reconstructed
+        // fails closed: the refusal shows the saved collection with no Save
+        // form and no selection or role controls, so the lost draft can never
+        // be resubmitted as an apparently intentional empty selection, and an
+        // explicit role/order submission is never silently replaced by the
+        // persisted values. Reloading Manage Assets starts a fresh edit.
+        if (!submitted.recoverable) {
+          res.status(422).render('releases/assets.njk', {
+            appName,
+            ...buildAssetPageRenderModel(id, req, viewModel, { errors }),
+            roles: RELEASE_ASSET_ROLES,
+            saveRecoveryUnavailable: true,
+            selectionErrorMessages: describeReleaseAssetSelectionErrors(errors, []),
+          });
+          return;
+        }
         res.status(422).render('releases/assets.njk', {
           appName,
           ...buildAssetPageRenderModel(id, req, viewModel, {
-            releaseAssets: submittedAssets,
-            assetPresentation: buildSubmittedReleaseAssetPresentation(viewModel, submittedAssets,
-              res.locals.clockFormat, req.app.locals.projectImageSettingsService),
-            errors: err.errors || { general: err.message },
+            releaseAssets: viewModel.submittedReleaseAssets,
+            assetPresentation: viewModel.submittedAssetPresentation,
+            errors,
           }),
           roles: RELEASE_ASSET_ROLES,
+          // A rejected legacy (role/order) draft keeps its explicit per-asset
+          // role and order in the retry form; a membership-only draft does not
+          // gain them, so its retry stays membership-only.
+          // One compact `roleOrder` field keeps a large draft resubmittable
+          // within the URL-encoded parameter limit.
+          submittedRoleOrder: submitted.legacy && submitted.assets.length
+            ? serializeCompactRoleOrder(submitted.assets)
+            : '',
+          selectionErrorMessages: describeReleaseAssetSelectionErrors(errors, submitted.assets),
         });
         return;
       }
@@ -1613,6 +1671,90 @@ function buildPublishProjectStatusModel(req, project, submittedStatus) {
   };
 }
 
+// One-time Manage Assets Save confirmation. Each completed Save (and only a
+// completed Save: the ticket is issued after selectAssets returns) gets its
+// own unpredictable ticket, held server-side against that release, and its
+// 302 goes to /releases/:id?assetsSaved=<ticket>. The Release Detail GET for
+// that release consumes the ticket and shows the confirmation once. A ticket
+// that is missing, malformed, unknown, expired, already consumed or issued
+// for another release shows nothing, so an unrelated visit can never claim
+// (or swallow) another Save's confirmation, and overlapping Saves confirm
+// independently. The URL carries only the opaque ticket, never membership.
+//
+// Tickets live in memory, per router (so per app instance), bounded by count
+// and expired lazily on each issue/consume: no timers, no database. A ticket
+// not followed within the lifetime, evicted by newer ones, or lost to a
+// server restart only loses the transient message; the Save stays persisted.
+const RELEASE_ASSETS_SAVED_PARAM = 'assetsSaved';
+const RELEASE_ASSETS_SAVED_TTL_MS = 2 * 60 * 1000;
+const RELEASE_ASSETS_SAVED_MAX_TICKETS = 256;
+const RELEASE_ASSETS_SAVED_TICKET_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
+const RELEASE_ASSETS_SAVED_MESSAGE = 'Assets saved successfully.';
+// B3-F1's unsigned release-ID flash cookie. It no longer proves anything; a
+// Release Detail GET that still carries one only clears it.
+const OBSOLETE_RELEASE_ASSETS_SAVED_COOKIE = 'creatorcrate_release_assets_saved';
+
+function createReleaseAssetsSavedConfirmations({
+  ttlMs = RELEASE_ASSETS_SAVED_TTL_MS,
+  maxTickets = RELEASE_ASSETS_SAVED_MAX_TICKETS,
+} = {}) {
+  // Insertion-ordered; every ticket has the same lifetime, so the oldest
+  // (first) entries are the first to expire.
+  const tickets = new Map();
+
+  function prune(now) {
+    for (const [ticket, entry] of tickets) {
+      if (entry.expiresAt > now && tickets.size <= maxTickets) break;
+      tickets.delete(ticket);
+    }
+  }
+
+  return {
+    issue(releaseId) {
+      const now = Date.now();
+      prune(now);
+      let ticket;
+      do {
+        ticket = crypto.randomBytes(32).toString('base64url');
+      } while (tickets.has(ticket));
+      tickets.set(ticket, { releaseId, expiresAt: now + ttlMs });
+      prune(now);
+      return ticket;
+    },
+    // Synchronous lookup-and-delete: two requests can never both consume one
+    // ticket. A ticket presented on another release is left for its own.
+    consume(ticket, releaseId) {
+      const now = Date.now();
+      prune(now);
+      if (typeof ticket !== 'string' || !RELEASE_ASSETS_SAVED_TICKET_PATTERN.test(ticket)) return false;
+      const entry = tickets.get(ticket);
+      if (!entry || entry.releaseId !== releaseId) return false;
+      tickets.delete(ticket);
+      return entry.expiresAt > now;
+    },
+  };
+}
+
+function buildReleaseAssetsSavedLocation(releaseId, ticket) {
+  return `/releases/${releaseId}?${RELEASE_ASSETS_SAVED_PARAM}=${ticket}`;
+}
+
+function consumeReleaseAssetsSavedConfirmation(req, res, releaseId, confirmations) {
+  if (parseCookies(req.headers.cookie)[OBSOLETE_RELEASE_ASSETS_SAVED_COOKIE] !== undefined) {
+    res.clearCookie(OBSOLETE_RELEASE_ASSETS_SAVED_COOKIE, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: req.secure === true,
+      path: `/releases/${releaseId}`,
+    });
+  }
+  if (!Object.hasOwn(req.query, RELEASE_ASSETS_SAVED_PARAM)) return false;
+  // A ticket-bearing Release Detail is never reused from the HTTP cache, so
+  // Back/Forward re-requests it and the consumed ticket shows nothing.
+  res.set('Cache-Control', 'no-store');
+  return confirmations.consume(req.query[RELEASE_ASSETS_SAVED_PARAM], releaseId);
+}
+
 function buildReleaseDetailRenderModel({
   appName,
   releaseService,
@@ -1740,7 +1882,6 @@ function buildAssetPageRenderModel(
     projectArchived: isProjectArchived(viewModel.project),
     releaseAssets,
     assetPresentation: pagePresentation,
-    assets: viewModel.assets,
     categories: viewModel.categories,
     categoryNavigation: viewModel.categoryNavigation,
     categoryFilterOptions: buildCategoryFilterOptions(viewModel.categories, viewModel.categoryNavigation),
@@ -1774,38 +1915,6 @@ function buildAssetPageRenderModel(
       action,
     ),
   };
-}
-
-function buildSubmittedReleaseAssetPresentation(viewModel, submittedAssets, clockFormat = '24h', imageSettings) {
-  const sourceById = new Map();
-  for (const row of [
-    ...(Array.isArray(viewModel.assets) ? viewModel.assets : []),
-    ...(Array.isArray(viewModel.releaseAssets) ? viewModel.releaseAssets : []),
-  ]) {
-    const id = row?.asset_id ?? row?.id;
-    if (id !== undefined && id !== null) sourceById.set(String(id), row);
-  }
-
-  const selectedAssets = (Array.isArray(submittedAssets) ? submittedAssets : []).map((submitted) => {
-    const source = sourceById.get(String(submitted.asset_id));
-    return source
-      ? { ...source, asset_id: submitted.asset_id, role: submitted.role, sort_order: submitted.sort_order }
-      : submitted;
-  });
-
-  const selectedIds = new Set(selectedAssets.map((asset) => String(asset.asset_id)));
-  const assetPage = Array.isArray(viewModel.assetPage)
-    ? viewModel.assetPage
-    : (Array.isArray(viewModel.assets) ? viewModel.assets : []);
-  return buildReleaseAssetPagePresentation({
-    ...(imageSettings ? { policyFingerprint: imageSettings.getPresentationPolicy?.()
-      ?? projectImagePresentationPolicy(imageSettings.getPolicy()) } : {}),
-    selectedAssets,
-    assets: assetPage,
-    candidateAssets: assetPage.filter((asset) => !selectedIds.has(String(asset.id))),
-    categories: viewModel.categories,
-    clockFormat,
-  });
 }
 
 /**
@@ -2355,16 +2464,470 @@ function parseId(value) {
 }
 
 /**
- * Parse a non-negative integer (>= 0) strictly.
- * Returns null if the value is not valid.
+ * Read an indexed form field (`name[0]=a&name[1]=b`) as ordered [index, value]
+ * pairs. Express's extended parser yields an array for small contiguous
+ * indices and an index-keyed object past its array limit; both are accepted.
+ * A bare repeated/single value is read positionally. Returns null for any
+ * other shape or a non-string value.
+ * @param {unknown} raw
+ * @returns {Array<[number, string]>|null}
  */
-function parseNonNegativeInt(value) {
-  if (typeof value !== 'string' && typeof value !== 'number') return null;
-  const str = String(value).trim();
+function readIndexedFormField(raw) {
+  if (typeof raw === 'string') return [[0, raw]];
+  if (Array.isArray(raw)) {
+    return raw.every((value) => typeof value === 'string')
+      ? raw.map((value, index) => [index, value])
+      : null;
+  }
+  if (!raw || typeof raw !== 'object') return null;
+  const pairs = [];
+  for (const [key, value] of Object.entries(raw)) {
+    if (!/^(0|[1-9]\d{0,5})$/.test(key) || typeof value !== 'string') return null;
+    pairs.push([Number(key), value]);
+  }
+  return pairs.sort((a, b) => a[0] - b[0]);
+}
+
+const RELEASE_ASSET_SAVE_INDEXED_FIELDS = ['selectedAssetIds', 'roleAssetIds', 'roles', 'sortOrder'];
+// Scalar Save fields: accepted only under their exact bare name. `_csrf` is
+// every form's token (already verified by the CSRF middleware); `roleOrder`
+// is the compact rejected-Save carrier (readCompactRoleOrder). Together with
+// the indexed fields above this is the whole URL-encoded Save field contract.
+const RELEASE_ASSET_SAVE_SCALAR_FIELDS = ['_csrf', 'roleOrder'];
+const FORM_FIELD_INDEX = /^(0|[1-9]\d{0,5})$/;
+// qs's first bracket group (lib/parse.js `brackets`): the key's root is the
+// text before it.
+const FORM_KEY_FIRST_BRACKET = /\[[^[\]]*]/;
+
+// Decode one URL-encoded component the way qs's default decoder does.
+function decodeFormComponent(text) {
+  const spaced = text.replace(/\+/g, ' ');
+  try {
+    return decodeURIComponent(spaced);
+  } catch {
+    return spaced;
+  }
+}
+
+/**
+ * Read the Manage Assets Save indexed fields from the raw URL-encoded body,
+ * keeping each value's ORIGINAL index. Pairs are split and decoded exactly as
+ * qs does. For each field every occurrence must use one form:
+ * bare `name` or `name[]` (indexed by occurrence, as qs does), or explicit
+ * `name[k]` with k a unique non-negative integer of at most six digits.
+ * Mixed forms, a repeated index, a non-numeric, oversized or nested index, or
+ * a key qs would still parse into the field (e.g. `[roles][0]`) makes that
+ * field `valid: false`. Absent fields are not in the map.
+ *
+ * Every other field name is outside the Save contract and sets
+ * `unsupported`: the scalar fields (RELEASE_ASSET_SAVE_SCALAR_FIELDS) are
+ * accepted only bare, and any other root — unknown, empty, leading-bracket,
+ * dotted (`selectedAssetIds.__proto__`), prototype-rooted
+ * (`__proto__[selectedAssetIds]`) or still-encoded after the single qs
+ * decode — is refused. The parser drops or relocates such keys, so ignoring
+ * them could turn a nonempty submission into an apparently intentional
+ * empty Save.
+ * @param {string} raw
+ * @returns {{ unsupported: boolean, fields: Map<string, { valid: boolean, entries: Array<[number, string]> }> }}
+ */
+function readRawIndexedFormFields(raw) {
+  const state = new Map();
+  let unsupported = false;
+  const fieldState = (name) => {
+    if (!state.has(name)) state.set(name, { valid: true, forms: new Set(), positional: [], indexed: new Map() });
+    return state.get(name);
+  };
+  for (const part of raw.split('&')) {
+    if (part === '') continue;
+    const bracketEquals = part.indexOf(']=');
+    const split = bracketEquals === -1 ? part.indexOf('=') : bracketEquals + 1;
+    const key = decodeFormComponent(split === -1 ? part : part.slice(0, split));
+    const value = split === -1 ? '' : decodeFormComponent(part.slice(split + 1));
+    if (RELEASE_ASSET_SAVE_SCALAR_FIELDS.includes(key)) continue;
+    const bracket = FORM_KEY_FIRST_BRACKET.exec(key);
+    const root = bracket ? key.slice(0, bracket.index) : key;
+    if (root === '' && bracket) {
+      // qs promotes a leading bracket group to the root: `[roles][1]` → roles.
+      const promoted = bracket[0].slice(1, -1);
+      if (RELEASE_ASSET_SAVE_INDEXED_FIELDS.includes(promoted)) fieldState(promoted).valid = false;
+      unsupported = true;
+      continue;
+    }
+    if (!RELEASE_ASSET_SAVE_INDEXED_FIELDS.includes(root)) {
+      unsupported = true;
+      continue;
+    }
+    const field = fieldState(root);
+    const suffix = key.slice(root.length);
+    if (suffix === '' || suffix === '[]') {
+      field.forms.add('positional');
+      field.positional.push(value);
+      continue;
+    }
+    const index = /^\[([^[\]]*)]$/.exec(suffix)?.[1];
+    if (index === undefined || !FORM_FIELD_INDEX.test(index) || field.indexed.has(Number(index))) {
+      field.valid = false;
+      continue;
+    }
+    field.forms.add('indexed');
+    field.indexed.set(Number(index), value);
+  }
+  const fields = new Map();
+  for (const [name, field] of state) {
+    const valid = field.valid && field.forms.size <= 1;
+    const entries = field.forms.has('indexed')
+      ? [...field.indexed].sort((a, b) => a[0] - b[0])
+      : field.positional.map((value, index) => [index, value]);
+    fields.set(name, { valid, entries: valid ? entries : [] });
+  }
+  return { unsupported, fields };
+}
+
+/**
+ * The index-preserving view of a Manage Assets Save request's indexed fields.
+ * - URL-encoded with the retained raw body: the original indices
+ *   (readRawIndexedFormFields), cross-checked against the parsed body so a
+ *   field either both or neither see is refused.
+ * - URL-encoded without it: indices cannot be recovered, so any indexed
+ *   role/order carrier is unavailable (refused as an invalid format).
+ * - Any other body (JSON keeps its explicit indices): null, the parsed body
+ *   is read as before.
+ * `unsupported` reports a raw field name outside the Save contract
+ * (readRawIndexedFormFields); the whole request is then an invalid format.
+ * @param {import('express').Request} req
+ * @returns {null|{ available: boolean, unsupported: boolean, fields: Map<string, { valid: boolean, entries: Array<[number, string]> }> }}
+ */
+function readReleaseAssetSaveFields(req) {
+  const raw = releaseAssetSaveRawBodies.get(req);
+  if (typeof raw !== 'string') {
+    return typeof req.is === 'function' && req.is('application/x-www-form-urlencoded')
+      ? { available: false, unsupported: false, fields: new Map() }
+      : null;
+  }
+  const { unsupported, fields } = readRawIndexedFormFields(raw);
+  const body = req.body || {};
+  for (const name of RELEASE_ASSET_SAVE_INDEXED_FIELDS) {
+    if (fields.has(name) !== (body[name] !== undefined)) {
+      fields.set(name, { valid: false, entries: [] });
+    }
+  }
+  return { available: true, unsupported, fields };
+}
+
+/**
+ * Whether a Manage Assets Save POST carries the form encoding the Save
+ * contract reads: the parsed media type (type-is, parameters ignored, never a
+ * substring match) is exactly application/x-www-form-urlencoded, and the
+ * application urlencoded parser actually read this body (its verify hook
+ * retained it, which it does only for a UTF-8 or undeclared charset). A
+ * missing, malformed or other Content-Type, or a body that parser skipped, is
+ * not a Save draft.
+ * @param {import('express').Request} req
+ * @returns {boolean}
+ */
+function isReleaseAssetSaveFormRequest(req) {
+  return typeof releaseAssetSaveRawBodies.get(req) === 'string'
+    && typeof req.is === 'function'
+    && req.is('application/x-www-form-urlencoded') === 'application/x-www-form-urlencoded';
+}
+
+function createUnsupportedReleaseAssetSaveMediaType() {
+  const err = new Error('Unsupported asset selection request format.');
+  err.status = 415;
+  return err;
+}
+
+function readSubmittedRole(value) {
+  return typeof value === 'string' && value.trim() !== '' ? value.trim().toLowerCase() : 'attachment';
+}
+
+/**
+ * Read one entry of the legacy `sortOrder` field by index. A bare single value
+ * (`sortOrder=12`) is the value at index 0 — never indexed character by
+ * character. Returns undefined when the index is absent.
+ * @param {unknown} container
+ * @param {number} index
+ */
+function readIndexedSortOrder(container, index) {
+  if (typeof container === 'string') return index === 0 ? container : undefined;
+  if (container && typeof container === 'object' && Object.prototype.hasOwnProperty.call(container, index)) {
+    return container[index];
+  }
+  return undefined;
+}
+
+/**
+ * Read a submitted legacy sort order with the same boundary as the compact
+ * `roleOrder` carrier (readCompactRoleOrder): a non-negative safe integer.
+ * A missing or blank value keeps the established default of 0. Anything else
+ * — negative, decimal, exponent, Infinity/NaN-like text, a value beyond
+ * Number.MAX_SAFE_INTEGER, or a nested/repeated value — is invalid; it is
+ * never rounded, clamped, truncated or replaced with 0, so a rejected draft
+ * can always be carried faithfully by the retry form.
+ * @param {unknown} value
+ * @returns {number|null} the order, or null when invalid
+ */
+function readSubmittedSortOrder(value) {
+  if (value === undefined) return 0;
+  if (typeof value !== 'string') return null;
+  const str = value.trim();
+  if (str === '') return 0;
   if (!/^\d+$/.test(str)) return null;
   const num = Number(str);
-  if (!Number.isInteger(num) || num < 0) return null;
-  return num;
+  return Number.isSafeInteger(num) ? num : null;
+}
+
+const RELEASE_ASSET_INVALID_ORDER_MESSAGE = 'Invalid asset order. Each order must be a whole number from 0 to '
+  + `${Number.MAX_SAFE_INTEGER}.`;
+
+/**
+ * Upper bound on compact `roleOrder` entries. Express's URL-encoded parser
+ * admits at most 1,000 parameters, so a Save form carrying `_csrf`,
+ * `roleOrder` and its `selectedAssetIds` can hold at most 998 members; the
+ * bound only stops a single oversized field from carrying more keys than any
+ * parseable membership could use.
+ */
+const RELEASE_ASSET_ROLE_ORDER_MAX_ENTRIES = 1000;
+
+/**
+ * Read the compact `roleOrder` carrier: one field holding a JSON array of
+ * `[assetId, role, sortOrder]` triples (positive safe-integer ID, string role,
+ * non-negative safe-integer order), in the keyed sequence. Returns ordered
+ * `[index, assetId, role, sortOrder]` keys or null when the field is not
+ * exactly one well-formed carrier within the entry bound.
+ * @param {unknown} raw
+ * @returns {Array<[number, number, string, number]>|null}
+ */
+function readCompactRoleOrder(raw) {
+  if (typeof raw !== 'string' || raw === '') return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed) || parsed.length > RELEASE_ASSET_ROLE_ORDER_MAX_ENTRIES) return null;
+  const keys = [];
+  for (const [index, entry] of parsed.entries()) {
+    if (!Array.isArray(entry) || entry.length !== 3) return null;
+    const [assetId, role, sortOrder] = entry;
+    if (!Number.isSafeInteger(assetId) || assetId < 1) return null;
+    if (typeof role !== 'string') return null;
+    if (!Number.isSafeInteger(sortOrder) || sortOrder < 0) return null;
+    keys.push([index, assetId, role, sortOrder]);
+  }
+  return keys;
+}
+
+/**
+ * Serialize a rejected legacy draft for the retry form's compact `roleOrder`
+ * carrier (see readCompactRoleOrder).
+ * @param {Array<{ asset_id: number, role: string, sort_order: number }>} assets
+ * @returns {string}
+ */
+function serializeCompactRoleOrder(assets) {
+  return JSON.stringify(assets.map((entry) => [entry.asset_id, entry.role, entry.sort_order]));
+}
+
+/**
+ * Parse a Manage Assets Save body into the submitted draft, without
+ * validating it. Accepted shapes:
+ *
+ * 1. Membership only — `selectedAssetIds` (single or repeated). Roles and
+ *    order of saved members stay server-owned.
+ * 2. Legacy positional — `selectedAssetIds` plus `roles[i]` / `sortOrder[i]`
+ *    paired by array position with `selectedAssetIds[i]` (older clients and
+ *    direct integrations). A missing role/order defaults to attachment / 0;
+ *    a present order that is not a non-negative safe integer makes the draft
+ *    invalid (`invalidOrder`), see readSubmittedSortOrder.
+ * 3. Legacy keyed — the same `roles[k]` / `sortOrder[k]` paired with
+ *    `roleAssetIds[k]` instead of a position. The rejected-Save retry form
+ *    renders a legacy draft this way because its `selectedAssetIds` come from
+ *    hidden off-page inputs plus page checkboxes the live region re-orders and
+ *    the user may toggle, so a positional pairing could silently move a role
+ *    or order onto another asset. Entries follow the keyed sequence (each key
+ *    consumes one matching selected occurrence); selected IDs without a key
+ *    follow in submission order with the legacy defaults, and keys whose ID
+ *    is no longer selected are ignored. Membership still comes only from
+ *    `selectedAssetIds`.
+ * 4. Compact keyed — the same keyed pairing carried by one `roleOrder` field
+ *    (a JSON array of `[assetId, role, sortOrder]`; see readCompactRoleOrder).
+ *    The rejected-Save retry form renders this so a large draft stays within
+ *    the URL-encoded parameter limit (one field per member plus two, instead
+ *    of four per member). It cannot be combined with `roles`, `sortOrder` or
+ *    `roleAssetIds`; a mixed or malformed carrier is an invalid format.
+ *
+ * Indexed fields (2 and 3) pair by their ORIGINAL submitted index, read from
+ * `indexedFields` (readReleaseAssetSaveFields) for a URL-encoded body: a
+ * role/order at index k belongs only to the asset at index k, and a missing
+ * role/order at k takes the defaults above. A value supplied at an index with
+ * no asset (no `roleAssetIds[k]`, or no k-th selected ID in the positional
+ * shape), or any field that cannot be read index-faithfully, is an invalid
+ * format — never shifted onto another asset. Structural errors are reported
+ * before order errors.
+ *
+ * @param {object} body
+ * @param {ReturnType<typeof readReleaseAssetSaveFields>} [indexedFields]
+ * @returns {{ valid: boolean, invalidOrder?: boolean, membershipOnly: boolean,
+ *   entries: Array<{ assetId: number|null, role: string, sortOrder: number }> }}
+ */
+function readReleaseAssetSaveDraft(body = {}, indexedFields = null) {
+  if (!indexedFields) return readParsedReleaseAssetSaveDraft(body);
+  // A raw field name outside the Save contract (B-F2R6) is refused before
+  // anything else: the parser may have dropped or relocated it, so neither
+  // the parsed membership nor its absence can be trusted.
+  if (indexedFields.unsupported) return { valid: false, membershipOnly: true, entries: [] };
+  const normalized = normalizeSelectedAssetIds(body.selectedAssetIds);
+  if (!normalized.valid) return { valid: false, membershipOnly: true, entries: [] };
+
+  // The submitted membership is validated from its raw representation before
+  // any format (membership-only, positional, keyed, compact) is chosen. The
+  // parser can drop or reshape a malformed selected-ID field — e.g.
+  // `selectedAssetIds[__proto__]=3` parses to an empty object — so a parsed
+  // value alone never proves an intentional empty or partial selection. A
+  // selected-ID field the raw reader rejects, or whose parsed IDs do not
+  // match its raw entries one for one, is an invalid format. A request with
+  // no selected-ID field at all, or a lone bare empty value, stays an
+  // intentional clear.
+  const rawSelected = indexedFields.fields.get('selectedAssetIds');
+  if (rawSelected) {
+    const expectedCount = body.selectedAssetIds === '' ? 0 : rawSelected.entries.length;
+    if (!rawSelected.valid || normalized.ids.length !== expectedCount) {
+      return { valid: false, membershipOnly: true, entries: [] };
+    }
+  }
+
+  const hasExpandedRoleOrder = body.roles !== undefined
+    || body.sortOrder !== undefined
+    || body.roleAssetIds !== undefined;
+  const hasCompactRoleOrder = body.roleOrder !== undefined;
+  // Membership-only and compact drafts carry no indexed role/order field.
+  if (!hasExpandedRoleOrder) return readParsedReleaseAssetSaveDraft(body);
+
+  const membershipOnly = false;
+  const invalidFormat = { valid: false, membershipOnly, entries: [] };
+  if (hasCompactRoleOrder || !indexedFields.available) return invalidFormat;
+
+  const field = (name) => indexedFields.fields.get(name);
+  for (const name of ['roleAssetIds', 'roles']) {
+    if (field(name) && !field(name).valid) return invalidFormat;
+  }
+  // A nested or repeated order is not a scalar order (B-F2R3 refusal).
+  const invalidOrder = { valid: false, invalidOrder: true, membershipOnly, entries: [] };
+  if (field('sortOrder') && !field('sortOrder').valid) return invalidOrder;
+  const roles = new Map(field('roles')?.entries || []);
+  const orders = new Map(field('sortOrder')?.entries || []);
+  const selected = normalized.ids.map((rawAssetId) => parseStrictInt(rawAssetId));
+
+  // [original index, asset ID] pairs the role/order fields are keyed by.
+  let owners;
+  if (field('roleAssetIds')) {
+    owners = field('roleAssetIds').entries.map(([index, rawKeyId]) => [index, parseStrictInt(rawKeyId)]);
+    if (owners.some(([, keyId]) => keyId === null)) return invalidFormat;
+  } else {
+    const submitted = field('selectedAssetIds');
+    const positions = submitted ? submitted.entries : [];
+    if ((submitted && !submitted.valid)
+      || positions.length !== selected.length
+      || positions.some(([, rawAssetId], i) => rawAssetId !== normalized.ids[i])) {
+      return invalidFormat;
+    }
+    owners = positions.map(([index], i) => [index, selected[i]]);
+  }
+  const ownedIndices = new Set(owners.map(([index]) => index));
+  for (const index of [...roles.keys(), ...orders.keys()]) {
+    if (!ownedIndices.has(index)) return invalidFormat;
+  }
+
+  const paired = [];
+  for (const [index, assetId] of owners) {
+    const sortOrder = readSubmittedSortOrder(orders.get(index));
+    if (sortOrder === null) return invalidOrder;
+    paired.push({ assetId, role: readSubmittedRole(roles.get(index)), sortOrder });
+  }
+  return {
+    valid: true,
+    membershipOnly,
+    entries: field('roleAssetIds') ? pairKeyedRoleOrder(selected, paired) : paired,
+  };
+}
+
+/**
+ * readReleaseAssetSaveDraft for a body whose indexed fields keep their
+ * indices once parsed (JSON), and for drafts with no indexed role/order field.
+ * @param {object} body
+ */
+function readParsedReleaseAssetSaveDraft(body = {}) {
+  const normalized = normalizeSelectedAssetIds(body.selectedAssetIds);
+  if (!normalized.valid) return { valid: false, membershipOnly: true, entries: [] };
+
+  const hasExpandedRoleOrder = body.roles !== undefined
+    || body.sortOrder !== undefined
+    || body.roleAssetIds !== undefined;
+  const hasCompactRoleOrder = body.roleOrder !== undefined;
+  const membershipOnly = !hasExpandedRoleOrder && !hasCompactRoleOrder;
+  const roles = body.roles || {};
+  const selected = normalized.ids.map((rawAssetId) => parseStrictInt(rawAssetId));
+  const invalidOrder = { valid: false, invalidOrder: true, membershipOnly, entries: [] };
+
+  if (hasCompactRoleOrder) {
+    const compact = hasExpandedRoleOrder ? null : readCompactRoleOrder(body.roleOrder);
+    if (!compact) return { valid: false, membershipOnly, entries: [] };
+    return {
+      valid: true,
+      membershipOnly,
+      entries: pairKeyedRoleOrder(selected, compact.map(([, assetId, role, sortOrder]) => ({
+        assetId,
+        role: readSubmittedRole(role),
+        sortOrder,
+      }))),
+    };
+  }
+
+  if (membershipOnly || body.roleAssetIds === undefined) {
+    const entries = [];
+    for (const [i, assetId] of selected.entries()) {
+      const sortOrder = readSubmittedSortOrder(readIndexedSortOrder(body.sortOrder, i));
+      if (sortOrder === null) return invalidOrder;
+      entries.push({ assetId, role: readSubmittedRole(roles[i]), sortOrder });
+    }
+    return { valid: true, membershipOnly, entries };
+  }
+
+  const keys = readIndexedFormField(body.roleAssetIds);
+  if (!keys) return { valid: false, membershipOnly, entries: [] };
+  const keyed = [];
+  for (const [index, rawKeyId] of keys) {
+    const keyId = parseStrictInt(rawKeyId);
+    if (keyId === null) return { valid: false, membershipOnly, entries: [] };
+    const sortOrder = readSubmittedSortOrder(readIndexedSortOrder(body.sortOrder, index));
+    if (sortOrder === null) return invalidOrder;
+    keyed.push({ assetId: keyId, role: readSubmittedRole(roles[index]), sortOrder });
+  }
+  return { valid: true, membershipOnly, entries: pairKeyedRoleOrder(selected, keyed) };
+}
+
+/**
+ * Pair keyed role/order entries with the submitted membership: entries follow
+ * the keyed sequence, each consuming one matching selected occurrence; keys
+ * whose ID is not (or no longer) selected are ignored; selected IDs without a
+ * key follow in submission order as attachment / 0.
+ * @param {Array<number|null>} selected
+ * @param {Array<{ assetId: number, role: string, sortOrder: number }>} keyed
+ */
+function pairKeyedRoleOrder(selected, keyed) {
+  const consumed = new Array(selected.length).fill(false);
+  const entries = [];
+  for (const entry of keyed) {
+    const position = selected.findIndex((assetId, i) => !consumed[i] && assetId === entry.assetId);
+    if (position === -1) continue;
+    consumed[position] = true;
+    entries.push(entry);
+  }
+  selected.forEach((assetId, i) => {
+    if (!consumed[i]) entries.push({ assetId, role: 'attachment', sortOrder: 0 });
+  });
+  return entries;
 }
 
 /**
@@ -2372,28 +2935,59 @@ function parseNonNegativeInt(value) {
  * Used on validation failure so the form can re-render the user's actual input
  * rather than the persisted selections from the database.
  *
- * Each entry has the fields the template reads: asset_id, role, sort_order.
- * Invalid asset IDs are skipped (the route will have already errored on them).
+ * Each entry has the fields the template reads: asset_id, role, sort_order,
+ * in the same sequence the Save handler validated. Invalid asset IDs are
+ * skipped (the route will have already errored on them). `legacy` reports
+ * whether the draft carried explicit roles/order.
+ *
+ * `recoverable` is false when the submitted draft cannot be reconstructed:
+ * its shape or role/order carrier is unreadable, or a nonempty submitted
+ * membership has no readable asset ID left. An empty draft in its place would
+ * be indistinguishable from an intentional clear, so the caller must not
+ * offer it as an editable Save form.
  */
 function buildSubmittedReleaseAssets(req) {
-  const normalized = normalizeSelectedAssetIds(req.body.selectedAssetIds);
-  // If malformed, return empty — the route will have already thrown 422
-  // before reaching this function, but guard defensively.
-  if (!normalized.valid) return [];
-  const roles = req.body.roles || {};
-  const sortOrders = req.body.sortOrder || {};
+  const draft = readReleaseAssetSaveDraft(req.body, readReleaseAssetSaveFields(req));
+  if (!draft.valid) return { recoverable: false, legacy: false, assets: [] };
+  const assets = draft.entries
+    .filter((entry) => entry.assetId !== null)
+    .map((entry) => ({ asset_id: entry.assetId, role: entry.role, sort_order: entry.sortOrder }));
+  return {
+    recoverable: draft.entries.length === 0 || assets.length > 0,
+    legacy: !draft.membershipOnly,
+    assets,
+  };
+}
 
-  const submitted = [];
-  for (let i = 0; i < normalized.ids.length; i++) {
-    const assetId = parseStrictInt(normalized.ids[i]);
-    if (assetId === null) continue;
-    const role = typeof roles[i] === 'string' && roles[i].trim() !== ''
-      ? roles[i].trim().toLowerCase()
-      : 'attachment';
-    const sortOrder = parseNonNegativeInt(sortOrders[i]) ?? 0;
-    submitted.push({ asset_id: assetId, role, sort_order: sortOrder });
+const SUBMITTED_ROLE_DISPLAY_LIMIT = 40;
+
+/**
+ * Describe the Save validator's per-selection errors
+ * (`selections[i].role`, `selections[i].assetId`, `selections[i].sortOrder`)
+ * for the visible error summary. Each names the submitted asset by ID only —
+ * never by project metadata — and quotes a rejected role as submitted
+ * (shortened); the template escapes every message.
+ * @param {object} errors
+ * @param {Array<{ asset_id: number, role: string }>} submittedAssets
+ * @returns {string[]}
+ */
+function describeReleaseAssetSelectionErrors(errors, submittedAssets) {
+  const messages = [];
+  for (const [key, message] of Object.entries(errors || {})) {
+    const match = /^selections\[(\d+)\]\.(role|assetId|sortOrder)$/.exec(key);
+    if (!match || typeof message !== 'string') continue;
+    const entry = submittedAssets[Number(match[1])];
+    const subject = entry ? `Asset ${entry.asset_id}` : `Selection ${Number(match[1]) + 1}`;
+    if (match[2] === 'role' && entry) {
+      const role = entry.role.length > SUBMITTED_ROLE_DISPLAY_LIMIT
+        ? `${entry.role.slice(0, SUBMITTED_ROLE_DISPLAY_LIMIT)}…`
+        : entry.role;
+      messages.push(`${subject} has an invalid role "${role}". ${message}`);
+    } else {
+      messages.push(`${subject}: ${message}`);
+    }
   }
-  return submitted;
+  return messages;
 }
 
 /**

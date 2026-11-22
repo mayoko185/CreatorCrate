@@ -1,5 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
+import http from 'node:http';
+import net from 'node:net';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,10 +9,13 @@ import { fileURLToPath } from 'node:url';
 import { createApp } from '../src/app.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { extractCsrfToken, getDisabledModeCsrf } from './helpers/auth.js';
-import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
+import { deriveDisabledModeCsrfToken } from '../src/middleware/csrf.js';
+import Database from 'better-sqlite3';
+import { openDatabase, runMigrations, closeDatabase, registerSqlFunctions } from '../src/db.js';
 import { formatProjectDirName } from '../src/storage/project-storage.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createReleaseRepository } from '../src/data/release-repository.js';
+import { createAssetCategoryRepository } from '../src/data/asset-category-repository.js';
 import { createReleaseService } from '../src/services/release-service.js';
 import { formatLocalDate, formatLocalTime } from '../src/util/date.js';
 import { getLocalTodayIso } from '../src/util/date.js';
@@ -18,6 +23,16 @@ import { PAGE_DEFAULT_DEFINITIONS } from '../src/services/page-defaults-service.
 import { buildCreateReleaseFormModel } from '../src/routes/release-create-form.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
+
+// B3-F2: a successful Manage Assets Save redirects to exactly /releases/:id
+// carrying only its own opaque one-time confirmation ticket.
+function expectReleaseAssetsSavedLocation(location, releaseId, label) {
+  const url = new URL(location, 'http://localhost');
+  expect(location.startsWith(`/releases/${releaseId}?assetsSaved=`), label).toBe(true);
+  expect(url.pathname, label).toBe(`/releases/${releaseId}`);
+  expect([...url.searchParams.keys()], label).toEqual(['assetsSaved']);
+  expect(url.searchParams.get('assetsSaved'), label).toMatch(/^[A-Za-z0-9_-]{43}$/);
+}
 
 function countTags(html, tag) {
   const re = new RegExp(`<${tag}[\\s>]`, 'g');
@@ -4477,7 +4492,7 @@ describe('release HTTP workflow', () => {
       .expect(302);
 
     // Successful saves return to the corresponding release detail page.
-    expect(submitRes.headers.location).toBe(`/releases/${releaseId}`);
+    expectReleaseAssetsSavedLocation(submitRes.headers.location, releaseId);
 
     // Verify exact junction-table rows
     const rows = getReleaseAssets(db, releaseId);
@@ -4653,7 +4668,7 @@ describe('release HTTP workflow', () => {
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
-    expect(submitRes.headers.location).toBe(`/releases/${releaseId}`);
+    expectReleaseAssetsSavedLocation(submitRes.headers.location, releaseId);
 
     // Both assets should be selected with the default role (attachment) and
     // normalized contiguous sort order. The route must not have thrown.
@@ -5486,7 +5501,7 @@ describe('release HTTP workflow', () => {
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
-    expect(res.headers.location).toBe(`/releases/${releaseId}`);
+    expectReleaseAssetsSavedLocation(res.headers.location, releaseId);
 
     // All junction rows must be removed
     const rows = getReleaseAssets(db, releaseId);
@@ -5547,14 +5562,14 @@ describe('release HTTP workflow', () => {
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
-    expect(res.headers.location).toBe(`/releases/${releaseId}`);
+    expectReleaseAssetsSavedLocation(res.headers.location, releaseId);
 
     // All junction rows must be removed
     const rows = getReleaseAssets(db, releaseId);
     expect(rows).toHaveLength(0);
   });
 
-  it('rejects null selectedAssetIds with 422 and preserves rows', async () => {
+  it('rejects null selectedAssetIds with 415 and preserves rows', async () => {
     // Regression: null must be treated as malformed, not as an intentional clear.
     const projRes = await agent
       .post('/projects')
@@ -5600,14 +5615,15 @@ describe('release HTTP workflow', () => {
     const beforeRows = getReleaseAssets(db, releaseId);
     expect(beforeRows).toHaveLength(1);
 
-    // Submit with null via JSON body
+    // Submit with null via JSON body. JSON is not a Save encoding (B-F2R7):
+    // it is refused before the draft is read, never treated as a clear.
     const res = await agent
       .post(createRes.headers.location + '/assets')
       .send({ selectedAssetIds: null, _csrf: csrfToken })
       .set('Content-Type', 'application/json')
-      .expect(422);
+      .expect(415);
 
-    expect(res.text).toMatch(/invalid/i);
+    expect(res.text).toContain('Unsupported asset selection request format.');
 
     // Original rows must remain unchanged
     const afterRows = getReleaseAssets(db, releaseId);
@@ -8705,6 +8721,9 @@ describe('release HTTP workflow', () => {
     async function setupReleaseWithAssets({
       title = 'Candidate Discovery Test',
       slug = 'candidate-discovery-test',
+      // P3-C4: opt-in zz-pad-NN.txt fillers (sorted last) so a supported page
+      // size such as 10 still paginates.
+      fillers = 0,
     } = {}) {
       const projRes = await agent
         .post('/projects')
@@ -8723,6 +8742,9 @@ describe('release HTTP workflow', () => {
       fs.writeFileSync(path.join(projectDir, 'beta.png'), 'beta content');
       fs.writeFileSync(path.join(projectDir, 'gamma.txt'), 'gamma content');
       fs.writeFileSync(path.join(projectDir, 'delta.txt'), 'delta content');
+      for (let index = 0; index < fillers; index++) {
+        fs.writeFileSync(path.join(projectDir, `zz-pad-${String(index).padStart(2, '0')}.txt`), `pad ${index}`);
+      }
       await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
@@ -9300,9 +9322,10 @@ describe('release HTTP workflow', () => {
     });
 
     it('bounds candidate options by page size and preserves filter state in pagination', async () => {
-      const { releaseLocation } = await setupReleaseWithAssets();
+      // P3-C4: 30 txt assets at the supported size 10 -> 3 pages.
+      const { releaseLocation } = await setupReleaseWithAssets({ fillers: 27 });
       const res = await agent
-        .get(`${releaseLocation}/assets?selection=all&extension=txt&pageSize=1`)
+        .get(`${releaseLocation}/assets?selection=all&extension=txt&pageSize=10`)
         .expect(200);
 
       expect(res.text).toContain('Page 1 of 3');
@@ -9312,7 +9335,7 @@ describe('release HTTP workflow', () => {
       expect(next).toBeDefined();
       const nextUrl = new URL(next.replace(/&amp;/g, '&'), 'http://localhost');
       expect(nextUrl.searchParams.get('extension')).toBe('txt');
-      expect(nextUrl.searchParams.get('pageSize')).toBe('1');
+      expect(nextUrl.searchParams.get('pageSize')).toBe('10');
       expect(nextUrl.searchParams.get('page')).toBe('2');
     });
 
@@ -9414,7 +9437,7 @@ describe('release HTTP workflow', () => {
     it('supports explicit grid view and preserves candidate query state in the switcher', async () => {
       const { releaseLocation } = await setupReleaseWithAssets();
       const res = await agent
-        .get(`${releaseLocation}/assets?selection=all&view=grid&search=beta&pageSize=1`)
+        .get(`${releaseLocation}/assets?selection=all&view=grid&search=beta&pageSize=10`)
         .expect(200);
       const section = selectedSection(res.text);
       const listUrl = switcherUrl(section, 'List');
@@ -9422,13 +9445,13 @@ describe('release HTTP workflow', () => {
       expect(section).toContain('<ul class="asset-grid"');
       expect(listUrl.searchParams.get('view')).toBe('list');
       expect(listUrl.searchParams.get('search')).toBe('beta');
-      expect(listUrl.searchParams.get('pageSize')).toBe('1');
+      expect(listUrl.searchParams.get('pageSize')).toBe('10');
     });
 
     it('supports explicit list view and preserves candidate query state in the switcher', async () => {
       const { releaseLocation } = await setupReleaseWithAssets();
       const res = await agent
-        .get(`${releaseLocation}/assets?view=list&extension=txt&pageSize=1`)
+        .get(`${releaseLocation}/assets?view=list&extension=txt&pageSize=10`)
         .expect(200);
       const section = selectedSection(res.text);
       const gridUrl = switcherUrl(section, 'Grid');
@@ -9438,7 +9461,7 @@ describe('release HTTP workflow', () => {
       expect(section).toMatch(/aria-current="page"[\s\S]*aria-label="List view"/);
       expect(gridUrl.searchParams.has('view')).toBe(false);
       expect(gridUrl.searchParams.get('extension')).toBe('txt');
-      expect(gridUrl.searchParams.get('pageSize')).toBe('1');
+      expect(gridUrl.searchParams.get('pageSize')).toBe('10');
     });
 
     it('preserves selected release order in both card views', async () => {
@@ -9708,7 +9731,8 @@ describe('release HTTP workflow', () => {
 
       const redirect = new URL(res.headers.location, 'http://localhost');
       expect(redirect.pathname).toBe(fixture.releaseLocation);
-      expect(redirect.search).toBe('');
+      // B3-F2: no Manage Assets query is carried, only the Save's own ticket.
+      expectReleaseAssetsSavedLocation(res.headers.location, fixture.releaseId);
       expect(getReleaseAssets(db, fixture.releaseId).map((row) => ({
         asset_id: row.asset_id,
         role: row.role,
@@ -9877,12 +9901,13 @@ describe('release HTTP workflow', () => {
       });
 
       it('shows the eligible collection for explicit all and carries it through generated URLs', async () => {
-        const fixture = await setupReleaseWithAssets();
-        const res = await agent.get(`${fixture.releaseLocation}/assets?selection=all&search=a&pageSize=1&page=2`).expect(200);
+        // P3-C4: 30 assets matching "a" at the supported size 10 -> page 2 of 3.
+        const fixture = await setupReleaseWithAssets({ fillers: 26 });
+        const res = await agent.get(`${fixture.releaseLocation}/assets?selection=all&search=a&pageSize=10&page=2`).expect(200);
         const section = selectedSection(res.text);
 
         expect(section).not.toContain('data-release-assets-selection-notice');
-        expect(section).toContain('4 project assets match the current filters.');
+        expect(section).toContain('30 project assets match the current filters.');
         expect(selectionRadio(res.text, 'all')).toContain('checked');
         expect(selectionRadio(res.text, 'selected')).not.toContain('checked');
 
@@ -9895,7 +9920,7 @@ describe('release HTTP workflow', () => {
         }
         expect(section).toContain('<input type="hidden" name="selection" value="all">');
         expect(res.text).toContain(
-          `<form id="release-assets-form" method="post" action="${fixture.releaseLocation}/assets?search=a&amp;selection=all&amp;page=2&amp;pageSize=1"`,
+          `<form id="release-assets-form" method="post" action="${fixture.releaseLocation}/assets?search=a&amp;selection=all&amp;page=2&amp;pageSize=10"`,
         );
 
         // Clear resets search and Selection to the default and returns to page 1,
@@ -10762,6 +10787,15 @@ describe('release HTTP workflow', () => {
       expect(beforeRows[0].asset_id).toBe(allAssets[0].id);
       expect(beforeRows[1].asset_id).toBe(allAssets[1].id);
 
+      // P3-C4: page 2 at the supported size 10 needs more than 10 txt matches.
+      const { project_id: moveProjectId } = db.prepare('SELECT project_id FROM releases WHERE id = ?').get(releaseId);
+      const moveProjectDir = getProjectDir(projectsRoot, moveProjectId, 'phase-9-4-test');
+      for (let index = 0; index < 12; index++) {
+        fs.writeFileSync(path.join(moveProjectDir, `zz-pad-${String(index).padStart(2, '0')}.txt`), `pad ${index}`);
+      }
+      await agent.post(`/projects/${moveProjectId}/scan`)
+        .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
+
       // Move the second asset up
       const res = await agent
         .post(`${releaseLocation}/assets/${allAssets[1].id}/move-up`)
@@ -10771,7 +10805,7 @@ describe('release HTTP workflow', () => {
           extension: ' TXT ',
           selection: 'all',
           page: '2',
-          pageSize: '2',
+          pageSize: '10',
           unknown: 'discard-me',
         })
         .set('Content-Type', 'application/x-www-form-urlencoded')
@@ -10784,7 +10818,7 @@ describe('release HTTP workflow', () => {
       expect(redirectUrl.searchParams.get('search')).toBe('txt');
       expect(redirectUrl.searchParams.get('extension')).toBe('txt');
       expect(redirectUrl.searchParams.get('page')).toBe('2');
-      expect(redirectUrl.searchParams.get('pageSize')).toBe('2');
+      expect(redirectUrl.searchParams.get('pageSize')).toBe('10');
       expect(redirectUrl.searchParams.has('unknown')).toBe(false);
 
       const afterRows = getReleaseAssets(db, releaseId);
@@ -10816,7 +10850,7 @@ describe('release HTTP workflow', () => {
           search: '  txt  ',
           extension: ' TXT ',
           page: '1',
-          pageSize: '2',
+          pageSize: '10',
           unknown: 'discard-me',
         })
         .set('Content-Type', 'application/x-www-form-urlencoded')
@@ -10827,7 +10861,7 @@ describe('release HTTP workflow', () => {
       expect([...redirectUrl.searchParams.keys()].sort()).toEqual(['extension', 'pageSize', 'search']);
       expect(redirectUrl.searchParams.get('search')).toBe('txt');
       expect(redirectUrl.searchParams.get('extension')).toBe('txt');
-      expect(redirectUrl.searchParams.get('pageSize')).toBe('2');
+      expect(redirectUrl.searchParams.get('pageSize')).toBe('10');
       expect(redirectUrl.searchParams.has('page')).toBe(false);
       expect(redirectUrl.searchParams.has('unknown')).toBe(false);
 
@@ -11652,7 +11686,9 @@ describe('release HTTP workflow', () => {
     // ── Candidate URL tests ───────────────────────────────────────────
 
     describe('candidate URL tests', () => {
-      async function setupReleaseWithAssets() {
+      // P3-C4: opt-in zz-pad-NN.txt fillers (sorted last) so the supported
+      // size 10 still paginates.
+      async function setupReleaseWithAssets({ fillers = 0 } = {}) {
         const projRes = await agent
           .post('/projects')
       .send('_csrf=' + encodeURIComponent(csrfToken))
@@ -11669,6 +11705,9 @@ describe('release HTTP workflow', () => {
         fs.writeFileSync(path.join(projectDir, 'beta.txt'), 'beta');
         fs.writeFileSync(path.join(projectDir, 'gamma.txt'), 'gamma');
         fs.writeFileSync(path.join(projectDir, 'delta.txt'), 'delta');
+        for (let index = 0; index < fillers; index++) {
+          fs.writeFileSync(path.join(projectDir, `zz-pad-${String(index).padStart(2, '0')}.txt`), `pad ${index}`);
+        }
         await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
@@ -11713,8 +11752,8 @@ describe('release HTTP workflow', () => {
       }
 
       it('renders Release Assets filters in the established external live dialog', async () => {
-        const { releaseLocation } = await setupReleaseWithAssets();
-        const res = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=1`).expect(200);
+        const { releaseLocation } = await setupReleaseWithAssets({ fillers: 16 });
+        const res = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=10`).expect(200);
         const region = releaseAssetsLiveRegion(res.text);
         const filterDialog = res.text.match(/<dialog id="release-assets-filter-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
 
@@ -11762,6 +11801,252 @@ describe('release HTTP workflow', () => {
         }
       });
 
+      describe('WP16 page-size consistency', () => {
+        const PAGE_SIZE_OPTIONS = ['10', '25', '50', '100', '150', '200', 'all'];
+
+        async function setupLargeRelease() {
+          const projRes = await agent
+            .post('/projects')
+            .send('_csrf=' + encodeURIComponent(csrfToken))
+            .send('title=Release+Pagination+Sizes')
+            .send('status=tbd')
+            .send('priority=normal')
+            .set('Content-Type', 'application/x-www-form-urlencoded')
+            .expect(302);
+          const projectId = projRes.headers.location.replace('/projects/', '');
+          const projectDir = getProjectDir(projectsRoot, projectId, 'release-pagination-sizes');
+          for (let index = 1; index <= 27; index += 1) {
+            fs.writeFileSync(path.join(projectDir, `clip-${String(index).padStart(2, '0')}.txt`), `clip ${index}`);
+          }
+          for (let index = 1; index <= 3; index += 1) {
+            fs.writeFileSync(path.join(projectDir, `note-${index}.md`), `note ${index}`);
+          }
+          await agent.post(`/projects/${projectId}/scan`)
+            .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
+          const allAssets = createAssetRepository(db).findByProjectId(Number(projectId));
+          const createRes = await agent
+            .post('/releases')
+            .send('_csrf=' + encodeURIComponent(csrfToken))
+            .send(`projectId=${projectId}`)
+            .send('title=WP16+Release')
+            .send('status=tbd')
+            .set('Content-Type', 'application/x-www-form-urlencoded')
+            .expect(302);
+          const releaseLocation = createRes.headers.location;
+          return { releaseLocation, releaseId: Number(releaseLocation.replace('/releases/', '')), allAssets };
+        }
+
+        function visibleAssetIds(html) {
+          return [...getAssetCollection(html).matchAll(/id="release-asset-select-(\d+)"/g)].map(([, id]) => Number(id));
+        }
+
+        function selectedSizes(html) {
+          const selected = (id) => sliceSelect(html, id).match(/<option value="([^"]*)"\s+selected>/)?.[1] ?? null;
+          return { dialog: selected('asset-page-size'), pagination: selected('pageSize') };
+        }
+
+        function pageInfo(html) {
+          return releaseAssetsLiveRegion(html).match(/class="pagination-info">Page (\d+) of (\d+)</)?.slice(1).map(Number) || null;
+        }
+
+        it('agrees on rows, totals, pages and real IDs for every size, the 25 fallback and View All', async () => {
+          const { releaseLocation, allAssets } = await setupLargeRelease();
+          const everyId = allAssets.map((asset) => asset.id).sort((a, b) => a - b);
+          expect(everyId).toHaveLength(30);
+
+          const fallback = await agent.get(`${releaseLocation}/assets?selection=all`).expect(200);
+          expect(selectedSizes(fallback.text)).toEqual({ dialog: '25', pagination: '25' });
+          expect(visibleAssetIds(fallback.text)).toHaveLength(25);
+          expect(pageInfo(fallback.text)).toEqual([1, 2]);
+
+          for (const size of PAGE_SIZE_OPTIONS.filter((value) => value !== 'all')) {
+            const pageSize = Number(size);
+            const pageCount = Math.ceil(30 / pageSize);
+            const seen = [];
+            for (let page = 1; page <= pageCount; page += 1) {
+              const res = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=${size}&page=${page}`).expect(200);
+              const ids = visibleAssetIds(res.text);
+              expect(selectedSizes(res.text)).toEqual({ dialog: size, pagination: size });
+              expect(releaseAssetsLiveRegion(res.text)).toContain('30 project assets match the current filters.');
+              expect(ids).toHaveLength(Math.min(pageSize, 30 - (page - 1) * pageSize));
+              expect(pageInfo(res.text)).toEqual(pageCount > 1 ? [page, pageCount] : null);
+              seen.push(...ids);
+            }
+            // No duplicate or missing assets across the pages of one size.
+            expect(new Set(seen).size).toBe(seen.length);
+            expect([...seen].sort((a, b) => a - b)).toEqual(everyId);
+          }
+
+          const all = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=all&page=3`).expect(200);
+          expect(selectedSizes(all.text)).toEqual({ dialog: 'all', pagination: 'all' });
+          expect([...visibleAssetIds(all.text)].sort((a, b) => a - b)).toEqual(everyId);
+          expect(pageInfo(all.text)).toBeNull();
+
+          // Returning from View All to a paginated size starts on a real page.
+          const back = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=10`).expect(200);
+          expect(pageInfo(back.text)).toEqual([1, 3]);
+          expect(visibleAssetIds(back.text)).toHaveLength(10);
+        });
+
+        // P3-C4: an unsupported pageSize used to query and render that many
+        // rows while neither control could show it (both fell to 10). Only
+        // the supported catalogue is honoured now; anything else is the
+        // default 25 for the query, the metadata, both controls and every
+        // generated URL, which then leave the implicit 25 out.
+        it('P3-C4: renders an unsupported, malformed or repeated pageSize at the effective 25 everywhere', async () => {
+          const { releaseLocation, releaseId, allAssets } = await setupLargeRelease();
+          expect(allAssets).toHaveLength(30);
+          const reference = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=25`).expect(200);
+          const referenceTwo = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=25&page=2`).expect(200);
+          const firstPage = visibleAssetIds(reference.text);
+          const secondPage = visibleAssetIds(referenceTwo.text);
+          expect(firstPage).toHaveLength(25);
+          expect(secondPage).toHaveLength(5);
+
+          const unsupported = [
+            '7', '15', '11', '24', '26', '201', '999999', '0', '-1', 'abc', '1.5', '010', '', 'ALL', 'All', '%20all',
+            '7&pageSize=15', '50&pageSize=10', '10&pageSize=abc', 'all&pageSize=all',
+          ];
+          for (const raw of unsupported) {
+            const label = `pageSize=${raw}`;
+            const res = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=${raw}`).expect(200);
+            const region = releaseAssetsLiveRegion(res.text);
+            expect(selectedSizes(res.text), label).toEqual({ dialog: '25', pagination: '25' });
+            expect(visibleAssetIds(res.text), label).toEqual(firstPage);
+            expect(region, label).toContain('30 project assets match the current filters.');
+            expect(pageInfo(res.text), label).toEqual([1, 2]);
+
+            const next = parseLinkByText(res.text, 'Next');
+            expect(next.pathname, label).toBe(`/releases/${releaseId}/assets`);
+            expect([...next.searchParams.entries()], label).toEqual([['selection', 'all'], ['page', '2']]);
+            for (const view of ['Grid', 'List']) {
+              const href = region.match(new RegExp(`href="([^"]*)"[^>]*aria-label="${view} view"`))?.[1];
+              expect(href, `${label} ${view}`).toBeDefined();
+              expect(new URL(href.replace(/&amp;/g, '&'), 'http://localhost').searchParams.has('pageSize'), `${label} ${view}`).toBe(false);
+            }
+            const clear = res.text.match(/href="([^"]*)"[^>]*data-release-assets-reset/)?.[1];
+            expect(clear, label).toBeDefined();
+            expect(new URL(clear.replace(/&amp;/g, '&'), 'http://localhost').searchParams.has('pageSize'), label).toBe(false);
+            expect(res.text, label).toContain(`<form id="release-assets-form" method="post" action="/releases/${releaseId}/assets?selection=all"`);
+            expect(res.text, label).not.toMatch(/name="pageSize" value="(?!25")/);
+
+            const pageTwo = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=${raw}&page=2`).expect(200);
+            expect(visibleAssetIds(pageTwo.text), label).toEqual(secondPage);
+            expect(pageInfo(pageTwo.text), label).toEqual([2, 2]);
+            const clamped = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=${raw}&page=99`).expect(200);
+            expect(visibleAssetIds(clamped.text), label).toEqual(secondPage);
+          }
+
+          // Grid and List render the same effective rows.
+          for (const view of ['grid', 'list']) {
+            const res = await agent.get(`${releaseLocation}/assets?selection=all&view=${view}&pageSize=7`).expect(200);
+            expect(selectedSizes(res.text), view).toEqual({ dialog: '25', pagination: '25' });
+            const regionIds = [...new Set([...releaseAssetsLiveRegion(res.text).matchAll(/id="release-asset-select-(\d+)"/g)]
+              .map(([, id]) => Number(id)))];
+            expect(regionIds, view).toEqual(firstPage);
+          }
+
+          // Saved-selected (the default Selection) uses the same effective size.
+          const save = await agent
+            .post(`${releaseLocation}/assets`)
+            .send('_csrf=' + encodeURIComponent(csrfToken))
+            .send(allAssets.map((asset) => `selectedAssetIds[]=${asset.id}`).join('&'))
+            .set('Content-Type', 'application/x-www-form-urlencoded')
+            .expect(302);
+          expect(save.headers.location).toBeDefined();
+          const membership = getReleaseAssets(db, releaseId).map((row) => row.asset_id);
+          expect([...membership].sort((a, b) => a - b)).toEqual(allAssets.map((asset) => asset.id).sort((a, b) => a - b));
+          for (const raw of ['7', '15', '999999']) {
+            const saved = await agent.get(`${releaseLocation}/assets?pageSize=${raw}`).expect(200);
+            expect(selectedSizes(saved.text), raw).toEqual({ dialog: '25', pagination: '25' });
+            expect(visibleAssetIds(saved.text), raw).toHaveLength(25);
+            expect(releaseAssetsLiveRegion(saved.text), raw).toContain('30 selected assets match the current filters.');
+            expect(pageInfo(saved.text), raw).toEqual([1, 2]);
+          }
+
+          // Every supported size, and View All, is still honoured as asked.
+          for (const size of PAGE_SIZE_OPTIONS) {
+            const res = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=${size}`).expect(200);
+            expect(selectedSizes(res.text), size).toEqual({ dialog: size, pagination: size });
+            expect(visibleAssetIds(res.text), size).toHaveLength(size === 'all' ? 30 : Math.min(Number(size), 30));
+          }
+        }, 30000);
+
+        it('clamps a later or out-of-range page to the last real page of the requested size', async () => {
+          const { releaseLocation } = await setupLargeRelease();
+          const lastOfTen = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=10&page=3`).expect(200);
+          const outOfRange = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=10&page=99`).expect(200);
+          expect(pageInfo(outOfRange.text)).toEqual([3, 3]);
+          expect(visibleAssetIds(outOfRange.text)).toEqual(visibleAssetIds(lastOfTen.text));
+
+          // Page 3 of size 10 asked at size 25 resolves to page 2 (5 rows), not an empty page.
+          const resized = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=25&page=3`).expect(200);
+          expect(pageInfo(resized.text)).toEqual([2, 2]);
+          expect(visibleAssetIds(resized.text)).toHaveLength(5);
+          expect(selectedSizes(resized.text)).toEqual({ dialog: '25', pagination: '25' });
+          const previous = parseLinkByText(resized.text, 'Previous');
+          expect(previous.searchParams.has('page')).toBe(false);
+          expect(previous.searchParams.has('pageSize')).toBe(false);
+        });
+
+        it('combines filters with a size, keeps both controls and the URL in step, and shows an empty match', async () => {
+          const { releaseLocation, allAssets } = await setupLargeRelease();
+          const noteIds = allAssets.filter((asset) => asset.filename.startsWith('note-')).map((asset) => asset.id).sort((a, b) => a - b);
+          const res = await agent.get(`${releaseLocation}/assets?selection=all&extension=md&search=note&view=list&pageSize=10`).expect(200);
+          expect(selectedSizes(res.text)).toEqual({ dialog: '10', pagination: '10' });
+          expect(releaseAssetsLiveRegion(res.text)).toContain('3 project assets match the current filters.');
+          const pageSizeForm = res.text.match(/<form class="page-size-form"[\s\S]*?<\/form>/)?.[0] || '';
+          expect([...pageSizeForm.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)">/g)].map(([, name, value]) => [name, value]))
+            .toEqual([['search', 'note'], ['extension', 'md'], ['selection', 'all'], ['view', 'list']]);
+          const listIds = [...res.text.matchAll(/id="release-asset-select-(\d+)"/g)].map(([, id]) => Number(id)).sort((a, b) => a - b);
+          expect(listIds).toEqual(noteIds);
+
+          const empty = await agent.get(`${releaseLocation}/assets?selection=all&search=zzz-nothing&pageSize=10&page=4`).expect(200);
+          expect(selectedSizes(empty.text)).toEqual({ dialog: '10', pagination: '10' });
+          expect(releaseAssetsLiveRegion(empty.text)).toContain('0 project assets match the current filters.');
+          expect(releaseAssetsLiveRegion(empty.text)).not.toContain('class="pagination"');
+          expect(visibleAssetIds(empty.text)).toEqual([]);
+        });
+
+        it('Clear keeps size and View, restores saved-selected, and never saves membership or defaults', async () => {
+          const { releaseLocation, releaseId, allAssets } = await setupLargeRelease();
+          const saved = allAssets.filter((asset) => /clip-0[1-3]\.txt/.test(asset.filename)).map((asset) => asset.id);
+          const save = agent
+            .post(`${releaseLocation}/assets`)
+            .send('_csrf=' + encodeURIComponent(csrfToken))
+            .set('Content-Type', 'application/x-www-form-urlencoded');
+          saved.forEach((id) => save.send(`selectedAssetIds[]=${id}`));
+          await save.expect(302);
+          const membershipBefore = getReleaseAssets(db, releaseId);
+          const defaultsSnapshot = () => ({
+            meta: db.prepare('SELECT key, value FROM app_meta ORDER BY key').all(),
+            project: db.prepare('SELECT * FROM project_page_defaults').all(),
+            scopes: db.prepare('SELECT * FROM project_page_default_scopes').all(),
+          });
+          const defaultsBefore = defaultsSnapshot();
+
+          const res = await agent.get(`${releaseLocation}/assets?selection=all&extension=md&search=note&view=list&pageSize=10`).expect(200);
+          const filterDialog = res.text.match(/<dialog id="release-assets-filter-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+          // Filter-only: no saved-default actions, badges or scope.
+          expect(filterDialog).not.toMatch(/Save defaults|Reset filters|Reset defaults|data-defaults|data-page-defaults|name="scope"/);
+          expect([...filterDialog.matchAll(/<label[^>]*>([^<]+)<\/label>/g)].map(([, label]) => label.trim()))
+            .toContain('Find project assets');
+          const clearHref = filterDialog.match(/href="([^"]*)"[^>]*data-release-assets-reset/)?.[1].replace(/&amp;/g, '&');
+          const clear = new URL(clearHref, 'http://localhost');
+          expect([...clear.searchParams.entries()]).toEqual([['pageSize', '10'], ['view', 'list']]);
+
+          const cleared = await agent.get(`${clear.pathname}${clear.search}`).expect(200);
+          expect(selectedSizes(cleared.text)).toEqual({ dialog: '10', pagination: '10' });
+          expect(releaseAssetsLiveRegion(cleared.text)).toContain('3 selected assets match the current filters.');
+          expect([...cleared.text.matchAll(/id="release-asset-select-(\d+)"/g)].map(([, id]) => Number(id)).sort((a, b) => a - b))
+            .toEqual([...saved].sort((a, b) => a - b));
+          expect(cleared.text).toContain('data-release-assets-selection-notice');
+
+          expect(getReleaseAssets(db, releaseId)).toEqual(membershipBefore);
+          expect(defaultsSnapshot()).toEqual(defaultsBefore);
+        });
+      });
+
       it('keeps all canonical while filtering and clearing, with real totals and no slicing', async () => {
         const { releaseLocation, allAssets } = await setupReleaseWithAssets();
         const res = await agent.get(`${releaseLocation}/assets?selection=all&search=a&page=99&pageSize=all`).expect(200);
@@ -11799,45 +12084,45 @@ describe('release HTTP workflow', () => {
       });
 
       it('Next link pathname and query on page 1', async () => {
-        const { releaseLocation, releaseId } = await setupReleaseWithAssets();
-        const res = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=1`).expect(200);
+        const { releaseLocation, releaseId } = await setupReleaseWithAssets({ fillers: 36 });
+        const res = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=10`).expect(200);
 
         const url = parseLinkByText(res.text, 'Next');
         expect(url).not.toBeNull();
         expect(url.pathname).toBe(`/releases/${releaseId}/assets`);
         expect(url.searchParams.get('page')).toBe('2');
-        expect(url.searchParams.get('pageSize')).toBe('1');
+        expect(url.searchParams.get('pageSize')).toBe('10');
         expect([...url.searchParams.keys()].sort()).toEqual(['page', 'pageSize', 'selection']);
       });
 
       it('Previous link on page 2 omits page=1', async () => {
-        const { releaseLocation, releaseId } = await setupReleaseWithAssets();
-        const res = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=1&page=2`).expect(200);
+        const { releaseLocation, releaseId } = await setupReleaseWithAssets({ fillers: 36 });
+        const res = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=10&page=2`).expect(200);
 
         const url = parseLinkByText(res.text, 'Previous');
         expect(url).not.toBeNull();
         expect(url.pathname).toBe(`/releases/${releaseId}/assets`);
-        expect(url.searchParams.get('pageSize')).toBe('1');
+        expect(url.searchParams.get('pageSize')).toBe('10');
         // page=1 is omitted
         expect(url.searchParams.has('page')).toBe(false);
         expect([...url.searchParams.keys()].sort()).toEqual(['pageSize', 'selection']);
       });
 
       it('Next link on page 2 preserves page=2', async () => {
-        const { releaseLocation, releaseId } = await setupReleaseWithAssets();
-        const res = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=1&page=2`).expect(200);
+        const { releaseLocation, releaseId } = await setupReleaseWithAssets({ fillers: 36 });
+        const res = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=10&page=2`).expect(200);
 
         const url = parseLinkByText(res.text, 'Next');
         expect(url).not.toBeNull();
         expect(url.pathname).toBe(`/releases/${releaseId}/assets`);
         expect(url.searchParams.get('page')).toBe('3');
-        expect(url.searchParams.get('pageSize')).toBe('1');
+        expect(url.searchParams.get('pageSize')).toBe('10');
         expect([...url.searchParams.keys()].sort()).toEqual(['page', 'pageSize', 'selection']);
       });
 
       it('page 1 is omitted from pagination URLs', async () => {
-        const { releaseLocation, releaseId } = await setupReleaseWithAssets();
-        const res = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=1`).expect(200);
+        const { releaseLocation, releaseId } = await setupReleaseWithAssets({ fillers: 36 });
+        const res = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=10`).expect(200);
 
         const url = parseLinkByText(res.text, 'Next');
         expect(url).not.toBeNull();
@@ -11849,22 +12134,22 @@ describe('release HTTP workflow', () => {
       });
 
       it('search and extension filters are preserved in pagination URLs', async () => {
-        const { releaseLocation, releaseId } = await setupReleaseWithAssets();
-        // extension=txt matches 3 files (alpha, beta, gamma), pageSize=1 → 3 pages
-        const res = await agent.get(`${releaseLocation}/assets?selection=all&extension=txt&pageSize=1`).expect(200);
+        const { releaseLocation, releaseId } = await setupReleaseWithAssets({ fillers: 36 });
+        // P3-C4: extension=txt matches all 40 files, pageSize=10 → 4 pages
+        const res = await agent.get(`${releaseLocation}/assets?selection=all&extension=txt&pageSize=10`).expect(200);
 
         const url = parseLinkByText(res.text, 'Next');
         expect(url).not.toBeNull();
         expect(url.pathname).toBe(`/releases/${releaseId}/assets`);
         expect(url.searchParams.get('extension')).toBe('txt');
         expect(url.searchParams.get('page')).toBe('2');
-        expect(url.searchParams.get('pageSize')).toBe('1');
+        expect(url.searchParams.get('pageSize')).toBe('10');
         expect([...url.searchParams.keys()].sort()).toEqual(['extension', 'page', 'pageSize', 'selection']);
       });
 
       it('unknown parameters are stripped from generated URLs', async () => {
-        const { releaseLocation, releaseId } = await setupReleaseWithAssets();
-        const res = await agent.get(`${releaseLocation}/assets?selection=all&unknown=param&junk=value&pageSize=1`).expect(200);
+        const { releaseLocation, releaseId } = await setupReleaseWithAssets({ fillers: 36 });
+        const res = await agent.get(`${releaseLocation}/assets?selection=all&unknown=param&junk=value&pageSize=10`).expect(200);
 
         const url = parseLinkByText(res.text, 'Next');
         expect(url).not.toBeNull();
@@ -11873,15 +12158,15 @@ describe('release HTTP workflow', () => {
         expect(url.searchParams.has('unknown')).toBe(false);
         expect(url.searchParams.has('junk')).toBe(false);
         // Must still have pageSize and page
-        expect(url.searchParams.get('pageSize')).toBe('1');
+        expect(url.searchParams.get('pageSize')).toBe('10');
         expect(url.searchParams.get('page')).toBe('2');
         expect([...url.searchParams.keys()].sort()).toEqual(['page', 'pageSize', 'selection']);
       });
 
       it('page beyond final page clamps and renders canonical links', async () => {
-        const { releaseLocation, releaseId } = await setupReleaseWithAssets();
-        // 4 files, pageSize=1 → 4 pages. Request page=999 → clamped to page 4.
-        const res = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=1&page=999`).expect(200);
+        const { releaseLocation, releaseId } = await setupReleaseWithAssets({ fillers: 36 });
+        // P3-C4: 40 files, pageSize=10 → 4 pages. Request page=999 → clamped to page 4.
+        const res = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=10&page=999`).expect(200);
 
         // Displayed page is the clamped page
         expect(res.text).toContain('Page 4 of 4');
@@ -11891,7 +12176,7 @@ describe('release HTTP workflow', () => {
         expect(prevUrl).not.toBeNull();
         expect(prevUrl.pathname).toBe(`/releases/${releaseId}/assets`);
         expect(prevUrl.searchParams.get('page')).toBe('3');
-        expect(prevUrl.searchParams.get('pageSize')).toBe('1');
+        expect(prevUrl.searchParams.get('pageSize')).toBe('10');
         expect([...prevUrl.searchParams.keys()].sort()).toEqual(['page', 'pageSize', 'selection']);
 
         // No Next link on the final page
@@ -11952,6 +12237,786 @@ describe('release HTTP workflow', () => {
   }
 
   // ─── Category filter control ───────────────────────────────────────────────
+
+  describe('read-only Manage Assets query contract (B-F1)', () => {
+    const READ_ONLY_HTTP_STATES = [
+      ['published release',
+        ({ releaseId }) => db.prepare("UPDATE releases SET published_date = '2025-06-15' WHERE id = ?").run(releaseId),
+        'This release is published. Asset selections are locked and read-only.'],
+      ['archived release',
+        ({ releaseId }) => db.prepare("UPDATE releases SET archived_at = '2026-01-01T00:00:00Z' WHERE id = ?").run(releaseId),
+        'This release is archived. Asset selections are read-only.'],
+      ['archived parent project',
+        ({ projectId }) => db.prepare("UPDATE projects SET archived_at = '2026-01-01T00:00:00Z' WHERE id = ?").run(projectId),
+        'The parent project is archived. Asset selections are read-only.'],
+    ];
+
+    // Record every real SQL execution on this connection, including
+    // statements the app prepared at construction, by wrapping the
+    // better-sqlite3 Statement prototype for the duration of one request.
+    function instrumentSqlExecution() {
+      const proto = Object.getPrototypeOf(db.prepare('SELECT 1'));
+      const originals = {};
+      const log = [];
+      for (const method of ['all', 'get', 'run', 'iterate']) {
+        originals[method] = proto[method];
+        proto[method] = function execute(...args) {
+          const result = originals[method].apply(this, args);
+          const rows = method === 'all' ? result : (method === 'get' && result !== undefined ? [result] : []);
+          log.push({
+            sql: this.source.replace(/\s+/g, ' ').trim(),
+            method,
+            args,
+            rows: rows.length,
+            metadataRows: rows.filter((row) => row && typeof row === 'object' && 'filename' in row).length,
+          });
+          return result;
+        };
+      }
+      return {
+        log,
+        restore: () => { for (const [method, fn] of Object.entries(originals)) proto[method] = fn; },
+      };
+    }
+
+    const isEditablePageSql = (entry) => entry.sql.includes('is_saved_member') || entry.sql.includes('AS candidate_total');
+    const isSavedCollectionSql = (entry) => entry.sql.startsWith('SELECT ra.release_id, ra.asset_id, ra.role, ra.sort_order, ra.created_at, a.project_id');
+    const isMembershipWrite = (entry) => entry.method === 'run' && /\b(INSERT|UPDATE|DELETE)\b[\s\S]*\b(release_assets|releases|assets)\b/i.test(entry.sql);
+
+    // 10,000 assets (alternating PNG/TXT), 400 saved members spread across the
+    // project in stored order that is the reverse of ID order. The saved IDs,
+    // roles and order are known independently of the service.
+    async function buildLargeReadOnlyFixture() {
+      const projectId = await createTestProject('B-F1 Read-only Scale');
+      const rows = [];
+      for (let index = 0; index < 10000; index += 1) {
+        const png = index % 2 === 0;
+        const filename = `${png ? 'img' : 'doc'}-${String(index).padStart(5, '0')}.${png ? 'png' : 'txt'}`;
+        rows.push({
+          relativePath: filename, filename, extension: png ? 'png' : 'txt',
+          mimeType: png ? 'image/png' : 'text/plain', sizeBytes: 100, modifiedAt: '2025-01-01T00:00:00Z',
+        });
+      }
+      const assets = createAssetRepository(db).upsertMany(projectId, rows);
+      const release = createReleaseService({ db }).createRelease(projectId, {
+        title: 'B-F1 Read-only', description: '', notes: '', plannedDate: null, patreonUrl: null,
+      });
+      const saved = Array.from({ length: 400 }, (_, index) => assets[index * 25]).reverse();
+      const insert = db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)');
+      db.transaction(() => {
+        saved.forEach((asset, index) => {
+          insert.run(release.id, asset.id, index === 0 ? 'primary' : index === 1 ? 'preview' : 'attachment', index);
+        });
+      })();
+      const missingSaved = saved[7];
+      db.prepare("UPDATE assets SET is_present = 0, missing_since = '2025-02-01T00:00:00Z' WHERE id IN (?, ?)")
+        .run(missingSaved.id, assets[1].id);
+      return { projectId, releaseId: release.id, assets, saved, missingSaved };
+    }
+
+    function liveRegion(html) {
+      const start = html.indexOf('<section data-release-assets-live-region>');
+      const end = html.indexOf('</section>', start);
+      expect(start).toBeGreaterThan(-1);
+      return html.slice(start, end);
+    }
+
+    function renderedCardIds(section) {
+      return [...section.matchAll(/<article[^>]*data-asset-id="(\d+)"/g)].map((match) => Number(match[1]));
+    }
+
+    async function measuredGet(url) {
+      const membershipBefore = getReleaseAssets(db, Number(url.split('/')[2]));
+      const { log, restore } = instrumentSqlExecution();
+      let res;
+      try {
+        res = await agent.get(url).expect(200);
+      } finally {
+        restore();
+      }
+      expect(getReleaseAssets(db, Number(url.split('/')[2]))).toEqual(membershipBefore);
+      return { res, log };
+    }
+
+    function expectReadOnlyResponse(res, log, fixture, notice, view) {
+      const savedIds = fixture.saved.map((asset) => asset.id);
+      const section = liveRegion(res.text);
+
+      // Exactly the complete saved collection, in stored order, no duplicates.
+      expect(renderedCardIds(section)).toEqual(savedIds);
+      expect((section.match(/class="asset-(?:grid|list)-item is-missing"/g) || [])).toHaveLength(1);
+      expect(section).toContain(fixture.saved[0].filename);
+      expect(section).toContain(fixture.saved[399].filename);
+
+      if (view === 'list') {
+        const orders = [...section.matchAll(/data-release-asset-stored-fact-label="Order">Order<\/dt><dd>(\d+)<\/dd>/g)].map((m) => Number(m[1]));
+        expect(orders).toEqual(savedIds.map((_, index) => index));
+        const roles = [...section.matchAll(/data-release-asset-stored-fact-label="Role">Role<\/dt><dd>([A-Za-z]+)<\/dd>/g)].map((m) => m[1]);
+        expect(roles.slice(0, 3)).toEqual(['Primary', 'Preview', 'Attachment']);
+        expect(roles.filter((role) => role !== 'Attachment')).toEqual(['Primary', 'Preview']);
+      } else {
+        const roles = [...section.matchAll(/<span class="release-asset-grid-role-value">([A-Za-z]+)<\/span>/g)].map((m) => m[1]);
+        expect(roles).toHaveLength(400);
+        expect(roles.slice(0, 3)).toEqual(['Primary', 'Preview', 'Attachment']);
+        expect(roles.filter((role) => role !== 'Attachment')).toEqual(['Primary', 'Preview']);
+      }
+
+      // Read-only controls only.
+      expect(res.text).toContain(notice);
+      expect(res.text).not.toContain('id="release-assets-form"');
+      expect(res.text).not.toContain('Save asset selection');
+      expect(section).not.toContain('data-release-assets-live-page-size-form');
+      expect(section).not.toContain('aria-label="Release asset pages"');
+      expect(section).not.toContain('data-dialog-open="release-assets-filter-dialog"');
+      expect(section).not.toContain('release-asset-select-');
+      expect(section).not.toContain('release-asset-role-form');
+
+      // SQL evidence: zero editable page/count reads; the only full asset
+      // metadata rows are the saved collection, from one statement.
+      expect(log.filter(isEditablePageSql).map((entry) => entry.sql)).toEqual([]);
+      const metadataStatements = log.filter((entry) => entry.metadataRows > 0);
+      expect(metadataStatements).toHaveLength(1);
+      expect(isSavedCollectionSql(metadataStatements[0])).toBe(true);
+      expect(metadataStatements[0].metadataRows).toBe(400);
+      expect(Math.max(...log.map((entry) => entry.rows))).toBeLessThanOrEqual(400);
+      expect(log.filter(isMembershipWrite)).toEqual([]);
+    }
+
+    it('published View All (selection=all&pageSize=all) on 10,000 assets renders 400 saved cards and fetches zero editable rows', async () => {
+      const fixture = await buildLargeReadOnlyFixture();
+      READ_ONLY_HTTP_STATES[0][1](fixture);
+      for (const view of ['grid', 'list']) {
+        const viewQuery = view === 'list' ? '&view=list' : '';
+        const { res, log } = await measuredGet(`/releases/${fixture.releaseId}/assets?selection=all&pageSize=all${viewQuery}`);
+        expectReadOnlyResponse(res, log, fixture, READ_ONLY_HTTP_STATES[0][2], view);
+      }
+    });
+
+    it('published numeric, unsupported-size and filtered requests render the same complete saved collection', async () => {
+      const fixture = await buildLargeReadOnlyFixture();
+      READ_ONLY_HTTP_STATES[0][1](fixture);
+      const categoryId = createAssetCategoryRepository(db).addProjectCategory({
+        projectId: fixture.projectId, displayName: 'Scale', directorySlug: 'scale', displayOrder: 0, enabled: true,
+      }).id;
+      const queries = [
+        ['pageSize=10', 'grid'],
+        ['pageSize=25&selection=all&view=list', 'list'],
+        ['pageSize=200&selection=all', 'grid'],
+        ['pageSize=7', 'grid'],
+        ['pageSize=15&view=list&page=9', 'list'],
+        [`pageSize=10&selection=all&search=img-0&extension=png&category=${categoryId}&view=list&page=2`, 'list'],
+        ['pageSize=all&search=doc&extension=txt', 'grid'],
+      ];
+      for (const [query, view] of queries) {
+        const { res, log } = await measuredGet(`/releases/${fixture.releaseId}/assets?${query}`);
+        expectReadOnlyResponse(res, log, fixture, READ_ONLY_HTTP_STATES[0][2], view);
+        // The view switch keeps the normalized size, never a stale page.
+        const section = liveRegion(res.text);
+        const expectedSize = /pageSize=(10|200|all)\b/.exec(query)?.[1];
+        const listHref = section.match(/href="([^"]*view=list[^"]*)"/)?.[1] ?? '';
+        if (expectedSize) expect(listHref).toContain(`pageSize=${expectedSize}`);
+        else expect(listHref).not.toContain('pageSize=');
+        expect(listHref).not.toContain('page=');
+      }
+    });
+
+    it.each(READ_ONLY_HTTP_STATES.slice(1))('%s on 10,000 assets renders the saved collection with zero editable rows (numeric and View All)', async (_label, makeReadOnly, notice) => {
+      const fixture = await buildLargeReadOnlyFixture();
+      makeReadOnly(fixture);
+      for (const [query, view] of [['selection=all&pageSize=all', 'grid'], ['pageSize=25&view=list', 'list'], ['pageSize=200&selection=all', 'grid']]) {
+        const { res, log } = await measuredGet(`/releases/${fixture.releaseId}/assets?${query}`);
+        expectReadOnlyResponse(res, log, fixture, notice, view);
+      }
+    });
+
+    it('editable control: the same 10,000-asset project still fetches exactly 25 full metadata rows at size 25', async () => {
+      const fixture = await buildLargeReadOnlyFixture();
+      const { res, log } = await measuredGet(`/releases/${fixture.releaseId}/assets?selection=all&pageSize=25&page=2`);
+      const pageRows = log.filter((entry) => entry.sql.includes('is_saved_member') && entry.sql.includes('LIMIT ? OFFSET ?'));
+      expect(pageRows).toHaveLength(1);
+      expect(pageRows[0].metadataRows).toBe(25);
+      expect(log.filter((entry) => entry.sql.includes('AS candidate_total'))).toHaveLength(1);
+      expect(log.reduce((sum, entry) => sum + entry.metadataRows, 0)).toBe(25);
+      expect(log.filter((entry) => isSavedCollectionSql(entry))).toEqual([]);
+      expect(renderedCardIds(liveRegion(res.text))).toHaveLength(25);
+      expect(res.text).toContain('Save asset selection');
+      expect(res.text).toContain('Page 2 of 400');
+    });
+
+    it('a well-formed Save on a published release stays 422 with the complete saved collection and no membership write', async () => {
+      const fixture = await buildLargeReadOnlyFixture();
+      READ_ONLY_HTTP_STATES[0][1](fixture);
+      const membershipBefore = getReleaseAssets(db, fixture.releaseId);
+      const { log, restore } = instrumentSqlExecution();
+      let res;
+      try {
+        res = await agent
+          .post(`/releases/${fixture.releaseId}/assets?selection=all&pageSize=all`)
+          .send('_csrf=' + encodeURIComponent(csrfToken))
+          .send(`selectedAssetIds=${fixture.assets[2].id}`)
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .expect(422);
+      } finally {
+        restore();
+      }
+      expect(getReleaseAssets(db, fixture.releaseId)).toEqual(membershipBefore);
+      expect(renderedCardIds(liveRegion(res.text))).toEqual(fixture.saved.map((asset) => asset.id));
+      expect(log.filter(isEditablePageSql)).toEqual([]);
+      expect(log.filter(isMembershipWrite)).toEqual([]);
+    });
+
+    // ─── B-F4: a malformed Save on a read-only release is refused (422) ─────
+    // before selectAssets' read-only guards run, but the page still displays
+    // the complete persisted saved collection, never the rejected draft.
+    describe('malformed read-only Save recovery (B-F4)', () => {
+      // 2,000 project assets (alternating categorized PNG / uncategorized
+      // TXT); 60 saved members in a stored order unrelated to ID order:
+      // Primary, a MISSING Preview, then Attachments; one animated/generated
+      // saved member. A foreign project owns a distinctively named asset.
+      async function buildMalformedSaveFixture() {
+        const projectId = await createTestProject('B-F4 Read-only');
+        const rows = [];
+        for (let index = 0; index < 2000; index += 1) {
+          const png = index % 2 === 0;
+          const filename = `${png ? 'img' : 'doc'}-${String(index).padStart(5, '0')}.${png ? 'png' : 'txt'}`;
+          rows.push({
+            relativePath: filename, filename, extension: png ? 'png' : 'txt',
+            mimeType: png ? 'image/png' : 'text/plain', sizeBytes: 100, modifiedAt: '2025-01-01T00:00:00Z',
+          });
+        }
+        const assets = createAssetRepository(db).upsertMany(projectId, rows);
+        const category = createAssetCategoryRepository(db).addProjectCategory({
+          projectId, displayName: 'Scale', directorySlug: 'scale', displayOrder: 0, enabled: true,
+        });
+        db.prepare("UPDATE assets SET category_id = ? WHERE project_id = ? AND extension = 'png'").run(category.id, projectId);
+        const release = createReleaseService({ db }).createRelease(projectId, {
+          title: 'B-F4 Read-only', description: '', notes: '', plannedDate: null, patreonUrl: null,
+        });
+        const picked = Array.from({ length: 60 }, (_, index) => assets[index * 33]);
+        const saved = picked.map((_, i) => (i % 2 === 0 ? picked[i / 2] : picked[59 - (i - 1) / 2]));
+        const insert = db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)');
+        db.transaction(() => {
+          saved.forEach((asset, index) => {
+            insert.run(release.id, asset.id, index === 0 ? 'primary' : index === 1 ? 'preview' : 'attachment', index);
+          });
+        })();
+        db.prepare("UPDATE assets SET is_present = 0, missing_since = '2025-02-01T00:00:00Z' WHERE id = ?").run(saved[1].id);
+        db.prepare('UPDATE assets SET source_animated = 1, source_generation = 3 WHERE id = ?').run(saved[3].id);
+        const foreignProjectId = await createTestProject('B-F4 Foreign');
+        const [foreign] = createAssetRepository(db).upsertMany(foreignProjectId, [{
+          relativePath: 'foreign-secret-bf4.png', filename: 'foreign-secret-bf4.png', extension: 'png',
+          mimeType: 'image/png', sizeBytes: 100, modifiedAt: '2025-01-01T00:00:00Z',
+        }]);
+        const nonMember = assets.find((asset) => !saved.includes(asset) && asset.extension === 'png');
+        return { projectId, releaseId: release.id, assets, saved, category, foreign, nonMember };
+      }
+
+      async function measuredPost(fixture, query, body, status = 422) {
+        const membershipBefore = getReleaseAssets(db, fixture.releaseId);
+        const { log, restore } = instrumentSqlExecution();
+        let res;
+        try {
+          res = await agent
+            .post(`/releases/${fixture.releaseId}/assets${query ? `?${query}` : ''}`)
+            .set('Content-Type', 'application/x-www-form-urlencoded')
+            .send(body)
+            .expect(status);
+        } finally {
+          restore();
+        }
+        expect(getReleaseAssets(db, fixture.releaseId)).toEqual(membershipBefore);
+        expect(log.filter(isMembershipWrite)).toEqual([]);
+        expect(db.inTransaction).toBe(false);
+        return { res, log };
+      }
+
+      const withCsrf = (body) => `_csrf=${encodeURIComponent(csrfToken)}&${body}`;
+
+      function expectPersistedReadOnlyError(res, log, fixture, { notice, error, view }) {
+        const savedIds = fixture.saved.map((asset) => asset.id);
+        const section = liveRegion(res.text);
+
+        // Exact saved IDs in stored order, no duplicates, no candidates.
+        expect(renderedCardIds(section)).toEqual(savedIds);
+        expect(new Set(renderedCardIds(section)).size).toBe(savedIds.length);
+        expect(renderedCardIds(section)).not.toContain(fixture.nonMember.id);
+        // The missing saved Preview stays in place.
+        const missing = section.match(/class="asset-(?:grid|list)-item is-missing">[\s\S]*?data-asset-id="(\d+)"/g) || [];
+        expect(missing).toHaveLength(1);
+        expect(missing[0]).toContain(`data-asset-id="${fixture.saved[1].id}"`);
+        expect(section).toContain('Missing at last scan');
+        // Metadata: every saved filename, category label.
+        for (const asset of fixture.saved) expect(section).toContain(asset.filename);
+        expect(section).toContain('Scale');
+
+        if (view === 'list') {
+          const orders = [...section.matchAll(/data-release-asset-stored-fact-label="Order">Order<\/dt><dd>(\d+)<\/dd>/g)].map((m) => Number(m[1]));
+          expect(orders).toEqual(savedIds.map((_, index) => index));
+          const roles = [...section.matchAll(/data-release-asset-stored-fact-label="Role">Role<\/dt><dd>([A-Za-z]+)<\/dd>/g)].map((m) => m[1]);
+          expect(roles).toEqual(savedIds.map((_, i) => (i === 0 ? 'Primary' : i === 1 ? 'Preview' : 'Attachment')));
+          expect(section).toContain('asset-list-card');
+        } else {
+          const roles = [...section.matchAll(/<span class="release-asset-grid-role-value">([A-Za-z]+)<\/span>/g)].map((m) => m[1]);
+          expect(roles).toEqual(savedIds.map((_, i) => (i === 0 ? 'Primary' : i === 1 ? 'Preview' : 'Attachment')));
+          expect(section).toContain('asset-grid-item');
+        }
+
+        // Truthful refusal: read-only notice + the validation error alert.
+        expect(res.text).toContain(notice);
+        expect(res.text).toMatch(new RegExp(`<p>${error.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}</p>`));
+        expect(res.text).not.toMatch(/saved successfully|Asset selection saved/i);
+
+        // No editable form, carriers, mutation or pagination controls.
+        expect(res.text).not.toContain('id="release-assets-form"');
+        expect(res.text).not.toContain('Save asset selection');
+        expect(res.text).not.toContain('name="roleOrder"');
+        expect(res.text).not.toContain('name="roleAssetIds');
+        expect(res.text).not.toMatch(/name="roles\[/);
+        expect(res.text).not.toMatch(/name="sortOrder\[/);
+        expect(res.text).not.toContain('name="selectedAssetIds"');
+        expect(section).not.toContain('release-asset-select-');
+        expect(section).not.toContain('release-asset-role-form');
+        expect(section).not.toContain('aria-label="Release asset pages"');
+        expect(section).not.toContain('data-release-assets-live-page-size-form');
+
+        // No foreign metadata, no internals.
+        expect(res.text).not.toContain('foreign-secret-bf4');
+        expect(res.text).not.toMatch(/SQLITE|SELECT |at .*\.js:\d+/);
+
+        // SQL: no editable page/count, no submitted-ID hydration, and the only
+        // full metadata rows are the saved collection from one statement.
+        expect(log.filter(isEditablePageSql).map((entry) => entry.sql)).toEqual([]);
+        expect(log.filter((entry) => entry.sql.includes('a.project_id = ? AND a.id IN ('))).toEqual([]);
+        const metadataStatements = log.filter((entry) => entry.metadataRows > 0);
+        expect(metadataStatements).toHaveLength(1);
+        expect(isSavedCollectionSql(metadataStatements[0])).toBe(true);
+        expect(metadataStatements[0].metadataRows).toBe(savedIds.length);
+        expect(Math.max(...log.map((entry) => entry.rows))).toBeLessThanOrEqual(savedIds.length);
+      }
+
+      it.each(READ_ONLY_HTTP_STATES)('%s: a non-integer selected ID stays 422 and renders the complete saved collection (Grid and List)', async (_label, makeReadOnly, notice) => {
+        const fixture = await buildMalformedSaveFixture();
+        makeReadOnly(fixture);
+        const body = withCsrf([
+          'selectedAssetIds=abc',
+          `selectedAssetIds=${fixture.foreign.id}`,
+          `selectedAssetIds=${fixture.nonMember.id}`,
+          `selectedAssetIds=${fixture.saved[0].id}`,
+        ].join('&'));
+        const cases = [
+          ['pageSize=10&page=2', 'grid'],
+          [`pageSize=25&selection=all&search=img&extension=png&category=${fixture.category.id}&view=list&page=3`, 'list'],
+          ['pageSize=200&selection=selected', 'grid'],
+          ['pageSize=all&selection=all&view=list', 'list'],
+          ['pageSize=7', 'grid'],
+          ['pageSize=15&view=list', 'list'],
+        ];
+        for (const [query, view] of cases) {
+          const { res, log } = await measuredPost(fixture, query, body);
+          expectPersistedReadOnlyError(res, log, fixture, { notice, error: 'Invalid asset selection.', view });
+          // URL context survives on the view switch (GET route, normalized size, no page).
+          const section = liveRegion(res.text);
+          const switchHref = section.match(/href="(\/releases\/\d+\/assets\?[^"]*view=(?:list|grid)[^"]*)"/)?.[1] ?? '';
+          expect(switchHref).toMatch(new RegExp(`^/releases/${fixture.releaseId}/assets\\?`));
+          const expectedSize = /pageSize=(10|200|all)\b/.exec(query)?.[1];
+          if (expectedSize) expect(switchHref).toContain(`pageSize=${expectedSize}`);
+          else expect(switchHref).not.toContain('pageSize=');
+          if (query.includes('search=img')) expect(switchHref).toContain('search=img');
+          expect(switchHref).not.toContain('page=');
+        }
+      });
+
+      it('published: other malformed or invalid Save classes keep their established 422 refusals with the saved collection', async () => {
+        const fixture = await buildMalformedSaveFixture();
+        const [, makeReadOnly, notice] = READ_ONLY_HTTP_STATES[0];
+        makeReadOnly(fixture);
+        const id = fixture.saved[0].id;
+        const cases = [
+          // Route-level malformed shapes (refused before the read-only guard).
+          [`selectedAssetIds[x]=${id}`, 'Invalid asset selection format.'],
+          [`selectedAssetIds=${id}&roleOrder=${encodeURIComponent('not-compact')}`, 'Invalid asset selection format.'],
+          [`selectedAssetIds=${id}&roleAssetIds[0]=abc&roles[0]=primary&sortOrder[0]=0`, 'Invalid asset selection format.'],
+          [`selectedAssetIds=${id}&selectedAssetIds=${encodeURIComponent('<b>1</b>')}`, 'Invalid asset selection.'],
+          // B-F2R3: a legacy order outside the non-negative safe-integer
+          // range is refused at the route, never coerced to 0.
+          [`selectedAssetIds=${id}&roles[0]=primary&sortOrder[0]=-4`, 'Invalid asset order. Each order must be a whole number from 0 to 9007199254740991.'],
+          [`selectedAssetIds=${id}&roles[0]=primary&sortOrder[0]=9007199254740992`, 'Invalid asset order. Each order must be a whole number from 0 to 9007199254740991.'],
+          // Well-formed requests reach the published guard first.
+          ['selectedAssetIds=999999999', notice],
+          [`selectedAssetIds=${fixture.foreign.id}`, notice],
+          [`selectedAssetIds=${id}&selectedAssetIds=${id}`, notice],
+          [`selectedAssetIds=${id}&roles[0]=bogus&sortOrder[0]=0`, notice],
+        ];
+        for (const [body, error] of cases) {
+          const { res, log } = await measuredPost(fixture, 'pageSize=25', withCsrf(body));
+          expectPersistedReadOnlyError(res, log, fixture, { notice, error, view: 'grid' });
+          expect(res.text).not.toContain('<b>1</b>');
+        }
+      });
+
+      it('a missing or invalid CSRF token is refused (403) before any rendering or write', async () => {
+        const fixture = await buildMalformedSaveFixture();
+        READ_ONLY_HTTP_STATES[0][1](fixture);
+        for (const body of ['selectedAssetIds=abc', '_csrf=forged&selectedAssetIds=abc']) {
+          const { res, log } = await measuredPost(fixture, 'pageSize=25', body, 403);
+          expect(res.text).not.toContain('data-release-assets-live-region');
+          expect(log.filter((entry) => entry.metadataRows > 0)).toEqual([]);
+        }
+      });
+
+      it('editable control: a malformed Save on an editable release still renders the rejected draft for retry', async () => {
+        const fixture = await buildMalformedSaveFixture();
+        const { res } = await measuredPost(
+          fixture,
+          'pageSize=25',
+          withCsrf(`selectedAssetIds=abc&selectedAssetIds=${fixture.nonMember.id}`),
+        );
+        expect(res.text).toContain('id="release-assets-form"');
+        expect(res.text).toContain('<p>Invalid asset selection.</p>');
+        // The draft (one surviving ID) replaces persisted membership in the form.
+        expect(res.text).toContain(`value="${fixture.nonMember.id}"`);
+        expect(res.text).not.toContain('foreign-secret-bf4');
+      });
+    });
+  });
+
+  describe('rejected Save role/order recovery (B-F2)', () => {
+    const decodeAttr = (value) => value
+      .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'").replace(/&amp;/g, '&');
+
+    function readAttrs(tag) {
+      const attrs = {};
+      for (const match of tag.matchAll(/([a-zA-Z_:][-a-zA-Z0-9_:.]*)(?:="([^"]*)")?/g)) {
+        if (match[1] === 'input') continue;
+        attrs[match[1]] = match[2] === undefined ? '' : decodeAttr(match[2]);
+      }
+      return attrs;
+    }
+
+    // The Save form's successful controls in tree order, as an HTML form
+    // submission builds its entry list: inputs inside the form that are not
+    // re-associated elsewhere, plus inputs anywhere with form="release-assets-form";
+    // unchecked checkboxes, disabled and unnamed controls are skipped.
+    function saveFormEntries(html) {
+      const formStart = html.indexOf('<form id="release-assets-form"');
+      expect(formStart).toBeGreaterThan(-1);
+      const formEnd = html.indexOf('</form>', formStart);
+      const formTag = html.slice(formStart, html.indexOf('>', formStart) + 1);
+      const entries = [];
+      for (const match of html.matchAll(/<input\b[^>]*>/g)) {
+        const attrs = readAttrs(match[0]);
+        const inside = match.index > formStart && match.index < formEnd;
+        const owned = attrs.form !== undefined ? attrs.form === 'release-assets-form' : inside;
+        if (!owned || attrs.name === undefined || attrs.disabled !== undefined) continue;
+        if (attrs.type === 'checkbox' && attrs.checked === undefined) continue;
+        entries.push([attrs.name, attrs.value ?? (attrs.type === 'checkbox' ? 'on' : '')]);
+      }
+      return { action: decodeAttr(readAttrs(formTag).action), method: readAttrs(formTag).method, entries };
+    }
+
+    const encodeEntries = (entries) => entries
+      .map(([name, value]) => `${encodeURIComponent(name)}=${encodeURIComponent(value)}`)
+      .join('&');
+
+    // The keyed role/order association the retry form carries: one compact
+    // `roleOrder` field (B-F2R1), never the expanded per-asset fields.
+    function carriedDraft(entries) {
+      expect(entries.some(([name]) => /^(roleAssetIds|roles|sortOrder)\b/.test(name))).toBe(false);
+      const carriers = entries.filter(([name]) => name === 'roleOrder');
+      expect(carriers.length).toBeLessThanOrEqual(1);
+      if (!carriers.length) return [];
+      return JSON.parse(carriers[0][1]).map(([assetId, role, sortOrder]) => ({ assetId, role, sortOrder }));
+    }
+
+    // Replace the retry form's compact carrier with an edited draft.
+    const withCarriedDraft = (entries, draft) => entries.map(([name, value]) => (
+      name === 'roleOrder'
+        ? [name, JSON.stringify(draft.map(({ assetId, role, sortOrder }) => [assetId, role, sortOrder]))]
+        : [name, value]
+    ));
+
+    const selectedIds = (entries) => entries
+      .filter(([name]) => name === 'selectedAssetIds')
+      .map(([, value]) => Number(value));
+
+    const selectionAlert = (html) => html
+      .match(/<div class="error-summary" role="alert" data-release-assets-selection-errors>[\s\S]*?<\/div>/)?.[0] || '';
+
+    // 25 images (three Save pages at size 10) with a saved Primary, a saved
+    // missing Preview, an off-page saved member and an off-page saved member
+    // the draft removes; one asset in another project.
+    async function buildRecoveryFixture() {
+      const projectId = await createTestProject('B-F2 Recovery');
+      const rows = Array.from({ length: 25 }, (_, index) => {
+        const filename = `img-${String(index).padStart(2, '0')}.png`;
+        return { relativePath: filename, filename, extension: 'png', mimeType: 'image/png', sizeBytes: 10, modifiedAt: '2025-01-01T00:00:00Z' };
+      });
+      const assets = createAssetRepository(db).upsertMany(projectId, rows);
+      const byName = Object.fromEntries(assets.map((asset) => [asset.filename, asset.id]));
+      const foreignProjectId = await createTestProject('B-F2 Foreign');
+      const foreign = insertAssetDirect(db, foreignProjectId, 'foreign-secret-<i>meta</i>.png');
+      const release = createReleaseService({ db }).createRelease(projectId, {
+        title: 'B-F2 Recovery', description: '', notes: '', plannedDate: null, patreonUrl: null,
+      });
+      const ids = {
+        primary: byName['img-00.png'],
+        missingPreview: byName['img-01.png'],
+        visibleAddition: byName['img-03.png'],
+        hiddenMember: byName['img-15.png'],
+        offPageAddition: byName['img-18.png'],
+        offPageRemoval: byName['img-20.png'],
+        foreign: foreign.id,
+      };
+      const insert = db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)');
+      insert.run(release.id, ids.primary, 'primary', 0);
+      insert.run(release.id, ids.missingPreview, 'preview', 1);
+      insert.run(release.id, ids.hiddenMember, 'attachment', 2);
+      insert.run(release.id, ids.offPageRemoval, 'attachment', 3);
+      db.prepare("UPDATE assets SET is_present = 0, missing_since = '2025-02-01T00:00:00Z' WHERE id = ?").run(ids.missingPreview);
+      return { projectId, releaseId: release.id, ids, url: `/releases/${release.id}/assets?selection=all&pageSize=10` };
+    }
+
+    // The rejected legacy draft: submitted sequence differs from the saved
+    // order, every entry has an explicit role and order, one role is invalid
+    // (and markup-bearing), one ID is foreign, the off-page removal is omitted.
+    function rejectedDraft(ids) {
+      return [
+        { assetId: ids.hiddenMember, role: 'attachment', sortOrder: 5 },
+        { assetId: ids.offPageAddition, role: '<b>bogus</b>', sortOrder: 4 },
+        { assetId: ids.primary, role: 'primary', sortOrder: 2 },
+        { assetId: ids.missingPreview, role: 'preview', sortOrder: 3 },
+        { assetId: ids.foreign, role: 'attachment', sortOrder: 6 },
+        { assetId: ids.visibleAddition, role: 'attachment', sortOrder: 1 },
+      ];
+    }
+
+    function legacyBody(draft) {
+      return [
+        ['_csrf', csrfToken],
+        ...draft.map((entry) => ['selectedAssetIds[]', String(entry.assetId)]),
+        ...draft.map((entry) => ['roles[]', entry.role]),
+        ...draft.map((entry) => ['sortOrder[]', String(entry.sortOrder)]),
+      ];
+    }
+
+    const postForm = (url, entries) => agent.post(url)
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send(encodeEntries(entries));
+
+    function expectRetryForm(res, fixture, draft) {
+      const form = saveFormEntries(res.text);
+      expect(form.method).toBe('post');
+      expect(new URL(form.action, 'http://localhost').pathname).toBe(`/releases/${fixture.releaseId}/assets`);
+      expect(form.entries.filter(([name]) => name === '_csrf')).toEqual([['_csrf', csrfToken]]);
+      // Exact membership, no duplicates introduced by hidden + visible inputs.
+      const ids = selectedIds(form.entries);
+      expect(new Set(ids).size).toBe(ids.length);
+      expect([...ids].sort((a, b) => a - b)).toEqual(draft.map((entry) => entry.assetId).sort((a, b) => a - b));
+      // Exact submitted sequence with each asset's own role and order.
+      expect(carriedDraft(form.entries)).toEqual(draft);
+      return form;
+    }
+
+    it('renders the rejected draft with keyed roles/order and a visible escaped indexed role error; resubmission is unchanged, then a corrected Save succeeds', async () => {
+      const fixture = await buildRecoveryFixture();
+      const { ids } = fixture;
+      const draft = rejectedDraft(ids);
+      const membershipBefore = getReleaseAssets(db, fixture.releaseId);
+
+      const rejected = await postForm(fixture.url, legacyBody(draft)).expect(422);
+      expect(getReleaseAssets(db, fixture.releaseId)).toEqual(membershipBefore);
+
+      // Accessible, escaped, ID-only validation message.
+      const alert = selectionAlert(rejected.text);
+      expect(alert).toContain('The asset selection was not saved.');
+      expect(alert).toContain(
+        `<li>Asset ${ids.offPageAddition} has an invalid role &quot;&lt;b&gt;bogus&lt;/b&gt;&quot;. Role must be one of: primary, preview, attachment.</li>`,
+      );
+      expect(rejected.text).not.toContain('<b>bogus</b>');
+      expect(rejected.text).not.toContain('foreign-secret');
+      expect(rejected.text).not.toContain('&lt;i&gt;meta');
+
+      const first = expectRetryForm(rejected, fixture, draft);
+      // The visible page renders its own checkboxes; everything else the draft
+      // holds (off-page addition, hidden member, foreign ID) is a hidden input.
+      const hidden = [...rejected.text.matchAll(/<input type="hidden" name="selectedAssetIds" value="(\d+)">/g)].map((m) => Number(m[1]));
+      const visible = new Set([...rejected.text.matchAll(/id="release-asset-select-(\d+)"/g)].map((m) => Number(m[1])));
+      expect(visible.size).toBe(10);
+      expect(rejected.text).toContain('Page 1 of 3');
+      expect(hidden).toEqual(draft.map((entry) => entry.assetId).filter((assetId) => !visible.has(assetId)));
+      expect(hidden).toContain(ids.foreign);
+      expect(hidden).toContain(ids.offPageAddition);
+      expect(hidden).toContain(ids.hiddenMember);
+      expect(visible.has(ids.visibleAddition)).toBe(true);
+      expect(hidden.length).toBeGreaterThanOrEqual(2);
+      expect(hidden).not.toContain(ids.offPageRemoval);
+      // The invalid markup-bearing role is carried escaped inside the compact field.
+      expect(rejected.text).toContain(`[${ids.offPageAddition},&quot;&lt;b&gt;bogus&lt;/b&gt;&quot;,4]`);
+
+      // Resubmitting the rendered form unchanged is the same draft and the
+      // same refusal, with no membership write.
+      const again = await postForm(first.action, first.entries).expect(422);
+      expect(getReleaseAssets(db, fixture.releaseId)).toEqual(membershipBefore);
+      expect(selectionAlert(again.text)).toBe(alert);
+      const second = expectRetryForm(again, fixture, draft);
+
+      // Correct only the invalid role. The foreign ID is then reported by the
+      // unchanged ownership check; the corrected draft is still carried.
+      const correctedDraft = draft.map((entry) => (
+        entry.assetId === ids.offPageAddition ? { ...entry, role: 'attachment' } : entry
+      ));
+      const corrected = withCarriedDraft(second.entries, correctedDraft);
+      const ownership = await postForm(second.action, corrected).expect(422);
+      expect(ownership.text).toContain(`Asset ${ids.foreign} does not belong to the release&#39;s project.`);
+      expect(ownership.text).not.toContain('foreign-secret');
+      expect(selectionAlert(ownership.text)).toBe('');
+      expect(getReleaseAssets(db, fixture.releaseId)).toEqual(membershipBefore);
+      const third = expectRetryForm(ownership, fixture, correctedDraft);
+
+      // Remove the foreign ID from the membership; its stale key is ignored.
+      const withoutForeign = third.entries.filter(([name, value]) => !(name === 'selectedAssetIds' && Number(value) === ids.foreign));
+      await postForm(third.action, withoutForeign).expect(302);
+
+      expect(getReleaseAssets(db, fixture.releaseId).map(({ asset_id, role, sort_order }) => ({ asset_id, role, sort_order }))).toEqual([
+        { asset_id: ids.visibleAddition, role: 'attachment', sort_order: 1 },
+        { asset_id: ids.primary, role: 'primary', sort_order: 2 },
+        { asset_id: ids.missingPreview, role: 'preview', sort_order: 3 },
+        { asset_id: ids.offPageAddition, role: 'attachment', sort_order: 4 },
+        { asset_id: ids.hiddenMember, role: 'attachment', sort_order: 5 },
+      ]);
+
+      // Reopened: a normal GET carries no role/order fields (membership only).
+      const reopened = await agent.get(fixture.url).expect(200);
+      const reopenedForm = saveFormEntries(reopened.text);
+      expect(carriedDraft(reopenedForm.entries)).toEqual([]);
+      expect(reopened.text).not.toContain('data-release-assets-submitted-role-order');
+      expect(selectedIds(reopenedForm.entries).sort((a, b) => a - b)).toEqual(
+        [ids.visibleAddition, ids.primary, ids.missingPreview, ids.offPageAddition, ids.hiddenMember].sort((a, b) => a - b),
+      );
+    });
+
+    it('deselecting the invalid-role asset in the retry form drops its role and saves the rest of the draft', async () => {
+      const fixture = await buildRecoveryFixture();
+      const { ids } = fixture;
+      // Invalid role on the visible addition; no foreign ID.
+      const draft = [
+        { assetId: ids.visibleAddition, role: 'cover', sortOrder: 3 },
+        { assetId: ids.hiddenMember, role: 'preview', sortOrder: 0 },
+        { assetId: ids.primary, role: 'primary', sortOrder: 1 },
+      ];
+      const rejected = await postForm(fixture.url, legacyBody(draft)).expect(422);
+      expect(selectionAlert(rejected.text)).toContain(`Asset ${ids.visibleAddition} has an invalid role &quot;cover&quot;.`);
+      const form = expectRetryForm(rejected, fixture, draft);
+
+      // The user unchecks the visible checkbox — the only change.
+      const unchecked = form.entries.filter(([name, value]) => !(name === 'selectedAssetIds' && Number(value) === ids.visibleAddition));
+      await postForm(form.action, unchecked).expect(302);
+      expect(getReleaseAssets(db, fixture.releaseId).map(({ asset_id, role, sort_order }) => ({ asset_id, role, sort_order }))).toEqual([
+        { asset_id: ids.hiddenMember, role: 'preview', sort_order: 0 },
+        { asset_id: ids.primary, role: 'primary', sort_order: 1 },
+        // The legacy contract keeps an unsubmitted saved missing member.
+        { asset_id: ids.missingPreview, role: 'preview', sort_order: 1 },
+      ]);
+    });
+
+    it('pairs keyed roles/order by asset ID regardless of selectedAssetIds order; new selections default and stale keys are ignored', async () => {
+      const fixture = await buildRecoveryFixture();
+      const { ids } = fixture;
+      await postForm(fixture.url, [
+        ['_csrf', csrfToken],
+        // Checkbox/hidden order differs from the keyed sequence.
+        ['selectedAssetIds', String(ids.visibleAddition)],
+        ['selectedAssetIds', String(ids.primary)],
+        ['selectedAssetIds', String(ids.hiddenMember)],
+        ['roleAssetIds[0]', String(ids.primary)],
+        ['roles[0]', 'Primary '],
+        ['sortOrder[0]', '4'],
+        ['roleAssetIds[1]', String(ids.offPageRemoval)],
+        ['roles[1]', 'not-a-role'],
+        ['sortOrder[1]', '0'],
+        ['roleAssetIds[2]', String(ids.hiddenMember)],
+        ['roles[2]', 'preview'],
+        ['sortOrder[2]', '7'],
+      ]).expect(302);
+      expect(getReleaseAssets(db, fixture.releaseId).map(({ asset_id, role, sort_order }) => ({ asset_id, role, sort_order }))).toEqual([
+        { asset_id: ids.visibleAddition, role: 'attachment', sort_order: 0 },
+        { asset_id: ids.missingPreview, role: 'preview', sort_order: 1 },
+        { asset_id: ids.primary, role: 'primary', sort_order: 4 },
+        { asset_id: ids.hiddenMember, role: 'preview', sort_order: 7 },
+      ]);
+    });
+
+    it('rejects malformed keyed role/order carriers without a membership write', async () => {
+      const fixture = await buildRecoveryFixture();
+      const { ids } = fixture;
+      const before = getReleaseAssets(db, fixture.releaseId);
+      for (const [carrier, message] of [
+        [[['roleAssetIds[x]', String(ids.primary)]], 'Invalid asset selection format.'],
+        [[['roleAssetIds[0][a]', String(ids.primary)]], 'Invalid asset selection format.'],
+        [[['roleAssetIds[0]', 'abc']], 'Invalid asset selection format.'],
+      ]) {
+        const res = await postForm(fixture.url, [
+          ['_csrf', csrfToken],
+          ['selectedAssetIds', String(ids.primary)],
+          ...carrier,
+          ['roles[0]', 'primary'],
+        ]).expect(422);
+        expect(res.text).toContain(message);
+        expect(getReleaseAssets(db, fixture.releaseId)).toEqual(before);
+      }
+    });
+
+    it('keeps existing outcomes for repeated, non-integer and unknown IDs and adds no carrier to a membership-only draft', async () => {
+      const fixture = await buildRecoveryFixture();
+      const { ids } = fixture;
+      const before = getReleaseAssets(db, fixture.releaseId);
+
+      const repeated = await postForm(fixture.url, legacyBody([
+        { assetId: ids.primary, role: 'primary', sortOrder: 0 },
+        { assetId: ids.primary, role: 'preview', sortOrder: 1 },
+      ])).expect(422);
+      expect(repeated.text).toContain('Duplicate asset IDs are not allowed.');
+
+      const nonInteger = await postForm(fixture.url, [
+        ['_csrf', csrfToken], ['selectedAssetIds[]', 'abc'], ['roles[]', 'primary'],
+      ]).expect(422);
+      expect(nonInteger.text).toContain('Invalid asset selection.');
+      expect(nonInteger.text).not.toContain('data-release-assets-submitted-role-order');
+
+      await postForm(fixture.url, [
+        ['_csrf', csrfToken], ['selectedAssetIds[]', '987654'], ['roles[]', 'primary'],
+      ]).expect(404);
+
+      // A membership-only rejected draft stays membership-only on retry.
+      const membershipOnly = await postForm(fixture.url, [
+        ['_csrf', csrfToken],
+        ['selectedAssetIds', String(ids.primary)],
+        ['selectedAssetIds', String(ids.foreign)],
+      ]).expect(422);
+      expect(membershipOnly.text).toContain(`Asset ${ids.foreign} does not belong to the release&#39;s project.`);
+      expect(membershipOnly.text).not.toContain('foreign-secret');
+      const form = saveFormEntries(membershipOnly.text);
+      expect(carriedDraft(form.entries)).toEqual([]);
+      expect(form.entries.some(([name]) => /^(roles|sortOrder|roleAssetIds|roleOrder)\b/.test(name))).toBe(false);
+      expect(selectedIds(form.entries).sort((a, b) => a - b)).toEqual([ids.primary, ids.foreign].sort((a, b) => a - b));
+      expect(getReleaseAssets(db, fixture.releaseId)).toEqual(before);
+    });
+
+    it('a well-formed legacy Save on a published release stays read-only with no carrier and no write', async () => {
+      const fixture = await buildRecoveryFixture();
+      db.prepare("UPDATE releases SET published_date = '2025-06-15' WHERE id = ?").run(fixture.releaseId);
+      const before = getReleaseAssets(db, fixture.releaseId);
+      const res = await postForm(fixture.url, legacyBody([
+        { assetId: fixture.ids.primary, role: 'bogus', sortOrder: 0 },
+      ])).expect(422);
+      expect(res.text).toContain('This release is published. Asset selections are locked and read-only.');
+      expect(res.text).not.toContain('id="release-assets-form"');
+      expect(res.text).not.toContain('data-release-assets-submitted-role-order');
+      expect(res.text).not.toContain('data-release-assets-selection-errors');
+      expect(getReleaseAssets(db, fixture.releaseId)).toEqual(before);
+    });
+  });
 
   describe('release asset category filter control', () => {
     async function setupCategoryFilterRelease() {
@@ -12416,7 +13481,8 @@ describe('release HTTP workflow', () => {
   // ─── Phase 9-5: Rendered count/page parity ──────────────────────────
 
   describe('Phase 9-5 rendered count and page parity', () => {
-    async function setupCountTestAssets() {
+    // P3-C4: opt-in zz-pad-NN.txt fillers so supported sizes still paginate.
+    async function setupCountTestAssets({ fillers = 0 } = {}) {
       const projRes = await agent
         .post('/projects')
       .send('_csrf=' + encodeURIComponent(csrfToken))
@@ -12439,6 +13505,9 @@ describe('release HTTP workflow', () => {
       for (const f of files) {
         fs.writeFileSync(path.join(projectDir, f), f);
       }
+      for (let index = 0; index < fillers; index++) {
+        fs.writeFileSync(path.join(projectDir, `zz-pad-${String(index).padStart(2, '0')}.txt`), `pad ${index}`);
+      }
       await agent.post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
@@ -12460,17 +13529,17 @@ describe('release HTTP workflow', () => {
     }
 
     it('no filter — rendered row count equals page size', async () => {
-      const { releaseLocation } = await setupCountTestAssets();
-      // pageSize=4 should show 4 rows, total=10, pageCount=3
-      const res = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=4`).expect(200);
+      const { releaseLocation } = await setupCountTestAssets({ fillers: 20 });
+      // P3-C4: pageSize=10 should show 10 rows, total=30, pageCount=3
+      const res = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=10`).expect(200);
 
       const rowCount = getCandidateTiles(res.text).length;
-      expect(rowCount).toBe(4);
+      expect(rowCount).toBe(10);
 
-      expect(res.text).toContain('10 project assets match the current filters.');
+      expect(res.text).toContain('30 project assets match the current filters.');
       expect(res.text).toContain('Page 1 of 3');
       const controlsPosition = res.text.indexOf('class="asset-viewer-display-controls"');
-      const countPosition = res.text.indexOf('10 project assets match the current filters.');
+      const countPosition = res.text.indexOf('30 project assets match the current filters.');
       const collectionStart = res.text.indexOf('<ul class="asset-grid"', countPosition);
       const paginationPosition = res.text.indexOf('<nav class="pagination" aria-label="Release asset pages">');
       expect(controlsPosition).toBeLessThan(countPosition);
@@ -12490,14 +13559,14 @@ describe('release HTTP workflow', () => {
     });
 
     it('extension filter — correct count and page count', async () => {
-      const { releaseLocation } = await setupCountTestAssets();
-      const res = await agent.get(`${releaseLocation}/assets?selection=all&extension=txt&pageSize=2`).expect(200);
+      const { releaseLocation } = await setupCountTestAssets({ fillers: 12 });
+      const res = await agent.get(`${releaseLocation}/assets?selection=all&extension=txt&pageSize=10`).expect(200);
 
       const rowCount = getCandidateTiles(res.text).length;
 
-      // alpha.txt, beta.txt, gamma.txt — 3 total, pageSize=2 → page 1 shows 2, pageCount=2
-      expect(rowCount).toBe(2);
-      expect(res.text).toContain('3 project assets match the current filters.');
+      // P3-C4: alpha.txt, beta.txt, gamma.txt + 12 fillers — 15 total, pageSize=10 → page 1 shows 10, pageCount=2
+      expect(rowCount).toBe(10);
+      expect(res.text).toContain('15 project assets match the current filters.');
       expect(res.text).toContain('Page 1 of 2');
     });
 
@@ -12513,8 +13582,8 @@ describe('release HTTP workflow', () => {
     });
 
     it('page beyond final page falls back to last page', async () => {
-      const { releaseLocation, releaseId } = await setupCountTestAssets();
-      const res = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=4&page=999`).expect(200);
+      const { releaseLocation, releaseId } = await setupCountTestAssets({ fillers: 20 });
+      const res = await agent.get(`${releaseLocation}/assets?selection=all&pageSize=10&page=999`).expect(200);
 
       expect(res.text).toContain('Page 3 of 3');
 
@@ -12524,7 +13593,7 @@ describe('release HTTP workflow', () => {
       const prevUrl = new URL(prevMatch[1].replace(/&amp;/g, '&'), 'http://localhost');
       expect(prevUrl.pathname).toBe(`/releases/${releaseId}/assets`);
       expect(prevUrl.searchParams.get('page')).toBe('2');
-      expect(prevUrl.searchParams.get('pageSize')).toBe('4');
+      expect(prevUrl.searchParams.get('pageSize')).toBe('10');
       expect([...prevUrl.searchParams.keys()].sort()).toEqual(['page', 'pageSize', 'selection']);
 
       // No Next link on the final page
@@ -13310,5 +14379,3369 @@ describe('release HTTP workflow', () => {
       });
       expect(readRelease(release.id).planned_date).toBe('2026-11-01');
     });
+  });
+
+  // B3-F1 / B3-F2: a completed Manage Assets Save confirms itself once on
+  // Release Detail. Each completed Save is issued its own unpredictable,
+  // single-use, short-lived ticket bound to the release, and its 302 goes to
+  // /releases/:id?assetsSaved=<ticket>. Only that ticket's own Release Detail
+  // GET shows the confirmation, once; B3-F1's shared release-ID flash cookie
+  // no longer proves anything.
+  describe('Manage Assets Save success confirmation (B3-F1/B3-F2)', () => {
+    const CONFIRMATION = 'Assets saved successfully.';
+    const OBSOLETE_FLASH = 'creatorcrate_release_assets_saved';
+    const TICKET = /^[A-Za-z0-9_-]{43}$/;
+    const TTL_MS = 2 * 60 * 1000;
+
+    async function createSaveFixture(title) {
+      const projectId = await createTestProject(title);
+      const dir = path.join(projectsRoot, app.locals.projectService.findById(projectId).project_dir);
+      for (const name of ['b3-one.png', 'b3-two.png', 'b3-three.png']) fs.writeFileSync(path.join(dir, name), 'png');
+      await agent.post(`/projects/${projectId}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
+      const ids = createAssetRepository(db).findByProjectId(projectId)
+        .sort((a, b) => a.filename.localeCompare(b.filename)).map((asset) => asset.id);
+      expect(ids).toHaveLength(3);
+      const release = releaseRepository.create({
+        projectId, title: `${title} Release`, description: '', notes: '',
+        plannedDate: null, plannedTime: null, patreonUrl: null, publishedDate: null,
+      });
+      return { projectId, releaseId: release.id, ids };
+    }
+
+    const memberIds = (releaseId) => getReleaseAssets(db, releaseId).map((row) => row.asset_id);
+
+    function saveForm(releaseId, ids, { token = csrfToken } = {}) {
+      const body = [
+        ...(token === null ? [] : [`_csrf=${encodeURIComponent(token)}`]),
+        ...ids.map((id) => `selectedAssetIds=${encodeURIComponent(id)}`),
+      ].join('&');
+      return agent.post(`/releases/${releaseId}/assets`).type('form').send(body);
+    }
+
+    const obsoleteFlashCookies = (res) => (res.headers['set-cookie'] || [])
+      .filter((value) => value.startsWith(`${OBSOLETE_FLASH}=`));
+
+    // A successful Save's redirect: 302, pathname exactly /releases/:id and a
+    // single opaque assetsSaved ticket as the only parameter (so it names no
+    // asset), and it sets no confirmation cookie.
+    function ticketOf(res, releaseId) {
+      expect(res.status).toBe(302);
+      const location = new URL(res.headers.location, 'http://creatorcrate.test');
+      expect(res.headers.location.startsWith(`/releases/${releaseId}?`)).toBe(true);
+      expect(location.pathname).toBe(`/releases/${releaseId}`);
+      expect([...location.searchParams.keys()]).toEqual(['assetsSaved']);
+      const ticket = location.searchParams.get('assetsSaved');
+      expect(ticket).toMatch(TICKET);
+      expect(res.headers['set-cookie'] || []).toEqual([]);
+      return ticket;
+    }
+
+    const detailWith = (releaseId, ticket, client = agent) => client
+      .get(`/releases/${releaseId}?assetsSaved=${encodeURIComponent(ticket)}`);
+
+    // The page feedback element, exactly once, and whether it shows the confirmation.
+    function feedback(html) {
+      const elements = html.match(/<div class="notice notice--success app-dialog-feedback" data-dialog-feedback[^>]*>[\s\S]*?<\/div>/g) || [];
+      expect(elements).toHaveLength(1);
+      const [element] = elements;
+      return {
+        element,
+        confirmed: !/\shidden[\s>]/.test(element.split('>')[0] + '>') && element.includes(CONFIRMATION),
+        count: html.split(CONFIRMATION).length - 1,
+      };
+    }
+
+    function expectConfirmed(res, label) {
+      expect(res.status, label).toBe(200);
+      const shown = feedback(res.text);
+      expect(shown.confirmed, label).toBe(true);
+      expect(shown.count, label).toBe(1);
+      expect(shown.element, label).toMatch(/role="status"/);
+      expect(shown.element, label).toMatch(/data-release-assets-saved/);
+      expect(shown.element, label).toContain(`<p data-dialog-feedback-text>${CONFIRMATION}</p>`);
+      expect(res.headers['cache-control'], label).toBe('no-store');
+    }
+
+    function expectNotConfirmed(res, label) {
+      expect(res.status, label).toBe(200);
+      const shown = feedback(res.text);
+      expect(shown.confirmed, label).toBe(false);
+      expect(shown.count, label).toBe(0);
+      expect(shown.element, label).toMatch(/^<div [^>]*\shidden>/);
+      expect(shown.element, label).not.toContain('data-release-assets-saved');
+    }
+
+    it('confirms a successful Save once through its own ticket: refresh, the same ticket again, a return visit and a direct GET never replay it; a new Save confirms again', async () => {
+      const f = await createSaveFixture('B3F1 Confirm Once');
+      expectNotConfirmed(await agent.get(`/releases/${f.releaseId}`), 'before any Save');
+
+      const saved = await saveForm(f.releaseId, [f.ids[0], f.ids[1]]);
+      const ticket = ticketOf(saved, f.releaseId);
+      expect(memberIds(f.releaseId)).toEqual([f.ids[0], f.ids[1]]);
+
+      // The redirected Release Detail GET shows it once and consumes it.
+      const shown = await agent.get(saved.headers.location);
+      expectConfirmed(shown, 'redirect');
+      expect(shown.headers['set-cookie'] || []).toEqual([]);
+
+      // Refresh (the same ticket-bearing URL) and the ticket from another client.
+      const refreshed = await agent.get(saved.headers.location);
+      expectNotConfirmed(refreshed, 'refresh');
+      expect(refreshed.headers['cache-control']).toBe('no-store');
+      expectNotConfirmed(await detailWith(f.releaseId, ticket, request(app)), 'consumed ticket, other client');
+      // Away, then back.
+      await agent.get('/releases').expect(200);
+      await agent.get(`/releases/${f.releaseId}/assets`).expect(200);
+      expectNotConfirmed(await agent.get(`/releases/${f.releaseId}`), 'return visit');
+      // A direct ordinary GET from a fresh client.
+      expectNotConfirmed(await request(app).get(`/releases/${f.releaseId}`), 'direct GET');
+      // A list-view URL is the same Release Detail and claims nothing either.
+      expectNotConfirmed(await agent.get(`/releases/${f.releaseId}?view=list`), 'list view');
+
+      // A second successful Save gets a new ticket and confirms once again.
+      const again = await saveForm(f.releaseId, [f.ids[2]]);
+      const secondTicket = ticketOf(again, f.releaseId);
+      expect(secondTicket).not.toBe(ticket);
+      expect(memberIds(f.releaseId)).toEqual([f.ids[2]]);
+      expectConfirmed(await agent.get(again.headers.location), 'second Save');
+      expectNotConfirmed(await agent.get(again.headers.location), 'refresh after second Save');
+      expectNotConfirmed(await agent.get(`/releases/${f.releaseId}`), 'plain GET after second Save');
+    });
+
+    // B3-F2a: an earlier Save's unfollowed confirmation never reaches an
+    // unrelated Release Detail visit after a later Save failed.
+    it('B3-F2a: a pending successful Save followed by a refused (403) Save never confirms an unrelated Release Detail GET', async () => {
+      const f = await createSaveFixture('B3F2a Pending');
+      const saved = await saveForm(f.releaseId, [f.ids[0]]);
+      const ticket = ticketOf(saved, f.releaseId);
+      expect(memberIds(f.releaseId)).toEqual([f.ids[0]]);
+
+      // Redirect deliberately not followed. A later Save is refused.
+      const refused = await saveForm(f.releaseId, [f.ids[1], f.ids[2]], { token: 'not-a-token' });
+      expect(refused.status).toBe(403);
+      expect(refused.headers.location).toBeUndefined();
+      expect(refused.headers['set-cookie'] || []).toEqual([]);
+      expect(refused.text).not.toContain(CONFIRMATION);
+      expect(memberIds(f.releaseId)).toEqual([f.ids[0]]);
+
+      // An ordinary Release Detail GET carries no ticket and shows no success.
+      expectNotConfirmed(await agent.get(`/releases/${f.releaseId}`), 'unrelated Detail GET');
+      expectNotConfirmed(await agent.get(`/releases/${f.releaseId}?view=list`), 'unrelated list-view GET');
+
+      // Actually following the earlier, genuine redirect still confirms it, once.
+      expectConfirmed(await agent.get(saved.headers.location), 'original redirect followed later');
+      expectNotConfirmed(await agent.get(saved.headers.location), 'original redirect replayed');
+      expect(memberIds(f.releaseId)).toEqual([f.ids[0]]);
+      expect(ticket).toMatch(TICKET);
+    });
+
+    // B3-F2b: overlapping successful Saves each keep their own confirmation.
+    it('B3-F2b: two overlapping successful Saves each confirm independently, in either consumption order, and never replay', async () => {
+      const f = await createSaveFixture('B3F2b Overlap');
+
+      // A then B, neither redirect followed.
+      const a = await saveForm(f.releaseId, [f.ids[0], f.ids[1]]);
+      const ticketA = ticketOf(a, f.releaseId);
+      expect(memberIds(f.releaseId)).toEqual([f.ids[0], f.ids[1]]);
+      const b = await saveForm(f.releaseId, [f.ids[2]]);
+      const ticketB = ticketOf(b, f.releaseId);
+      // Persisted in submission order: B, the later Save, is the membership.
+      expect(memberIds(f.releaseId)).toEqual([f.ids[2]]);
+      expect(ticketA).not.toBe(ticketB);
+
+      // An unrelated visit consumes neither.
+      expectNotConfirmed(await agent.get(`/releases/${f.releaseId}`), 'unrelated visit while A and B pend');
+
+      expectConfirmed(await agent.get(a.headers.location), 'follow A');
+      expectConfirmed(await agent.get(b.headers.location), 'follow B');
+      expectNotConfirmed(await agent.get(a.headers.location), 'refresh A');
+      expectNotConfirmed(await agent.get(b.headers.location), 'refresh B');
+      expectNotConfirmed(await detailWith(f.releaseId, ticketA, request(app)), 'replay A elsewhere');
+      expectNotConfirmed(await detailWith(f.releaseId, ticketB, request(app)), 'replay B elsewhere');
+
+      // C then D, consumed D first, each from its own client ("tab").
+      const tabC = request.agent(app);
+      const tabD = request.agent(app);
+      const c = await saveForm(f.releaseId, [f.ids[1]]);
+      const d = await saveForm(f.releaseId, [f.ids[0], f.ids[2]]);
+      const ticketC = ticketOf(c, f.releaseId);
+      const ticketD = ticketOf(d, f.releaseId);
+      expect(new Set([ticketA, ticketB, ticketC, ticketD]).size).toBe(4);
+      expect(memberIds(f.releaseId)).toEqual([f.ids[0], f.ids[2]]);
+      expectConfirmed(await tabD.get(d.headers.location), 'follow D first');
+      expectConfirmed(await tabC.get(c.headers.location), 'follow C second');
+      expectNotConfirmed(await tabD.get(d.headers.location), 'refresh D');
+      expectNotConfirmed(await tabC.get(c.headers.location), 'refresh C');
+      expect(memberIds(f.releaseId)).toEqual([f.ids[0], f.ids[2]]);
+    });
+
+    it('confirms nothing for a missing, fabricated, malformed, consumed or cross-release ticket, or an obsolete B3-F1 cookie, and never refuses Release Detail for it', async () => {
+      const first = await createSaveFixture('B3F2 First');
+      const second = await createSaveFixture('B3F2 Second');
+      const saved = await saveForm(first.releaseId, [first.ids[0]]);
+      const ticket = ticketOf(saved, first.releaseId);
+
+      expectNotConfirmed(await agent.get(`/releases/${first.releaseId}`), 'no ticket');
+      // A valid ticket for the first release confirms nothing on the second,
+      // and is not spent by being presented there.
+      const crossed = await detailWith(second.releaseId, ticket);
+      expectNotConfirmed(crossed, 'cross-release ticket');
+      expect(crossed.headers['cache-control']).toBe('no-store');
+
+      const fabricated = 'A'.repeat(43);
+      const malformed = [
+        ['fabricated well-formed', `assetsSaved=${fabricated}`],
+        ['empty', 'assetsSaved='],
+        ['short', 'assetsSaved=abc'],
+        ['too long', `assetsSaved=${ticket}A`],
+        ['bad characters', `assetsSaved=${encodeURIComponent(`${ticket.slice(0, 42)}+`)}`],
+        ['numeric release ID', `assetsSaved=${first.releaseId}`],
+        ['notice code', 'assetsSaved=1'],
+        ['repeated', `assetsSaved=${ticket}&assetsSaved=${ticket}`],
+        ['bracketed', `assetsSaved[]=${ticket}`],
+        ['keyed', `assetsSaved[x]=${ticket}`],
+      ];
+      for (const [label, query] of malformed) {
+        expectNotConfirmed(await agent.get(`/releases/${first.releaseId}?${query}`), label);
+      }
+
+      // The obsolete B3-F1 cookie naming this very release claims nothing and
+      // is cleared; unrelated cookies are left alone.
+      const obsolete = await request(app).get(`/releases/${first.releaseId}`)
+        .set('Cookie', `${OBSOLETE_FLASH}=${first.releaseId}; unrelated_cookie=kept`);
+      expectNotConfirmed(obsolete, 'obsolete matching cookie');
+      const cleared = obsoleteFlashCookies(obsolete);
+      expect(cleared).toHaveLength(1);
+      expect(cleared[0]).toMatch(new RegExp(`^${OBSOLETE_FLASH}=;`));
+      expect(cleared[0]).toMatch(new RegExp(`; Path=/releases/${first.releaseId}(;|$)`));
+      expect(cleared[0]).toMatch(/Expires=Thu, 01 Jan 1970/);
+      expect(obsolete.headers['set-cookie'].filter((value) => value.startsWith('unrelated_cookie='))).toEqual([]);
+      expect(obsolete.headers['cache-control']).toBeUndefined();
+
+      // None of the above spent the genuine ticket, which still confirms
+      // once, even beside an obsolete cookie, and is then consumed.
+      const genuine = await request(app).get(saved.headers.location)
+        .set('Cookie', `${OBSOLETE_FLASH}=${first.releaseId}`);
+      expectConfirmed(genuine, 'genuine ticket');
+      expect(obsoleteFlashCookies(genuine)).toHaveLength(1);
+      expectNotConfirmed(await detailWith(first.releaseId, ticket), 'consumed ticket');
+      expectNotConfirmed(await detailWith(second.releaseId, ticket), 'consumed ticket on other release');
+    });
+
+    it('expires an unfollowed ticket: the Save stays persisted, only the message is lost', async () => {
+      const f = await createSaveFixture('B3F2 Expiry');
+      vi.useFakeTimers({ toFake: ['Date'], now: Date.now() });
+      try {
+        const late = await saveForm(f.releaseId, [f.ids[1]]);
+        const lateTicket = ticketOf(late, f.releaseId);
+        const prompt = await saveForm(f.releaseId, [f.ids[0]]);
+        ticketOf(prompt, f.releaseId);
+        vi.advanceTimersByTime(TTL_MS - 1);
+        expectConfirmed(await agent.get(prompt.headers.location), 'just inside the lifetime');
+        vi.advanceTimersByTime(1);
+        expectNotConfirmed(await detailWith(f.releaseId, lateTicket), 'expired');
+        expectNotConfirmed(await agent.get(late.headers.location), 'expired, again');
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(memberIds(f.releaseId)).toEqual([f.ids[0]]);
+    });
+
+    it('never issues a ticket for rejected Saves (422 recoverable and fail-closed, 403, 404, 415, read-only), and none spends a pending one', async () => {
+      const f = await createSaveFixture('B3F1 Rejected');
+      const foreign = await createSaveFixture('B3F1 Foreign');
+      // A genuine Save whose redirect is left pending throughout.
+      const pending = await saveForm(f.releaseId, [f.ids[0]]);
+      ticketOf(pending, f.releaseId);
+      const persisted = memberIds(f.releaseId);
+      expect(persisted).toEqual([f.ids[0]]);
+
+      const rejections = [
+        ['recoverable 422 (foreign ID)', () => saveForm(f.releaseId, [f.ids[1], foreign.ids[0]]), 422],
+        // An unknown asset ID keeps its established 404 refusal.
+        ['unknown ID 404', () => saveForm(f.releaseId, [f.ids[1], 987654321]), 404],
+        ['fail-closed 422 (malformed field)', () => agent.post(`/releases/${f.releaseId}/assets`).type('form')
+          .send(`_csrf=${encodeURIComponent(csrfToken)}&selectedAssetIds[__proto__]=3`), 422],
+        ['fail-closed 422 (unsafe order)', () => agent.post(`/releases/${f.releaseId}/assets`).type('form')
+          .send(`_csrf=${encodeURIComponent(csrfToken)}&selectedAssetIds[]=${f.ids[1]}&roles[]=primary&sortOrder[]=9007199254740992`), 422],
+        ['invalid CSRF 403', () => saveForm(f.releaseId, [f.ids[1]], { token: 'not-a-token' }), 403],
+        ['missing CSRF 403', () => saveForm(f.releaseId, [f.ids[1]], { token: null }), 403],
+        ['unsupported media 415', () => agent.post(`/releases/${f.releaseId}/assets`)
+          .set('Content-Type', 'application/json').set('X-CSRF-Token', csrfToken)
+          .send(JSON.stringify({ _csrf: csrfToken, selectedAssetIds: [f.ids[1]] })), 415],
+        ['unknown release 404', () => saveForm(987654321, [f.ids[1]]), 404],
+      ];
+      for (const [label, send, status] of rejections) {
+        const res = await send();
+        expect(res.status, label).toBe(status);
+        expect(res.headers.location, label).toBeUndefined();
+        expect(res.headers['set-cookie'] || [], label).toEqual([]);
+        expect(res.text, label).not.toContain(CONFIRMATION);
+        expect(res.text, label).not.toContain('assetsSaved');
+        expect(memberIds(f.releaseId), label).toEqual(persisted);
+        expectNotConfirmed(await agent.get(`/releases/${f.releaseId}`), `${label}: Release Detail`);
+      }
+
+      // Read-only refusal: an archived release refuses a valid Save.
+      db.prepare("UPDATE releases SET archived_at = '2026-01-01T00:00:00Z' WHERE id = ?").run(f.releaseId);
+      const readOnly = await saveForm(f.releaseId, [f.ids[1]]);
+      expect(readOnly.status).toBe(422);
+      expect(readOnly.headers.location).toBeUndefined();
+      expect(readOnly.headers['set-cookie'] || []).toEqual([]);
+      expect(readOnly.text).not.toContain(CONFIRMATION);
+      expect(memberIds(f.releaseId)).toEqual(persisted);
+      const archivedDetail = await agent.get(`/releases/${f.releaseId}`);
+      expectNotConfirmed(archivedDetail, 'archived Release Detail');
+      expect(archivedDetail.text).toContain('This release is archived and read-only.');
+
+      // The pending genuine Save still confirms, once: no refusal spent it.
+      expectConfirmed(await agent.get(pending.headers.location), 'pending genuine Save');
+      expectNotConfirmed(await agent.get(pending.headers.location), 'pending genuine Save replayed');
+    });
+
+    it('keeps pending tickets bounded: the oldest unfollowed ticket is dropped once 256 newer ones pend', async () => {
+      const f = await createSaveFixture('B3F2 Bounded');
+      const oldest = await saveForm(f.releaseId, [f.ids[0]]);
+      ticketOf(oldest, f.releaseId);
+      const second = await saveForm(f.releaseId, [f.ids[1]]);
+      ticketOf(second, f.releaseId);
+      for (let index = 0; index < 255; index += 1) {
+        await saveForm(f.releaseId, [f.ids[index % 3]]).expect(302);
+      }
+      // 257 issued: the first is evicted, the second (now oldest) is kept.
+      expectNotConfirmed(await agent.get(oldest.headers.location), 'evicted ticket');
+      expectConfirmed(await agent.get(second.headers.location), 'oldest retained ticket');
+      expect(memberIds(f.releaseId)).toEqual([f.ids[254 % 3]]);
+    }, 60_000);
+
+    it('keeps tickets per app instance: another app never honours this one\'s ticket', async () => {
+      const f = await createSaveFixture('B3F2 Per App');
+      const saved = await saveForm(f.releaseId, [f.ids[0]]);
+      ticketOf(saved, f.releaseId);
+      const otherDataRoot = path.join(tmpDir, 'other-app');
+      fs.mkdirSync(otherDataRoot, { recursive: true });
+      const { csrfPepper } = ensureAuthEnablement(otherDataRoot);
+      // Same database, so the release exists there too, as after a restart.
+      const otherApp = createApp({ appName: 'CreatorCrate', db, projectsRoot }, { appDataRoot: otherDataRoot, authState: { csrfPepper } });
+      expectNotConfirmed(await request(otherApp).get(saved.headers.location), 'other app instance (restart)');
+      expectConfirmed(await agent.get(saved.headers.location), 'issuing app instance');
+    });
+
+    it('keeps the archived-parent warning beside the confirmation it cannot replace', async () => {
+      const f = await createSaveFixture('B3F1 Coexist');
+      const saved = await saveForm(f.releaseId, [f.ids[0]]);
+      ticketOf(saved, f.releaseId);
+      // The project is archived between the Save and the redirected GET: the
+      // warning still renders, separately, and the confirmation does not replace it.
+      db.prepare("UPDATE projects SET status = 'archived', archived_at = '2026-01-01T00:00:00Z' WHERE id = ?").run(f.projectId);
+      const shown = await agent.get(saved.headers.location);
+      expectConfirmed(shown, 'archived parent');
+      expect(shown.text).toContain('The parent project is archived. This release is read-only.');
+    });
+  });
+});
+
+// ─── B-F3: the whole Manage Assets Save POST reads asset state in bounded ─────
+// batches. A dedicated verbose connection records every SQL statement SQLite
+// executes for the request (including transaction control and the 422
+// recovery render), and a prepare wrapper records rows returned per statement.
+describe('Manage Assets Save validation SQL bounds (B-F3)', () => {
+  const BATCH = 500;
+  const VALIDATION = /^SELECT id, project_id, is_present FROM assets WHERE id IN \(/;
+  const RECOVERY = /\bWHERE a\.project_id = (?:\?|[\d.]+) AND a\.id IN \(/;
+  const PER_ID_ASSET_READ = /^SELECT\b(?=.*\bFROM assets(?: a)?\b)(?=.*\bWHERE (?:a\.)?id = (?:\?|[\d.]+)(?:\s|$))/;
+  const MEMBERSHIP_WRITE = /^(?:INSERT|UPDATE|DELETE)\b.*\brelease_assets\b/;
+  const ASSET_READ = /^SELECT\b.*\bFROM assets\b/;
+
+  let tmpDir;
+  let db;
+  let app;
+  let agent;
+  let csrfToken;
+  let tracing;
+  let trace;
+  let rowLog;
+  let projectId;
+  let ids;
+  let foreignId;
+  let service;
+
+  const normalize = (sql) => String(sql).replace(/\s+/g, ' ').trim();
+
+  beforeEach(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-b-f3-'));
+    const projectsRoot = path.join(tmpDir, 'projects');
+    const appDataRoot = path.join(tmpDir, 'app');
+    fs.mkdirSync(projectsRoot, { recursive: true });
+    fs.mkdirSync(appDataRoot, { recursive: true });
+    tracing = false;
+    trace = [];
+    rowLog = [];
+    db = new Database(path.join(tmpDir, 'test.db'), {
+      verbose: (sql) => { if (tracing) trace.push(normalize(sql)); },
+    });
+    db.pragma('journal_mode = WAL');
+    db.pragma('foreign_keys = ON');
+    registerSqlFunctions(db);
+    runMigrations(db, MIGRATIONS_DIR);
+    const originalPrepare = db.prepare.bind(db);
+    db.prepare = (sql, ...args) => {
+      const statement = originalPrepare(sql, ...args);
+      const text = normalize(sql);
+      return new Proxy(statement, {
+        get(target, prop, receiver) {
+          if (prop === 'all' || prop === 'get') {
+            return (...params) => {
+              const result = target[prop](...params);
+              if (tracing) rowLog.push({ sql: text, rows: prop === 'all' ? result.length : (result ? 1 : 0) });
+              return result;
+            };
+          }
+          const value = Reflect.get(target, prop, receiver);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+    };
+    const { csrfPepper } = ensureAuthEnablement(appDataRoot);
+    app = createApp({ appName: 'CreatorCrate', db, projectsRoot }, { appDataRoot, authState: { csrfPepper } });
+    ({ agent, csrfToken } = await getDisabledModeCsrf(app, appDataRoot));
+
+    projectId = insertProjectDirect(db, { title: 'B-F3 Project' });
+    const rows = Array.from({ length: 620 }, (_, index) => {
+      const filename = `img-${String(index).padStart(4, '0')}.png`;
+      return { relativePath: filename, filename, extension: 'png', mimeType: 'image/png', sizeBytes: 10, modifiedAt: '2025-01-01T00:00:00Z' };
+    });
+    ids = createAssetRepository(db).upsertMany(projectId, rows).map((asset) => asset.id);
+    const foreignProjectId = insertProjectDirect(db, { title: 'B-F3 Foreign' });
+    foreignId = insertAssetDirect(db, foreignProjectId, 'foreign-secret-<i>meta</i>.png').id;
+    service = createReleaseService({ db });
+  });
+
+  afterEach(() => {
+    closeDatabase(db);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function createRelease(title = 'B-F3 Release') {
+    return service.createRelease(projectId, { title, description: '', notes: '', plannedDate: null, patreonUrl: null });
+  }
+
+  function membership(releaseId) {
+    return db.prepare('SELECT asset_id, role, sort_order FROM release_assets WHERE release_id = ? ORDER BY sort_order, asset_id')
+      .all(releaseId)
+      .map((row) => [row.asset_id, row.role, row.sort_order]);
+  }
+
+  const encode = (entries) => entries
+    .map(([name, value]) => `${encodeURIComponent(name)}=${encodeURIComponent(value)}`)
+    .join('&');
+
+  async function post(releaseId, entries) {
+    trace.length = 0;
+    rowLog.length = 0;
+    tracing = true;
+    let res;
+    try {
+      res = await agent
+        .post(`/releases/${releaseId}/assets?pageSize=10`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send(encode([['_csrf', csrfToken], ...entries]));
+    } finally {
+      tracing = false;
+    }
+    const count = (pattern) => trace.filter((sql) => pattern.test(sql)).length;
+    const rowsFor = (pattern) => rowLog.filter((entry) => pattern.test(entry.sql)).reduce((sum, entry) => sum + entry.rows, 0);
+    return {
+      res,
+      sql: {
+        validation: count(VALIDATION),
+        validationRows: rowsFor(VALIDATION),
+        recovery: count(RECOVERY),
+        recoveryRows: rowsFor(RECOVERY),
+        perIdAssetReads: count(PER_ID_ASSET_READ),
+        membershipWrites: count(MEMBERSHIP_WRITE),
+        begin: count(/^BEGIN\b/),
+        maxAssetRowsPerStatement: Math.max(0, ...rowLog.filter((entry) => ASSET_READ.test(entry.sql)).map((entry) => entry.rows)),
+        total: trace.length,
+      },
+    };
+  }
+
+  const membershipEntries = (assetIds) => assetIds.map((id) => ['selectedAssetIds', String(id)]);
+
+  // The Save form's successful controls, as the browser would submit them.
+  function retryFormEntries(html) {
+    const formStart = html.indexOf('<form id="release-assets-form"');
+    expect(formStart).toBeGreaterThan(-1);
+    const formEnd = html.indexOf('</form>', formStart);
+    const entries = [];
+    for (const match of html.matchAll(/<input\b[^>]*>/g)) {
+      const attr = (name) => {
+        const found = new RegExp(`\\s${name}(?:="([^"]*)")?(?=[\\s>/])`).exec(match[0]);
+        return found ? (found[1] ?? '') : undefined;
+      };
+      const form = attr('form');
+      const inside = match.index > formStart && match.index < formEnd;
+      const owned = form !== undefined ? form === 'release-assets-form' : inside;
+      const name = attr('name');
+      if (!owned || name === undefined || attr('disabled') !== undefined) continue;
+      if (attr('type') === 'checkbox' && attr('checked') === undefined) continue;
+      entries.push([name, (attr('value') ?? '')
+        .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'").replace(/&amp;/g, '&')]);
+    }
+    return entries;
+  }
+
+  const selectedIds = (entries) => entries.filter(([name]) => name === 'selectedAssetIds').map(([, value]) => Number(value));
+
+  it('rejects a 517-ID Save with a foreign ID: bounded validation and recovery, no writes, draft kept', async () => {
+    const release = createRelease();
+    service.selectAssets(release.id, [
+      { assetId: ids[0], role: 'primary', sortOrder: 0 },
+      { assetId: ids[550], role: 'preview', sortOrder: 1 },
+      { assetId: ids[10], role: 'attachment', sortOrder: 2 },
+    ]);
+    const before = membership(release.id);
+    const submitted = [...ids.slice(0, 300), foreignId, ...ids.slice(300, 516)];
+    expect(submitted).toHaveLength(517);
+
+    const { res, sql } = await post(release.id, membershipEntries(submitted));
+
+    expect(res.status).toBe(422);
+    expect(res.text).toContain(`Asset ${foreignId} does not belong to the release&#39;s project.`);
+    expect(res.text).not.toContain('foreign-secret');
+    expect(membership(release.id)).toEqual(before);
+    // Validation: ceil(517 / 500) = 2 ownership/presence statements.
+    expect(sql.validation).toBe(2);
+    expect(sql.validationRows).toBe(517);
+    expect(sql.perIdAssetReads).toBe(0);
+    // Recovery: its own project-scoped hydrate batches over the submitted IDs
+    // not already on the rendered page (page 1 lists the three saved members,
+    // two of them submitted): 515 IDs → 500 + 15. The project scope drops the
+    // foreign ID, so 514 rows come back.
+    expect(sql.recovery).toBe(2);
+    expect(sql.recoveryRows).toBe(514);
+    expect(sql.membershipWrites).toBe(0);
+    expect(sql.maxAssetRowsPerStatement).toBeLessThanOrEqual(BATCH);
+    // Everything else in the request is a fixed set: session/CSRF, release
+    // and project lookups, guards, saved membership, page, aggregates,
+    // categories and extensions for the recovery render.
+    expect(sql.total).toBe(33);
+
+    // The retry form carries every submitted ID exactly once (the foreign ID
+    // by ID only); page-visible checkboxes follow the hidden off-page
+    // carriers in tree order, so compare as a set. Resubmitting it unchanged
+    // is rejected the same way.
+    const retry = retryFormEntries(res.text);
+    const byId = (a, b) => a - b;
+    expect(selectedIds(retry)).toHaveLength(517);
+    expect(selectedIds(retry).sort(byId)).toEqual([...submitted].sort(byId));
+    const again = await post(release.id, retry.filter(([name]) => name !== '_csrf'));
+    expect(again.res.status).toBe(422);
+    expect(again.sql.validation).toBe(2);
+    expect(again.sql.perIdAssetReads).toBe(0);
+    expect(membership(release.id)).toEqual(before);
+
+    // Dropping the foreign ID through the same form saves once.
+    const corrected = await post(release.id, retry.filter(([name, value]) => name !== '_csrf' && !(name === 'selectedAssetIds' && value === String(foreignId))));
+    expect(corrected.res.status).toBe(302);
+    expect(corrected.sql.validation).toBe(2);
+    expect(corrected.sql.perIdAssetReads).toBe(0);
+    expect(corrected.sql.recovery).toBe(0);
+    // Membership-only Save: saved members keep their roles and relative order
+    // (ids[550] was never submitted, so it is removed); new IDs append in the
+    // order the form submitted them.
+    const correctedIds = selectedIds(retry).filter((id) => id !== foreignId);
+    const saved = membership(release.id);
+    expect(saved).toHaveLength(516);
+    expect(saved.slice(0, 2)).toEqual([[ids[0], 'primary', 0], [ids[10], 'attachment', 1]]);
+    expect(saved.map(([id]) => id)).toEqual([ids[0], ids[10], ...correctedIds.filter((id) => id !== ids[0] && id !== ids[10])]);
+    expect(saved.slice(2).every(([, role], index) => role === 'attachment' && saved[index + 2][2] === index + 2)).toBe(true);
+  });
+
+  it('saves a valid 517-ID membership once with bounded validation reads', async () => {
+    const release = createRelease();
+    const submitted = [...ids.slice(100, 617)].reverse();
+
+    const { res, sql } = await post(release.id, membershipEntries(submitted));
+
+    expect(res.status).toBe(302);
+    expectReleaseAssetsSavedLocation(res.headers.location, release.id);
+    expect(sql.validation).toBe(2);
+    expect(sql.validationRows).toBe(517);
+    expect(sql.perIdAssetReads).toBe(0);
+    expect(sql.recovery).toBe(0);
+    // One atomic replace: a single transaction, one DELETE + 517 guarded INSERTs.
+    expect(sql.begin).toBe(1);
+    expect(sql.membershipWrites).toBe(1 + 517);
+    expect(sql.maxAssetRowsPerStatement).toBeLessThanOrEqual(BATCH);
+    // 2 validation + 518 writes + 9 fixed request statements.
+    expect(sql.total).toBe(529);
+    expect(membership(release.id)).toEqual(submitted.map((id, index) => [id, 'attachment', index]));
+  });
+
+  it.each([1, 25, 250, 500, 501, 517])('validates a %i-ID POST with ceil(n / 500) lookups', async (n) => {
+    const release = createRelease(`Growth ${n}`);
+    const { res, sql } = await post(release.id, membershipEntries(ids.slice(0, n)));
+    expect(res.status).toBe(302);
+    expect(sql.validation).toBe(Math.ceil(n / BATCH));
+    expect(sql.validationRows).toBe(n);
+    expect(sql.perIdAssetReads).toBe(0);
+    expect(sql.recovery).toBe(0);
+    expect(sql.membershipWrites).toBe(1 + n);
+    // The rest of the request is the same nine statements at every size.
+    expect(sql.total - sql.validation - sql.membershipWrites).toBe(9);
+    expect(membership(release.id)).toHaveLength(n);
+  });
+
+  it('clears membership on an empty POST with no asset reads', async () => {
+    const release = createRelease();
+    service.selectAssets(release.id, ids.slice(0, 2).map((assetId) => ({ assetId })), { membershipOnly: true });
+    const { res, sql } = await post(release.id, []);
+    expect(res.status).toBe(302);
+    expect(sql.validation).toBe(0);
+    expect(sql.perIdAssetReads).toBe(0);
+    // One DELETE plus the same nine fixed request statements.
+    expect(sql.total).toBe(10);
+    expect(membership(release.id)).toEqual([]);
+  });
+
+  it('rejects a 501-ID POST ending in an unknown ID as not found after two lookups', async () => {
+    const release = createRelease();
+    service.selectAssets(release.id, [{ assetId: ids[3], role: 'primary', sortOrder: 0 }]);
+    const unknown = ids.at(-1) + 5000;
+    const { res, sql } = await post(release.id, membershipEntries([...ids.slice(0, 500), unknown]));
+    expect(res.status).toBe(404);
+    expect(sql.validation).toBe(2);
+    expect(sql.perIdAssetReads).toBe(0);
+    expect(sql.membershipWrites).toBe(0);
+    expect(membership(release.id)).toEqual([[ids[3], 'primary', 0]]);
+  });
+
+  it('keeps a keyed (B-F2) role/order draft through a batched-validation rejection', async () => {
+    const release = createRelease();
+    const draft = [...ids.slice(0, 120).map((assetId, index) => ({
+      assetId,
+      role: index === 5 ? 'primary' : (index === 9 ? 'preview' : 'attachment'),
+      sortOrder: 200 - index,
+    })), { assetId: foreignId, role: 'attachment', sortOrder: 7 }];
+    const entries = [];
+    draft.forEach(({ assetId, role, sortOrder }, index) => {
+      entries.push(['selectedAssetIds', String(assetId)]);
+      entries.push([`roleAssetIds[${index}]`, String(assetId)], [`roles[${index}]`, role], [`sortOrder[${index}]`, String(sortOrder)]);
+    });
+
+    const { res, sql } = await post(release.id, entries);
+
+    expect(res.status).toBe(422);
+    expect(res.text).toContain(`Asset ${foreignId} does not belong to the release&#39;s project.`);
+    expect(res.text).not.toContain('foreign-secret');
+    expect(sql.validation).toBe(1);
+    expect(sql.perIdAssetReads).toBe(0);
+    expect(sql.membershipWrites).toBe(0);
+    expect(membership(release.id)).toEqual([]);
+    const retry = retryFormEntries(res.text);
+    expect(selectedIds(retry)).toEqual(draft.map(({ assetId }) => assetId));
+    expect(retry.some(([name]) => /^(roleAssetIds|roles|sortOrder)\b/.test(name))).toBe(false);
+    const carriers = retry.filter(([name]) => name === 'roleOrder');
+    expect(carriers).toHaveLength(1);
+    expect(JSON.parse(carriers[0][1]).map(([assetId, role, sortOrder]) => ({ assetId, role, sortOrder })))
+      .toEqual(draft);
+  });
+
+  // ─── B-F2R1: a large rejected legacy draft stays resubmittable ─────────────
+  // Express's URL-encoded parser refuses more than 1,000 parameters with 413
+  // before any route runs. The retry form carries role/order in one compact
+  // `roleOrder` field, so it submits (members + 2) fields instead of the
+  // expanded keyed carrier's (4 × members + 1).
+  describe('large rejected-Save recovery within the parameter limit (B-F2R1)', () => {
+    const PARAMETER_LIMIT = 1000;
+    const BODY_LIMIT_BYTES = 100 * 1024;
+
+    const compact = (draft) => JSON.stringify(draft.map(({ assetId, role, sortOrder }) => [assetId, role, sortOrder]));
+    const carried = (entries) => {
+      const carriers = entries.filter(([name]) => name === 'roleOrder');
+      expect(carriers).toHaveLength(1);
+      return JSON.parse(carriers[0][1]).map(([assetId, role, sortOrder]) => ({ assetId, role, sortOrder }));
+    };
+    const legacyPositional = (draft) => [
+      ...draft.map(({ assetId }) => ['selectedAssetIds[]', String(assetId)]),
+      ...draft.map(({ role }) => ['roles[]', role]),
+      ...draft.map(({ sortOrder }) => ['sortOrder[]', String(sortOrder)]),
+    ];
+    // The B-F2 expanded keyed carrier the retry form rendered before B-F2R1.
+    const expandedKeyed = (draft) => draft.flatMap(({ assetId, role, sortOrder }, index) => [
+      ['selectedAssetIds', String(assetId)],
+      [`roleAssetIds[${index}]`, String(assetId)],
+      [`roles[${index}]`, role],
+      [`sortOrder[${index}]`, String(sortOrder)],
+    ]);
+    const bodyBytes = (entries) => Buffer.byteLength(encode([['_csrf', csrfToken], ...entries]));
+    const withoutCsrf = (entries) => entries.filter(([name]) => name !== '_csrf');
+    const savedRoleOrder = (draft) => [...draft]
+      .sort((a, b) => a.sortOrder - b.sortOrder)
+      .map(({ assetId, role, sortOrder }) => [assetId, role, sortOrder]);
+
+    // n members in a non-ascending sequence with unique explicit orders (7 is
+    // coprime with every size used, so (index × 7) mod n is a permutation),
+    // the saved Primary and Preview kept, and one invalid role.
+    function largeDraft(n, invalidAt = 7) {
+      const chosen = [ids[1], ids[0], ...ids.slice(2, n).reverse()];
+      return chosen.map((assetId, index) => ({
+        assetId,
+        role: index === invalidAt ? 'bogus' : (assetId === ids[0] ? 'primary' : (assetId === ids[1] ? 'preview' : 'attachment')),
+        sortOrder: (index * 7) % n,
+      }));
+    }
+
+    function editableRelease(title) {
+      const release = createRelease(title);
+      service.selectAssets(release.id, [
+        { assetId: ids[0], role: 'primary', sortOrder: 0 },
+        { assetId: ids[1], role: 'preview', sortOrder: 1 },
+        { assetId: ids[610], role: 'attachment', sortOrder: 2 },
+      ]);
+      return release;
+    }
+
+    it('a 300-member legacy draft: 422 retry form fits the parser, unchanged retry is refused, corrected retry saves exact roles/order', async () => {
+      const release = editableRelease();
+      const before = membership(release.id);
+      const draft = largeDraft(300);
+      expect(new Set(draft.map(({ sortOrder }) => sortOrder)).size).toBe(300);
+
+      const initial = legacyPositional(draft);
+      expect(initial.length + 1).toBe(901);
+      const rejected = await post(release.id, initial);
+      expect(rejected.res.status).toBe(422);
+      expect(rejected.res.text).toContain('data-release-assets-selection-errors');
+      expect(rejected.res.text).toContain(`Asset ${draft[7].assetId} has an invalid role &quot;bogus&quot;.`);
+      // Role validation precedes the batched asset lookups (B-F3 precedence).
+      expect(rejected.sql.validation).toBe(0);
+      expect(rejected.sql.perIdAssetReads).toBe(0);
+      expect(rejected.sql.membershipWrites).toBe(0);
+      expect(membership(release.id)).toEqual(before);
+
+      // The rendered retry form: _csrf, one roleOrder, one selectedAssetIds per member.
+      const retry = retryFormEntries(rejected.res.text);
+      expect(retry.filter(([name]) => name === '_csrf')).toEqual([['_csrf', csrfToken]]);
+      expect(retry).toHaveLength(302);
+      expect(retry.length).toBeLessThanOrEqual(PARAMETER_LIMIT);
+      expect(Buffer.byteLength(encode(retry))).toBeLessThan(BODY_LIMIT_BYTES);
+      const retryIds = selectedIds(retry);
+      expect(new Set(retryIds).size).toBe(300);
+      expect([...retryIds].sort((a, b) => a - b)).toEqual(draft.map(({ assetId }) => assetId).sort((a, b) => a - b));
+      expect(retryIds).not.toContain(ids[610]);
+      // Each asset keeps its own role and order, in the submitted sequence.
+      expect(carried(retry)).toEqual(draft);
+      // Was 4 × 300 + 1 = 1,201 fields with the expanded keyed carrier.
+      expect(expandedKeyed(draft).length + 1).toBe(1201);
+
+      // Unchanged retry reaches the route and is refused the same way.
+      const again = await post(release.id, withoutCsrf(retry));
+      expect(again.res.status).toBe(422);
+      expect(again.res.text).toContain(`Asset ${draft[7].assetId} has an invalid role &quot;bogus&quot;.`);
+      expect(again.sql.validation).toBe(0);
+      expect(again.sql.membershipWrites).toBe(0);
+      expect(membership(release.id)).toEqual(before);
+      const second = retryFormEntries(again.res.text);
+      expect(carried(second)).toEqual(draft);
+
+      // Correct the invalid role in the carrier; the Save succeeds.
+      const correctedDraft = draft.map((entry, index) => (index === 7 ? { ...entry, role: 'attachment' } : entry));
+      const corrected = withoutCsrf(second).map(([name, value]) => (name === 'roleOrder' ? [name, compact(correctedDraft)] : [name, value]));
+      const saved = await post(release.id, corrected);
+      expect(saved.res.status).toBe(302);
+      expectReleaseAssetsSavedLocation(saved.res.headers.location, release.id);
+      expect(saved.sql.validation).toBe(1);
+      expect(saved.sql.perIdAssetReads).toBe(0);
+      expect(saved.sql.begin).toBe(1);
+      expect(saved.sql.membershipWrites).toBe(1 + 300);
+      expect(membership(release.id)).toEqual(savedRoleOrder(correctedDraft));
+    });
+
+    it.each([100, 240, 249, 250, 251, 300, 333])('a %i-member rejected legacy draft retries through the parser (no 413)', async (n) => {
+      const release = editableRelease(`Size ${n}`);
+      const before = membership(release.id);
+      const draft = largeDraft(n);
+      const rejected = await post(release.id, legacyPositional(draft));
+      expect(rejected.res.status).toBe(422);
+      const retry = retryFormEntries(rejected.res.text);
+      expect(retry).toHaveLength(n + 2);
+      expect(Buffer.byteLength(encode(retry))).toBeLessThan(BODY_LIMIT_BYTES);
+      expect(carried(retry)).toEqual(draft);
+
+      const again = await post(release.id, withoutCsrf(retry));
+      expect(again.res.status).toBe(422);
+      expect(again.res.text).toContain(`Asset ${draft[7].assetId} has an invalid role &quot;bogus&quot;.`);
+      expect(again.sql.validation).toBe(0);
+      expect(again.sql.membershipWrites).toBe(0);
+      expect(membership(release.id)).toEqual(before);
+
+      // The pre-B-F2R1 expanded keyed carrier for the same draft: 4n + 1
+      // fields, refused by the parser from 250 members on.
+      const expanded = await post(release.id, expandedKeyed(draft));
+      expect(expandedKeyed(draft).length + 1).toBe(4 * n + 1);
+      expect(expanded.res.status).toBe(4 * n + 1 > PARAMETER_LIMIT ? 413 : 422);
+      expect(expanded.res.text).toContain(4 * n + 1 > PARAMETER_LIMIT ? 'too many parameters' : 'has an invalid role &quot;bogus&quot;.');
+      expect(expanded.sql.membershipWrites).toBe(0);
+      expect(membership(release.id)).toEqual(before);
+    });
+
+    it('a 517-member compact draft with a foreign ID: two lookups, 422 with the draft kept, corrected Save writes exact roles/order', async () => {
+      const release = editableRelease();
+      const before = membership(release.id);
+      const draft = [...largeDraft(516, -1), { assetId: foreignId, role: 'attachment', sortOrder: 9999 }];
+      const entries = [['roleOrder', compact(draft)], ...draft.map(({ assetId }) => ['selectedAssetIds', String(assetId)])];
+      expect(entries.length + 1).toBe(519);
+      expect(bodyBytes(entries)).toBeLessThan(BODY_LIMIT_BYTES);
+
+      const rejected = await post(release.id, entries);
+      expect(rejected.res.status).toBe(422);
+      expect(rejected.res.text).toContain(`Asset ${foreignId} does not belong to the release&#39;s project.`);
+      expect(rejected.res.text).not.toContain('foreign-secret');
+      expect(rejected.sql.validation).toBe(2);
+      expect(rejected.sql.perIdAssetReads).toBe(0);
+      expect(rejected.sql.membershipWrites).toBe(0);
+      expect(membership(release.id)).toEqual(before);
+      const retry = retryFormEntries(rejected.res.text);
+      expect(retry).toHaveLength(519);
+      expect(carried(retry)).toEqual(draft);
+
+      const corrected = withoutCsrf(retry).filter(([name, value]) => !(name === 'selectedAssetIds' && value === String(foreignId)));
+      const saved = await post(release.id, corrected);
+      expect(saved.res.status).toBe(302);
+      expect(saved.sql.validation).toBe(2);
+      expect(saved.sql.membershipWrites).toBe(1 + 516);
+      // The foreign ID's stale key is ignored.
+      expect(membership(release.id)).toEqual(savedRoleOrder(draft.slice(0, 516)));
+    });
+
+    it('supports 998 members with a compact carrier (1,000 fields); 999 members exceed the parser limit with 413 and no write', async () => {
+      const more = Array.from({ length: 400 }, (_, index) => {
+        const filename = `more-${String(index).padStart(4, '0')}.png`;
+        return { relativePath: filename, filename, extension: 'png', mimeType: 'image/png', sizeBytes: 10, modifiedAt: '2025-01-01T00:00:00Z' };
+      });
+      const all = [...ids, ...createAssetRepository(db).upsertMany(projectId, more).map((asset) => asset.id)];
+      const release = editableRelease();
+      const before = membership(release.id);
+      const draftOf = (n) => all.slice(0, n).map((assetId, index) => ({ assetId, role: index === 0 ? 'primary' : 'attachment', sortOrder: n - index }));
+      const entriesOf = (draft) => [['roleOrder', compact(draft)], ...draft.map(({ assetId }) => ['selectedAssetIds', String(assetId)])];
+
+      const over = entriesOf(draftOf(999));
+      expect(over.length + 1).toBe(1001);
+      const refused = await post(release.id, over);
+      expect(refused.res.status).toBe(413);
+      expect(refused.sql.validation).toBe(0);
+      expect(refused.sql.membershipWrites).toBe(0);
+      expect(membership(release.id)).toEqual(before);
+
+      const max = draftOf(998);
+      const entries = entriesOf(max);
+      expect(entries.length + 1).toBe(PARAMETER_LIMIT);
+      expect(bodyBytes(entries)).toBeLessThan(BODY_LIMIT_BYTES);
+      const saved = await post(release.id, entries);
+      expect(saved.res.status).toBe(302);
+      expect(saved.sql.validation).toBe(2);
+      expect(saved.sql.membershipWrites).toBe(1 + 998);
+      expect(membership(release.id)).toEqual(savedRoleOrder(max));
+    });
+
+    it('rejects malformed, mixed and over-bound compact carriers as an invalid format with no write', async () => {
+      const release = editableRelease();
+      const before = membership(release.id);
+      const member = String(ids[0]);
+      const tooMany = JSON.stringify(Array.from({ length: 1001 }, (_, index) => [ids[0], 'primary', index]));
+      const cases = [
+        [['roleOrder', '']],
+        [['roleOrder', 'not json']],
+        [['roleOrder', '{"0":[1,"primary",0]}']],
+        [['roleOrder', '[1,"primary",0]']],
+        [['roleOrder', `[[${member},"primary"]]`]],
+        [['roleOrder', `[[${member},"primary",0,1]]`]],
+        [['roleOrder', `[["${member}","primary",0]]`]],
+        [['roleOrder', '[[0,"primary",0]]']],
+        [['roleOrder', `[[${member},"primary",-1]]`]],
+        [['roleOrder', `[[${member},"primary",1.5]]`]],
+        [['roleOrder', `[[${member},"primary","0"]]`]],
+        [['roleOrder', `[[${member},null,0]]`]],
+        [['roleOrder', `[[${member},"primary",0]]`], ['roleOrder', `[[${member},"primary",0]]`]],
+        [['roleOrder[0]', `[[${member},"primary",0]]`]],
+        [['roleOrder', `[[${member},"primary",0]]`], ['roles[0]', 'primary']],
+        [['roleOrder', `[[${member},"primary",0]]`], ['sortOrder[0]', '0']],
+        [['roleOrder', `[[${member},"primary",0]]`], ['roleAssetIds[0]', member]],
+        [['roleOrder', tooMany]],
+      ];
+      for (const carrier of cases) {
+        const { res, sql } = await post(release.id, [['selectedAssetIds', member], ...carrier]);
+        expect(res.status, JSON.stringify(carrier).slice(0, 80)).toBe(422);
+        expect(res.text).toContain('Invalid asset selection format.');
+        expect(res.text).not.toContain('data-release-assets-submitted-role-order');
+        expect(sql.validation).toBe(0);
+        expect(sql.membershipWrites).toBe(0);
+        expect(membership(release.id)).toEqual(before);
+      }
+    });
+
+    it('keeps duplicate, foreign, unknown and read-only refusals for compact drafts', async () => {
+      const release = editableRelease();
+      const before = membership(release.id);
+      const roleOrder = ['roleOrder', compact([{ assetId: ids[0], role: 'primary', sortOrder: 0 }, { assetId: ids[2], role: 'attachment', sortOrder: 1 }])];
+
+      const duplicate = await post(release.id, [roleOrder, ['selectedAssetIds', String(ids[0])], ['selectedAssetIds', String(ids[2])], ['selectedAssetIds', String(ids[0])]]);
+      expect(duplicate.res.status).toBe(422);
+      expect(duplicate.res.text).toContain('Duplicate asset IDs are not allowed.');
+      expect(duplicate.sql.membershipWrites).toBe(0);
+
+      // A key cannot smuggle membership: only selectedAssetIds selects.
+      const keyOnly = await post(release.id, [['roleOrder', compact([{ assetId: foreignId, role: 'primary', sortOrder: 0 }])], ['selectedAssetIds', String(ids[2])]]);
+      expect(keyOnly.res.status).toBe(302);
+      expect(membership(release.id)).toEqual([[ids[2], 'attachment', 0]]);
+      service.selectAssets(release.id, before.map(([assetId, role, sortOrder]) => ({ assetId, role, sortOrder })));
+
+      const foreign = await post(release.id, [['roleOrder', compact([{ assetId: foreignId, role: 'primary', sortOrder: 0 }])], ['selectedAssetIds', String(foreignId)]]);
+      expect(foreign.res.status).toBe(422);
+      expect(foreign.res.text).toContain(`Asset ${foreignId} does not belong to the release&#39;s project.`);
+      expect(foreign.res.text).not.toContain('foreign-secret');
+      expect(foreign.sql.membershipWrites).toBe(0);
+
+      const unknown = ids.at(-1) + 9000;
+      const missing = await post(release.id, [['roleOrder', compact([{ assetId: unknown, role: 'primary', sortOrder: 0 }])], ['selectedAssetIds', String(unknown)]]);
+      expect(missing.res.status).toBe(404);
+      expect(missing.sql.membershipWrites).toBe(0);
+      expect(membership(release.id)).toEqual(before);
+
+      // A parseable large compact draft on a published or archived release
+      // stays read-only.
+      const large = largeDraft(300, -1);
+      const largeEntries = [['roleOrder', compact(large)], ...large.map(({ assetId }) => ['selectedAssetIds', String(assetId)])];
+      db.prepare("UPDATE releases SET published_date = '2025-06-15' WHERE id = ?").run(release.id);
+      const published = await post(release.id, largeEntries);
+      expect(published.res.status).toBe(422);
+      expect(published.res.text).toContain('This release is published. Asset selections are locked and read-only.');
+      expect(published.res.text).not.toContain('id="release-assets-form"');
+      expect(published.res.text).not.toContain('data-release-assets-submitted-role-order');
+      expect(published.sql.membershipWrites).toBe(0);
+      expect(membership(release.id)).toEqual(before);
+    });
+
+    it('a large compact draft without a valid CSRF token, or over the body byte limit, is refused before the route', async () => {
+      const release = editableRelease();
+      const before = membership(release.id);
+      const draft = largeDraft(300, -1);
+      const body = [['roleOrder', compact(draft)], ...draft.map(({ assetId }) => ['selectedAssetIds', String(assetId)])];
+      for (const csrf of [[], [['_csrf', 'not-the-token']]]) {
+        tracing = true;
+        trace.length = 0;
+        const res = await agent.post(`/releases/${release.id}/assets`)
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .send(encode([...csrf, ...body]));
+        tracing = false;
+        expect(res.status).toBe(403);
+        expect(trace.filter((sql) => VALIDATION.test(sql) || MEMBERSHIP_WRITE.test(sql))).toEqual([]);
+      }
+
+      // The 100 KB URL-encoded body limit still applies: one oversized role.
+      const oversized = [['roleOrder', compact([{ assetId: ids[0], role: 'x'.repeat(BODY_LIMIT_BYTES), sortOrder: 0 }])], ['selectedAssetIds', String(ids[0])]];
+      expect(bodyBytes(oversized)).toBeGreaterThan(BODY_LIMIT_BYTES);
+      const tooLarge = await post(release.id, oversized);
+      expect(tooLarge.res.status).toBe(413);
+      expect(tooLarge.sql.validation).toBe(0);
+      expect(tooLarge.sql.membershipWrites).toBe(0);
+      expect(membership(release.id)).toEqual(before);
+    });
+  });
+
+  // ─── B-F2R3: unrepresentable legacy order and unsafe empty retry ──────────
+  // A legacy order must fit the compact retry carrier (a non-negative safe
+  // integer); and a rejected Save whose draft cannot be reconstructed must
+  // never come back as an editable form whose Save clears membership.
+  describe('unrepresentable legacy order and unrecoverable rejected Save (B-F2R3)', () => {
+    const ORDER_ERROR = 'Invalid asset order. Each order must be a whole number from 0 to 9007199254740991.';
+    const FORMAT_ERROR = 'Invalid asset selection format.';
+    const UNSAFE = '9007199254740992';
+    const compactOf = (draft) => JSON.stringify(draft.map(({ assetId, role, sortOrder }) => [assetId, role, sortOrder]));
+    const legacyPositional = (draft) => [
+      ...draft.map(({ assetId }) => ['selectedAssetIds[]', String(assetId)]),
+      ...draft.map(({ role }) => ['roles[]', role]),
+      ...draft.map(({ sortOrder }) => ['sortOrder[]', String(sortOrder)]),
+    ];
+
+    // Two persisted members (saved Primary and Preview) on an editable release.
+    function persistedRelease(title = 'B-F2R3 Release') {
+      const release = createRelease(title);
+      service.selectAssets(release.id, [
+        { assetId: ids[0], role: 'primary', sortOrder: 0 },
+        { assetId: ids[1], role: 'preview', sortOrder: 1 },
+      ]);
+      return release;
+    }
+    const PERSISTED = () => [[ids[0], 'primary', 0], [ids[1], 'preview', 1]];
+
+    // The independent reviewer's draft: three selected assets (the two saved
+    // members plus an off-page addition), explicit roles, one invalid role,
+    // one order beyond Number.MAX_SAFE_INTEGER.
+    const reviewerDraft = () => [
+      { assetId: ids[0], role: 'primary', sortOrder: 0 },
+      { assetId: ids[1], role: 'preview', sortOrder: 1 },
+      { assetId: ids[42], role: 'bogus', sortOrder: UNSAFE },
+    ];
+
+    // A fail-closed refusal: visible notice and error, no Save form, no
+    // membership/role/order fields anywhere, no write, membership unchanged.
+    function expectFailClosed({ res, sql }, release, error, before) {
+      expect(res.status).toBe(422);
+      expect(res.text).toMatch(new RegExp(`<p>${error.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}</p>`));
+      expect(res.text).toContain('data-release-assets-save-recovery-unavailable');
+      expect(res.text).toContain('<strong>Nothing was saved.</strong>');
+      expect(res.text).toMatch(new RegExp(`<a href="/releases/${release.id}/assets\\?pageSize=10">Reload Manage Assets</a>`));
+      expect(res.text).not.toContain('id="release-assets-form"');
+      expect(res.text).not.toContain('Save asset selection');
+      expect(res.text).not.toContain('form="release-assets-form"');
+      expect(res.text).not.toContain('name="selectedAssetIds"');
+      expect(res.text).not.toContain('name="roleOrder"');
+      expect(res.text).not.toMatch(/name="(?:roleAssetIds|roles|sortOrder)\[/);
+      expect(res.text).not.toContain('release-assets-filter-dialog');
+      expect(res.text).not.toContain('data-release-assets-live-page-size-form');
+      expect(res.text).not.toContain('foreign-secret');
+      expect(sql.membershipWrites).toBe(0);
+      expect(membership(release.id)).toEqual(before);
+    }
+
+    it('refuses the reviewer\'s unsafe-order draft (invalid role + 9007199254740992) without a resubmittable form', async () => {
+      const release = persistedRelease();
+      expect(membership(release.id)).toEqual(PERSISTED());
+      const refused = await post(release.id, legacyPositional(reviewerDraft()));
+      expectFailClosed(refused, release, ORDER_ERROR, PERSISTED());
+      // Refused at the route: no Save validation lookup ran.
+      expect(refused.sql.validation).toBe(0);
+      expect(refused.res.text).not.toContain(UNSAFE);
+    });
+
+    it('refuses an unsafe order even when every role is valid, in positional and keyed legacy formats', async () => {
+      const release = persistedRelease();
+      const valid = reviewerDraft().map((entry, index) => (index === 2 ? { ...entry, role: 'attachment' } : entry));
+      expectFailClosed(await post(release.id, legacyPositional(valid)), release, ORDER_ERROR, PERSISTED());
+      const keyed = valid.flatMap(({ assetId, role, sortOrder }, index) => [
+        ['selectedAssetIds', String(assetId)],
+        [`roleAssetIds[${index}]`, String(assetId)],
+        [`roles[${index}]`, role],
+        [`sortOrder[${index}]`, String(sortOrder)],
+      ]);
+      expectFailClosed(await post(release.id, keyed), release, ORDER_ERROR, PERSISTED());
+    });
+
+    it('applies one non-negative safe-integer order boundary; nothing is rounded, clamped, truncated or zeroed', async () => {
+      const release = persistedRelease();
+      const invalid = [
+        '-1', '-0', '+1', '1.5', '1.0', '0.5', '1e3', '1E3', '0x10', 'Infinity', '-Infinity', 'NaN', 'abc', '1 2',
+        UNSAFE, '9007199254740993', '18446744073709551616', '9'.repeat(400),
+      ];
+      for (const value of invalid) {
+        const refused = await post(release.id, [
+          ['selectedAssetIds[]', String(ids[0])], ['roles[]', 'primary'], ['sortOrder[]', value],
+        ]);
+        expect(refused.res.status, value).toBe(422);
+        expectFailClosed(refused, release, ORDER_ERROR, PERSISTED());
+      }
+      // A nested order value is not a scalar order.
+      expectFailClosed(
+        await post(release.id, [['selectedAssetIds[]', String(ids[0])], ['roles[0]', 'primary'], ['sortOrder[0][]', '1']]),
+        release, ORDER_ERROR, PERSISTED(),
+      );
+    });
+
+    it('keeps valid legacy orders: 0, ordinary values, leading zeros, the established blank/missing default and MAX_SAFE_INTEGER', async () => {
+      const release = persistedRelease();
+      const saved = await post(release.id, [
+        ['selectedAssetIds[]', String(ids[0])], ['selectedAssetIds[]', String(ids[1])],
+        ['selectedAssetIds[]', String(ids[42])], ['selectedAssetIds[]', String(ids[3])],
+        ['roles[]', 'primary'], ['roles[]', 'preview'], ['roles[]', 'attachment'], ['roles[]', 'attachment'],
+        ['sortOrder[]', String(Number.MAX_SAFE_INTEGER)], ['sortOrder[]', '007'], ['sortOrder[]', ' 12 '], ['sortOrder[]', ''],
+      ]);
+      expect(saved.res.status).toBe(302);
+      expect(membership(release.id)).toEqual([
+        [ids[3], 'attachment', 0],
+        [ids[1], 'preview', 7],
+        [ids[42], 'attachment', 12],
+        [ids[0], 'primary', Number.MAX_SAFE_INTEGER],
+      ]);
+
+      // A missing order index defaults to 0, and a bare single order is the
+      // whole value at index 0 (never read character by character).
+      const bare = await post(release.id, [
+        ['selectedAssetIds', String(ids[0])], ['selectedAssetIds', String(ids[1])],
+        ['roles[0]', 'primary'], ['roles[1]', 'preview'], ['sortOrder', '12'],
+      ]);
+      expect(bare.res.status).toBe(302);
+      expect(membership(release.id)).toEqual([[ids[1], 'preview', 0], [ids[0], 'primary', 12]]);
+    });
+
+    it('a MAX_SAFE_INTEGER order survives a rejected draft\'s compact carrier and the corrected retry', async () => {
+      const release = persistedRelease();
+      const draft = [
+        { assetId: ids[42], role: 'bogus', sortOrder: 3 },
+        { assetId: ids[0], role: 'primary', sortOrder: Number.MAX_SAFE_INTEGER },
+        { assetId: ids[1], role: 'preview', sortOrder: 0 },
+      ];
+      const rejected = await post(release.id, legacyPositional(draft));
+      expect(rejected.res.status).toBe(422);
+      expect(rejected.sql.membershipWrites).toBe(0);
+      const retry = retryFormEntries(rejected.res.text);
+      expect(retry.filter(([name]) => name === 'roleOrder')).toEqual([['roleOrder', compactOf(draft)]]);
+      const corrected = retry.filter(([name]) => name !== '_csrf').map(([name, value]) => (
+        name === 'roleOrder' ? [name, value.replace('"bogus"', '"attachment"')] : [name, value]
+      ));
+      expect((await post(release.id, corrected)).res.status).toBe(302);
+      expect(membership(release.id)).toEqual([
+        [ids[1], 'preview', 0], [ids[42], 'attachment', 3], [ids[0], 'primary', Number.MAX_SAFE_INTEGER],
+      ]);
+    });
+
+    it('a valid selection with a malformed compact carrier fails closed instead of rendering an empty saveable form', async () => {
+      const release = persistedRelease();
+      const selected = [ids[0], ids[1], ids[42]].map((id) => ['selectedAssetIds', String(id)]);
+      const good = [[ids[0], 'primary', 0], [ids[1], 'preview', 1], [ids[42], 'attachment', 2]];
+      const cases = [
+        ['invalid JSON', [['roleOrder', '[[1,"primary",0]']]],
+        ['entry of wrong length', [['roleOrder', JSON.stringify([[ids[0], 'primary'], ...good.slice(1)])]]],
+        ['unsafe integer order', [['roleOrder', `[[${ids[0]},"primary",0],[${ids[1]},"preview",1],[${ids[42]},"bogus",${UNSAFE}]]`]]],
+        ['invalid asset ID', [['roleOrder', JSON.stringify([[0, 'primary', 0], ...good.slice(1)])]]],
+        ['mixed compact and keyed fields', [['roleOrder', JSON.stringify(good)], ['roleAssetIds[0]', String(ids[0])], ['roles[0]', 'primary'], ['sortOrder[0]', '0']]],
+        ['repeated roleOrder', [['roleOrder', JSON.stringify(good)], ['roleOrder', JSON.stringify(good)]]],
+        ['nested roleOrder', [['roleOrder[0]', JSON.stringify(good)]]],
+        ['empty roleOrder', [['roleOrder', '']]],
+      ];
+      for (const [label, carrier] of cases) {
+        const refused = await post(release.id, [...selected, ...carrier]);
+        expect(refused.res.status, label).toBe(422);
+        expectFailClosed(refused, release, FORMAT_ERROR, PERSISTED());
+        expect(refused.sql.validation, label).toBe(0);
+      }
+    });
+
+    it('a nonempty submission with no readable asset ID, or a malformed selection shape, fails closed', async () => {
+      const release = persistedRelease();
+      expectFailClosed(await post(release.id, [['selectedAssetIds', 'abc']]), release, 'Invalid asset selection.', PERSISTED());
+      expectFailClosed(
+        await post(release.id, [['selectedAssetIds', 'abc'], ['roles[]', 'primary'], ['sortOrder[]', '0']]),
+        release, 'Invalid asset selection.', PERSISTED(),
+      );
+      expectFailClosed(await post(release.id, [['selectedAssetIds[x]', String(ids[0])]]), release, FORMAT_ERROR, PERSISTED());
+      // A partly readable selection keeps its readable IDs for retry (B-F4 control).
+      const partial = await post(release.id, [['selectedAssetIds', 'abc'], ['selectedAssetIds', String(ids[42])]]);
+      expect(partial.res.status).toBe(422);
+      expect(partial.res.text).not.toContain('data-release-assets-save-recovery-unavailable');
+      expect(selectedIds(retryFormEntries(partial.res.text))).toEqual([ids[42]]);
+      expect(membership(release.id)).toEqual(PERSISTED());
+    });
+
+    it('an intentional valid empty Save still clears membership', async () => {
+      const release = persistedRelease();
+      const cleared = await post(release.id, []);
+      expect(cleared.res.status).toBe(302);
+      expectReleaseAssetsSavedLocation(cleared.res.headers.location, release.id);
+      expect(membership(release.id)).toEqual([]);
+    });
+
+    it('an ordinary valid legacy Save persists its explicit roles and orders', async () => {
+      const release = persistedRelease();
+      const draft = [
+        { assetId: ids[42], role: 'attachment', sortOrder: 5 },
+        { assetId: ids[1], role: 'primary', sortOrder: 2 },
+        { assetId: ids[0], role: 'preview', sortOrder: 9 },
+      ];
+      expect((await post(release.id, legacyPositional(draft))).res.status).toBe(302);
+      expect(membership(release.id)).toEqual([[ids[1], 'primary', 2], [ids[42], 'attachment', 5], [ids[0], 'preview', 9]]);
+    });
+
+    it('an ordinary rejected legacy Save keeps a recoverable retry; unchanged it is refused again, corrected it saves', async () => {
+      const release = persistedRelease();
+      // Off-page addition (ids[42]) and off-page removal: membership changes.
+      const draft = [
+        { assetId: ids[42], role: 'bogus', sortOrder: 2 },
+        { assetId: ids[1], role: 'preview', sortOrder: 0 },
+        { assetId: ids[0], role: 'primary', sortOrder: 1 },
+      ];
+      const first = await post(release.id, legacyPositional(draft));
+      expect(first.res.status).toBe(422);
+      expect(first.res.text).toContain(`Asset ${ids[42]} has an invalid role &quot;bogus&quot;.`);
+      expect(first.res.text).not.toContain('data-release-assets-save-recovery-unavailable');
+      expect(first.sql.membershipWrites).toBe(0);
+      expect(membership(release.id)).toEqual(PERSISTED());
+      const retry = retryFormEntries(first.res.text).filter(([name]) => name !== '_csrf');
+      expect([...selectedIds(retry)].sort((a, b) => a - b)).toEqual(draft.map(({ assetId }) => assetId).sort((a, b) => a - b));
+      expect(retry.filter(([name]) => name === 'roleOrder')).toEqual([['roleOrder', compactOf(draft)]]);
+
+      const unchanged = await post(release.id, retry);
+      expect(unchanged.res.status).toBe(422);
+      expect(unchanged.res.text).toContain(`Asset ${ids[42]} has an invalid role &quot;bogus&quot;.`);
+      expect(unchanged.res.text).not.toContain(FORMAT_ERROR);
+      expect(unchanged.sql.membershipWrites).toBe(0);
+      expect(membership(release.id)).toEqual(PERSISTED());
+      expect(retryFormEntries(unchanged.res.text).filter(([name]) => name === 'roleOrder')).toEqual([['roleOrder', compactOf(draft)]]);
+
+      const corrected = retry.map(([name, value]) => (name === 'roleOrder' ? [name, value.replace('"bogus"', '"attachment"')] : [name, value]));
+      expect((await post(release.id, corrected)).res.status).toBe(302);
+      expect(membership(release.id)).toEqual([[ids[1], 'preview', 0], [ids[0], 'primary', 1], [ids[42], 'attachment', 2]]);
+    });
+
+    it('read-only releases keep their B-F4 refusal for an unsafe order; CSRF still precedes the route', async () => {
+      const release = persistedRelease();
+      db.prepare("UPDATE releases SET published_date = '2025-06-15' WHERE id = ?").run(release.id);
+      const published = await post(release.id, legacyPositional(reviewerDraft()));
+      expect(published.res.status).toBe(422);
+      expect(published.res.text).toContain('This release is published. Asset selections are locked and read-only.');
+      expect(published.res.text).toContain(`<p>${ORDER_ERROR}</p>`);
+      expect(published.res.text).not.toContain('id="release-assets-form"');
+      expect(published.res.text).not.toContain('data-release-assets-save-recovery-unavailable');
+      expect(published.sql.membershipWrites).toBe(0);
+      expect(membership(release.id)).toEqual(PERSISTED());
+
+      const editable = persistedRelease('B-F2R3 CSRF');
+      tracing = true;
+      trace.length = 0;
+      const forged = await agent.post(`/releases/${editable.id}/assets`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send(encode([['_csrf', 'forged'], ...legacyPositional(reviewerDraft())]));
+      tracing = false;
+      expect(forged.status).toBe(403);
+      expect(trace.filter((sql) => MEMBERSHIP_WRITE.test(sql))).toEqual([]);
+      expect(membership(editable.id)).toEqual(PERSISTED());
+    });
+  });
+
+  // ─── B-F2R4: sparse indexed role/order fields keep their original index ───
+  // Express's URL-encoded parser compacts `roles[1]=preview` (alone) into
+  // `roles: ['preview']`. A role/order submitted at index k must stay with the
+  // asset submitted at index k; it must never slide onto another asset.
+  describe('sparse keyed role/order index preservation (B-F2R4)', () => {
+    const FORMAT_ERROR = 'Invalid asset selection format.';
+    const ORDER_ERROR = 'Invalid asset order. Each order must be a whole number from 0 to 9007199254740991.';
+    const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    function rows(releaseId) {
+      return db.prepare('SELECT asset_id, role, sort_order FROM release_assets WHERE release_id = ? ORDER BY asset_id')
+        .all(releaseId)
+        .map((row) => [row.asset_id, row.role, row.sort_order]);
+    }
+
+    // Persisted rows as the oracle: exactly these IDs, once each.
+    async function expectSaved(entries, expected) {
+      const release = createRelease();
+      const { res, sql } = await post(release.id, entries);
+      expect(res.status, JSON.stringify(entries)).toBe(302);
+      expect(sql.membershipWrites).toBeGreaterThan(0);
+      const saved = rows(release.id);
+      expect(saved, JSON.stringify(entries)).toEqual([...expected].sort((a, b) => a[0] - b[0]));
+      expect(new Set(saved.map(([assetId]) => assetId)).size).toBe(saved.length);
+      return release;
+    }
+
+    function persisted(title = 'B-F2R4 Release') {
+      const release = createRelease(title);
+      service.selectAssets(release.id, [
+        { assetId: ids[5], role: 'primary', sortOrder: 0 },
+        { assetId: ids[6], role: 'preview', sortOrder: 1 },
+      ]);
+      return release;
+    }
+    const PERSISTED_ROWS = () => [[ids[5], 'primary', 0], [ids[6], 'preview', 1]];
+
+    function expectFailClosed({ res, sql }, release, error) {
+      expect(res.status).toBe(422);
+      expect(res.text).toMatch(new RegExp(`<p>${escape(error)}</p>`));
+      expect(res.text).toContain('data-release-assets-save-recovery-unavailable');
+      expect(res.text).toContain('<strong>Nothing was saved.</strong>');
+      expect(res.text).not.toContain('id="release-assets-form"');
+      expect(res.text).not.toContain('Save asset selection');
+      expect(res.text).not.toContain('name="selectedAssetIds"');
+      expect(res.text).not.toContain('name="roleOrder"');
+      expect(res.text).not.toMatch(/name="(?:roleAssetIds|roles|sortOrder)\[/);
+      expect(res.text).not.toContain('foreign-secret');
+      expect(sql.membershipWrites).toBe(0);
+      expect(rows(release.id)).toEqual([...PERSISTED_ROWS()].sort((a, b) => a[0] - b[0]));
+    }
+
+    // Raw body exactly as written (brackets unencoded), CSRF first.
+    async function postRaw(releaseId, raw) {
+      trace.length = 0;
+      tracing = true;
+      try {
+        const res = await agent.post(`/releases/${releaseId}/assets?pageSize=10`)
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .send(`_csrf=${encodeURIComponent(csrfToken)}&${raw}`);
+        return { res, sql: { membershipWrites: trace.filter((text) => MEMBERSHIP_WRITE.test(text)).length } };
+      } finally {
+        tracing = false;
+      }
+    }
+
+    it('reproduces the reviewer case: roles[1]/sortOrder[1] stay with roleAssetIds[1]', async () => {
+      const [A, B] = [ids[0], ids[1]];
+      const release = await expectSaved([
+        ['selectedAssetIds', String(A)], ['selectedAssetIds', String(B)],
+        ['roleAssetIds[0]', String(A)], ['roleAssetIds[1]', String(B)],
+        ['roles[1]', 'preview'], ['sortOrder[1]', '19'],
+      ], [[A, 'attachment', 0], [B, 'preview', 19]]);
+      // Same result for the raw, unencoded wire form.
+      const raw = createRelease('B-F2R4 raw');
+      const { res } = await postRaw(raw.id,
+        `selectedAssetIds=${A}&selectedAssetIds=${B}&roleAssetIds[0]=${A}&roleAssetIds[1]=${B}&roles[1]=preview&sortOrder[1]=19`);
+      expect(res.status).toBe(302);
+      expect(rows(raw.id)).toEqual(rows(release.id));
+    });
+
+    it('a sparse Primary role stays on its own asset (no Primary moves to another asset)', async () => {
+      const [A, B, C] = [ids[0], ids[1], ids[2]];
+      await expectSaved([
+        ['selectedAssetIds', String(A)], ['selectedAssetIds', String(B)], ['selectedAssetIds', String(C)],
+        ['roleAssetIds[0]', String(A)], ['roleAssetIds[1]', String(B)], ['roleAssetIds[2]', String(C)],
+        ['roles[2]', 'primary'], ['sortOrder[2]', '0'], ['sortOrder[1]', '5'],
+      ], [[A, 'attachment', 0], [B, 'attachment', 5], [C, 'primary', 0]]);
+    });
+
+    it('pairs every dense and sparse keyed combination by original index', async () => {
+      const [A, B, C, D] = [ids[0], ids[1], ids[2], ids[3]];
+      const select = (...assetIds) => assetIds.map((assetId) => ['selectedAssetIds', String(assetId)]);
+      const keys = (pairs) => pairs.map(([index, assetId]) => [`roleAssetIds[${index}]`, String(assetId)]);
+      const cases = [
+        // A. Dense 0, 1, 2.
+        [[...select(A, B, C), ...keys([[0, A], [1, B], [2, C]]),
+          ['roles[0]', 'primary'], ['roles[1]', 'preview'], ['roles[2]', 'attachment'],
+          ['sortOrder[0]', '0'], ['sortOrder[1]', '1'], ['sortOrder[2]', '2']],
+        [[A, 'primary', 0], [B, 'preview', 1], [C, 'attachment', 2]]],
+        // B. Only role index 1.
+        [[...select(A, B), ...keys([[0, A], [1, B]]), ['roles[1]', 'preview']],
+          [[A, 'attachment', 0], [B, 'preview', 0]]],
+        // C. Only order index 1.
+        [[...select(A, B), ...keys([[0, A], [1, B]]), ['sortOrder[1]', '5']],
+          [[A, 'attachment', 0], [B, 'attachment', 5]]],
+        // D. Roles at 0 and 2; none at 1.
+        [[...select(A, B, C), ...keys([[0, A], [1, B], [2, C]]), ['roles[0]', 'primary'], ['roles[2]', 'preview']],
+          [[A, 'primary', 0], [B, 'attachment', 0], [C, 'preview', 0]]],
+        // E. Orders at 0 and 2; none at 1.
+        [[...select(A, B, C), ...keys([[0, A], [1, B], [2, C]]), ['sortOrder[0]', '4'], ['sortOrder[2]', '8']],
+          [[A, 'attachment', 4], [B, 'attachment', 0], [C, 'attachment', 8]]],
+        // F. Role at 1, order at 2.
+        [[...select(A, B, C), ...keys([[0, A], [1, B], [2, C]]), ['roles[1]', 'preview'], ['sortOrder[2]', '6']],
+          [[A, 'attachment', 0], [B, 'preview', 0], [C, 'attachment', 6]]],
+        // G. Indexed fields in reversed wire order.
+        [[['sortOrder[1]', '19'], ['roles[1]', 'preview'], ...keys([[1, B], [0, A]]), ...select(B, A)],
+          [[A, 'attachment', 0], [B, 'preview', 19]]],
+        // H. A key for an unselected asset is ignored (its role/order with it).
+        [[...select(A, B), ...keys([[0, A], [1, B], [2, C]]), ['roles[2]', 'primary'], ['sortOrder[2]', '9']],
+          [[A, 'attachment', 0], [B, 'attachment', 0]]],
+        // I. A selected asset with no keyed entry takes the defaults.
+        [[...select(A, B, D), ...keys([[0, A], [1, B]]), ['roles[1]', 'preview'], ['sortOrder[1]', '3']],
+          [[A, 'attachment', 0], [B, 'preview', 3], [D, 'attachment', 0]]],
+        // J. A missing middle asset-ID index.
+        [[...select(A, C), ...keys([[0, A], [2, C]]), ['roles[2]', 'preview'], ['sortOrder[2]', '3']],
+          [[A, 'attachment', 0], [C, 'preview', 3]]],
+        // L. Large numeric indices (past the parser's array threshold).
+        [[...select(A, B), ...keys([[0, A], [150, B]]), ['roles[150]', 'preview'], ['sortOrder[150]', '7']],
+          [[A, 'attachment', 0], [B, 'preview', 7]]],
+        [[...select(A, B), ...keys([[999998, A], [999999, B]]), ['roles[999999]', 'primary']],
+          [[A, 'attachment', 0], [B, 'primary', 0]]],
+        // O. Empty role/order values take the defaults at their own index.
+        [[...select(A, B), ...keys([[0, A], [1, B]]), ['roles[0]', 'preview'], ['roles[1]', ''], ['sortOrder[1]', ''], ['sortOrder[0]', '2']],
+          [[A, 'preview', 2], [B, 'attachment', 0]]],
+        // P. Shared role, different orders.
+        [[...select(A, B, C), ...keys([[0, A], [1, B], [2, C]]),
+          ['roles[1]', 'preview'], ['roles[2]', 'preview'], ['sortOrder[1]', '9'], ['sortOrder[2]', '3']],
+        [[A, 'attachment', 0], [B, 'preview', 9], [C, 'preview', 3]]],
+        // B-F2R3 boundary at a sparse index.
+        [[...select(A, B), ...keys([[0, A], [1, B]]), ['sortOrder[1]', '9007199254740991']],
+          [[A, 'attachment', 0], [B, 'attachment', Number.MAX_SAFE_INTEGER]]],
+      ];
+      for (const [entries, expected] of cases) await expectSaved(entries, expected);
+    });
+
+    it('the legacy positional shape also pairs roles[k]/sortOrder[k] with the k-th selected ID', async () => {
+      const [A, B, C] = [ids[0], ids[1], ids[2]];
+      await expectSaved([
+        ['selectedAssetIds', String(A)], ['selectedAssetIds', String(B)],
+        ['roles[1]', 'preview'], ['sortOrder[1]', '19'],
+      ], [[A, 'attachment', 0], [B, 'preview', 19]]);
+      // Indexed selectedAssetIds keep their own indices too.
+      await expectSaved([
+        ['selectedAssetIds[0]', String(A)], ['selectedAssetIds[2]', String(C)],
+        ['roles[2]', 'primary'], ['sortOrder[0]', '4'],
+      ], [[A, 'attachment', 4], [C, 'primary', 0]]);
+    });
+
+    it('keeps all four dense Save formats', async () => {
+      const [A, B] = [ids[0], ids[1]];
+      // Membership only: server-owned roles/order (new members attachment, appended order).
+      const membershipOnly = createRelease('B-F2R4 membership');
+      expect((await post(membershipOnly.id, [['selectedAssetIds', String(A)], ['selectedAssetIds', String(B)]])).res.status).toBe(302);
+      expect(rows(membershipOnly.id).map(([assetId]) => assetId)).toEqual([A, B]);
+      // Legacy positional.
+      await expectSaved([
+        ['selectedAssetIds[]', String(A)], ['selectedAssetIds[]', String(B)],
+        ['roles[]', 'primary'], ['roles[]', 'preview'], ['sortOrder[]', '1'], ['sortOrder[]', '2'],
+      ], [[A, 'primary', 1], [B, 'preview', 2]]);
+      // Keyed.
+      await expectSaved([
+        ['selectedAssetIds', String(B)], ['selectedAssetIds', String(A)],
+        ['roleAssetIds[0]', String(A)], ['roles[0]', 'primary'], ['sortOrder[0]', '1'],
+        ['roleAssetIds[1]', String(B)], ['roles[1]', 'preview'], ['sortOrder[1]', '2'],
+      ], [[A, 'primary', 1], [B, 'preview', 2]]);
+      // Compact roleOrder tuples are explicit and untouched.
+      await expectSaved([
+        ['selectedAssetIds', String(A)], ['selectedAssetIds', String(B)],
+        ['roleOrder', JSON.stringify([[B, 'preview', 2], [A, 'primary', 1]])],
+      ], [[A, 'primary', 1], [B, 'preview', 2]]);
+    });
+
+    it('refuses ambiguous or malformed indexed shapes fail-closed, with no write', async () => {
+      const [A, B, C] = [ids[0], ids[1], ids[2]];
+      const base = `selectedAssetIds=${A}&selectedAssetIds=${B}&roleAssetIds[0]=${A}&roleAssetIds[1]=${B}`;
+      const cases = [
+        // K. Repeated indices.
+        [`${base}&roles[1]=preview&roles[1]=primary`, FORMAT_ERROR],
+        [`${base}&roleAssetIds[1]=${C}`, FORMAT_ERROR],
+        [`${base}&sortOrder[1]=1&sortOrder[1]=2`, ORDER_ERROR],
+        // M. Non-numeric / signed / padded indices.
+        [`${base}&roles[x]=preview`, FORMAT_ERROR],
+        [`${base}&roles[-1]=preview`, FORMAT_ERROR],
+        [`${base}&roles[01]=preview`, FORMAT_ERROR],
+        [`${base}&roles[__proto__]=preview`, FORMAT_ERROR],
+        // L. Excessive index.
+        [`${base}&roles[1000000]=preview`, FORMAT_ERROR],
+        [`selectedAssetIds=${A}&roleAssetIds[1000000]=${A}`, FORMAT_ERROR],
+        // N. Nested values.
+        [`${base}&roles[1][a]=preview`, FORMAT_ERROR],
+        [`${base}&roles[1][]=preview`, FORMAT_ERROR],
+        [`${base}&roleAssetIds[2][]=${C}`, FORMAT_ERROR],
+        [`${base}&sortOrder[1][]=4`, ORDER_ERROR],
+        // A key qs would still parse into the field.
+        [`${base}&[roles][1]=preview`, FORMAT_ERROR],
+        // Mixed bare/indexed forms of one field.
+        [`${base}&roles=preview&roles[1]=primary`, FORMAT_ERROR],
+        // A role/order at an index with no asset ID never slides onto one.
+        [`selectedAssetIds=${A}&selectedAssetIds=${C}&roleAssetIds[0]=${A}&roleAssetIds[2]=${C}&roles[1]=primary`, FORMAT_ERROR],
+        [`${base}&sortOrder[2]=19`, FORMAT_ERROR],
+        [`selectedAssetIds=${A}&selectedAssetIds=${B}&roles[2]=preview`, FORMAT_ERROR],
+        [`selectedAssetIds[0]=${A}&selectedAssetIds[2]=${B}&roles[1]=primary`, FORMAT_ERROR],
+        // Empty or non-integer key IDs.
+        [`${base}&roleAssetIds[2]=`, FORMAT_ERROR],
+        // Conflicting payload shapes.
+        [`${base}&roleOrder=${encodeURIComponent(JSON.stringify([[A, 'primary', 0]]))}`, FORMAT_ERROR],
+        // B-F2R3 unsafe order at a sparse index.
+        [`${base}&sortOrder[1]=9007199254740992`, ORDER_ERROR],
+        [`${base}&sortOrder[1]=1e3`, ORDER_ERROR],
+        [`${base}&sortOrder[1]=-1`, ORDER_ERROR],
+        [`${base}&sortOrder[1]=1.5`, ORDER_ERROR],
+      ];
+      for (const [raw, error] of cases) {
+        const release = persisted();
+        const result = await postRaw(release.id, raw);
+        expect(result.res.status, raw).toBe(422);
+        expectFailClosed(result, release, error);
+      }
+    });
+
+    it('validation errors keep the original index: an invalid sparse role names its own asset and retries faithfully', async () => {
+      const [A, B] = [ids[0], ids[1]];
+      const release = persisted();
+      const first = await post(release.id, [
+        ['selectedAssetIds', String(A)], ['selectedAssetIds', String(B)],
+        ['roleAssetIds[0]', String(A)], ['roleAssetIds[1]', String(B)],
+        ['roles[1]', 'bogus'], ['sortOrder[1]', '19'],
+      ]);
+      expect(first.res.status).toBe(422);
+      expect(first.res.text).toContain(`Asset ${B} has an invalid role &quot;bogus&quot;.`);
+      expect(first.res.text).not.toContain(`Asset ${A} has an invalid role`);
+      expect(first.res.text).not.toContain('data-release-assets-save-recovery-unavailable');
+      expect(first.sql.membershipWrites).toBe(0);
+      expect(rows(release.id)).toEqual(PERSISTED_ROWS());
+      const retry = retryFormEntries(first.res.text).filter(([name]) => name !== '_csrf');
+      const compact = JSON.stringify([[A, 'attachment', 0], [B, 'bogus', 19]]);
+      expect(retry.filter(([name]) => name === 'roleOrder')).toEqual([['roleOrder', compact]]);
+      expect(selectedIds(retry).sort((a, b) => a - b)).toEqual([A, B]);
+
+      const unchanged = await post(release.id, retry);
+      expect(unchanged.res.status).toBe(422);
+      expect(unchanged.res.text).toContain(`Asset ${B} has an invalid role &quot;bogus&quot;.`);
+      expect(unchanged.sql.membershipWrites).toBe(0);
+      expect(rows(release.id)).toEqual(PERSISTED_ROWS());
+
+      const corrected = retry.map(([name, value]) => (name === 'roleOrder' ? [name, value.replace('"bogus"', '"preview"')] : [name, value]));
+      expect((await post(release.id, corrected)).res.status).toBe(302);
+      expect(rows(release.id)).toEqual([[A, 'attachment', 0], [B, 'preview', 19]]);
+    });
+
+    it('unknown, foreign and duplicate IDs with sparse keyed fields are refused without a write or foreign metadata', async () => {
+      const [A, B] = [ids[0], ids[1]];
+      // Established statuses: unknown ID 404; foreign / duplicate 422.
+      for (const [label, selected, status, message] of [
+        ['unknown', [A, 999999999], 404, null],
+        ['foreign', [A, foreignId], 422, `Asset ${foreignId} does not belong to the release&#39;s project.`],
+        ['duplicate', [A, B, B], 422, 'Duplicate asset IDs are not allowed.'],
+      ]) {
+        const release = persisted(`B-F2R4 ${label}`);
+        const result = await post(release.id, [
+          ...selected.map((assetId) => ['selectedAssetIds', String(assetId)]),
+          ['roleAssetIds[0]', String(A)], ['roleAssetIds[1]', String(selected[1])],
+          ['roles[1]', 'primary'], ['sortOrder[1]', '19'],
+        ]);
+        expect(result.res.status, label).toBe(status);
+        if (message) expect(result.res.text).toContain(message);
+        expect(result.sql.membershipWrites, label).toBe(0);
+        expect(result.res.text).not.toContain('foreign-secret');
+        expect(rows(release.id)).toEqual(PERSISTED_ROWS());
+        // A recoverable retry keeps B's Primary/19 on its own ID, never on A.
+        const roleOrder = result.res.text.includes('<form id="release-assets-form"')
+          ? retryFormEntries(result.res.text).find(([name]) => name === 'roleOrder')?.[1]
+          : undefined;
+        if (label !== 'unknown') expect(roleOrder, label).toBeDefined();
+        if (roleOrder) {
+          const tuples = JSON.parse(roleOrder);
+          expect(tuples.find(([assetId]) => assetId === A), label).toEqual([A, 'attachment', 0]);
+          expect(tuples.find(([assetId]) => assetId === selected[1]), label).toEqual([selected[1], 'primary', 19]);
+        }
+      }
+    });
+
+    it('read-only releases refuse sparse keyed Saves with the persisted collection and no Save form', async () => {
+      const [A, B] = [ids[0], ids[1]];
+      const release = persisted();
+      db.prepare("UPDATE releases SET published_date = '2025-06-15' WHERE id = ?").run(release.id);
+      for (const raw of [
+        `selectedAssetIds=${A}&selectedAssetIds=${B}&roleAssetIds[0]=${A}&roleAssetIds[1]=${B}&roles[1]=preview&sortOrder[1]=19`,
+        `selectedAssetIds=${A}&roleAssetIds[0]=${A}&roles[1]=preview`,
+      ]) {
+        const result = await postRaw(release.id, raw);
+        expect(result.res.status).toBe(422);
+        expect(result.res.text).toContain('This release is published. Asset selections are locked and read-only.');
+        expect(result.res.text).not.toContain('id="release-assets-form"');
+        expect(result.res.text).not.toContain('name="roleOrder"');
+        expect(result.sql.membershipWrites).toBe(0);
+        expect(rows(release.id)).toEqual(PERSISTED_ROWS());
+      }
+    });
+
+    it('keeps CSRF ahead of the route for a sparse keyed Save', async () => {
+      const [A, B] = [ids[0], ids[1]];
+      const release = persisted();
+      trace.length = 0;
+      tracing = true;
+      const forged = await agent.post(`/releases/${release.id}/assets`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send(`_csrf=forged&selectedAssetIds=${A}&selectedAssetIds=${B}&roleAssetIds[0]=${A}&roleAssetIds[1]=${B}&roles[1]=preview`);
+      tracing = false;
+      expect(forged.status).toBe(403);
+      expect(trace.filter((sql) => MEMBERSHIP_WRITE.test(sql))).toEqual([]);
+      expect(rows(release.id)).toEqual(PERSISTED_ROWS());
+    });
+
+    it('keeps the B-F3 validation batch bound for a large sparse keyed Save', async () => {
+      const release = createRelease();
+      const members = ids.slice(0, 520);
+      const entries = [
+        ...members.map((assetId) => ['selectedAssetIds', String(assetId)]),
+        ['roleAssetIds[0]', String(members[0])],
+        ['roleAssetIds[400]', String(members[400])], ['roles[400]', 'primary'], ['sortOrder[400]', '3'],
+      ];
+      const { res, sql } = await post(release.id, entries);
+      expect(res.status).toBe(302);
+      expect(sql.validation).toBe(2);
+      expect(sql.maxAssetRowsPerStatement).toBeLessThanOrEqual(BATCH);
+      expect(sql.perIdAssetReads).toBe(0);
+      const saved = rows(release.id);
+      expect(saved).toHaveLength(520);
+      expect(saved.find(([assetId]) => assetId === members[400])).toEqual([members[400], 'primary', 3]);
+      expect(saved.find(([assetId]) => assetId === members[0])).toEqual([members[0], 'attachment', 0]);
+      expect(saved.filter(([, role]) => role === 'primary')).toHaveLength(1);
+    });
+  });
+  // ─── B-F2R5: a malformed selected-ID field is never an empty Save ─────────
+  // Express's extended parser (qs, allowPrototypes) turns
+  // `selectedAssetIds[__proto__]=3` into `selectedAssetIds: {}` — an empty
+  // membership. The raw selected-ID field must be validated before the
+  // membership-only / positional / keyed / compact format is chosen, so a
+  // dropped or reshaped selection is refused instead of clearing the release.
+  describe('malformed selected-ID validation before format choice (B-F2R5)', () => {
+    const FORMAT_ERROR = 'Invalid asset selection format.';
+    const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    function rows(releaseId) {
+      return db.prepare('SELECT asset_id, role, sort_order FROM release_assets WHERE release_id = ? ORDER BY asset_id')
+        .all(releaseId)
+        .map((row) => [row.asset_id, row.role, row.sort_order]);
+    }
+
+    // A Primary, B Preview.
+    function persisted(title = 'B-F2R5 Release') {
+      const release = createRelease(title);
+      service.selectAssets(release.id, [
+        { assetId: ids[5], role: 'primary', sortOrder: 0 },
+        { assetId: ids[6], role: 'preview', sortOrder: 1 },
+      ]);
+      return release;
+    }
+    const PERSISTED_ROWS = () => [[ids[5], 'primary', 0], [ids[6], 'preview', 1]];
+
+    // Raw body exactly as written, CSRF first.
+    async function postRaw(releaseId, raw, csrf = csrfToken) {
+      trace.length = 0;
+      rowLog.length = 0;
+      tracing = true;
+      try {
+        const res = await agent.post(`/releases/${releaseId}/assets?pageSize=10`)
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .send(raw === '' ? `_csrf=${encodeURIComponent(csrf)}` : `_csrf=${encodeURIComponent(csrf)}&${raw}`);
+        const count = (pattern) => trace.filter((text) => pattern.test(text)).length;
+        return { res, sql: { membershipWrites: count(MEMBERSHIP_WRITE), validation: count(VALIDATION) } };
+      } finally {
+        tracing = false;
+      }
+    }
+
+    function expectFailClosed({ res, sql }, release, label) {
+      // Persisted membership and write count first: they are the data-loss oracle.
+      expect(rows(release.id), label).toEqual(PERSISTED_ROWS());
+      expect(sql.membershipWrites, label).toBe(0);
+      expect(res.status, label).toBe(422);
+      expect(res.text, label).toMatch(new RegExp(`<div class="error-summary" role="alert">\\s*<p>${escape(FORMAT_ERROR)}</p>`));
+      expect(res.text, label).toContain('data-release-assets-save-recovery-unavailable');
+      expect(res.text, label).toContain('<strong>Nothing was saved.</strong>');
+      expect(res.text, label).not.toContain('id="release-assets-form"');
+      expect(res.text, label).not.toContain('Save asset selection');
+      expect(res.text, label).not.toContain('name="selectedAssetIds"');
+      expect(res.text, label).not.toContain('name="roleOrder"');
+      expect(res.text, label).not.toMatch(/name="(?:roleAssetIds|roles|sortOrder)\[/);
+      expect(res.text, label).not.toContain('foreign-secret');
+      expect(res.text, label).not.toContain('__proto__');
+      expect(sql.membershipWrites, label).toBe(0);
+      // Refused before any asset validation lookup.
+      expect(sql.validation, label).toBe(0);
+      expect(rows(release.id), label).toEqual(PERSISTED_ROWS());
+    }
+
+    it('reproduces the reviewer case: selectedAssetIds[__proto__]=3 is refused, membership kept', async () => {
+      const release = persisted();
+      expect(rows(release.id)).toEqual(PERSISTED_ROWS());
+      const result = await postRaw(release.id, 'selectedAssetIds[__proto__]=3');
+      expectFailClosed(result, release, '__proto__');
+    });
+
+    it('refuses prototype-like and percent-encoded selected-ID names without depending on req.body', async () => {
+      const A = ids[5];
+      for (const raw of [
+        'selectedAssetIds[__proto__]=3',
+        'selectedAssetIds[constructor]=3',
+        'selectedAssetIds[prototype]=3',
+        'selectedAssetIds[toString]=3',
+        'selectedAssetIds[hasOwnProperty]=3',
+        'selectedAssetIds[valueOf]=3',
+        'selectedAssetIds[__proto__][0]=3',
+        'selectedAssetIds[__proto__][__proto__]=3',
+        `selectedAssetIds[__proto__]=${A}`,
+        'selectedAssetIds%5B__proto__%5D=3',
+        'selectedAssetIds%5b__proto__%5d=3',
+        'selectedAssetIds%5B%5F%5Fproto%5F%5F%5D=3',
+        'selectedAssetIds%5Bconstructor%5D=3',
+        'selectedAssetIds%5Bprototype%5D=3',
+        'selectedAssetIds%5BtoString%5D=3',
+        'selectedAssetIds[__proto__]=',
+      ]) {
+        const release = persisted('B-F2R5 case');
+        expectFailClosed(await postRaw(release.id, raw), release, raw);
+      }
+    });
+
+    it('refuses mixed valid/malformed, ambiguous, nested and oversized selected-ID fields', async () => {
+      const [A, B] = [ids[5], ids[6]];
+      for (const raw of [
+        // A valid neighbour must not hide a dropped malformed entry.
+        `selectedAssetIds[0]=${A}&selectedAssetIds[__proto__]=3`,
+        `selectedAssetIds[__proto__]=3&selectedAssetIds[0]=${A}`,
+        `selectedAssetIds=${A}&selectedAssetIds[__proto__]=3`,
+        `selectedAssetIds[__proto__]=3&selectedAssetIds=${A}`,
+        `selectedAssetIds[]=${A}&selectedAssetIds%5B__proto__%5D=3`,
+        `selectedAssetIds[1]=${A}&selectedAssetIds[toString]=${B}`,
+        // Mixed bare/indexed forms, repeated index, non-numeric, nested,
+        // oversized index, unterminated and leading-bracket keys.
+        `selectedAssetIds=${A}&selectedAssetIds[1]=${B}`,
+        `selectedAssetIds[0]=${A}&selectedAssetIds[0]=${B}`,
+        `selectedAssetIds[a]=${A}`,
+        `selectedAssetIds[0][a]=${A}`,
+        `selectedAssetIds[-1]=${A}`,
+        `selectedAssetIds[01]=${A}`,
+        `selectedAssetIds[9999999]=${A}`,
+        `selectedAssetIds%5B0=${A}`,
+        `[selectedAssetIds][0]=${A}`,
+      ]) {
+        const release = persisted('B-F2R5 case');
+        expectFailClosed(await postRaw(release.id, raw), release, raw);
+      }
+    });
+
+    it('a role/order carrier never masks a malformed selected-ID field', async () => {
+      const [A, B] = [ids[5], ids[6]];
+      const roleOrder = encodeURIComponent(JSON.stringify([[A, 'primary', 0], [B, 'preview', 1]]));
+      for (const raw of [
+        // Sparse keyed (B-F2R4 shape).
+        `selectedAssetIds[__proto__]=3&roleAssetIds[0]=${A}&roleAssetIds[1]=${B}&roles[1]=preview&sortOrder[1]=19`,
+        // Legacy positional.
+        'selectedAssetIds[__proto__]=3&roles[0]=primary&sortOrder[0]=0',
+        // Compact roleOrder (valid and malformed).
+        `selectedAssetIds[__proto__]=3&roleOrder=${roleOrder}`,
+        `selectedAssetIds[__proto__]=3&roleOrder=%5B%5B${A}%2C%22primary%22%2C1.5%5D%5D`,
+        // B-F2R3 unsafe order with a malformed selection: still format-refused.
+        `selectedAssetIds[__proto__]=3&roleAssetIds[0]=${A}&sortOrder[0]=9007199254740992`,
+        `selectedAssetIds[0]=${A}&selectedAssetIds[__proto__]=${B}&roleAssetIds[0]=${A}&roles[0]=primary`,
+      ]) {
+        const release = persisted('B-F2R5 case');
+        expectFailClosed(await postRaw(release.id, raw), release, raw);
+      }
+    });
+
+    it('keeps a deliberate empty Save: no selected-ID field (or a lone bare empty value) clears membership', async () => {
+      for (const raw of ['', 'selectedAssetIds=']) {
+        const release = persisted(`B-F2R5 empty ${raw}`);
+        const { res, sql } = await postRaw(release.id, raw);
+        expect(res.status, raw).toBe(302);
+        expectReleaseAssetsSavedLocation(res.headers.location, release.id);
+        expect(sql.membershipWrites, raw).toBeGreaterThan(0);
+        expect(rows(release.id), raw).toEqual([]);
+      }
+    });
+
+    it('keeps every supported selected-ID representation', async () => {
+      const [A, B, C] = [ids[5], ids[6], ids[7]];
+      for (const [raw, expected] of [
+        [`selectedAssetIds=${A}`, [A]],
+        [`selectedAssetIds=${A}&selectedAssetIds=${B}&selectedAssetIds=${C}`, [A, B, C]],
+        [`selectedAssetIds[]=${A}&selectedAssetIds[]=${B}`, [A, B]],
+        [`selectedAssetIds=${A}&selectedAssetIds[]=${B}`, [A, B]],
+        [`selectedAssetIds[0]=${A}&selectedAssetIds[1]=${B}`, [A, B]],
+        [`selectedAssetIds[1]=${A}`, [A]],
+        [`selectedAssetIds[5]=${A}&selectedAssetIds[2]=${B}`, [A, B]],
+        [`selectedAssetIds[150]=${A}&selectedAssetIds[999999]=${C}`, [A, C]],
+        [`selectedAssetIds%5B0%5D=${A}&selectedAssetIds%5B1%5D=${C}`, [A, C]],
+        [`selectedAssetIds%5B%5D=${B}`, [B]],
+      ]) {
+        const release = persisted('B-F2R5 case');
+        const { res, sql } = await postRaw(release.id, raw);
+        expect(res.status, raw).toBe(302);
+        expect(sql.membershipWrites, raw).toBeGreaterThan(0);
+        expect(rows(release.id).map(([assetId]) => assetId), raw).toEqual([...expected].sort((x, y) => x - y));
+        // Membership-only keeps a saved member's role/order.
+        if (expected.includes(A)) expect(rows(release.id).find(([assetId]) => assetId === A), raw).toEqual([A, 'primary', 0]);
+      }
+    });
+
+    it('keeps B-F2R4 sparse keyed pairing, legacy positional pairing and the B-F2R3 order refusal', async () => {
+      const [A, B] = [ids[0], ids[1]];
+      const sparse = createRelease('B-F2R5 sparse');
+      const keyed = await postRaw(sparse.id,
+        `selectedAssetIds=${A}&selectedAssetIds=${B}&roleAssetIds[0]=${A}&roleAssetIds[1]=${B}&roles[1]=preview&sortOrder[1]=19`);
+      expect(keyed.res.status).toBe(302);
+      expect(rows(sparse.id)).toEqual([[A, 'attachment', 0], [B, 'preview', 19]]);
+      const positional = createRelease('B-F2R5 positional');
+      const legacy = await postRaw(positional.id,
+        `selectedAssetIds[0]=${A}&selectedAssetIds[1]=${B}&roles[0]=primary&sortOrder[0]=4&roles[1]=preview&sortOrder[1]=7`);
+      expect(legacy.res.status).toBe(302);
+      expect(rows(positional.id)).toEqual([[A, 'primary', 4], [B, 'preview', 7]]);
+      const unsafe = persisted('B-F2R5 unsafe');
+      const refused = await postRaw(unsafe.id, `selectedAssetIds=${ids[5]}&roles[0]=primary&sortOrder[0]=9007199254740992`);
+      expect(refused.res.status).toBe(422);
+      expect(refused.res.text).toContain('Invalid asset order.');
+      expect(refused.sql.membershipWrites).toBe(0);
+      expect(rows(unsafe.id)).toEqual(PERSISTED_ROWS());
+    });
+
+    it('keeps unknown, foreign and duplicate refusals for indexed selected IDs', async () => {
+      const A = ids[5];
+      for (const [label, raw, status, message] of [
+        ['unknown', `selectedAssetIds[0]=${A}&selectedAssetIds[1]=999999999`, 404, null],
+        ['foreign', `selectedAssetIds[0]=${A}&selectedAssetIds[1]=${foreignId}`, 422, `Asset ${foreignId} does not belong to the release&#39;s project.`],
+        ['duplicate', `selectedAssetIds[0]=${A}&selectedAssetIds[3]=${A}`, 422, 'Duplicate asset IDs are not allowed.'],
+      ]) {
+        const release = persisted(`B-F2R5 ${label}`);
+        const { res, sql } = await postRaw(release.id, raw);
+        expect(res.status, label).toBe(status);
+        if (message) expect(res.text, label).toContain(message);
+        expect(res.text, label).not.toContain('foreign-secret');
+        expect(sql.membershipWrites, label).toBe(0);
+        expect(rows(release.id), label).toEqual(PERSISTED_ROWS());
+      }
+    });
+
+    it('a rejected malformed Save cannot be retried into an empty Save', async () => {
+      const release = persisted();
+      const first = await postRaw(release.id, 'selectedAssetIds[__proto__]=3');
+      expectFailClosed(first, release, 'initial');
+      // No Save form, so the response offers nothing a browser could submit.
+      expect(first.res.text).not.toMatch(/<form\b[^>]*action="\/releases\/\d+\/assets[^"]*"[^>]*method="post"/i);
+      expect(first.res.text).not.toMatch(/<form\b[^>]*method="post"[^>]*action="\/releases\/\d+\/assets/i);
+      const reload = /<a href="([^"]+)">Reload Manage Assets<\/a>/.exec(first.res.text)?.[1]?.replace(/&amp;/g, '&');
+      expect(reload).toBe(`/releases/${release.id}/assets?pageSize=10`);
+      // Reload starts from the saved selection: A and B checked.
+      const page = await agent.get(reload);
+      expect(page.status).toBe(200);
+      const entries = retryFormEntries(page.text);
+      expect(selectedIds(entries).sort((x, y) => x - y)).toEqual([ids[5], ids[6]]);
+      expect(rows(release.id)).toEqual(PERSISTED_ROWS());
+      // Submitting the reloaded form unchanged keeps both members and roles.
+      const resubmit = await post(release.id, entries.filter(([name]) => name !== '_csrf'));
+      expect(resubmit.res.status).toBe(302);
+      expect(rows(release.id)).toEqual(PERSISTED_ROWS());
+      // Repeating the malformed POST stays refused.
+      expectFailClosed(await postRaw(release.id, 'selectedAssetIds[__proto__]=3'), release, 'repeat');
+    });
+
+    it('read-only releases keep the B-F4 saved collection for a malformed selected-ID POST', async () => {
+      const cases = [
+        ['published', (release) => db.prepare("UPDATE releases SET published_date = '2025-06-15' WHERE id = ?").run(release.id)],
+        ['archived', (release) => db.prepare('UPDATE releases SET archived_at = CURRENT_TIMESTAMP WHERE id = ?').run(release.id)],
+        ['archived project', () => db.prepare("UPDATE projects SET status = 'archived', archived_at = datetime('now') WHERE id = ?").run(projectId)],
+      ];
+      for (const [label, lock] of cases) {
+        const release = persisted(`B-F2R5 ${label}`);
+        lock(release);
+        const { res, sql } = await postRaw(release.id, 'selectedAssetIds[__proto__]=3');
+        expect(res.status, label).toBe(422);
+        expect(res.text, label).toContain(FORMAT_ERROR);
+        expect(res.text, label).not.toContain('id="release-assets-form"');
+        expect(res.text, label).not.toContain('name="roleOrder"');
+        expect(res.text, label).not.toContain('data-release-assets-save-recovery-unavailable');
+        // The complete persisted saved collection is displayed.
+        expect(res.text, label).toContain('img-0005.png');
+        expect(res.text, label).toContain('img-0006.png');
+        expect(sql.membershipWrites, label).toBe(0);
+        expect(rows(release.id), label).toEqual(PERSISTED_ROWS());
+      }
+    });
+
+    it('keeps CSRF ahead of the route for a malformed selected-ID POST', async () => {
+      const release = persisted();
+      const { res, sql } = await postRaw(release.id, 'selectedAssetIds[__proto__]=3', 'forged');
+      expect(res.status).toBe(403);
+      expect(sql.membershipWrites).toBe(0);
+      expect(rows(release.id)).toEqual(PERSISTED_ROWS());
+    });
+
+    // ─── B-F2R6: a raw field name outside the Save contract is refused ──────
+    // Express's parser drops or relocates keys such as
+    // `__proto__[selectedAssetIds]` or `selectedAssetIds.__proto__`, leaving no
+    // selectedAssetIds at all — which used to read as an intentional empty
+    // Save and delete every member. Every raw name is now classified against
+    // the Save contract (_csrf, roleOrder bare; selectedAssetIds, roleAssetIds,
+    // roles, sortOrder bare / [] / [k]) before any format is chosen.
+    describe('unsupported raw Save field names (B-F2R6)', () => {
+      it('refuses each reported alias independently with zero membership writes', async () => {
+        for (const raw of [
+          '__proto__[selectedAssetIds]=1',
+          'constructor[selectedAssetIds]=1',
+          'selectedAssetIds.__proto__=1',
+          'selectedAssetIds%2E__proto__=1',
+        ]) {
+          const release = persisted('B-F2R6 reported alias');
+          expect(rows(release.id), raw).toEqual(PERSISTED_ROWS());
+          expectFailClosed(await postRaw(release.id, raw), release, raw);
+        }
+      });
+
+      it('refuses prototype-rooted, dotted and encoded aliases after one qs-equivalent decode', async () => {
+        for (const raw of [
+          'prototype[selectedAssetIds]=1',
+          'toString[selectedAssetIds]=1',
+          'hasOwnProperty[selectedAssetIds]=1',
+          'selectedAssetIds.constructor=1',
+          'selectedAssetIds.prototype=1',
+          'selectedAssetIds.toString=1',
+          'selectedAssetIds[__proto__]=1',
+          'selectedAssetIds[constructor]=1',
+          '__proto__[selectedAssetIds][0]=1',
+          '__proto__[__proto__][selectedAssetIds]=1',
+          'constructor[prototype][selectedAssetIds]=1',
+          'selectedAssetIds.__proto__[0]=1',
+          'selectedAssetIds.__proto__.x=1',
+          // Percent-encoded brackets, dots and underscores; mixed case escapes.
+          '__proto__%5BselectedAssetIds%5D=1',
+          '__proto__%5bselectedAssetIds%5d=1',
+          '%5F%5Fproto%5F%5F%5BselectedAssetIds%5D=1',
+          '%5f%5fproto%5f%5f[selectedAssetIds]=1',
+          'constructor%5BselectedAssetIds%5D=1',
+          'selectedAssetIds%2e__proto__=1',
+          'selectedAssetIds%2E%5F%5Fproto%5F%5F=1',
+          'selectedAssetIds%2Econstructor=1',
+          'selectedAssetIds.%5F%5Fproto%5F%5F=1',
+          // Double-encoded names stay literal after the single decode.
+          'selectedAssetIds%255B0%255D=1',
+          'selectedAssetIds%252E__proto__=1',
+          '%5BselectedAssetIds%5D%5B0%5D=1',
+        ]) {
+          const release = persisted('B-F2R6 alias');
+          expectFailClosed(await postRaw(release.id, raw), release, raw);
+        }
+      });
+
+      it('refuses unknown, empty, nested and malformed field names in general', async () => {
+        for (const raw of [
+          'unknownField=1',
+          'zzUnknownMarker=1',
+          'selectedAssetIds.extra=1',
+          'selectedAssetIds[extra]=1',
+          '[selectedAssetIds][0]=1',
+          '[zzUnknownMarker]=1',
+          '[]=1',
+          'unknown[selectedAssetIds]=1',
+          'nested[unknown][selectedAssetIds]=1',
+          '=1',
+          '=',
+          'zzUnknownMarker',
+          'SelectedAssetIds=1',
+          'selectedassetids=1',
+          'selected+AssetIds=1',
+          'selectedAssetIds%20=1',
+          'selectedAssetIds+=1',
+          's%C3%A9lectedAssetIds=1',
+          'selectedAssetIds%ZZ=1',
+          'selectedAssetIds%=1',
+          // Scalar fields are accepted only under their exact bare name
+          // (`_csrf[]` / `_csrf[0]` reshape the token and are refused by CSRF
+          // first; see the CSRF case below).
+          '_csrf.x=1',
+          '_csrf%2Ex=1',
+          'roleOrder[]=%5B%5D',
+          'roleOrder[0]=%5B%5D',
+          'roleOrder.x=1',
+        ]) {
+          const release = persisted('B-F2R6 unknown');
+          const result = await postRaw(release.id, raw);
+          expectFailClosed(result, release, raw);
+          // Attacker-controlled names are never echoed.
+          expect(result.res.text, raw).not.toContain('zzUnknownMarker');
+        }
+      });
+
+      it('a supported field never masks an unsupported one, in either order', async () => {
+        const [A, B, C] = [ids[5], ids[6], ids[7]];
+        const compact = `roleOrder=${encodeURIComponent(JSON.stringify([[A, 'primary', 0], [B, 'preview', 1]]))}`;
+        const keyed = `roleAssetIds[0]=${A}&roleAssetIds[1]=${B}&roles[0]=primary&sortOrder[0]=0&roles[1]=preview&sortOrder[1]=1`;
+        const positional = `selectedAssetIds[0]=${A}&selectedAssetIds[1]=${B}&roles[0]=primary&sortOrder[0]=0`;
+        const pairs = [
+          // A/B: valid selected ID with a malformed alias.
+          [`selectedAssetIds=${A}`, '__proto__[selectedAssetIds]=1'],
+          [`selectedAssetIds=${A}`, 'selectedAssetIds.__proto__=1'],
+          [`selectedAssetIds=${A}&selectedAssetIds=${C}`, 'selectedAssetIds%2E__proto__=1'],
+          // C: valid IDs with an unrelated unsupported field.
+          [`selectedAssetIds=${A}&selectedAssetIds=${B}&selectedAssetIds=${C}`, 'unknownField=1'],
+          [`selectedAssetIds[0]=${A}&selectedAssetIds[3]=${C}`, 'nested[unknown][selectedAssetIds]=1'],
+          // D: no valid selected IDs, only an alias (with a bare empty value).
+          ['selectedAssetIds=', '__proto__[selectedAssetIds]=1'],
+          // E: valid compact carrier.
+          [`selectedAssetIds=${A}&selectedAssetIds=${B}&${compact}`, 'constructor[selectedAssetIds]=1'],
+          [compact, 'selectedAssetIds.__proto__=1'],
+          // F: valid keyed and positional role/order.
+          [`selectedAssetIds=${A}&selectedAssetIds=${B}&${keyed}`, 'selectedAssetIds%2E__proto__=1'],
+          [keyed, '__proto__[selectedAssetIds]=1'],
+          [positional, 'unknown[selectedAssetIds]=1'],
+        ];
+        for (const [valid, alias] of pairs) {
+          for (const raw of [`${valid}&${alias}`, `${alias}&${valid}`]) {
+            const release = persisted('B-F2R6 mixed');
+            expectFailClosed(await postRaw(release.id, raw), release, raw);
+          }
+        }
+      });
+
+      it('keeps every supported Save format and both intentional empty Saves', async () => {
+        const [A, B, C] = [ids[5], ids[6], ids[7]];
+        const cases = [
+          // Normal one-asset membership-only Save keeps A's saved role/order.
+          ['one asset', `selectedAssetIds=${A}`, [[A, 'primary', 0]]],
+          ['membership-only', `selectedAssetIds=${A}&selectedAssetIds=${B}&selectedAssetIds=${C}`,
+            [[A, 'primary', 0], [B, 'preview', 1], [C, 'attachment', 2]]],
+          ['sparse indexed', `selectedAssetIds[150]=${B}&selectedAssetIds[7]=${A}`, [[A, 'primary', 0], [B, 'preview', 1]]],
+          ['encoded brackets', `selectedAssetIds%5B0%5D=${A}&selectedAssetIds%5b1%5d=${C}`, null],
+          ['positional', `selectedAssetIds[0]=${A}&selectedAssetIds[1]=${C}&roles[0]=preview&sortOrder[0]=4&roles[1]=primary&sortOrder[1]=2`,
+            [[A, 'preview', 4], [C, 'primary', 2]]],
+          ['keyed', `selectedAssetIds=${A}&selectedAssetIds=${C}&roleAssetIds[0]=${C}&roleAssetIds[3]=${A}&roles[3]=preview&sortOrder[3]=9`,
+            [[A, 'preview', 9], [C, 'attachment', 0]]],
+          ['compact', `selectedAssetIds=${A}&selectedAssetIds=${C}&roleOrder=${encodeURIComponent(JSON.stringify([[C, 'primary', 0], [A, 'preview', 5]]))}`,
+            [[A, 'preview', 5], [C, 'primary', 0]]],
+          ['empty: no selected-ID field', '', []],
+          ['empty: bare selectedAssetIds=', 'selectedAssetIds=', []],
+        ];
+        for (const [label, raw, expected] of cases) {
+          const release = persisted(`B-F2R6 ${label}`);
+          const { res, sql } = await postRaw(release.id, raw);
+          expect(res.status, label).toBe(302);
+          expectReleaseAssetsSavedLocation(res.headers.location, release.id, label);
+          expect(sql.membershipWrites, label).toBeGreaterThan(0);
+          if (expected) {
+            expect(rows(release.id), label).toEqual([...expected].sort((x, y) => x[0] - y[0]));
+          } else {
+            expect(rows(release.id).map(([assetId]) => assetId), label).toEqual([A, C]);
+          }
+        }
+      });
+
+      it('a repeated unsupported Save stays refused and the reloaded form saves A and B unchanged', async () => {
+        const release = persisted('B-F2R6 retry');
+        for (const raw of ['__proto__[selectedAssetIds]=1', 'selectedAssetIds.__proto__=1', '__proto__[selectedAssetIds]=1']) {
+          const result = await postRaw(release.id, raw);
+          expectFailClosed(result, release, raw);
+          expect(result.res.text, raw).not.toMatch(/<form\b[^>]*method="post"[^>]*action="\/releases\/\d+\/assets/i);
+          expect(result.res.text, raw).not.toMatch(/<form\b[^>]*action="\/releases\/\d+\/assets[^"]*"[^>]*method="post"/i);
+          const reload = /<a href="([^"]+)">Reload Manage Assets<\/a>/.exec(result.res.text)?.[1]?.replace(/&amp;/g, '&');
+          expect(reload, raw).toBe(`/releases/${release.id}/assets?pageSize=10`);
+        }
+        const page = await agent.get(`/releases/${release.id}/assets?pageSize=10`);
+        const entries = retryFormEntries(page.text);
+        expect(selectedIds(entries).sort((x, y) => x - y)).toEqual([ids[5], ids[6]]);
+        const resubmit = await post(release.id, entries.filter(([name]) => name !== '_csrf'));
+        expect(resubmit.res.status).toBe(302);
+        expect(rows(release.id)).toEqual(PERSISTED_ROWS());
+      });
+
+      it('read-only releases keep the B-F4 saved collection for an unsupported field', async () => {
+        const cases = [
+          ['published', (release) => db.prepare("UPDATE releases SET published_date = '2025-06-15' WHERE id = ?").run(release.id)],
+          ['archived', (release) => db.prepare('UPDATE releases SET archived_at = CURRENT_TIMESTAMP WHERE id = ?').run(release.id)],
+          ['archived project', () => db.prepare("UPDATE projects SET status = 'archived', archived_at = datetime('now') WHERE id = ?").run(projectId)],
+        ];
+        for (const [label, lock] of cases) {
+          const release = persisted(`B-F2R6 ${label}`);
+          lock(release);
+          for (const raw of ['__proto__[selectedAssetIds]=1', 'selectedAssetIds%2E__proto__=1']) {
+            const { res, sql } = await postRaw(release.id, raw);
+            expect(res.status, `${label} ${raw}`).toBe(422);
+            expect(res.text, label).toContain(FORMAT_ERROR);
+            expect(res.text, label).not.toContain('id="release-assets-form"');
+            expect(res.text, label).not.toContain('name="roleOrder"');
+            expect(res.text, label).not.toContain('name="selectedAssetIds"');
+            expect(res.text, label).not.toContain('data-release-assets-save-recovery-unavailable');
+            expect(res.text, label).toContain('img-0005.png');
+            expect(res.text, label).toContain('img-0006.png');
+            expect(sql.membershipWrites, label).toBe(0);
+            expect(sql.validation, label).toBe(0);
+            expect(rows(release.id), label).toEqual(PERSISTED_ROWS());
+          }
+        }
+      });
+
+      it('keeps CSRF, unknown, foreign and duplicate refusals ahead of or alongside the field contract', async () => {
+        const A = ids[5];
+        const forgedRelease = persisted('B-F2R6 csrf');
+        const forged = await postRaw(forgedRelease.id, '__proto__[selectedAssetIds]=1', 'forged');
+        expect(forged.res.status).toBe(403);
+        expect(forged.sql.membershipWrites).toBe(0);
+        expect(rows(forgedRelease.id)).toEqual(PERSISTED_ROWS());
+        // A reshaped token field (`_csrf[]`, `_csrf[0]`) is refused by CSRF.
+        for (const raw of ['_csrf[]=x', '_csrf[0]=x', '_csrf%5Bx%5D.y=1']) {
+          const { res, sql } = await postRaw(forgedRelease.id, raw);
+          expect(res.status, raw).toBe(403);
+          expect(sql.membershipWrites, raw).toBe(0);
+          expect(rows(forgedRelease.id), raw).toEqual(PERSISTED_ROWS());
+        }
+        for (const [label, raw, status] of [
+          ['unknown', `selectedAssetIds=${A}&selectedAssetIds=999999999`, 404],
+          ['foreign', `selectedAssetIds=${A}&selectedAssetIds=${foreignId}`, 422],
+          ['duplicate', `selectedAssetIds=${A}&selectedAssetIds=${A}`, 422],
+          // An unsupported name is refused before any asset lookup, so a
+          // foreign ID beside it is never resolved or disclosed.
+          ['foreign + alias', `selectedAssetIds=${foreignId}&__proto__[selectedAssetIds]=1`, 422],
+        ]) {
+          const release = persisted(`B-F2R6 ${label}`);
+          const { res, sql } = await postRaw(release.id, raw);
+          expect(res.status, label).toBe(status);
+          expect(res.text, label).not.toContain('foreign-secret');
+          expect(sql.membershipWrites, label).toBe(0);
+          if (label === 'foreign + alias') expect(sql.validation, label).toBe(0);
+          expect(rows(release.id), label).toEqual(PERSISTED_ROWS());
+        }
+      });
+    });
+
+    // ─── B-F2R7: only a URL-encoded form body is a Save draft ───────────────
+    // The Manage Assets Save form posts application/x-www-form-urlencoded.
+    // express.json() also parses JSON for every route, and text/plain,
+    // octet-stream, multipart or a missing Content-Type leave req.body empty,
+    // so either could reach parsed-body interpretation as a full or partial
+    // membership replacement (an apparently intentional empty Save). The route
+    // refuses any other media type with 415 before reading the draft.
+    //
+    // Requests here go over a real socket with node:http so the exact
+    // Content-Type header and body bytes are what the test writes (no client
+    // default), and the server's own `request` event records what arrived.
+    describe('Save request Content-Type enforcement (B-F2R7)', () => {
+      const UNSUPPORTED = 'Unsupported asset selection request format.';
+      let server;
+      let origin;
+      let cookie;
+      let token;
+      let arrived;
+
+      beforeEach(async () => {
+        arrived = [];
+        server = http.createServer(app);
+        server.on('request', (req) => {
+          arrived.push({ method: req.method, url: req.url, contentType: req.headers['content-type'] });
+        });
+        await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+        origin = `http://127.0.0.1:${server.address().port}`;
+        const health = await rawRequest('GET', '/health', {});
+        const setCookie = health.headers['set-cookie'].find((value) => value.startsWith('cc_csrf_anon='));
+        cookie = setCookie.split(';')[0];
+        const { csrfPepper } = ensureAuthEnablement(path.join(tmpDir, 'app'));
+        token = deriveDisabledModeCsrfToken(csrfPepper, decodeURIComponent(cookie.split('=')[1]));
+      });
+
+      afterEach(async () => {
+        await new Promise((resolve) => server.close(resolve));
+      });
+
+      function rawRequest(method, pathname, headers, body) {
+        return new Promise((resolve, reject) => {
+          const req = http.request(`${origin}${pathname}`, { method, headers }, (res) => {
+            const chunks = [];
+            res.on('data', (chunk) => chunks.push(chunk));
+            res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, text: Buffer.concat(chunks).toString('utf8') }));
+          });
+          req.on('error', reject);
+          if (body !== undefined) req.write(body);
+          req.end();
+        });
+      }
+
+      /**
+       * POST exactly `body` with exactly `contentType` (undefined omits the
+       * header). `csrf` is sent as X-CSRF-Token unless null.
+       */
+      async function send(releaseId, { contentType, body, csrf = token }) {
+        const headers = { Cookie: cookie, Accept: 'text/html', 'Content-Length': Buffer.byteLength(body) };
+        if (contentType !== undefined) headers['Content-Type'] = contentType;
+        if (csrf !== null) headers['X-CSRF-Token'] = csrf;
+        arrived.length = 0;
+        trace.length = 0;
+        rowLog.length = 0;
+        tracing = true;
+        let res;
+        try {
+          res = await rawRequest('POST', `/releases/${releaseId}/assets?pageSize=10`, headers, body);
+        } finally {
+          tracing = false;
+        }
+        const count = (pattern) => trace.filter((text) => pattern.test(text)).length;
+        const post = arrived.filter((entry) => entry.method === 'POST');
+        expect(post).toHaveLength(1);
+        return {
+          res,
+          sentContentType: contentType,
+          arrivedContentType: post[0].contentType,
+          sql: {
+            membershipWrites: count(MEMBERSHIP_WRITE),
+            validation: count(VALIDATION),
+            begin: count(/^BEGIN\b/),
+            assetReads: count(/^SELECT\b.*\bFROM assets\b/),
+          },
+        };
+      }
+
+      function expectUnsupported(result, release, label) {
+        const { res, sql } = result;
+        // Persisted membership and write count first: they are the data-loss oracle.
+        expect(rows(release.id), label).toEqual(PERSISTED_ROWS());
+        expect(sql.membershipWrites, label).toBe(0);
+        expect(sql.begin, label).toBe(0);
+        expect(sql.validation, label).toBe(0);
+        expect(sql.assetReads, label).toBe(0);
+        expect(db.inTransaction, label).toBe(false);
+        expect(result.arrivedContentType, label).toBe(result.sentContentType);
+        expect(res.status, label).toBe(415);
+        expect(res.headers.location, label).toBeUndefined();
+        expect(res.text, label).toContain(UNSUPPORTED);
+        // An explicit refusal: no success notice, no Save form that could
+        // resubmit an empty draft, and no project or foreign metadata.
+        expect(res.text, label).not.toContain('id="release-assets-form"');
+        expect(res.text, label).not.toContain('Save asset selection');
+        expect(res.text, label).not.toContain('name="selectedAssetIds"');
+        expect(res.text, label).not.toContain('name="roleOrder"');
+        expect(res.text, label).not.toContain('img-0005.png');
+        expect(res.text, label).not.toContain('foreign-secret');
+        expect(res.text, label).not.toContain('B-F3 Project');
+        expect(res.text, label).not.toMatch(/saved|updated/i);
+      }
+
+      function expectCsrfRefused(result, release, label) {
+        expect(rows(release.id), label).toEqual(PERSISTED_ROWS());
+        expect(result.sql.membershipWrites, label).toBe(0);
+        expect(result.res.status, label).toBe(403);
+        expect(result.res.text, label).not.toContain(UNSUPPORTED);
+      }
+
+      const json = (value) => JSON.stringify(value);
+
+      it('reproduces the reviewer cases: JSON and unparsed bodies are refused, A and B kept', async () => {
+        const [A, B, C] = [ids[5], ids[6], ids[7]];
+        const cases = [
+          // CASE 1: the token travels in the JSON body itself (no header), so
+          // a non-403 answer proves express.json() parsed it.
+          ['json unknown only', { contentType: 'application/json', body: json({ _csrf: token, unknown: 1 }), csrf: null }],
+          // CASE 2: a partial replacement (A, C) that would drop B.
+          ['json mixed', { contentType: 'application/json', body: json({ _csrf: token, selectedAssetIds: [A, C], unknown: 1 }), csrf: null }],
+          // CASE 3/4: body never parsed; CSRF through the accepted header.
+          ['text/plain', { contentType: 'text/plain', body: 'selectedAssetIds=3' }],
+          ['octet-stream', { contentType: 'application/octet-stream', body: 'selectedAssetIds=3' }],
+        ];
+        for (const [label, request] of cases) {
+          const release = persisted(`B-F2R7 ${label}`);
+          expect(rows(release.id), label).toEqual([[A, 'primary', 0], [B, 'preview', 1]]);
+          expectUnsupported(await send(release.id, request), release, label);
+        }
+        // Negative authorization control: a forged header is still 403.
+        const forged = persisted('B-F2R7 forged');
+        expectCsrfRefused(await send(forged.id, { contentType: 'text/plain', body: 'selectedAssetIds=3', csrf: 'forged' }), forged, 'forged');
+      });
+
+      it('refuses every JSON Save shape before draft interpretation', async () => {
+        const [A, B, C] = [ids[5], ids[6], ids[7]];
+        const compact = json([[A, 'primary', 0], [B, 'preview', 1]]);
+        const cases = [
+          ['A unknown only', { _csrf: token, unknown: 1 }],
+          ['B selected + unknown', { _csrf: token, selectedAssetIds: [A, C], unknown: 1 }],
+          ['C valid-looking selected', { selectedAssetIds: [A, B] }],
+          ['C scalar selected', { selectedAssetIds: String(A) }],
+          ['D empty selected', { selectedAssetIds: [] }],
+          ['D empty object', {}],
+          ['E compact roleOrder', { selectedAssetIds: [A, B], roleOrder: compact }],
+          ['E keyed', { selectedAssetIds: [A, B], roleAssetIds: [A, B], roles: ['primary', 'preview'], sortOrder: ['0', '1'] }],
+          ['F malformed nesting', { selectedAssetIds: { 0: { 1: [A] } }, roles: [[['primary']]], nested: { selectedAssetIds: [C] } }],
+          ['F prototype keys', JSON.parse(`{"__proto__":{"selectedAssetIds":[${C}]},"constructor":{"prototype":{}}}`)],
+        ];
+        for (const contentType of ['application/json', 'application/json; charset=utf-8', 'application/vnd.api+json', 'application/merge-patch+json']) {
+          for (const [label, value] of cases) {
+            const release = persisted(`B-F2R7 json ${label}`);
+            // G: valid CSRF in the supported header.
+            expectUnsupported(await send(release.id, { contentType, body: json(value) }), release, `${contentType} ${label}`);
+          }
+        }
+        // H: invalid CSRF on JSON stays the established 403, header or body.
+        const forged = persisted('B-F2R7 json forged');
+        expectCsrfRefused(await send(forged.id, { contentType: 'application/json', body: json({ selectedAssetIds: [A] }), csrf: 'forged' }), forged, 'json forged header');
+        expectCsrfRefused(await send(forged.id, { contentType: 'application/json', body: json({ _csrf: 'forged', selectedAssetIds: [A] }), csrf: null }), forged, 'json forged body');
+        expectCsrfRefused(await send(forged.id, { contentType: 'application/json', body: json({ selectedAssetIds: [A] }), csrf: null }), forged, 'json missing token');
+        // Syntactically invalid JSON is refused by the parser (400) before CSRF.
+        const broken = persisted('B-F2R7 json broken');
+        const brokenResult = await send(broken.id, { contentType: 'application/json', body: '{"selectedAssetIds":' });
+        expect(brokenResult.res.status).toBe(400);
+        expect(brokenResult.sql.membershipWrites).toBe(0);
+        expect(rows(broken.id)).toEqual(PERSISTED_ROWS());
+      });
+
+      it('refuses unparsed, multipart, missing, unexpected, malformed and look-alike media types', async () => {
+        const A = ids[5];
+        const form = `selectedAssetIds=${A}`;
+        const multipartBody = [
+          '--b7', 'Content-Disposition: form-data; name="_csrf"', '', 'x',
+          '--b7', 'Content-Disposition: form-data; name="selectedAssetIds"', '', String(A),
+          '--b7--', '',
+        ].join('\r\n');
+        const cases = [
+          ['text/plain', 'text/plain', form],
+          ['text/plain charset', 'text/plain; charset=utf-8', form],
+          ['octet-stream', 'application/octet-stream', form],
+          ['multipart', 'multipart/form-data; boundary=b7', multipartBody],
+          ['missing', undefined, form],
+          ['unexpected xml', 'application/xml', form],
+          ['unexpected html', 'text/html', form],
+          ['malformed: no subtype', 'application/', form],
+          ['malformed: no slash', 'x-www-form-urlencoded', form],
+          ['malformed: empty parameter', 'application/x-www-form-urlencoded;;;=', form],
+          ['malformed: bad parameter', 'application/x-www-form-urlencoded; charset', form],
+          ['malformed: spaces in type', 'application /x-www-form-urlencoded', form],
+          ['look-alike: suffix', 'application/x-www-form-urlencodedx', form],
+          ['look-alike: +json', 'application/x-www-form-urlencoded+json', form],
+          ['look-alike: text tree', 'text/x-www-form-urlencoded', form],
+          ['look-alike: truncated', 'application/x-www-form-urlencode', form],
+          ['look-alike: no x-', 'application/www-form-urlencoded', form],
+          ['look-alike: reversed', 'x-www-form-urlencoded/application', form],
+          ['look-alike: in parameter', 'text/plain; type=application/x-www-form-urlencoded', form],
+          ['look-alike: two types', 'text/plain, application/x-www-form-urlencoded', form],
+        ];
+        for (const [label, contentType, body] of cases) {
+          const release = persisted(`B-F2R7 ${label}`);
+          expectUnsupported(await send(release.id, { contentType, body }), release, label);
+        }
+        // A nonempty unparsed body with no usable req.body is never an empty Save,
+        // even when the token is only in that unparsed body (CSRF then refuses).
+        for (const [label, contentType, body] of [
+          ['text/plain missing token', 'text/plain', `_csrf=${token}&${form}`],
+          ['octet-stream forged', 'application/octet-stream', form],
+          ['multipart forged', 'multipart/form-data; boundary=b7', multipartBody],
+          ['missing type forged', undefined, form],
+        ]) {
+          const release = persisted(`B-F2R7 csrf ${label}`);
+          const csrf = label.endsWith('forged') ? 'forged' : null;
+          expectCsrfRefused(await send(release.id, { contentType, body, csrf }), release, label);
+        }
+      });
+
+      it('keeps the parser charset boundary: a non-UTF-8 URL-encoded charset is refused before CSRF', async () => {
+        for (const charset of ['iso-8859-1', 'utf-16', 'latin1', 'x-unknown']) {
+          const release = persisted(`B-F2R7 charset ${charset}`);
+          const result = await send(release.id, {
+            contentType: `application/x-www-form-urlencoded; charset=${charset}`,
+            body: `_csrf=${token}&selectedAssetIds=${ids[5]}`,
+            csrf: null,
+          });
+          expect(result.res.status, charset).toBe(415);
+          expect(result.sql.membershipWrites, charset).toBe(0);
+          expect(result.sql.validation, charset).toBe(0);
+          expect(rows(release.id), charset).toEqual(PERSISTED_ROWS());
+        }
+      });
+
+      it('accepts the browser URL-encoded Save with or without a UTF-8 charset, in every supported format', async () => {
+        const [A, B, C] = [ids[5], ids[6], ids[7]];
+        const compact = encodeURIComponent(json([[C, 'primary', 0], [A, 'preview', 5]]));
+        const formats = [
+          ['membership-only', `selectedAssetIds=${A}&selectedAssetIds=${B}&selectedAssetIds=${C}`,
+            [[A, 'primary', 0], [B, 'preview', 1], [C, 'attachment', 2]]],
+          ['positional', `selectedAssetIds[0]=${A}&selectedAssetIds[1]=${C}&roles[0]=preview&sortOrder[0]=4&roles[1]=primary&sortOrder[1]=2`,
+            [[A, 'preview', 4], [C, 'primary', 2]]],
+          ['sparse keyed', `selectedAssetIds=${A}&selectedAssetIds=${C}&roleAssetIds[0]=${C}&roleAssetIds[3]=${A}&roles[3]=preview&sortOrder[3]=9`,
+            [[A, 'preview', 9], [C, 'attachment', 0]]],
+          ['compact', `selectedAssetIds=${A}&selectedAssetIds=${C}&roleOrder=${compact}`,
+            [[A, 'preview', 5], [C, 'primary', 0]]],
+          ['empty A: no selected-ID field', '', []],
+          ['empty B: bare selectedAssetIds=', 'selectedAssetIds=', []],
+        ];
+        for (const contentType of [
+          'application/x-www-form-urlencoded',
+          'application/x-www-form-urlencoded;charset=UTF-8',
+          'application/x-www-form-urlencoded; charset=utf-8',
+          'Application/X-WWW-Form-URLEncoded; Charset="UTF-8"',
+        ]) {
+          for (const [label, raw, expected] of formats) {
+            const release = persisted(`B-F2R7 ${label}`);
+            const name = `${contentType} ${label}`;
+            // Token in the form body, as the rendered form submits it.
+            const body = raw === '' ? `_csrf=${encodeURIComponent(token)}` : `_csrf=${encodeURIComponent(token)}&${raw}`;
+            const result = await send(release.id, { contentType, body, csrf: null });
+            expect(result.arrivedContentType, name).toBe(contentType);
+            expect(result.res.status, name).toBe(302);
+            expectReleaseAssetsSavedLocation(result.res.headers.location, release.id, name);
+            expect(result.sql.membershipWrites, name).toBeGreaterThan(0);
+            expect(db.inTransaction, name).toBe(false);
+            expect(rows(release.id), name).toEqual([...expected].sort((x, y) => x[0] - y[0]));
+          }
+        }
+        // The token may also travel in the supported header for a form body.
+        const headerRelease = persisted('B-F2R7 form header token');
+        const viaHeader = await send(headerRelease.id, { contentType: 'application/x-www-form-urlencoded', body: `selectedAssetIds=${B}` });
+        expect(viaHeader.res.status).toBe(302);
+        // Membership-only keeps B's saved role and renumbers its order.
+        expect(rows(headerRelease.id)).toEqual([[B, 'preview', 0]]);
+      });
+
+      it('keeps URL-encoded CSRF and raw-field refusals unchanged', async () => {
+        const A = ids[5];
+        const forged = persisted('B-F2R7 form forged');
+        expectCsrfRefused(await send(forged.id, {
+          contentType: 'application/x-www-form-urlencoded', body: `_csrf=forged&selectedAssetIds=${A}`, csrf: null,
+        }), forged, 'form forged body');
+        expectCsrfRefused(await send(forged.id, {
+          contentType: 'application/x-www-form-urlencoded', body: `selectedAssetIds=${A}`, csrf: null,
+        }), forged, 'form missing token');
+        // B-F2R5/B-F2R6 raw validation still answers a malformed URL-encoded Save.
+        for (const raw of ['unknown=1', '__proto__[selectedAssetIds]=1', 'selectedAssetIds[__proto__]=3']) {
+          const release = persisted('B-F2R7 raw field');
+          const result = await send(release.id, {
+            contentType: 'application/x-www-form-urlencoded; charset=UTF-8', body: `_csrf=${token}&${raw}`, csrf: null,
+          });
+          expect(rows(release.id), raw).toEqual(PERSISTED_ROWS());
+          expect(result.sql.membershipWrites, raw).toBe(0);
+          expect(result.res.status, raw).toBe(422);
+          expect(result.res.text, raw).toContain(FORMAT_ERROR);
+          expect(result.res.text, raw).toContain('data-release-assets-save-recovery-unavailable');
+          expect(result.res.text, raw).not.toContain(UNSUPPORTED);
+        }
+      });
+
+      it('read-only releases refuse unsupported media types without writes or Save controls; B-F4 is unchanged', async () => {
+        const cases = [
+          ['published', (release) => db.prepare("UPDATE releases SET published_date = '2025-06-15' WHERE id = ?").run(release.id)],
+          ['archived', (release) => db.prepare('UPDATE releases SET archived_at = CURRENT_TIMESTAMP WHERE id = ?').run(release.id)],
+          ['archived project', () => db.prepare("UPDATE projects SET status = 'archived', archived_at = datetime('now') WHERE id = ?").run(projectId)],
+        ];
+        for (const [label, lock] of cases) {
+          const release = persisted(`B-F2R7 ${label}`);
+          lock(release);
+          for (const request of [
+            { contentType: 'application/json', body: json({ _csrf: token, unknown: 1 }), csrf: null },
+            { contentType: 'application/json', body: json({ selectedAssetIds: [ids[7]] }) },
+            { contentType: 'text/plain', body: 'selectedAssetIds=3' },
+            { contentType: 'multipart/form-data; boundary=b7', body: '--b7--\r\n' },
+            { contentType: undefined, body: 'selectedAssetIds=3' },
+          ]) {
+            expectUnsupported(await send(release.id, request), release, `${label} ${request.contentType}`);
+          }
+          // A supported but malformed URL-encoded request keeps the B-F4 page.
+          const malformed = await send(release.id, {
+            contentType: 'application/x-www-form-urlencoded', body: `_csrf=${token}&__proto__[selectedAssetIds]=1`, csrf: null,
+          });
+          expect(malformed.res.status, label).toBe(422);
+          expect(malformed.res.text, label).toContain(FORMAT_ERROR);
+          expect(malformed.res.text, label).toContain('img-0005.png');
+          expect(malformed.res.text, label).toContain('img-0006.png');
+          expect(malformed.res.text, label).not.toContain('id="release-assets-form"');
+          expect(malformed.sql.membershipWrites, label).toBe(0);
+          expect(rows(release.id), label).toEqual(PERSISTED_ROWS());
+        }
+      });
+
+      it('keeps the large URL-encoded Save boundary under the unchanged parser limits', async () => {
+        const selected = ids.slice(0, 517);
+        const roleOrder = json(selected.map((id, index) => [id, index === 0 ? 'primary' : 'attachment', index]));
+        const release = createRelease('B-F2R7 large');
+        const body = [`_csrf=${encodeURIComponent(token)}`, ...selected.map((id) => `selectedAssetIds=${id}`), `roleOrder=${encodeURIComponent(roleOrder)}`].join('&');
+        expect(Buffer.byteLength(body)).toBeLessThan(100 * 1024);
+        const result = await send(release.id, { contentType: 'application/x-www-form-urlencoded;charset=UTF-8', body, csrf: null });
+        expect(result.res.status).toBe(302);
+        expect(result.sql.validation).toBe(2);
+        expect(db.prepare('SELECT COUNT(*) AS n FROM release_assets WHERE release_id = ?').get(release.id).n).toBe(517);
+        // The same members as JSON are refused, and the saved 517 stay.
+        const refused = await send(release.id, { contentType: 'application/json', body: json({ selectedAssetIds: [selected[0]] }) });
+        expect(refused.res.status).toBe(415);
+        expect(refused.sql.membershipWrites).toBe(0);
+        expect(db.prepare('SELECT COUNT(*) AS n FROM release_assets WHERE release_id = ?').get(release.id).n).toBe(517);
+      });
+    });
+  });
+
+  // ─── Package C1: HTTP Save input, recovery and security contract ──────────
+  // Every request here is written byte for byte onto a real socket against a
+  // real listening server, so the transmitted media type, framing and header
+  // order are exactly what the test states. Each test builds its own release
+  // (A Primary/0, B Preview/1 unless stated) and audits SQL during the
+  // request: membership writes and BEGIN distinguish a validation refusal
+  // (none), a rollback (BEGIN without a committed change) and a Save.
+  describe('Manage Assets Save HTTP contract coverage (Package C1)', () => {
+    const FORMAT_ERROR = 'Invalid asset selection format.';
+    const ORDER_ERROR = 'Invalid asset order. Each order must be a whole number from 0 to 9007199254740991.';
+    const UNSUPPORTED = 'Unsupported asset selection request format.';
+    const UNSAFE = '9007199254740992';
+    const FORM = 'application/x-www-form-urlencoded';
+    // Real-socket matrices issue up to ~100 requests per test.
+    const C1_TIMEOUT_MS = 60000;
+    const escapeRe = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    let server;
+    let port;
+    let cookie;
+    let token;
+    let observed;
+
+    beforeEach(async () => {
+      observed = [];
+      // Records what Node/Express saw for each request; app handles it unchanged.
+      server = http.createServer((req, res) => {
+        const entry = {
+          method: req.method,
+          rawHeaders: [...req.rawHeaders],
+          contentType: req.headers['content-type'],
+          contentLength: req.headers['content-length'],
+          transferEncoding: req.headers['transfer-encoding'],
+        };
+        res.on('finish', () => {
+          entry.expressForm = typeof req.is === 'function' ? req.is(FORM) : undefined;
+          entry.expressJson = typeof req.is === 'function' ? req.is('application/json') : undefined;
+          entry.bodyKeys = req.body && typeof req.body === 'object' ? Object.keys(req.body).sort() : null;
+        });
+        observed.push(entry);
+        app(req, res);
+      });
+      await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+      port = server.address().port;
+      const health = await exchange(buildRequest({ method: 'GET', target: '/health', headers: [], framing: 'none' }));
+      const setCookie = health.headers['set-cookie'].find((value) => value.startsWith('cc_csrf_anon='));
+      cookie = setCookie.split(';')[0];
+      const { csrfPepper } = ensureAuthEnablement(path.join(tmpDir, 'app'));
+      token = deriveDisabledModeCsrfToken(csrfPepper, decodeURIComponent(cookie.split('=')[1]));
+    }, C1_TIMEOUT_MS);
+
+    afterEach(async () => {
+      await new Promise((resolve) => server.close(resolve));
+    }, C1_TIMEOUT_MS);
+
+    /** Exact HTTP/1.1 request bytes. framing: 'length' | 'none' | 'chunked'. */
+    function buildRequest({ method = 'POST', target, headers, body = '', framing = 'length', chunks = [] }) {
+      const lines = [`${method} ${target} HTTP/1.1`, `Host: 127.0.0.1:${port}`, 'Connection: close'];
+      for (const [name, value] of headers) lines.push(`${name}: ${value}`);
+      let payload = Buffer.alloc(0);
+      if (framing === 'length') {
+        payload = Buffer.isBuffer(body) ? body : Buffer.from(body, 'utf8');
+        lines.push(`Content-Length: ${payload.length}`);
+      } else if (framing === 'chunked') {
+        lines.push('Transfer-Encoding: chunked');
+        payload = Buffer.concat([
+          ...chunks.flatMap((chunk) => {
+            const bytes = Buffer.from(chunk, 'utf8');
+            return [Buffer.from(`${bytes.length.toString(16)}\r\n`, 'latin1'), bytes, Buffer.from('\r\n', 'latin1')];
+          }),
+          Buffer.from('0\r\n\r\n', 'latin1'),
+        ]);
+      } else if (framing !== 'none') {
+        throw new Error(`unknown framing ${framing}`);
+      }
+      return Buffer.concat([Buffer.from(`${lines.join('\r\n')}\r\n\r\n`, 'latin1'), payload]);
+    }
+
+    function parseResponse(buffer) {
+      const split = buffer.indexOf('\r\n\r\n');
+      const head = buffer.subarray(0, split).toString('latin1').split('\r\n');
+      const headers = {};
+      for (const line of head.slice(1)) {
+        const colon = line.indexOf(':');
+        (headers[line.slice(0, colon).trim().toLowerCase()] ||= []).push(line.slice(colon + 1).trim());
+      }
+      let body = buffer.subarray(split + 4);
+      if ((headers['transfer-encoding'] || []).some((value) => /chunked/i.test(value))) {
+        const parts = [];
+        let offset = 0;
+        for (;;) {
+          const lineEnd = body.indexOf('\r\n', offset);
+          const size = parseInt(body.subarray(offset, lineEnd).toString('latin1'), 16);
+          if (!size) break;
+          parts.push(body.subarray(lineEnd + 2, lineEnd + 2 + size));
+          offset = lineEnd + 2 + size + 2;
+        }
+        body = Buffer.concat(parts);
+      }
+      return {
+        status: Number(head[0].split(' ')[1]),
+        headers,
+        location: headers.location ? headers.location[0] : undefined,
+        text: body.toString('utf8'),
+      };
+    }
+
+    function exchange(requestBytes) {
+      return new Promise((resolve, reject) => {
+        const socket = net.connect(port, '127.0.0.1');
+        const chunks = [];
+        const timer = setTimeout(() => { socket.destroy(); reject(new Error('raw HTTP exchange timed out')); }, 10000);
+        socket.on('data', (chunk) => chunks.push(chunk));
+        socket.on('end', () => { clearTimeout(timer); resolve(parseResponse(Buffer.concat(chunks))); });
+        socket.on('error', (err) => { clearTimeout(timer); reject(err); });
+        socket.write(requestBytes);
+      });
+    }
+
+    /**
+     * POST to Manage Assets Save. `contentTypes` lists every Content-Type
+     * header line in transmission order ([] sends none). `csrfHeader` is the
+     * X-CSRF-Token value (null omits it).
+     */
+    async function send(releaseId, {
+      contentTypes = [FORM], body = '', framing = 'length', chunks, csrfHeader = null, extraHeaders = [],
+    }) {
+      const headers = [['Cookie', cookie], ['Accept', 'text/html']];
+      for (const value of contentTypes) headers.push(['Content-Type', value]);
+      if (csrfHeader !== null) headers.push(['X-CSRF-Token', csrfHeader]);
+      headers.push(...extraHeaders);
+      const requestBytes = buildRequest({ target: `/releases/${releaseId}/assets?pageSize=10`, headers, body, framing, chunks });
+      observed.length = 0;
+      trace.length = 0;
+      rowLog.length = 0;
+      tracing = true;
+      let res;
+      try {
+        res = await exchange(requestBytes);
+      } finally {
+        tracing = false;
+      }
+      const count = (pattern) => trace.filter((text) => pattern.test(text)).length;
+      const posts = observed.filter((entry) => entry.method === 'POST');
+      expect(posts).toHaveLength(1);
+      return {
+        res,
+        requestBytes,
+        seen: posts[0],
+        sql: {
+          membershipWrites: count(MEMBERSHIP_WRITE),
+          validation: count(VALIDATION),
+          begin: count(/^BEGIN\b/),
+          commit: count(/^COMMIT\b/),
+          rollback: count(/^ROLLBACK\b/),
+          // Any data write at all (membership, sessions, metadata).
+          anyWrites: count(/^(?:INSERT|UPDATE|DELETE|REPLACE)\b/),
+          assetReads: count(/^SELECT\b.*\bFROM assets\b/),
+        },
+      };
+    }
+
+    async function getPage(releaseId, query = '?pageSize=10') {
+      return exchange(buildRequest({
+        method: 'GET', target: `/releases/${releaseId}/assets${query}`, headers: [['Cookie', cookie], ['Accept', 'text/html']], framing: 'none',
+      }));
+    }
+
+    const withToken = (raw) => (raw === '' ? `_csrf=${encodeURIComponent(token)}` : `_csrf=${encodeURIComponent(token)}&${raw}`);
+    const A = () => ids[5];
+    const B = () => ids[6];
+    const C = () => ids[7];
+
+    function rows(releaseId) {
+      return db.prepare('SELECT asset_id, role, sort_order FROM release_assets WHERE release_id = ? ORDER BY asset_id')
+        .all(releaseId)
+        .map((row) => [row.asset_id, row.role, row.sort_order]);
+    }
+
+    /** A fresh editable release: A Primary/0, B Preview/1. */
+    // Release titles are neutral: a label such as `__proto__` must not reach
+    // the page through the title, where it would mask the absence assertions.
+    let releaseSerial = 0;
+    function persisted(title) {
+      releaseSerial += 1;
+      const release = createRelease(`C1 release ${releaseSerial}`);
+      service.selectAssets(release.id, [
+        { assetId: A(), role: 'primary', sortOrder: 0 },
+        { assetId: B(), role: 'preview', sortOrder: 1 },
+      ]);
+      expect(rows(release.id), `${title} fixture`).toEqual(PERSISTED());
+      return release;
+    }
+    const PERSISTED = () => [[A(), 'primary', 0], [B(), 'preview', 1]];
+
+    const LOCKS = [
+      ['published', (release) => db.prepare("UPDATE releases SET published_date = '2025-06-15' WHERE id = ?").run(release.id),
+        () => 'This release is published. Asset selections are locked and read-only.'],
+      ['archived release', (release) => db.prepare('UPDATE releases SET archived_at = CURRENT_TIMESTAMP WHERE id = ?').run(release.id),
+        (release) => `Release ${release.id} is archived and cannot be modified.`],
+      ['archived parent project', () => db.prepare("UPDATE projects SET status = 'archived', archived_at = datetime('now') WHERE id = ?").run(projectId),
+        () => `Project ${projectId} is archived and cannot be modified.`],
+    ];
+    function unlockProject() {
+      db.prepare("UPDATE projects SET status = 'tbd', archived_at = NULL WHERE id = ?").run(projectId);
+    }
+
+    /**
+     * Nothing was written and nothing is left open. A refusal page may read
+     * its model inside one read-only snapshot (BEGIN … SELECT … COMMIT); that
+     * snapshot holds no write and never rolls back, so a write-then-rollback
+     * cannot pass for a validation refusal.
+     */
+    function expectUntouched(result, release, label, expected = PERSISTED()) {
+      expect(rows(release.id), label).toEqual(expected);
+      expect(result.sql.membershipWrites, label).toBe(0);
+      expect(result.sql.anyWrites, label).toBe(0);
+      expect(result.sql.rollback, label).toBe(0);
+      expect(result.sql.begin, label).toBeLessThanOrEqual(1);
+      expect(result.sql.commit, label).toBe(result.sql.begin);
+      expect(db.inTransaction, label).toBe(false);
+    }
+
+    function expectNoSaveControls(text, label) {
+      expect(text, label).not.toContain('id="release-assets-form"');
+      expect(text, label).not.toContain('Save asset selection');
+      expect(text, label).not.toContain('form="release-assets-form"');
+      expect(text, label).not.toContain('name="selectedAssetIds"');
+      expect(text, label).not.toContain('name="roleOrder"');
+      expect(text, label).not.toMatch(/name="(?:roleAssetIds|roles|sortOrder)\[/);
+      expect(text, label).not.toContain('foreign-secret');
+    }
+
+    function expectUnsupported(result, release, label) {
+      expectUntouched(result, release, label);
+      // Refused before any service read: no transaction at all.
+      expect(result.sql.begin, label).toBe(0);
+      expect(result.sql.validation, label).toBe(0);
+      expect(result.sql.assetReads, label).toBe(0);
+      expect(result.res.status, label).toBe(415);
+      expect(result.res.location, label).toBeUndefined();
+      expect(result.res.text, label).toContain(UNSUPPORTED);
+      expectNoSaveControls(result.res.text, label);
+      expect(result.res.text, label).not.toContain('img-0005.png');
+      expect(result.res.text, label).not.toContain('C1 ');
+    }
+
+    function expectFailClosed(result, release, label, error = FORMAT_ERROR) {
+      expectUntouched(result, release, label);
+      expect(result.sql.validation, label).toBe(0);
+      expect(result.res.status, label).toBe(422);
+      expect(result.res.location, label).toBeUndefined();
+      expect(result.res.text, label).toMatch(new RegExp(`<div class="error-summary" role="alert">\\s*<p>${escapeRe(error)}</p>`));
+      expect(result.res.text, label).toContain('data-release-assets-save-recovery-unavailable');
+      expect(result.res.text, label).toContain('<strong>Nothing was saved.</strong>');
+      expectNoSaveControls(result.res.text, label);
+      expect(result.res.text, label).not.toContain('__proto__');
+    }
+
+    function expectCsrfRefused(result, release, label) {
+      expectUntouched(result, release, label);
+      expect(result.sql.validation, label).toBe(0);
+      expect(result.res.status, label).toBe(403);
+      expect(result.res.location, label).toBeUndefined();
+      expect(result.res.text, label).not.toContain(UNSUPPORTED);
+    }
+
+    function expectSaved(result, release, label, expected) {
+      expect(result.res.status, label).toBe(302);
+      expectReleaseAssetsSavedLocation(result.res.location, release.id, label);
+      expect(result.sql.begin, label).toBe(1);
+      expect(result.sql.commit, label).toBe(1);
+      expect(result.sql.rollback, label).toBe(0);
+      expect(result.sql.membershipWrites, label).toBe(1 + expected.length);
+      expect(db.inTransaction, label).toBe(false);
+      expect(rows(release.id), label).toEqual([...expected].sort((x, y) => x[0] - y[0]));
+    }
+
+    // ── §4 supported encodings ────────────────────────────────────────────
+    it('C1 accepts every supported URL-encoded media type with a body or header CSRF token and persists the intended membership', async () => {
+      const contentTypes = [
+        'application/x-www-form-urlencoded',
+        'application/x-www-form-urlencoded; charset=UTF-8',
+        'application/x-www-form-urlencoded;charset=utf-8',
+        'application/x-www-form-urlencoded; charset="UTF-8"',
+        'application/x-www-form-urlencoded; charset="utf-8"',
+        'APPLICATION/X-WWW-FORM-URLENCODED',
+        'Application/X-Www-Form-Urlencoded; Charset=UTF-8',
+      ];
+      // Membership-only B, C: B keeps its saved Preview role, A is removed, C appends.
+      const expected = () => [[B(), 'preview', 0], [C(), 'attachment', 1]];
+      for (const contentType of contentTypes) {
+        for (const via of ['body token', 'header token']) {
+          const label = `${contentType} / ${via}`;
+          const release = persisted(label);
+          const raw = `selectedAssetIds=${B()}&selectedAssetIds=${C()}`;
+          const result = await send(release.id, via === 'body token'
+            ? { contentTypes: [contentType], body: withToken(raw) }
+            : { contentTypes: [contentType], body: raw, csrfHeader: token });
+          // The bytes on the wire carry exactly this one Content-Type.
+          const head = result.requestBytes.toString('latin1').split('\r\n\r\n')[0];
+          expect(head.match(/^content-type:.*$/gim), label).toEqual([`Content-Type: ${contentType}`]);
+          expect(result.seen.contentType, label).toBe(contentType);
+          expect(result.seen.expressForm, label).toBe(FORM);
+          expect(result.seen.bodyKeys, label).toEqual(via === 'body token' ? ['_csrf', 'selectedAssetIds'] : ['selectedAssetIds']);
+          // Reached Save validation (one batched lookup) and persisted.
+          expect(result.sql.validation, label).toBe(1);
+          expectSaved(result, release, label, expected());
+        }
+      }
+    }, C1_TIMEOUT_MS);
+
+    // ── §5 unsupported media types ────────────────────────────────────────
+    it('C1 refuses unsupported, missing, malformed and look-alike media types with valid CSRF: 415 and zero writes', async () => {
+      const form = `selectedAssetIds=${C()}`;
+      const multipartBody = [
+        '--c1b', 'Content-Disposition: form-data; name="_csrf"', '', token,
+        '--c1b', 'Content-Disposition: form-data; name="selectedAssetIds"', '', String(C()),
+        '--c1b--', '',
+      ].join('\r\n');
+      const cases = [
+        ['application/json', ['application/json'], JSON.stringify({ selectedAssetIds: [C()] })],
+        ['application/json charset', ['application/json; charset=utf-8'], JSON.stringify({ selectedAssetIds: [C()] })],
+        ['application/problem+json', ['application/problem+json'], JSON.stringify({ selectedAssetIds: [C()] })],
+        ['text/plain', ['text/plain'], form],
+        ['octet-stream', ['application/octet-stream'], form],
+        ['multipart with real boundary/body', ['multipart/form-data; boundary=c1b'], multipartBody],
+        ['missing Content-Type', [], form],
+        ['malformed: bare slash', ['/'], form],
+        ['malformed: double semicolon', ['application/x-www-form-urlencoded;;'], form],
+        ['malformed: unterminated quoted charset', ['application/x-www-form-urlencoded; charset="utf-8'], form],
+        ['malformed: empty value', [''], form],
+        ['look-alike: -x suffix', ['application/x-www-form-urlencoded-x'], form],
+        ['look-alike: +xml suffix', ['application/x-www-form-urlencoded+xml'], form],
+        ['look-alike: multipart tree', ['multipart/x-www-form-urlencoded'], form],
+        ['look-alike: vnd prefix', ['application/vnd.x-www-form-urlencoded'], form],
+        ['embedded in a parameter of another type', ['text/plain; boundary="application/x-www-form-urlencoded"'], form],
+        ['embedded in a profile parameter', ['application/octet-stream; profile=application/x-www-form-urlencoded'], form],
+      ];
+      for (const [label, contentTypes, body] of cases) {
+        const release = persisted(label);
+        const result = await send(release.id, { contentTypes, body, csrfHeader: token });
+        expect(result.seen.contentType, label).toBe(contentTypes.length ? contentTypes[0] : undefined);
+        expect(result.seen.expressForm, label).not.toBe(FORM);
+        expectUnsupported(result, release, label);
+      }
+      // A URL-encoded media type named only in an unrelated header is not the
+      // request's Content-Type.
+      for (const [label, contentTypes, extraHeaders] of [
+        ['X-Content-Type header, text/plain body', ['text/plain'], [['X-Content-Type', FORM]]],
+        ['Accept header only, no Content-Type', [], [['Accept-Post', FORM], ['X-Original-Content-Type', FORM]]],
+        ['Content-Disposition parameter', ['application/octet-stream'], [['Content-Disposition', `form-data; type=${FORM}`]]],
+      ]) {
+        const release = persisted(label);
+        const result = await send(release.id, { contentTypes, body: form, csrfHeader: token, extraHeaders });
+        expectUnsupported(result, release, label);
+      }
+      // Unsupported charset: the unchanged body parser refuses it (415) before
+      // CSRF and before the route.
+      for (const charset of ['iso-8859-1', 'utf-16', 'x-unknown']) {
+        const label = `charset ${charset}`;
+        const release = persisted(label);
+        const result = await send(release.id, { contentTypes: [`${FORM}; charset=${charset}`], body: withToken(form) });
+        expectUntouched(result, release, label);
+        expect(result.res.status, label).toBe(415);
+        expect(result.res.text, label).not.toContain(UNSUPPORTED);
+        expect(result.sql.validation, label).toBe(0);
+        expect(result.res.location, label).toBeUndefined();
+      }
+    }, C1_TIMEOUT_MS);
+
+    // ── §6 JSON data-loss controls ────────────────────────────────────────
+    it('C1 refuses JSON Save bodies A–H on A Primary/0 + B Preview/1 without touching the rows', async () => {
+      const json = (value) => JSON.stringify(value);
+      const compact = json([[A(), 'primary', 0], [B(), 'preview', 1]]);
+      const cases = [
+        // Token in the JSON body itself (no header): a non-403 proves express.json parsed it.
+        ['A body token + unknown', { body: json({ _csrf: token, unknown: 1 }) }],
+        ['B body token + [A,C] + unknown', { body: json({ _csrf: token, selectedAssetIds: [A(), C()], unknown: 1 }) }],
+        ['C valid-looking selected', { body: json({ _csrf: token, selectedAssetIds: [A(), B()] }) }],
+        ['C string selected', { body: json({ _csrf: token, selectedAssetIds: [String(A()), String(B())] }) }],
+        ['D empty selected', { body: json({ _csrf: token, selectedAssetIds: [] }) }],
+        ['E compact roleOrder', { body: json({ _csrf: token, selectedAssetIds: [A(), B()], roleOrder: compact }) }],
+        ['E keyed roleAssetIds', { body: json({ _csrf: token, selectedAssetIds: [A(), B()], roleAssetIds: [B()], roles: { 0: 'primary' }, sortOrder: { 0: '3' } }) }],
+        ['F malformed nested', { body: json({ _csrf: token, selectedAssetIds: [[A()], { x: B() }], roles: [{ 0: ['primary'] }] }) }],
+        ['F null selected', { body: json({ _csrf: token, selectedAssetIds: null }) }],
+        // G: token through the supported header.
+        ['G header token + [A,C]', { body: json({ selectedAssetIds: [A(), C()] }), csrfHeader: token }],
+        ['G header token + empty', { body: json({ selectedAssetIds: [] }), csrfHeader: token }],
+      ];
+      for (const [label, request] of cases) {
+        const release = persisted(`json ${label}`);
+        const result = await send(release.id, { contentTypes: ['application/json'], ...request });
+        expect(result.seen.expressJson, label).toBe('application/json');
+        expect(result.seen.bodyKeys.length, label).toBeGreaterThan(0);
+        expectUnsupported(result, release, label);
+      }
+      // H: invalid CSRF stays the established 403 in every position. A body
+      // token wins over the header, so a forged body token is refused even
+      // alongside a valid header.
+      for (const [label, request] of [
+        ['H forged body token', { body: json({ _csrf: 'forged', selectedAssetIds: [A()] }) }],
+        ['H forged header token', { body: json({ selectedAssetIds: [A()] }), csrfHeader: 'forged' }],
+        ['H missing token', { body: json({ selectedAssetIds: [] }) }],
+        ['H forged body + valid header', { body: json({ _csrf: 'forged', selectedAssetIds: [] }), csrfHeader: token }],
+      ]) {
+        const release = persisted(`json ${label}`);
+        expectCsrfRefused(await send(release.id, { contentTypes: ['application/json'], ...request }), release, label);
+      }
+    }, C1_TIMEOUT_MS);
+
+    // ── §7 raw field-name regressions ─────────────────────────────────────
+    it('C1 refuses every malformed raw field name alone and beside valid membership, compact or keyed fields', async () => {
+      const F = () => foreignId;
+      // [label, raw fragment]. Each fragment names a field outside the Save
+      // contract or an unreadable selected-ID shape; values are the foreign
+      // ID so any leak of its metadata would show.
+      const malformed = [
+        ['__proto__[selectedAssetIds]', () => `__proto__[selectedAssetIds]=${F()}`],
+        ['constructor[selectedAssetIds]', () => `constructor[selectedAssetIds]=${F()}`],
+        ['selectedAssetIds.__proto__', () => `selectedAssetIds.__proto__=${F()}`],
+        ['selectedAssetIds%2E__proto__', () => `selectedAssetIds%2E__proto__=${F()}`],
+        ['selectedAssetIds[__proto__]', () => `selectedAssetIds[__proto__]=${F()}`],
+        ['selectedAssetIds[constructor]', () => `selectedAssetIds[constructor]=${F()}`],
+        ['unknown top-level', () => `unknownField=${F()}`],
+        ['unknown nested', () => `unknown[selectedAssetIds]=${F()}`],
+        ['dotted alias', () => `roles.0=primary&selected.AssetIds=${F()}`],
+        ['nested brackets', () => `selectedAssetIds[0][1]=${F()}`],
+        ['invalid index: leading zero', () => `selectedAssetIds[01]=${F()}`],
+        ['invalid index: negative', () => `selectedAssetIds[-1]=${F()}`],
+        ['invalid index: exponent', () => `selectedAssetIds[1e2]=${F()}`],
+        ['invalid index: seven digits', () => `selectedAssetIds[1000000]=${F()}`],
+        ['repeated numeric index', () => `selectedAssetIds[4]=${C()}&selectedAssetIds[4]=${F()}`],
+        ['malformed encoded bracket', () => `selectedAssetIds%5B0=${F()}`],
+        ['reversed brackets', () => `selectedAssetIds]0[=${F()}`],
+        ['double-encoded brackets', () => `selectedAssetIds%255B0%255D=${F()}`],
+        ['leading bracket root', () => `[selectedAssetIds][0]=${F()}`],
+      ];
+      const compact = () => encodeURIComponent(JSON.stringify([[A(), 'primary', 0], [B(), 'preview', 1]]));
+      const placements = [
+        ['alone', (bad) => bad],
+        ['valid selected ID first', (bad) => `selectedAssetIds=${A()}&${bad}`],
+        ['malformed first', (bad) => `${bad}&selectedAssetIds=${A()}`],
+        ['with compact roleOrder', (bad) => `selectedAssetIds=${A()}&selectedAssetIds=${B()}&${bad}&roleOrder=${compact()}`],
+        ['with keyed role/order', (bad) => `selectedAssetIds=${A()}&selectedAssetIds=${B()}&roleAssetIds[0]=${A()}&roles[0]=primary&sortOrder[0]=0&${bad}&roleAssetIds[1]=${B()}&roles[1]=preview&sortOrder[1]=1`],
+      ];
+      for (const [name, fragment] of malformed) {
+        for (const [where, place] of placements) {
+          const label = `${name} / ${where}`;
+          const release = persisted(label);
+          const result = await send(release.id, { body: withToken(place(fragment())) });
+          expect(result.seen.expressForm, label).toBe(FORM);
+          expectFailClosed(result, release, label);
+          expect(result.res.text, label).not.toContain(`Asset ${foreignId}`);
+        }
+      }
+    }, C1_TIMEOUT_MS);
+
+    // ── §8 intentional empty Saves ────────────────────────────────────────
+    it('C1 keeps intentional empty Saves: no selected-ID field, a bare empty value, and the rendered form with nothing checked', async () => {
+      for (const [label, raw] of [['A no selectedAssetIds', ''], ['B selectedAssetIds=', 'selectedAssetIds=']]) {
+        const release = persisted(label);
+        const result = await send(release.id, { body: withToken(raw) });
+        expect(result.sql.validation, label).toBe(0);
+        expectSaved(result, release, label, []);
+      }
+
+      // C: the actual rendered form. Both saved members are page-visible
+      // checked checkboxes (no hidden off-page carriers), so unchecking them
+      // leaves exactly the form's _csrf — the browser's empty submission.
+      const release = persisted('C rendered form unchecked');
+      const page = await getPage(release.id);
+      expect(page.status).toBe(200);
+      expect(page.text).toMatch(/<form id="release-assets-form" method="post" action="\/releases\/\d+\/assets\?pageSize=10" class="inline-form"/);
+      expect(page.text).not.toMatch(/<form id="release-assets-form"[^>]*enctype=/);
+      const entries = retryFormEntries(page.text);
+      expect(entries.filter(([name]) => name === 'selectedAssetIds').map(([, value]) => Number(value)).sort((x, y) => x - y)).toEqual([A(), B()]);
+      expect(page.text).not.toMatch(/<input type="hidden" name="selectedAssetIds"/);
+      const unchecked = entries.filter(([name]) => name !== 'selectedAssetIds');
+      expect(unchecked).toEqual([['_csrf', token]]);
+      const result = await send(release.id, { body: encode(unchecked) });
+      expectSaved(result, release, 'C rendered form unchecked', []);
+
+      // Not an empty Save: unsupported or malformed bodies with the same
+      // (empty) apparent membership are refused and leave A/B in place.
+      const json = persisted('empty JSON');
+      expectUnsupported(await send(json.id, { contentTypes: ['application/json'], body: '{}', csrfHeader: token }), json, 'empty JSON');
+      const text = persisted('empty text/plain');
+      expectUnsupported(await send(text.id, { contentTypes: ['text/plain'], body: '', csrfHeader: token }), text, 'empty text/plain');
+      const malformed = persisted('malformed empty-looking');
+      expectFailClosed(await send(malformed.id, { body: withToken('selectedAssetIds[__proto__]=') }), malformed, 'malformed empty-looking');
+    }, C1_TIMEOUT_MS);
+
+    // ── §9 request framing (CHARACTERIZATION of the current runtime) ──────
+    // Observed behavior, not a new framing policy: a supported media type
+    // with no body framing is refused as unsupported (the URL-encoded parser
+    // never reads a body that has none, so no Save draft exists); a framed
+    // zero-byte body is a parsed empty form, i.e. an intentional clear.
+    it('C1 characterizes Save request framing: unframed, zero-length, empty chunked, chunked and unparseable bodies', async () => {
+      const unframed = persisted('no Content-Length, no Transfer-Encoding');
+      const none = await send(unframed.id, { body: '', framing: 'none', csrfHeader: token });
+      const noneHead = none.requestBytes.toString('latin1');
+      expect(noneHead).not.toMatch(/^(content-length|transfer-encoding):/im);
+      expect(noneHead.endsWith('\r\n\r\n')).toBe(true);
+      expect(none.seen.contentLength).toBeUndefined();
+      expect(none.seen.transferEncoding).toBeUndefined();
+      expect(none.seen.contentType).toBe(FORM);
+      expectUnsupported(none, unframed, 'unframed');
+
+      const zero = persisted('Content-Length: 0');
+      const zeroResult = await send(zero.id, { body: '', framing: 'length', csrfHeader: token });
+      expect(zeroResult.requestBytes.toString('latin1')).toMatch(/\r\nContent-Length: 0\r\n\r\n$/);
+      expect(zeroResult.seen.contentLength).toBe('0');
+      expect(zeroResult.seen.expressForm).toBe(FORM);
+      expectSaved(zeroResult, zero, 'Content-Length: 0', []);
+
+      const emptyChunked = persisted('empty chunked');
+      const emptyChunkedResult = await send(emptyChunked.id, { framing: 'chunked', chunks: [], csrfHeader: token });
+      expect(emptyChunkedResult.requestBytes.toString('latin1')).toMatch(/\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n$/);
+      expect(emptyChunkedResult.seen.transferEncoding).toBe('chunked');
+      expect(emptyChunkedResult.seen.contentLength).toBeUndefined();
+      expectSaved(emptyChunkedResult, emptyChunked, 'empty chunked', []);
+
+      // Nonempty chunked form, split mid-token and mid-field, body CSRF token.
+      const chunked = persisted('nonempty chunked');
+      const body = withToken(`selectedAssetIds=${C()}&selectedAssetIds=${A()}`);
+      const cut = [7, 40, body.length - 3];
+      const chunks = [body.slice(0, cut[0]), body.slice(cut[0], cut[1]), body.slice(cut[1], cut[2]), body.slice(cut[2])];
+      expect(chunks.join('')).toBe(body);
+      const chunkedResult = await send(chunked.id, { framing: 'chunked', chunks });
+      expect(chunkedResult.seen.transferEncoding).toBe('chunked');
+      expect(chunkedResult.seen.bodyKeys).toEqual(['_csrf', 'selectedAssetIds']);
+      expectSaved(chunkedResult, chunked, 'nonempty chunked', [[A(), 'primary', 0], [C(), 'attachment', 1]]);
+
+      // Correct media type, body that does not decode to a readable Save:
+      // refused fail-closed (422), never a clear.
+      for (const [label, rawBody] of [
+        ['invalid percent escape in value', Buffer.from(withToken('selectedAssetIds=%E0%A4%A'))],
+        ['invalid percent escape in name', Buffer.from(withToken(`selected%ZZAssetIds=${C()}`))],
+        ['invalid UTF-8 bytes in value', Buffer.concat([Buffer.from(withToken('selectedAssetIds=')), Buffer.from([0xff, 0xfe])])],
+        ['NUL in value', Buffer.from(withToken('selectedAssetIds=%00'))],
+      ]) {
+        const release = persisted(label);
+        const result = await send(release.id, { body: rawBody });
+        expect(result.seen.expressForm, label).toBe(FORM);
+        expect(result.res.status, label).toBe(422);
+        expectUntouched(result, release, label);
+        expect(result.sql.validation, label).toBe(0);
+        expect(result.res.text, label).toContain('data-release-assets-save-recovery-unavailable');
+        expectNoSaveControls(result.res.text, label);
+      }
+    }, C1_TIMEOUT_MS);
+
+    // ── §10 duplicate Content-Type (CHARACTERIZATION of the current runtime)
+    // Node's HTTP parser keeps the FIRST Content-Type line and discards later
+    // ones (req.headers), while req.rawHeaders keeps every line. This pins
+    // what this Node/Express runtime does; proxies and other servers may
+    // differ, and no header normalization is added.
+    it('C1 characterizes duplicate Content-Type headers: Node keeps the first line, membership follows that type', async () => {
+      const form = () => withToken(`selectedAssetIds=${B()}&selectedAssetIds=${C()}`);
+      const formSaved = () => [[B(), 'preview', 0], [C(), 'attachment', 1]];
+      const cases = [
+        ['supported first, unsupported second', [['Content-Type', FORM], ['Content-Type', 'application/json']], form, 302],
+        ['unsupported first, supported second (form body)', [['Content-Type', 'text/plain'], ['Content-Type', FORM]], form, 415],
+        ['JSON first, supported second (form body)', [['Content-Type', 'application/json'], ['Content-Type', FORM]], form, 400],
+        ['JSON first, supported second (JSON body)', [['Content-Type', 'application/json'], ['Content-Type', FORM]],
+          () => JSON.stringify({ _csrf: token, selectedAssetIds: [] }), 415],
+        ['identical duplicates', [['Content-Type', FORM], ['Content-Type', FORM]], form, 302],
+        ['case-variant names, supported first', [['content-type', FORM], ['CONTENT-TYPE', 'text/plain']], form, 302],
+        ['case-variant names, unsupported first', [['CONTENT-TYPE', 'application/octet-stream'], ['content-type', FORM]], form, 415],
+      ];
+      for (const [label, headerLines, body, status] of cases) {
+        const release = persisted(label);
+        const result = await send(release.id, {
+          contentTypes: [], body: body(), extraHeaders: headerLines, csrfHeader: status === 415 ? token : null,
+        });
+        // As transmitted: both lines, in order.
+        const transmitted = result.requestBytes.toString('latin1').split('\r\n\r\n')[0].split('\r\n')
+          .filter((line) => /^content-type:/i.test(line));
+        expect(transmitted, label).toEqual(headerLines.map(([name, value]) => `${name}: ${value}`));
+        // Visible to Node/Express: every raw line, but only the first as the header.
+        const rawTypes = [];
+        for (let i = 0; i < result.seen.rawHeaders.length; i += 2) {
+          if (/^content-type$/i.test(result.seen.rawHeaders[i])) rawTypes.push(result.seen.rawHeaders[i + 1]);
+        }
+        expect(rawTypes, label).toEqual(headerLines.map(([, value]) => value));
+        expect(result.seen.contentType, label).toBe(headerLines[0][1]);
+        expect(result.seen.expressForm, label).toBe(headerLines[0][1] === FORM ? FORM : false);
+        expect(result.res.status, label).toBe(status);
+        if (status === 302) {
+          expectSaved(result, release, label, formSaved());
+        } else {
+          expectUntouched(result, release, label);
+          expect(result.sql.validation, label).toBe(0);
+          if (status === 415) expect(result.res.text, label).toContain(UNSUPPORTED);
+        }
+      }
+    }, C1_TIMEOUT_MS);
+
+    // ── §11 Save format compatibility and sparse pairing ─────────────────
+    it('C1 persists exact asset_id/role/sort_order for all four URL-encoded Save formats', async () => {
+      const compact = () => encodeURIComponent(JSON.stringify([[B(), 'primary', 4], [A(), 'attachment', 2]]));
+      const formats = [
+        ['membership-only', () => `selectedAssetIds=${C()}&selectedAssetIds=${A()}`,
+          () => [[A(), 'primary', 0], [C(), 'attachment', 1]]],
+        ['legacy positional', () => `selectedAssetIds=${C()}&selectedAssetIds=${A()}&roles=preview&roles=primary&sortOrder=3&sortOrder=1`,
+          () => [[C(), 'preview', 3], [A(), 'primary', 1]]],
+        ['B-F2 keyed roleAssetIds', () => `selectedAssetIds=${A()}&selectedAssetIds=${C()}&roleAssetIds[0]=${C()}&roleAssetIds[1]=${A()}`
+          + '&roles[0]=primary&roles[1]=preview&sortOrder[0]=7&sortOrder[1]=8',
+          () => [[C(), 'primary', 7], [A(), 'preview', 8]]],
+        ['B-F2R1 compact roleOrder', () => `selectedAssetIds=${A()}&selectedAssetIds=${B()}&roleOrder=${compact()}`,
+          () => [[B(), 'primary', 4], [A(), 'attachment', 2]]],
+      ];
+      for (const [label, raw, expected] of formats) {
+        const release = persisted(label);
+        const result = await send(release.id, { body: withToken(raw()) });
+        expect(result.sql.validation, label).toBe(1);
+        expectSaved(result, release, label, expected());
+      }
+    }, C1_TIMEOUT_MS);
+
+    it('C1 pairs sparse keyed and positional role/order fields by original index with no misattribution', async () => {
+      const cases = [
+        // The specified keyed case: A Attachment/0, B Preview/19.
+        ['sparse keyed (spec)', () => `selectedAssetIds=${A()}&selectedAssetIds=${B()}&roleAssetIds[0]=${A()}&roleAssetIds[1]=${B()}`
+          + '&roles[1]=preview&sortOrder[1]=19',
+          () => [[A(), 'attachment', 0], [B(), 'preview', 19]]],
+        ['sparse positional, adjacent', () => `selectedAssetIds[0]=${A()}&selectedAssetIds[1]=${B()}&roles[1]=preview&sortOrder[1]=19`,
+          () => [[A(), 'attachment', 0], [B(), 'preview', 19]]],
+        // qs compacts selectedAssetIds[4] to position 1 and roles[4] to 0; the
+        // raw indices keep the role on B.
+        ['sparse positional, gap', () => `selectedAssetIds[0]=${A()}&selectedAssetIds[4]=${B()}&roles[4]=preview&sortOrder[4]=19`,
+          () => [[A(), 'attachment', 0], [B(), 'preview', 19]]],
+        ['sparse keyed, reversed with Primary', () => `selectedAssetIds=${A()}&selectedAssetIds=${B()}&roleAssetIds[2]=${B()}&roleAssetIds[5]=${A()}`
+          + '&roles[5]=primary&sortOrder[5]=3',
+          () => [[B(), 'attachment', 0], [A(), 'primary', 3]]],
+        ['sparse keyed, order only', () => `selectedAssetIds=${A()}&selectedAssetIds=${B()}&roleAssetIds[0]=${A()}&roleAssetIds[9]=${B()}&sortOrder[9]=19`,
+          () => [[A(), 'attachment', 0], [B(), 'attachment', 19]]],
+      ];
+      for (const [label, raw, expected] of cases) {
+        const release = persisted(label);
+        const result = await send(release.id, { body: withToken(raw()) });
+        expectSaved(result, release, label, expected());
+        // The role/order submitted for B never lands on A.
+        const saved = new Map(rows(release.id).map(([assetId, role, sortOrder]) => [assetId, { role, sortOrder }]));
+        if (label === 'sparse keyed, reversed with Primary') {
+          // The Primary/3 submitted at index 5 stays on A; B (index 2) takes the defaults.
+          expect(saved.get(B()), label).toEqual({ role: 'attachment', sortOrder: 0 });
+        } else {
+          expect(saved.get(A()), label).toEqual({ role: 'attachment', sortOrder: 0 });
+          expect(saved.get(B()).sortOrder, label).toBe(19);
+        }
+      }
+    }, C1_TIMEOUT_MS);
+
+    // ── §12 unsafe-order recovery ─────────────────────────────────────────
+    it('C1 refuses an invalid role + unsafe order fail-closed, and keeps an ordinary invalid role recoverable through the next real submission', async () => {
+      const unsafe = persisted('unsafe order');
+      const refused = await send(unsafe.id, {
+        body: withToken(`selectedAssetIds=${A()}&selectedAssetIds=${B()}&roles=bogus&roles=preview&sortOrder=${UNSAFE}&sortOrder=1`),
+      });
+      expectFailClosed(refused, unsafe, 'unsafe order', ORDER_ERROR);
+      expect(refused.res.text).not.toContain(UNSAFE);
+      // The saved members are still listed for reference.
+      expect(refused.res.text).toContain('img-0005.png');
+      expect(refused.res.text).toContain('img-0006.png');
+
+      // Ordinary invalid role, valid orders: A bogus/0, C preview/1 (C is new).
+      const release = persisted('ordinary invalid role');
+      const first = await send(release.id, {
+        body: withToken(`selectedAssetIds=${A()}&selectedAssetIds=${C()}&roles=bogus&roles=preview&sortOrder=0&sortOrder=1`),
+      });
+      expect(first.res.status).toBe(422);
+      expect(first.res.text).toContain(`Asset ${A()} has an invalid role &quot;bogus&quot;.`);
+      expect(first.res.text).not.toContain('data-release-assets-save-recovery-unavailable');
+      expectUntouched(first, release, 'ordinary first');
+      // The role refusal precedes any asset lookup.
+      expect(first.sql.validation).toBe(0);
+
+      // The rendered compact carrier, as an attribute.
+      const carrierJson = JSON.stringify([[A(), 'bogus', 0], [C(), 'preview', 1]]);
+      expect(first.res.text).toContain(`<input type="hidden" name="roleOrder" value="${carrierJson.replace(/"/g, '&quot;')}">`);
+      const retry = retryFormEntries(first.res.text);
+      expect(retry.filter(([name]) => name === '_csrf')).toEqual([['_csrf', token]]);
+      expect(selectedIds(retry).sort((x, y) => x - y)).toEqual([A(), C()]);
+      expect(retry.filter(([name]) => name === 'roleOrder')).toEqual([['roleOrder', carrierJson]]);
+      expect(retry.map(([name]) => name).filter((name) => !['_csrf', 'selectedAssetIds', 'roleOrder'].includes(name))).toEqual([]);
+
+      // The next actual HTTP submission of that form, unchanged: still refused.
+      const unchanged = await send(release.id, { body: encode(retry) });
+      expect(unchanged.res.status).toBe(422);
+      expect(unchanged.res.text).toContain(`Asset ${A()} has an invalid role &quot;bogus&quot;.`);
+      expect(unchanged.res.text).not.toContain(FORMAT_ERROR);
+      expectUntouched(unchanged, release, 'unchanged retry');
+      expect(retryFormEntries(unchanged.res.text).filter(([name]) => name === 'roleOrder')).toEqual([['roleOrder', carrierJson]]);
+
+      // Corrected through the same carrier: saves exactly.
+      const corrected = retry.map(([name, value]) => (name === 'roleOrder' ? [name, value.replace('"bogus"', '"attachment"')] : [name, value]));
+      expectSaved(await send(release.id, { body: encode(corrected) }), release, 'corrected retry',
+        [[A(), 'attachment', 0], [C(), 'preview', 1]]);
+    }, C1_TIMEOUT_MS);
+
+    // ── §13 malformed retry input ─────────────────────────────────────────
+    it('C1 refuses malformed retry carriers fail-closed and escapes a rejected role in the recoverable retry', async () => {
+      const enc = (value) => encodeURIComponent(JSON.stringify(value));
+      const cases = [
+        ['malformed roleOrder JSON', () => `selectedAssetIds=${A()}&selectedAssetIds=${B()}&roleOrder=${encodeURIComponent('[[')}`],
+        ['wrong tuple length', () => `selectedAssetIds=${A()}&selectedAssetIds=${B()}&roleOrder=${enc([[A(), 'primary']])}`],
+        ['four-element tuple', () => `selectedAssetIds=${A()}&roleOrder=${enc([[A(), 'primary', 0, 1]])}`],
+        ['unsafe compact sortOrder', () => `selectedAssetIds=${A()}&roleOrder=${encodeURIComponent(`[[${A()},"primary",${UNSAFE}]]`)}`],
+        ['negative compact sortOrder', () => `selectedAssetIds=${A()}&roleOrder=${enc([[A(), 'primary', -1]])}`],
+        ['string compact asset ID', () => `selectedAssetIds=${A()}&roleOrder=${enc([[String(A()), 'primary', 0]])}`],
+        ['conflicting compact and keyed', () => `selectedAssetIds=${A()}&roleOrder=${enc([[A(), 'primary', 0]])}&roleAssetIds[0]=${A()}&roles[0]=preview`],
+        ['conflicting compact and positional', () => `selectedAssetIds=${A()}&roleOrder=${enc([[A(), 'primary', 0]])}&roles=preview`],
+        ['repeated compact carrier', () => `selectedAssetIds=${A()}&roleOrder=${enc([[A(), 'primary', 0]])}&roleOrder=${enc([[A(), 'primary', 0]])}`],
+        ['malformed selected ID + valid carrier', () => `selectedAssetIds[__proto__]=${C()}&selectedAssetIds=${A()}&roleOrder=${enc([[A(), 'primary', 0]])}`],
+        ['unreadable selected ID + valid carrier', () => `selectedAssetIds=abc&roleOrder=${enc([[A(), 'primary', 0]])}`],
+        ['unpaired positional role', () => `selectedAssetIds=${A()}&roles[1]=primary`],
+        ['unpaired keyed order', () => `selectedAssetIds=${A()}&selectedAssetIds=${B()}&roleAssetIds[0]=${A()}&sortOrder[3]=5`],
+        ['non-numeric keyed ID', () => `selectedAssetIds=${A()}&roleAssetIds[0]=x${A()}&roles[0]=primary`],
+      ];
+      for (const [label, raw] of cases) {
+        const release = persisted(label);
+        const result = await send(release.id, { body: withToken(raw()) });
+        const error = label === 'unreadable selected ID + valid carrier' ? 'Invalid asset selection.' : FORMAT_ERROR;
+        expectFailClosed(result, release, label, error);
+      }
+
+      // A recoverable rejected draft escapes the submitted role everywhere.
+      const role = '<script>alert("x")</script>';
+      const release = persisted('escaped role');
+      const result = await send(release.id, {
+        body: withToken(`selectedAssetIds=${A()}&roleOrder=${enc([[A(), role, 0]])}`),
+      });
+      expect(result.res.status).toBe(422);
+      expectUntouched(result, release, 'escaped role');
+      expect(result.res.text).not.toContain(role);
+      expect(result.res.text).not.toContain('<script>alert');
+      expect(result.res.text).toContain(`Asset ${A()} has an invalid role &quot;&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;&quot;.`);
+      // The attribute escapes the JSON backslash as &#92;; a browser decodes it
+      // (the shared form scraper only decodes named entities).
+      expect(result.res.text).toContain('&lt;script&gt;alert(&#92;&quot;x&#92;&quot;)&lt;/script&gt;');
+      const retry = retryFormEntries(result.res.text).map(([name, value]) => [name, value.replace(/&#92;/g, String.fromCharCode(92))]);
+      expect(retry.filter(([name]) => name === 'roleOrder')).toEqual([['roleOrder', JSON.stringify([[A(), role, 0]])]]);
+      // Its next submission is refused the same way, without a write.
+      const again = await send(release.id, { body: encode(retry) });
+      expect(again.res.status).toBe(422);
+      expect(again.res.text).not.toContain('<script>alert');
+      expectUntouched(again, release, 'escaped role retry');
+      expect(selectedIds(retry)).toEqual([A()]);
+    }, C1_TIMEOUT_MS);
+
+    // ── §14 CSRF and authorization ────────────────────────────────────────
+    it('C1 keeps CSRF, media-type, read-only and asset authorization precedence with no unauthorized write', async () => {
+      const raw = () => `selectedAssetIds=${C()}`;
+      const valid = [
+        ['valid body token', () => ({ body: withToken(raw()) })],
+        ['valid header token', () => ({ body: raw(), csrfHeader: token })],
+      ];
+      for (const [label, request] of valid) {
+        const release = persisted(label);
+        expectSaved(await send(release.id, request()), release, label, [[C(), 'attachment', 0]]);
+      }
+      const refusedCsrf = [
+        ['missing token', () => ({ body: raw() })],
+        ['forged body token', () => ({ body: `_csrf=forged&${raw()}` })],
+        ['forged header token', () => ({ body: raw(), csrfHeader: 'forged' })],
+        ['forged body token + valid header', () => ({ body: `_csrf=forged&${raw()}`, csrfHeader: token })],
+        ['empty body token', () => ({ body: `_csrf=&${raw()}` })],
+        ['unsupported body + forged token', () => ({ contentTypes: ['text/plain'], body: raw(), csrfHeader: 'forged' })],
+        ['JSON body + forged token', () => ({ contentTypes: ['application/json'], body: JSON.stringify({ _csrf: 'forged', selectedAssetIds: [] }) })],
+      ];
+      for (const [label, request] of refusedCsrf) {
+        const release = persisted(label);
+        expectCsrfRefused(await send(release.id, request()), release, label);
+      }
+      const unsupported = persisted('unsupported body + valid token');
+      expectUnsupported(await send(unsupported.id, { contentTypes: ['text/plain'], body: raw(), csrfHeader: token }), unsupported, 'unsupported + valid');
+
+      // Asset authorization: unknown 404, foreign/duplicate 422, never a write.
+      for (const [label, body, status, message] of [
+        ['unknown asset', () => `selectedAssetIds=${A()}&selectedAssetIds=999999999`, 404, null],
+        ['foreign asset', () => `selectedAssetIds=${A()}&selectedAssetIds=${foreignId}`, 422, `Asset ${foreignId} does not belong to the release&#39;s project.`],
+        ['duplicate asset', () => `selectedAssetIds=${A()}&selectedAssetIds=${A()}`, 422, 'Duplicate asset IDs are not allowed.'],
+      ]) {
+        const release = persisted(label);
+        const result = await send(release.id, { body: withToken(body()) });
+        expect(result.res.status, label).toBe(status);
+        if (message) expect(result.res.text, label).toContain(message);
+        expect(result.res.text, label).not.toContain('foreign-secret');
+        expectUntouched(result, release, label);
+      }
+
+      // Read-only states: a valid URL-encoded Save is refused by the service
+      // guard (422 with the saved collection); CSRF still runs first, and an
+      // unsupported media type is still 415.
+      for (const [label, lock, message] of LOCKS) {
+        const release = persisted(label);
+        lock(release);
+        try {
+          const result = await send(release.id, { body: withToken(raw()) });
+          expect(result.res.status, label).toBe(422);
+          expect(result.res.text, label).toContain(message(release));
+          expectUntouched(result, release, label);
+          expectNoSaveControls(result.res.text, label);
+          expect(result.res.text, label).toContain('img-0005.png');
+          expectCsrfRefused(await send(release.id, { body: `_csrf=forged&${raw()}` }), release, `${label} forged`);
+          expectUnsupported(await send(release.id, { contentTypes: ['application/json'], body: '{}', csrfHeader: token }), release, `${label} JSON`);
+        } finally {
+          unlockProject();
+        }
+      }
+
+      // An unknown release: CSRF first (403), then 404, never a write.
+      tracing = true;
+      trace.length = 0;
+      const forgedUnknown = await exchange(buildRequest({
+        target: '/releases/999999/assets', headers: [['Cookie', cookie], ['Content-Type', FORM]], body: `_csrf=forged&${raw()}`,
+      }));
+      const unknown = await exchange(buildRequest({
+        target: '/releases/999999/assets', headers: [['Cookie', cookie], ['Content-Type', FORM]], body: withToken(raw()),
+      }));
+      tracing = false;
+      expect(forgedUnknown.status).toBe(403);
+      expect(unknown.status).toBe(404);
+      expect(trace.filter((text) => MEMBERSHIP_WRITE.test(text))).toEqual([]);
+    }, C1_TIMEOUT_MS);
+
+    // ── §15 read-only recovery ────────────────────────────────────────────
+    it('C1 read-only releases answer a malformed URL-encoded Save with the complete persisted collection and no Save controls', async () => {
+      const malformedBodies = [
+        ['prototype-rooted field', () => `__proto__[selectedAssetIds]=${C()}`],
+        ['malformed selected-ID index', () => `selectedAssetIds[__proto__]=${C()}`],
+        ['unknown field', () => `unknownField=${foreignId}`],
+        ['unsafe legacy order', () => `selectedAssetIds=${A()}&roles=bogus&sortOrder=${UNSAFE}`],
+        ['malformed compact carrier', () => `selectedAssetIds=${A()}&roleOrder=%5B%5B`],
+      ];
+      for (const [lockLabel, lock] of LOCKS) {
+        for (const [label, raw] of malformedBodies) {
+          const name = `${lockLabel} / ${label}`;
+          const release = persisted(name);
+          // B is a missing saved member: it must still be listed.
+          db.prepare('UPDATE assets SET is_present = 0 WHERE id = ?').run(B());
+          lock(release);
+          try {
+            const result = await send(release.id, { body: withToken(raw()) });
+            expect(result.res.status, name).toBe(422);
+            expectUntouched(result, release, name);
+            expect(result.sql.validation, name).toBe(0);
+            expect(result.res.text, name).toMatch(/<div class="error-summary" role="alert">/);
+            expect(result.res.text, name).toContain('img-0005.png');
+            expect(result.res.text, name).toContain('img-0006.png');
+            expect(result.res.text, name).toContain('<span class="release-asset-grid-role-value">Primary</span>');
+            expect(result.res.text, name).toContain('<span class="release-asset-grid-role-value">Preview</span>');
+            expect(result.res.text, name).not.toContain('data-release-assets-save-recovery-unavailable');
+            expectNoSaveControls(result.res.text, name);
+            expect(result.res.text, name).not.toContain(UNSAFE);
+            // Unsupported media type: 415, no writes.
+            expectUnsupported(await send(release.id, { contentTypes: ['text/plain'], body: raw(), csrfHeader: token }), release, `${name} text/plain`);
+          } finally {
+            db.prepare('UPDATE assets SET is_present = 1 WHERE id = ?').run(B());
+            unlockProject();
+          }
+        }
+      }
+    }, C1_TIMEOUT_MS);
+
+    // ── §16 large compact carrier control ─────────────────────────────────
+    it('C1 carries a 300-member rejected compact draft through its retry and saves a 517-member compact Save exactly', async () => {
+      const members = ids.slice(20, 320);
+      const draft = members.map((assetId, index) => ({
+        assetId,
+        role: index === 0 ? 'primary' : (index === 150 ? 'bogus' : (index === 299 ? 'preview' : 'attachment')),
+        sortOrder: 1000 - index,
+      }));
+      const release = persisted('large compact');
+      // The expanded keyed shape of this draft is 1,201 fields: over the
+      // unchanged 1,000-parameter parser limit, refused (413) before CSRF and
+      // the route. This is why the retry form uses the compact carrier.
+      const expanded = await send(release.id, {
+        body: withToken(draft.flatMap(({ assetId, role, sortOrder }, index) => [
+          `selectedAssetIds=${assetId}`, `roleAssetIds[${index}]=${assetId}`, `roles[${index}]=${role}`, `sortOrder[${index}]=${sortOrder}`,
+        ]).join('&')),
+      });
+      expect(expanded.res.status).toBe(413);
+      expectUntouched(expanded, release, 'large expanded keyed');
+      expect(expanded.sql.begin).toBe(0);
+
+      const compactDraft = JSON.stringify(draft.map(({ assetId, role, sortOrder }) => [assetId, role, sortOrder]));
+      const body = withToken(`${members.map((id) => `selectedAssetIds=${id}`).join('&')}&roleOrder=${encodeURIComponent(compactDraft)}`);
+      expect(body.split('&')).toHaveLength(302);
+      const first = await send(release.id, { body });
+      expect(first.seen.expressForm).toBe(FORM);
+      expect(first.res.status).toBe(422);
+      expect(first.res.text).toContain(`Asset ${members[150]} has an invalid role &quot;bogus&quot;.`);
+      expectUntouched(first, release, 'large first');
+
+      const retry = retryFormEntries(first.res.text);
+      // _csrf + 300 selected IDs + one roleOrder: well inside 1,000 fields.
+      expect(retry).toHaveLength(302);
+      expect(selectedIds(retry).sort((x, y) => x - y)).toEqual([...members].sort((x, y) => x - y));
+      const carrier = retry.filter(([name]) => name === 'roleOrder');
+      expect(carrier).toHaveLength(1);
+      expect(JSON.parse(carrier[0][1]).map(([assetId, role, sortOrder]) => ({ assetId, role, sortOrder }))).toEqual(draft);
+
+      const unchanged = await send(release.id, { body: encode(retry) });
+      expect(unchanged.res.status).toBe(422);
+      expect(unchanged.res.status).not.toBe(413);
+      expectUntouched(unchanged, release, 'large unchanged');
+
+      const corrected = retry.map(([name, value]) => (name === 'roleOrder' ? [name, value.replace('"bogus"', '"attachment"')] : [name, value]));
+      const saved = await send(release.id, { body: encode(corrected) });
+      expectSaved(saved, release, 'large corrected', draft.map(({ assetId, role, sortOrder }) => [assetId, role === 'bogus' ? 'attachment' : role, sortOrder]));
+
+      // 517 members with a compact carrier: 519 fields, saved exactly.
+      const large = ids.slice(0, 517);
+      const compact = large.map((assetId, index) => [assetId, index === 516 ? 'primary' : 'attachment', index * 2]);
+      const bigRelease = createRelease('C1 517 compact');
+      const big = await send(bigRelease.id, {
+        body: withToken(`${large.map((id) => `selectedAssetIds=${id}`).join('&')}&roleOrder=${encodeURIComponent(JSON.stringify(compact))}`),
+      });
+      expect(big.requestBytes.toString('latin1').split('\r\n\r\n')[1].split('&')).toHaveLength(519);
+      expect(big.sql.validation).toBe(2);
+      expectSaved(big, bigRelease, 'large 517 compact', compact);
+    }, C1_TIMEOUT_MS);
   });
 });
