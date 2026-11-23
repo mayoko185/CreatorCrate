@@ -128,8 +128,15 @@ describe('release Social Preparation detail display', () => {
         expect(summary).not.toMatch(/<form\b|<button\b|<input\b|<a\b|data-dialog|data-social|sent successfully|retry|reprepare|activate/i);
       }
       expect(html).toContain('href="/releases/new" data-dialog-open="release-create-dialog"');
-      expect(html).toContain('aria-label="Releases defaults"');
-      expect(html).toContain('aria-label="Reset filters"');
+      // WP12: one Filters & Defaults entry replaces the retired separate Releases Defaults entry.
+      expect(html).toContain('href="#releases-filter-dialog" aria-label="Filters &amp; Defaults"');
+      expect(html).toContain('data-dialog-open="releases-filter-dialog"');
+      expect(html).not.toMatch(/aria-label="Releases defaults"|releases-defaults-dialog|\/releases\?defaults=1|data-releases-defaults-autosave/);
+      // Reset filters is the dialog's GET-only form; Reset defaults is a separate JavaScript-only button.
+      const resetFilters = html.match(/<form class="releases-filter-reset[^"]*" method="get" action="\/releases">[\s\S]*?<\/form>/)?.[0];
+      expect(resetFilters).toContain('data-releases-filters-reset>Reset filters</button>');
+      expect(resetFilters).not.toMatch(/name="_csrf"|data-releases-defaults-reset/);
+      expect(html).toContain('type="button" disabled data-releases-defaults-reset>Reset defaults</button>');
       expect(html).toContain('aria-label="Release list pages"');
       expect(html).toContain('class="table-scroll refined-table-scroll releases-table-scroll" tabindex="0" aria-label="Release list"');
       expect(html.match(/<thead>[\s\S]*?<\/thead>/)[0]).toContain('<th>Social Posts</th>');

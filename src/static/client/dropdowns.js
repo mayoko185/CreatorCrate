@@ -554,18 +554,117 @@ function creatorCrateDropdownIndividualInputs(dropdown, mode) {
     .filter((input) => !isCreatorCrateDropdownSelectAllInput(input));
 }
 
+// Carried values (multi-selects with Select all only): a pending request can restrict a
+// filter to a value with no rendered option (Releases / Calendar history destinations).
+// Its owner keeps that value in a hidden form input marked with this attribute and the
+// dropdown's field name. The dropdown counts carried values that would submit (see
+// creatorCrateDropdownCarrierSubmits) as selected, so it never
+// shows All (nor a checked Select all) while one is active, and a user edit of the
+// dropdown removes them: Select all clears the whole dimension in one action, and a
+// chosen value replaces the carried intent. Their labels are never rendered.
+export const CC_DROPDOWN_CARRIED_VALUE_ATTRIBUTE = 'data-cc-dropdown-carried-value';
+
+// P3: a carrier counts only when native form submission would include it in `form`:
+// not disabled itself, not inside a disabled <fieldset> (outside that fieldset's
+// first <legend>, per HTML), and owned by `form` (a form="" attribute can move it;
+// see creatorCrateFormOwner).
+function creatorCrateDropdownCarrierIsDisabled(input) {
+  if (input?.disabled || input?.hasAttribute?.('disabled')) return true;
+  let child = input;
+  let ancestor = input?.parentElement ?? input?.parentNode ?? null;
+  while (ancestor && ancestor.nodeType !== 9) {
+    if (String(ancestor.tagName || '').toUpperCase() === 'FIELDSET'
+      && (ancestor.disabled || ancestor.hasAttribute?.('disabled'))) {
+      const firstLegend = Array.from(ancestor.children || [])
+        .find((element) => String(element?.tagName || '').toUpperCase() === 'LEGEND');
+      if (!firstLegend || firstLegend !== child) return true;
+    }
+    child = ancestor;
+    ancestor = ancestor.parentElement ?? ancestor.parentNode ?? null;
+  }
+  return false;
+}
+
+// P3-C1 follow-up: a control belongs to its HTML form owner, not to the form that
+// happens to contain it. A real control reports that owner as `control.form`
+// (null when form="" names no form). A minimal DOM without that property is
+// resolved the same way: a form="" attribute names the owner by id (null when it
+// names no form), otherwise the nearest ancestor form owns it.
+export function creatorCrateFormOwner(control) {
+  if (!control) return null;
+  if (control.form !== undefined) return control.form;
+  const formId = control.getAttribute?.('form');
+  if (formId !== null && formId !== undefined) {
+    const document = control.ownerDocument;
+    const target = document?.getElementById?.(formId) ?? null;
+    return String(target?.tagName || '').toUpperCase() === 'FORM' ? target : null;
+  }
+  let ancestor = control.parentElement ?? control.parentNode ?? null;
+  while (ancestor && ancestor.nodeType !== 9) {
+    if (String(ancestor.tagName || '').toUpperCase() === 'FORM') return ancestor;
+    ancestor = ancestor.parentElement ?? ancestor.parentNode ?? null;
+  }
+  return null;
+}
+
+// Every control matching `selector` whose form owner is `form`, wherever it sits:
+// descendants owned by another form (form="other") are excluded, and controls
+// outside `form` that name it with form="" are included.
+export function creatorCrateFormOwnedControls(form, selector) {
+  if (!form) return [];
+  const candidates = new Set(Array.from(form.querySelectorAll?.(selector) || []));
+  const document = form.ownerDocument;
+  if (document && document !== form) {
+    Array.from(document.querySelectorAll?.(selector) || []).forEach((control) => candidates.add(control));
+  }
+  return Array.from(candidates).filter((control) => creatorCrateFormOwner(control) === form);
+}
+
+function creatorCrateDropdownCarrierSubmits(input, form) {
+  if (creatorCrateDropdownCarrierIsDisabled(input)) return false;
+  return creatorCrateFormOwner(input) === form;
+}
+
+// The dropdown's form is its own controls' form owner (a dropdown can be rendered
+// outside the form it filters); the nearest ancestor form is the fallback.
+function creatorCrateDropdownForm(dropdown, inputs) {
+  const owned = inputs.map((input) => creatorCrateFormOwner(input)).find(Boolean);
+  return owned || dropdown?.closest?.('form') || null;
+}
+
+function creatorCrateDropdownCarriedInputs(dropdown) {
+  if (creatorCrateDropdownSelectAllValue(dropdown) === null) return [];
+  const inputs = creatorCrateDropdownInputs(dropdown, 'multiple');
+  const name = inputs
+    .map((input) => input.getAttribute?.('name') ?? input.name ?? '')
+    .find((value) => value !== '');
+  const form = creatorCrateDropdownForm(dropdown, inputs);
+  if (!name || !form) return [];
+  return creatorCrateFormOwnedControls(form, `input[${CC_DROPDOWN_CARRIED_VALUE_ATTRIBUTE}]`)
+    .filter((input) => (input.getAttribute?.('name') ?? input.name) === name
+      && String(input.value ?? '') !== ''
+      && creatorCrateDropdownCarrierSubmits(input, form));
+}
+
+function removeCreatorCrateDropdownCarriedInputs(dropdown) {
+  creatorCrateDropdownCarriedInputs(dropdown).forEach((input) => input.remove?.());
+}
+
 // Reconciles the Select all row with the individual rows. `changed` is the row the user
 // just toggled (if any): choosing Select all clears individual values, choosing a value
 // leaves All, and clearing the last value (or unchecking Select all) returns to All.
+// A user edit also drops carried values; without one they keep Select all unchecked.
 function reconcileCreatorCrateDropdownSelectAll(dropdown, changed = null) {
   const selectAll = creatorCrateDropdownSelectAllInput(dropdown);
   if (!selectAll) return;
   const individual = creatorCrateDropdownIndividualInputs(dropdown, 'multiple');
+  if (changed) removeCreatorCrateDropdownCarriedInputs(dropdown);
   if (changed === selectAll && selectAll.checked) {
     individual.forEach((input) => { input.checked = false; });
     return;
   }
-  selectAll.checked = !individual.some((input) => input.checked);
+  selectAll.checked = !individual.some((input) => input.checked)
+    && creatorCrateDropdownCarriedInputs(dropdown).length === 0;
 }
 
 function preventCreatorCrateDropdownSelectAllDeselect(dropdown, event) {
@@ -574,7 +673,8 @@ function preventCreatorCrateDropdownSelectAllDeselect(dropdown, event) {
   if (creatorCrateDropdownSelectAllInput(dropdown) !== target) return;
   // Unrestricted stays unrestricted until a value is chosen; cancelling the click
   // restores the box without a change event, so filters are not refreshed for nothing.
-  if (!creatorCrateDropdownIndividualInputs(dropdown, 'multiple').some((input) => input.checked)) {
+  if (!creatorCrateDropdownIndividualInputs(dropdown, 'multiple').some((input) => input.checked)
+    && creatorCrateDropdownCarriedInputs(dropdown).length === 0) {
     event.preventDefault?.();
   }
 }
@@ -842,6 +942,11 @@ function updateCreatorCrateDropdownSummary(dropdown) {
     if (!selectedInput || summaryText === '') return;
   } else if (mode === 'multiple') {
     const selectedInputs = creatorCrateDropdownIndividualInputs(dropdown, mode).filter((input) => input.checked);
+    const renderedValues = new Set(selectedInputs.map((input) => String(input.value ?? '')));
+    const carriedValues = new Set(creatorCrateDropdownCarriedInputs(dropdown)
+      .map((input) => String(input.value ?? ''))
+      .filter((value) => !renderedValues.has(value)));
+    const selectedCount = selectedInputs.length + carriedValues.size;
     const selectAllEnabled = creatorCrateDropdownSelectAllValue(dropdown) !== null;
     const emptySummary = (dropdown.dataset?.ccDropdownEmptySummary
       ?? dropdown.getAttribute?.('data-cc-dropdown-empty-summary')
@@ -849,13 +954,14 @@ function updateCreatorCrateDropdownSummary(dropdown) {
     const countLabel = dropdown.dataset?.ccDropdownCountLabel
       ?? dropdown.getAttribute?.('data-cc-dropdown-count-label')
       ?? 'items';
-    if (selectedInputs.length === 0) {
+    // A carried value has no rendered label: it is only ever counted.
+    if (selectedCount === 0) {
       summaryText = emptySummary;
-    } else if (selectedInputs.length === 1) {
-      summaryText = assetViewerFilterMultiSelectLabel(selectedInputs[0])
+    } else if (selectedCount === 1) {
+      summaryText = (selectedInputs.length === 1 ? assetViewerFilterMultiSelectLabel(selectedInputs[0]) : '')
         || `1 ${countLabel.replace(/s$/, '')} selected`;
     } else {
-      summaryText = `${selectedInputs.length} ${countLabel} selected`;
+      summaryText = `${selectedCount} ${countLabel} selected`;
     }
   } else {
     return;

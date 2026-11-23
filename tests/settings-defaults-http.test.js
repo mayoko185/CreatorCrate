@@ -231,6 +231,246 @@ describe('settings — page defaults HTTP', () => {
     expect(readMeta(db, 'page_defaults.calendar.month')).toBeUndefined();
   });
 
+  // WP14a: a legacy Settings write of Calendar defaults advances the Calendar
+  // defaults generation in the same transaction, so an explicit Calendar Save
+  // or Reset defaults prepared before it is rejected and cannot overwrite it.
+  it('advances the Calendar defaults generation on a legacy write and fences an older explicit Save', async () => {
+    const service = app.locals.pageDefaultsService;
+    const generationKey = 'page_defaults_generation.calendar';
+    expect(service.getMutationGeneration('calendar')).toBe(0);
+
+    // A Settings post without Calendar fields leaves it alone.
+    await agent.post('/settings/defaults').type('form').send({ ...VALID_DEFAULTS, _csrf: csrfToken }).expect(302);
+    expect(readMeta(db, generationKey)).toBeUndefined();
+
+    await agent.post('/settings/defaults').type('form').send({
+      calendarView: 'list', calendarStatus: 'published', calendarWeekStart: 'sunday', _csrf: csrfToken,
+    }).expect(302);
+    expect(service.getMutationGeneration('calendar')).toBe(1);
+    expect(service.getMutationGeneration('releases')).toBe(0);
+    // A rejected legacy write writes nothing, the generation included.
+    await agent.post('/settings/defaults').type('form').send({
+      calendarView: 'grid', calendarStatus: 'planned', calendarWeekStart: 'invalid', _csrf: csrfToken,
+    }).expect(422);
+    expect(service.getMutationGeneration('calendar')).toBe(1);
+    // A one-field legacy autosave (the current Calendar dialog) also counts.
+    await agent.post('/settings/defaults').type('form').send({ calendarStatus: 'planned', _csrf: csrfToken }).expect(302);
+    expect(service.getMutationGeneration('calendar')).toBe(2);
+    expect(readMeta(db, defaultKey('calendar', 'status'))).toBe('planned');
+
+    // An explicit Save prepared at generation 0 is stale: nothing is written.
+    const stale = await agent.post('/calendar/defaults').set('Accept', 'application/json').type('form').send({
+      _csrf: csrfToken, view: 'grid', status: 'all', weekStart: 'monday',
+      defaultsGeneration: '0', defaultsOperation: 'op-stale',
+    }).expect(409);
+    expect(stale.body).toMatchObject({
+      code: 'DEFAULTS_GENERATION_CONFLICT',
+      operation: { id: 'op-stale', result: 'conflict', committed: false, expectedGeneration: 0, generation: 2 },
+      authority: { generation: 2, defaults: { view: 'list', status: 'planned', weekStart: 'sunday' } },
+    });
+    expect(readMeta(db, defaultKey('calendar', 'view'))).toBe('list');
+    expect(readMeta(db, defaultKey('calendar', 'status'))).toBe('planned');
+    expect(readMeta(db, defaultKey('calendar', 'weekStart'))).toBe('sunday');
+    const staleReset = await agent.post('/calendar/defaults/reset').set('Accept', 'application/json').type('form')
+      .send({ _csrf: csrfToken, defaultsGeneration: '1', defaultsOperation: 'op-stale-reset' })
+      .expect(409);
+    expect(staleReset.body.operation).toMatchObject({ kind: 'resetDefaults', result: 'conflict', generation: 2 });
+    expect(readMeta(db, defaultKey('calendar', 'view'))).toBe('list');
+  });
+
+  // C2: legacy Settings writes of Releases Sort/Order advance the Releases
+  // defaults generation in the same transaction (the WP14a Calendar
+  // mechanism), so an explicit Releases Save / Reset prepared before them is
+  // rejected as stale instead of overwriting the newer saved values.
+  describe('C2 — Releases legacy writes fence explicit Releases Save / Reset', () => {
+    const generationKey = 'page_defaults_generation.releases';
+    const otherGenerationKeys = [
+      'page_defaults_generation.asset_viewer',
+      'page_defaults_generation.projects',
+      'page_defaults_generation.calendar',
+    ];
+
+    function generation(page) {
+      return app.locals.pageDefaultsService.getMutationGeneration(page);
+    }
+
+    function releasesRows() {
+      return db.prepare("SELECT key, value FROM app_meta WHERE key LIKE 'page_defaults.releases.%' ORDER BY key").all();
+    }
+
+    function postReleasesSave(fields) {
+      return agent.post('/releases/defaults').set('Accept', 'application/json').type('form')
+        .send({ _csrf: csrfToken, ...fields });
+    }
+
+    function postReleasesReset(fields) {
+      return agent.post('/releases/defaults/reset').set('Accept', 'application/json').type('form')
+        .send({ _csrf: csrfToken, ...fields });
+    }
+
+    it('rejects a stale explicit Releases Save prepared before a newer legacy write (cases A, J)', async () => {
+      const g = generation('releases');
+      expect(g).toBe(0);
+      const prepared = { sort: 'title', order: 'asc', defaultsGeneration: String(g), defaultsOperation: 'op-stale-save' };
+
+      const legacy = await agent.post('/settings/defaults').type('form')
+        .send({ releasesSort: 'updated', releasesOrder: 'desc', _csrf: csrfToken })
+        .expect(302);
+      expect(legacy.headers.location).toBe('/settings/defaults?notice=defaults_saved');
+      const g2 = generation('releases');
+      expect(g2).not.toBe(g);
+      expect(g2).toBe(1);
+      expect(readMeta(db, generationKey)).toBe('1');
+      for (const key of otherGenerationKeys) expect(readMeta(db, key)).toBeUndefined();
+
+      const stale = await postReleasesSave(prepared).expect(409);
+      expect(stale.body).toMatchObject({
+        status: 'error',
+        code: 'DEFAULTS_GENERATION_CONFLICT',
+        operation: { id: 'op-stale-save', kind: 'save', result: 'conflict', committed: false, expectedGeneration: 0, generation: 1 },
+        authority: { page: 'releases', generation: 1, savedKeys: ['sort', 'order'], defaults: { sort: 'updated', order: 'desc' } },
+      });
+      expect(releasesRows()).toEqual([
+        { key: defaultKey('releases', 'order'), value: 'desc' },
+        { key: defaultKey('releases', 'sort'), value: 'updated' },
+      ]);
+      expect(generation('releases')).toBe(1);
+    });
+
+    it('rejects a stale explicit Releases Reset and keeps the newer saved values (cases K, I)', async () => {
+      writeMeta(db, defaultKey('new_project', 'status'), 'planned');
+      const prepared = { defaultsGeneration: String(generation('releases')), defaultsOperation: 'op-stale-reset' };
+
+      await agent.post('/settings/defaults').type('form')
+        .send({ releasesSort: 'created', releasesOrder: 'desc', _csrf: csrfToken })
+        .expect(302);
+
+      const stale = await postReleasesReset(prepared).expect(409);
+      expect(stale.body).toMatchObject({
+        code: 'DEFAULTS_GENERATION_CONFLICT',
+        operation: { id: 'op-stale-reset', kind: 'resetDefaults', result: 'conflict', committed: false, expectedGeneration: 0, generation: 1 },
+      });
+      expect(releasesRows()).toEqual([
+        { key: defaultKey('releases', 'order'), value: 'desc' },
+        { key: defaultKey('releases', 'sort'), value: 'created' },
+      ]);
+      expect(readMeta(db, defaultKey('new_project', 'status'))).toBe('planned');
+      expect(generation('releases')).toBe(1);
+
+      // A Reset carrying the current generation still works.
+      const current = await postReleasesReset({ defaultsGeneration: '1', defaultsOperation: 'op-current-reset' }).expect(200);
+      expect(current.body).toMatchObject({
+        status: 'success',
+        operation: { id: 'op-current-reset', kind: 'resetDefaults', result: 'committed', committed: true, expectedGeneration: 1, generation: 2 },
+        reset: { page: 'releases', changed: true },
+      });
+      expect(releasesRows()).toEqual([]);
+      expect(readMeta(db, defaultKey('new_project', 'status'))).toBe('planned');
+    });
+
+    it('accepts current-generation Saves and fences across sequential legacy and explicit writes (cases H, L, M)', async () => {
+      const first = await postReleasesSave({ sort: 'title', order: 'desc', defaultsGeneration: '0', defaultsOperation: 'op-h' }).expect(200);
+      expect(first.body.operation).toMatchObject({ id: 'op-h', result: 'committed', committed: true, generation: 1 });
+
+      // L: a legacy write after an explicit Save advances past it.
+      await agent.post('/settings/defaults').type('form')
+        .send({ releasesSort: 'updated', releasesOrder: 'asc', _csrf: csrfToken }).expect(302);
+      expect(generation('releases')).toBe(2);
+      // M: further sequential legacy writes keep advancing; a one-field write counts.
+      await agent.post('/settings/defaults').type('form')
+        .send({ releasesOrder: 'desc', _csrf: csrfToken }).expect(302);
+      expect(generation('releases')).toBe(3);
+      expect(readMeta(db, defaultKey('releases', 'sort'))).toBe('updated');
+      expect(readMeta(db, defaultKey('releases', 'order'))).toBe('desc');
+
+      await postReleasesSave({ sort: 'planned', order: 'asc', defaultsGeneration: '1', defaultsOperation: 'op-old' }).expect(409);
+      expect(readMeta(db, defaultKey('releases', 'sort'))).toBe('updated');
+
+      const current = await postReleasesSave({ sort: 'created', order: 'asc', defaultsGeneration: '3', defaultsOperation: 'op-cur' }).expect(200);
+      expect(current.body.operation).toMatchObject({ id: 'op-cur', result: 'committed', expectedGeneration: 3, generation: 4 });
+      expect(readMeta(db, defaultKey('releases', 'sort'))).toBe('created');
+      expect(readMeta(db, defaultKey('releases', 'order'))).toBe('asc');
+      expect(generation('calendar')).toBe(0);
+    });
+
+    it('advances only the submitted pages: Calendar-only, combined, and unrelated writes (cases B, C, D)', async () => {
+      seedMovedDefaults(db);
+      const movedBefore = movedStorageSnapshot(db);
+
+      // D: unrelated Settings-only writes advance no page generation.
+      await agent.post('/settings/defaults').type('form')
+        .send({ ...VALID_DEFAULTS, clockFormat: '24h', noteRevisionRetention: '9', _csrf: csrfToken }).expect(302);
+      expect(readMeta(db, generationKey)).toBeUndefined();
+      for (const key of otherGenerationKeys) expect(readMeta(db, key)).toBeUndefined();
+
+      // B: Calendar-only advances Calendar, not Releases.
+      await agent.post('/settings/defaults').type('form')
+        .send({ calendarView: 'list', calendarStatus: 'planned', calendarWeekStart: 'sunday', _csrf: csrfToken }).expect(302);
+      expect(generation('calendar')).toBe(1);
+      expect(generation('releases')).toBe(0);
+
+      // C: one combined write protects both page generations.
+      await agent.post('/settings/defaults').type('form').send({
+        releasesSort: 'title', releasesOrder: 'desc',
+        calendarView: 'grid', calendarStatus: 'published', calendarWeekStart: 'monday',
+        _csrf: csrfToken,
+      }).expect(302);
+      expect(generation('calendar')).toBe(2);
+      expect(generation('releases')).toBe(1);
+      await postReleasesSave({ sort: 'planned', order: 'asc', defaultsGeneration: '0', defaultsOperation: 'op-r' }).expect(409);
+      await agent.post('/calendar/defaults').set('Accept', 'application/json').type('form')
+        .send({ _csrf: csrfToken, view: 'list', status: 'all', weekStart: 'sunday', defaultsGeneration: '1', defaultsOperation: 'op-c' })
+        .expect(409);
+      expect(readMeta(db, defaultKey('releases', 'sort'))).toBe('title');
+      expect(readMeta(db, defaultKey('calendar', 'status'))).toBe('published');
+
+      // Other defaults pages keep their values and generations.
+      expect(movedStorageSnapshot(db)).toEqual(movedBefore);
+      for (const key of otherGenerationKeys.filter((key) => !key.endsWith('.calendar'))) {
+        expect(readMeta(db, key)).toBeUndefined();
+      }
+      expect(readMeta(db, CLOCK_FORMAT_KEY)).toBe('24h');
+      expect(readMeta(db, NOTE_REVISION_RETENTION_KEY)).toBe('9');
+    });
+
+    it('does not advance the generation for invalid, rejected, or rolled-back writes (cases E, F, G)', async () => {
+      await agent.post('/settings/defaults').type('form')
+        .send({ releasesSort: 'updated', releasesOrder: 'desc', _csrf: csrfToken }).expect(302);
+      expect(generation('releases')).toBe(1);
+
+      // E: an invalid Releases value is rejected atomically.
+      await agent.post('/settings/defaults').type('form')
+        .send({ releasesSort: 'invalid', releasesOrder: 'asc', _csrf: csrfToken }).expect(422);
+      await agent.post('/settings/defaults').type('form')
+        .send({ releasesSort: 'title', releasesOrder: 'asc', new_projectStatus: 'invalid', _csrf: csrfToken }).expect(422);
+      // F: a POST without CSRF is rejected before any write.
+      await agent.post('/settings/defaults').type('form')
+        .send({ releasesSort: 'title', releasesOrder: 'asc' }).expect(403);
+      expect(generation('releases')).toBe(1);
+      expect(readMeta(db, defaultKey('releases', 'sort'))).toBe('updated');
+      expect(readMeta(db, defaultKey('releases', 'order'))).toBe('desc');
+
+      // G: a failure after the generation advance and the Sort write rolls
+      // the whole transaction back, the generation included.
+      const orderKey = defaultKey('releases', 'order');
+      db.exec(`
+        CREATE TRIGGER fail_releases_order_update BEFORE UPDATE ON app_meta
+        WHEN NEW.key = '${orderKey}'
+        BEGIN SELECT RAISE(ABORT, 'forced'); END;
+      `);
+      await agent.post('/settings/defaults').type('form')
+        .send({ releasesSort: 'title', releasesOrder: 'asc', _csrf: csrfToken }).expect(500);
+      db.exec('DROP TRIGGER fail_releases_order_update');
+      expect(generation('releases')).toBe(1);
+      expect(readMeta(db, defaultKey('releases', 'sort'))).toBe('updated');
+      expect(readMeta(db, orderKey)).toBe('desc');
+
+      // The prepared current-generation Save is still accepted afterwards.
+      await postReleasesSave({ sort: 'title', order: 'asc', defaultsGeneration: '1', defaultsOperation: 'op-after' }).expect(200);
+      expect(generation('releases')).toBe(2);
+    });
+  });
+
   it('renders the project image defaults without persisting missing keys', async () => {
     const res = await agent.get('/settings/defaults').expect(200);
     const thumbnail = settingsSection(res.text, 'defaults-thumbnail-generation');

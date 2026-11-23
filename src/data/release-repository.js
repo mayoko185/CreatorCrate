@@ -214,7 +214,13 @@ export function createReleaseRepository(db) {
     RETURNING ${COLUMNS.join(', ')}
   `);
 
-  const findCalendarRangeStmt = db.prepare(`
+  // Calendar candidate set: every non-archived release whose effective date
+  // (publication when published, otherwise plan) is in [start, end). Archived
+  // parent projects stay included (their entries render read-only). WP13's
+  // Project and Project Type predicates only narrow this set; `projects` is a
+  // 1:1 join on the owning Project, so they never duplicate a release.
+  function buildCalendarRangeSql(extraConditions = []) {
+    return `
     SELECT
       r.id,
       r.project_id,
@@ -232,13 +238,15 @@ export function createReleaseRepository(db) {
     WHERE r.archived_at IS NULL
       AND (CASE WHEN r.published_date IS NOT NULL THEN r.published_date ELSE r.planned_date END) >= ?
       AND (CASE WHEN r.published_date IS NOT NULL THEN r.published_date ELSE r.planned_date END) < ?
-      AND (? IS NULL OR r.project_id = ?)
+      ${extraConditions.map((condition) => `AND ${condition}`).join('\n      ')}
     ORDER BY
       CASE WHEN r.published_date IS NOT NULL THEN r.published_date ELSE r.planned_date END ASC,
       (NULLIF(r.planned_time, '') IS NULL) ASC,
       NULLIF(r.planned_time, '') ASC,
       r.id ASC
-  `);
+  `;
+  }
+  const findCalendarRangeStmt = db.prepare(buildCalendarRangeSql());
 
   // ─── Dashboard Projections ─────────────────────────────────────────────
 
@@ -848,11 +856,33 @@ export function createReleaseRepository(db) {
      *
      * @param {string} startDate - ISO date YYYY-MM-DD (inclusive)
      * @param {string} endDate - ISO date YYYY-MM-DD (exclusive)
-     * @param {number|null} projectId - optional Calendar-only project filter
+     * @param {number|null|{projectIds?: number[], projectTypes?: string[]}} [filters]
+     *   WP13: `{ projectIds, projectTypes }` — OR within each array, AND
+     *   between them (an empty or absent array is unrestricted). A legacy
+     *   scalar Project ID (or null) is still accepted as a one-element
+     *   `projectIds`.
      * @returns {Array<ReleaseRecord & {project_title: string, notes: string, published_date: string|null}>}
      */
-    findCalendarRange(startDate, endDate, projectId = null) {
-      return findCalendarRangeStmt.all(startDate, endDate, projectId, projectId);
+    findCalendarRange(startDate, endDate, filters = null) {
+      const selection = filters !== null && typeof filters === 'object'
+        ? filters
+        : { projectIds: filters == null ? [] : [filters] };
+      const projectIds = Array.isArray(selection.projectIds) ? selection.projectIds : [];
+      const projectTypes = Array.isArray(selection.projectTypes) ? selection.projectTypes : [];
+      if (projectIds.length === 0 && projectTypes.length === 0) {
+        return findCalendarRangeStmt.all(startDate, endDate);
+      }
+      const conditions = [];
+      const params = [startDate, endDate];
+      if (projectIds.length > 0) {
+        conditions.push(`r.project_id IN (${projectIds.map(() => '?').join(', ')})`);
+        params.push(...projectIds);
+      }
+      if (projectTypes.length > 0) {
+        conditions.push(`p.project_type IN (${projectTypes.map(() => '?').join(', ')})`);
+        params.push(...projectTypes);
+      }
+      return db.prepare(buildCalendarRangeSql(conditions)).all(...params);
     },
 
     /**
@@ -1585,7 +1615,9 @@ export function createReleaseRepository(db) {
      * Build the WHERE conditions and params for release list queries.
      * Returns { conditions: string[], params: any[] }.
      * @param {Object} filters
-     * @param {number|null} filters.projectId
+     * @param {number|null} filters.projectId - legacy scalar alias
+     * @param {number[]} [filters.projectIds] - OR-ed owning Project IDs (wins over projectId)
+     * @param {string[]} [filters.projectTypes] - OR-ed owning Project Type values (stable catalogue values)
      * @param {number|null} [filters.assetId] - exact release_assets membership (owner-guarded)
      * @param {string|null} filters.schedule - 'overdue'|'today'|'upcoming'|'unscheduled'
      * @param {boolean} filters.includeArchived
@@ -1605,9 +1637,24 @@ export function createReleaseRepository(db) {
         params.push(term, term, term, term);
       }
 
-      if (filters.projectId != null) {
+      // Owning-Project selection: OR across `projectIds` (authoritative when
+      // supplied); the legacy scalar `projectId` applies only when no array is
+      // given, so the two are never both enforced.
+      const projectIds = Array.isArray(filters.projectIds) ? filters.projectIds : [];
+      if (projectIds.length > 0) {
+        conditions.push(`releases.project_id IN (${projectIds.map(() => '?').join(',')})`);
+        params.push(...projectIds);
+      } else if (filters.projectId != null) {
         conditions.push('releases.project_id = ?');
         params.push(filters.projectId);
+      }
+
+      // Owning Project Type: OR across stable catalogue values, AND-ed with
+      // the Project selection and every other filter.
+      const projectTypes = Array.isArray(filters.projectTypes) ? filters.projectTypes : [];
+      if (projectTypes.length > 0) {
+        conditions.push(`projects.project_type IN (${projectTypes.map(() => '?').join(',')})`);
+        params.push(...projectTypes);
       }
 
       // Exact asset membership. The asset must belong to the release's own
@@ -1670,7 +1717,9 @@ export function createReleaseRepository(db) {
      * Paginated release list with project title and asset counts.
      * Uses SQL LIMIT/OFFSET for pagination — no in-memory slicing.
      * @param {Object} filters
-     * @param {number|null} filters.projectId
+     * @param {number|null} filters.projectId - legacy scalar alias
+     * @param {number[]} [filters.projectIds] - OR-ed owning Project IDs (wins over projectId)
+     * @param {string[]} [filters.projectTypes] - OR-ed owning Project Type values (stable catalogue values)
      * @param {number|null} [filters.assetId]
      * @param {string|null} filters.schedule
      * @param {boolean} filters.includeArchived
@@ -1686,6 +1735,8 @@ export function createReleaseRepository(db) {
       const {
         search,
         projectId,
+        projectIds = [],
+        projectTypes = [],
         assetId = null,
         schedule,
         includeArchived = false,
@@ -1698,7 +1749,7 @@ export function createReleaseRepository(db) {
       } = filters;
 
       const { conditions, params } = this._buildFilterConditions({
-        search, projectId, assetId, schedule, includeArchived, today, activeScheduleFilter,
+        search, projectId, projectIds, projectTypes, assetId, schedule, includeArchived, today, activeScheduleFilter,
       });
       const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
       const orderClause = buildOrderClauseWithTable('releases', sortBy, order);
@@ -1732,6 +1783,8 @@ export function createReleaseRepository(db) {
       const {
         search,
         projectId,
+        projectIds = [],
+        projectTypes = [],
         assetId = null,
         schedule,
         includeArchived = false,
@@ -1740,7 +1793,7 @@ export function createReleaseRepository(db) {
       } = filters;
 
       const { conditions, params } = this._buildFilterConditions({
-        search, projectId, assetId, schedule, includeArchived, today, activeScheduleFilter,
+        search, projectId, projectIds, projectTypes, assetId, schedule, includeArchived, today, activeScheduleFilter,
       });
       const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
       const sql = `SELECT COUNT(*) AS c FROM releases JOIN projects ON projects.id = releases.project_id ${where}`;

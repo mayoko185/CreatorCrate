@@ -614,6 +614,9 @@ describe('Release Delete in place', () => {
       expect(releaseDeleteState(t.document, '12').phase).toBe('unresolved');
       expect(t.deletedEvents()).toHaveLength(0);
       expect(t.dialog.open).toBe(true);
+      // Calendar M1 P3-A: the host hears of the unresolved Delete once.
+      const claims = t.document.events.filter((event) => event.type === 'release-action-unresolved');
+      expect(claims.map(({ detail }) => detail)).toEqual([{ releaseId: '12', action: 'delete' }]);
     }
   });
 
@@ -732,5 +735,238 @@ describe('Release Delete in place', () => {
     editController.current = null;
     const document = { nodeType: 9, getElementById: () => null };
     expect(enhanceReleaseDelete(document)).toBeNull();
+  });
+});
+
+// Calendar M1 late verification (P2): a Delete Check again answer that
+// arrives after a newer release action took the page feedback. The host
+// stand-in answers release-action-unresolved exactly as Calendar does
+// (live-regions.js); the ownership checks under test are release-delete.js's.
+function calendarHost(t) {
+  const host = { owner: null, claims: [] };
+  t.document.dispatchEvent = function dispatchEvent(event) {
+    this.events.push(event);
+    if (event.type !== 'release-action-unresolved') return;
+    const action = {};
+    host.owner = action;
+    host.claims.push(event.detail);
+    event.detail.ownsFeedback = () => host.owner === action;
+  };
+  host.newerAction = (message, { retry = false } = {}) => {
+    editController.current.releaseId = '7';
+    t.dialog.open = false;
+    host.owner = {};
+    t.feedback.querySelector('[data-dialog-feedback-text]').textContent = message;
+    host.retry = retry
+      ? t.feedback.appendChild(new FakeNode('button', { type: 'button', 'data-calendar-edit-refresh-retry': '' }))
+      : null;
+  };
+  return host;
+}
+
+const feedbackText = (t) => t.feedback.querySelector('[data-dialog-feedback-text]').textContent;
+const feedbackControls = (t) => t.feedback.querySelectorAll('button')
+  .map((node) => [...node.attributes.keys()].find((name) => name.startsWith('data-')));
+
+async function heldDeleteCheckAgain() {
+  const t = setup();
+  const host = calendarHost(t);
+  t.fetch.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+  t.fetch.mockResolvedValueOnce(jsonResponse(200, EDIT_MODEL));
+  t.confirmAndSubmit();
+  await flush();
+  expect(releaseDeleteState(t.document, '12').phase).toBe('unresolved');
+  const held = deferred();
+  t.fetch.mockReturnValueOnce(held.promise);
+  const check = t.feedback.querySelector('[data-release-delete-feedback-check]');
+  check.focus();
+  check.click();
+  await flush();
+  expect(feedbackText(t)).toBe(`${M.unconfirmed} ${M.checking}`);
+  expect(host.claims.map(({ action }) => action)).toEqual(['delete', 'delete']);
+  return { t, host, held };
+}
+
+describe('Release Delete — late Check again after a newer release action (Calendar M1 P2)', () => {
+  it('LV-F — a late "still present" answer keeps the newer Edit report; the Delete keeps its own result', async () => {
+    const { t, host, held } = await heldDeleteCheckAgain();
+    host.newerAction('Release updated.');
+    const focused = t.document.activeElement;
+    held.resolve(jsonResponse(200, EDIT_MODEL));
+    await flush();
+    expect(feedbackText(t)).toBe('Release updated.');
+    expect(feedbackControls(t)).toEqual([]);
+    expect(t.document.activeElement).toBe(focused);
+    const record = releaseDeleteState(t.document, '12');
+    expect(record.phase).toBe('unresolved');
+    expect(record.message).toBe(`${M.unconfirmed} ${M.stillPresent}`);
+    expect(t.deletePosts()).toHaveLength(1);
+    expect(t.gets()).toHaveLength(2);
+    expect(t.deletedEvents()).toHaveLength(0);
+    // Reopening release 12 shows that result with its GET-only Check again.
+    editController.current.releaseId = '12';
+    t.reopen();
+    expect(t.status.textContent).toContain(M.stillPresent);
+    expect(t.status.querySelector('[data-release-delete-check]')).not.toBeNull();
+  });
+
+  it('LV-G — a late "still present" answer keeps a newer confirmed Archive report', async () => {
+    const { t, host, held } = await heldDeleteCheckAgain();
+    host.newerAction('Release “Other” archived.');
+    held.resolve(jsonResponse(200, EDIT_MODEL));
+    await flush();
+    expect(feedbackText(t)).toBe('Release “Other” archived.');
+    expect(feedbackControls(t)).toEqual([]);
+    expect(t.posts()).toHaveLength(1);
+  });
+
+  it('LV-E / LV-M — a newer refresh failure keeps its warning and its only Retry refresh, with focus', async () => {
+    const { t, host, held } = await heldDeleteCheckAgain();
+    host.newerAction('Release saved, but Calendar could not refresh.', { retry: true });
+    host.retry.focus();
+    held.resolve(jsonResponse(409, { status: 'error', code: 'RELEASE_ARCHIVED' }));
+    await flush();
+    expect(feedbackText(t)).toBe('Release saved, but Calendar could not refresh.');
+    expect(feedbackControls(t)).toEqual(['data-calendar-edit-refresh-retry']);
+    expect(t.document.activeElement).toBe(host.retry);
+    // An archived read is still only an observation for Delete.
+    expect(releaseDeleteState(t.document, '12').phase).toBe('unresolved');
+    expect(t.document.events.filter(({ type }) => type === 'release-archived')).toHaveLength(0);
+  });
+
+  it('LV-K — a late failed check never replaces the newer report', async () => {
+    const { t, host, held } = await heldDeleteCheckAgain();
+    host.newerAction('Release updated.');
+    held.resolve(jsonResponse(503, { status: 'error', message: 'Service unavailable' }));
+    await flush();
+    expect(feedbackText(t)).toBe('Release updated.');
+    expect(feedbackControls(t)).toEqual([]);
+    expect(releaseDeleteState(t.document, '12').message).toBe(`${M.unconfirmed} ${M.checkFailed}`);
+    expect(t.deletePosts()).toHaveLength(1);
+  });
+
+  it('LV-J — a late 404 settles the Delete as observed gone and still re-reads the host, without its feedback', async () => {
+    const { t, host, held } = await heldDeleteCheckAgain();
+    host.newerAction('Release updated.');
+    held.resolve(jsonResponse(404, NOT_FOUND));
+    await flush();
+    expect(releaseDeleteState(t.document, '12').phase).toBe('missing');
+    expect(feedbackText(t)).toBe('Release updated.');
+    expect(t.deletedEvents()).toHaveLength(1);
+    expect(t.deletedEvents()[0].detail).toMatchObject({
+      releaseId: '12', outcome: 'observed-missing', confirmed: false, feedback: false,
+    });
+    expect(t.deletePosts()).toHaveLength(1);
+  });
+
+  it('LV-H — with no newer action the answer still reports in the page feedback with its Check again', async () => {
+    const { t, held } = await heldDeleteCheckAgain();
+    held.resolve(jsonResponse(200, EDIT_MODEL));
+    await flush();
+    expect(feedbackText(t)).toBe(`${M.unconfirmed} ${M.stillPresent}`);
+    expect(feedbackControls(t)).toEqual(['data-release-delete-feedback-check']);
+    t.fetch.mockResolvedValueOnce(jsonResponse(404, NOT_FOUND));
+    t.feedback.querySelector('[data-release-delete-feedback-check]').click();
+    await flush();
+    expect(t.deletedEvents()[0].detail).not.toHaveProperty('feedback');
+    expect(feedbackText(t)).toContain(M.observedMissing);
+    expect(t.deletePosts()).toHaveLength(1);
+  });
+
+  it('LV-7 — an older check answering after a newer check of the same release stays ignored (check number)', async () => {
+    const { t, held } = await heldDeleteCheckAgain();
+    editController.current.releaseId = '12';
+    t.fetch.mockResolvedValueOnce(jsonResponse(200, EDIT_MODEL));
+    t.handle.check('12');
+    await flush();
+    held.resolve(jsonResponse(404, NOT_FOUND));
+    await flush();
+    expect(releaseDeleteState(t.document, '12').phase).toBe('unresolved');
+    expect(feedbackText(t)).toBe(`${M.unconfirmed} ${M.stillPresent}`);
+    expect(t.deletedEvents()).toHaveLength(0);
+    expect(t.deletePosts()).toHaveLength(1);
+  });
+});
+
+// Calendar Correction M1 (P2): feedback control ownership for Delete. Release
+// 12's Delete is unresolved with a page Check again; a newer action on
+// release 7 then owns the page feedback.
+const A_STALE = 'Release saved, but Calendar could not refresh. The calendar shown may be out of date.';
+
+async function unresolvedDeleteThenNewer({ retry = true } = {}) {
+  const t = setup();
+  const host = calendarHost(t);
+  t.fetch.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+  t.fetch.mockResolvedValueOnce(jsonResponse(200, EDIT_MODEL));
+  t.confirmAndSubmit();
+  await flush();
+  const oldCheck = t.feedback.querySelector('[data-release-delete-feedback-check]');
+  expect(oldCheck).not.toBeNull();
+  host.newerAction(A_STALE, { retry });
+  return { t, host, oldCheck };
+}
+
+describe('Release Delete — Calendar Correction M1 feedback ownership (P2)', () => {
+  it('P2-H — a retained or captured old page Check again is inert: no GET, no claim, the newer notice and Retry stay', async () => {
+    const { t, host, oldCheck } = await unresolvedDeleteThenNewer();
+    oldCheck.focus();
+    oldCheck.click();
+    await flush();
+    expect(t.gets()).toHaveLength(1);
+    expect(host.claims).toHaveLength(1);
+    expect(feedbackText(t)).toBe(A_STALE);
+    expect(feedbackControls(t)).toEqual(['data-calendar-edit-refresh-retry']);
+    expect(t.document.activeElement?.id).toBe('main-content');
+    expect(t.deletePosts()).toHaveLength(1);
+  });
+
+  it('P2-B / P2-C — reopening after the loss offers Check again in the dialog only; closing leaves the newer notice', async () => {
+    const { t, host } = await unresolvedDeleteThenNewer();
+    t.feedback.querySelector('[data-release-delete-feedback-check]').remove();
+    editController.current.releaseId = '12';
+    t.reopen();
+    expect(t.status.textContent).toContain(M.stillPresent);
+    expect(t.status.querySelector('[data-release-delete-check]')).not.toBeNull();
+    expect(feedbackText(t)).toBe(A_STALE);
+    expect(feedbackControls(t)).toEqual(['data-calendar-edit-refresh-retry']);
+    t.dismiss();
+    await flush();
+    expect(feedbackText(t)).toBe(A_STALE);
+    expect(feedbackControls(t)).toEqual(['data-calendar-edit-refresh-retry']);
+    expect(t.gets()).toHaveLength(1);
+    expect(host.claims).toHaveLength(1);
+    expect(t.deletePosts()).toHaveLength(1);
+  });
+
+  it('P2-F / P2-G — a reopen whose load is refused 404 after the loss settles gone and re-reads data only', async () => {
+    const { t } = await unresolvedDeleteThenNewer({ retry: false });
+    t.feedback.querySelector('[data-release-delete-feedback-check]').remove();
+    t.feedback.querySelector('[data-dialog-feedback-text]').textContent = 'Release updated.';
+    editController.current.releaseId = '12';
+    t.reopen({ refused: { status: 404, body: NOT_FOUND } });
+    await flush();
+    expect(releaseDeleteState(t.document, '12').phase).toBe('missing');
+    expect(t.status.textContent).toContain(M.observedMissing);
+    expect(feedbackText(t)).toBe('Release updated.');
+    expect(feedbackControls(t)).toEqual([]);
+    expect(t.deletedEvents()).toHaveLength(1);
+    expect(t.deletedEvents()[0].detail).toMatchObject({
+      releaseId: '12', outcome: 'observed-missing', confirmed: false, feedback: false,
+    });
+    expect(t.gets()).toHaveLength(1);
+    expect(t.deletePosts()).toHaveLength(1);
+  });
+
+  it('P3-C — the Delete check number still discards an older answer after a newer one', async () => {
+    const { t, held } = await heldDeleteCheckAgain();
+    t.fetch.mockResolvedValueOnce(jsonResponse(200, EDIT_MODEL));
+    t.handle.check('12');
+    await flush();
+    held.resolve(jsonResponse(503, { status: 'error' }));
+    await flush();
+    expect(releaseDeleteState(t.document, '12').message).toBe(`${M.unconfirmed} ${M.stillPresent}`);
+    expect(feedbackText(t)).toBe(`${M.unconfirmed} ${M.stillPresent}`);
+    expect(t.gets()).toHaveLength(3);
+    expect(t.deletePosts()).toHaveLength(1);
   });
 });

@@ -15,6 +15,10 @@ import { enhanceReleaseCreateDialog } from './client/release-create-dialog.js';
 // with data-defaults-explicit-save and carries no legacy autosave marker.
 import { enhanceAssetLibraryFiltersDefaults } from './client/asset-library-filters-defaults.js';
 import { enhanceProjectsFiltersDefaults } from './client/projects-filters-defaults.js';
+// WP12: the Releases combined Filters & Defaults dialog (#releases-defaults-form,
+// data-defaults-explicit-save, no legacy autosave marker).
+import { enhanceReleasesFiltersDefaults } from './client/releases-filters-defaults.js';
+import { enhanceCalendarFiltersDefaults } from './client/calendar-filters-defaults.js';
 import { enhanceProjectEditDialog } from './client/project-edit-dialog.js';
 import { enhanceProjectArchive } from './client/project-archive.js';
 import { enhanceProjectDelete } from './client/project-delete.js';
@@ -334,13 +338,10 @@ if (typeof document !== 'undefined') {
     enhanceReleaseSignatures(document);
     enhanceProjectsDefaultsFetchSave(document);
     enhanceReleasesDefaultsFetchSave(document);
-    enhancePageDefaultsFetchSave(document, {
-      formSelector: '#calendar-defaults-form',
-      markerAttribute: 'data-calendar-defaults-fetch-save',
-      beginRefresh: beginCalendarDefaultsLiveRefresh,
-      refresh: refreshCalendarLiveRegion,
-      refreshFailureMessage: 'Settings saved, but Calendar could not refresh. Refresh the page to see the saved defaults.',
-    });
+    // WP14b: the Calendar per-control autosave binding (#calendar-defaults-form,
+    // which posted to /settings/defaults on change) is retired; the combined
+    // Filters & Defaults dialog saves only through the explicit transport
+    // (enhanceCalendarFiltersDefaults below).
     // WP9b: the Asset Viewer per-control autosave binding is retired; the
     // combined Filters & Defaults dialog saves only through the explicit
     // transport (enhanceAssetLibraryFiltersDefaults below).
@@ -388,7 +389,13 @@ if (typeof document !== 'undefined') {
     // the explicit transport; the legacy per-control autosave form is retired.
     enhanceProjectsFiltersDefaults(document);
     enhanceReleasesLiveFiltering(document);
+    // WP12: the Releases combined Filters & Defaults dialog saves only through
+    // the explicit transport; the legacy per-control autosave form is retired.
+    enhanceReleasesFiltersDefaults(document);
     enhanceCalendarLiveFiltering(document);
+    // WP14b: the Calendar combined Filters & Defaults dialog saves only through
+    // the explicit transport; the legacy per-control autosave form is retired.
+    enhanceCalendarFiltersDefaults(document);
     enhanceReleaseAssetsLiveFiltering(document);
     enhanceProjectAssetsLiveFiltering(document);
     enhanceAssetLibraryLiveFiltering(document);

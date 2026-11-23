@@ -1230,7 +1230,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
 
   // Mount after /releases to retain its /releases/calendar compatibility redirect.
   app.use('/calendar', createCalendarRouter({
-    appName, workflowQueryService, pageDefaultsService, projectService,
+    appName, db, workflowQueryService, pageDefaultsService, projectService,
     projectTagService, nsfwFilterSettingsService,
   }));
 

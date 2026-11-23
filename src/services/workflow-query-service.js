@@ -336,6 +336,13 @@ function normalizeAssetLibraryTagSelection(value, tagCatalog) {
   return [...selected].sort((left, right) => left - right);
 }
 
+// Express parses a repeated query key into an array; a single key stays a
+// scalar. Either form becomes a flat value list (absent → []).
+function toQueryValueList(value) {
+  if (value === undefined || value === null) return [];
+  return Array.isArray(value) ? value : [value];
+}
+
 function readAssetLibraryProjectSelection(input) {
   if (hasOwn(input, 'projectIds') && input.projectIds !== undefined) return input.projectIds;
   return input.projectId;
@@ -1171,14 +1178,17 @@ export function createWorkflowQueryService({
    *
    * @returns {Array<{ id: number, title: string }>}
    */
-  function getProjectsPageFilterOptions(selectedProjectId = null) {
+  function getProjectsPageFilterOptions(selectedProjectIds = null) {
     const projectOptions = projectRepository
       .listActiveAssetFilterOptions()
       .map((project) => ({ id: project.id, title: project.title }));
-    const selectedProject = selectedProjectId === null ? null : projectRepository.findById(selectedProjectId);
-
-    if (selectedProject && !projectOptions.some((project) => project.id === selectedProject.id)) {
-      projectOptions.push({ id: selectedProject.id, title: selectedProject.title });
+    // Each selected historical (e.g. archived) Project that still exists is
+    // appended so a selection never disappears just because it is outside the
+    // active subset. Unknown or deleted IDs are not invented as options.
+    for (const selectedProjectId of toQueryValueList(selectedProjectIds)) {
+      if (projectOptions.some((project) => project.id === selectedProjectId)) continue;
+      const selectedProject = projectRepository.findById(selectedProjectId);
+      if (selectedProject) projectOptions.push({ id: selectedProject.id, title: selectedProject.title });
     }
 
     return projectOptions.sort(compareProjectOptions);
@@ -1480,6 +1490,26 @@ export function createWorkflowQueryService({
   // ─── Phase 6C: Release Planning Views ─────────────────────────────────
 
   /**
+   * Normalize repeated Project Type (`type`) query values against the live
+   * Project Type catalogue (stable `value` identity; labels/colors are
+   * presentation only). Unknown or stale values are dropped; the result is
+   * deduplicated and sorted for deterministic serialization. Shared by the
+   * Releases list (WP11) and Calendar (WP13).
+   * @param {unknown} value
+   * @returns {string[]}
+   */
+  function normalizeProjectTypeSelection(value) {
+    const candidates = toQueryValueList(value).filter((candidate) => typeof candidate === 'string' && candidate !== '');
+    if (candidates.length === 0) return [];
+    if (typeof projectOptionCatalogueService?.getProjectTypeCatalogue !== 'function') {
+      throw new Error('Project Type filtering requires a projectOptionCatalogueService dependency.');
+    }
+    const available = new Set(projectOptionCatalogueService.getProjectTypeCatalogue().map((entry) => entry.value));
+    return [...new Set(candidates.filter((candidate) => available.has(candidate)))]
+      .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+  }
+
+  /**
    * Normalize and validate release list filters.
    * Uses strict positive-integer validation for numeric fields to reject
    * malformed values like "1junk", "2.5", "1e2", "+2", "-2", or "0".
@@ -1507,7 +1537,28 @@ export function createWorkflowQueryService({
       return num;
     }
 
-    const projectId = parseStrictPositiveInt(raw.project);
+    // Repeated `project` values (WP8 contract): each value is validated on its
+    // own with the strict policy above; malformed values are dropped
+    // individually (a lone malformed value keeps the established unrestricted
+    // fallback). Valid but unknown, deleted or archived IDs are kept so they
+    // remain a restriction and can never broaden results. Deduplicated and
+    // sorted ascending for deterministic canonical URLs.
+    // C1: only flat scalar entries are eligible. A nested query key such as
+    // `project[1][]=2` parses to ['1', ['2']]; stringifying that inner array
+    // would yield "2" and silently add Project 2, so arrays and objects are
+    // dropped before the strict check (like any other malformed value).
+    const projectIds = [...new Set(toQueryValueList(raw.project)
+      .filter((candidate) => typeof candidate === 'string' || typeof candidate === 'number')
+      .map(parseStrictPositiveInt)
+      .filter((value) => Number.isSafeInteger(value)))]
+      .sort((left, right) => left - right);
+    // Legacy scalar alias, populated only for an exact single selection.
+    const projectId = projectIds.length === 1 ? projectIds[0] : null;
+    // Repeated `type` values are validated against the live Project Type
+    // catalogue's stable `value`; stale or unknown values are dropped like the
+    // Asset Library's catalogue-backed Type selection. The catalogue is read
+    // only when a Type was actually supplied.
+    const projectTypes = normalizeProjectTypeSelection(raw.type);
     // Optional exact-asset scope. Unlike `project`, a supplied-but-malformed
     // asset value must not fall back to the unscoped list: it is flagged so
     // getReleaseList returns an empty result instead of silently broadening.
@@ -1532,7 +1583,9 @@ export function createWorkflowQueryService({
     let pageSize = pageSizeRaw !== null ? pageSizeRaw : 25;
     if (pageSize > 100) pageSize = 100;
 
-    const filters = { search, projectId, schedule, includeArchived, sortBy, order, page, pageSize };
+    const filters = {
+      search, projectId, projectIds, projectTypes, schedule, includeArchived, sortBy, order, page, pageSize,
+    };
     if (assetSupplied) {
       filters.assetId = assetId;
       filters.assetFilterInvalid = assetFilterInvalid;
@@ -1549,7 +1602,11 @@ export function createWorkflowQueryService({
    * @returns {{ releases: Array, total: number, page: number, pageSize: number, pageCount: number, today: string }}
    */
   function getReleaseList(rawFilters, options = {}) {
-    const { assetFilterInvalid = false, ...filters } = normalizeListFilters(rawFilters);
+    // A caller that already normalized this exact query (the Releases route)
+    // passes the result through so the catalogue-backed Type selection is
+    // normalized once per request.
+    const { assetFilterInvalid = false, ...filters } = options.normalizedFilters
+      ?? normalizeListFilters(rawFilters);
     const today = options.today || defaultToday();
 
     // List view always excludes archived-parent releases per Phase 6C:
@@ -1675,10 +1732,53 @@ export function createWorkflowQueryService({
    * @param {string} month - YYYY-MM month string
    * @param {Object} [options]
    * @param {string} [options.today] - ISO date YYYY-MM-DD override
-   * @param {number|string} [options.projectId] - optional project filter
+   * @param {number[]} [options.projectIds] - WP13: OR-ed owning Project IDs
+   *   (normalized by the caller against its option source; empty/absent = all)
+   * @param {string[]} [options.projectTypes] - WP13: OR-ed owning Project Type
+   *   catalogue values, AND-ed with `projectIds` (empty/absent = all)
+   * @param {number|string} [options.projectId] - legacy scalar alias, used only
+   *   when `projectIds` is not supplied
    * @param {'monday'|'sunday'} [options.weekStart='monday']
    * @returns {{ month: string, days: Array<{ date: string, entries: Array }>, firstDayWeekday: number, prevMonthDaysCount: number, prevMonth: string|null, nextMonth: string|null, today: string }}
    */
+  // WP13: structural normalization of the Calendar Project / Project Type
+  // selection handed to the range query. Valid positive IDs and non-empty
+  // strings only, deduplicated and deterministically ordered; the array form
+  // wins over the legacy scalar `projectId`, so both are never applied.
+  function normalizeCalendarRangeSelection(options) {
+    const toProjectId = (value) => {
+      const id = typeof value === 'number'
+        ? value
+        : (typeof value === 'string' && /^[1-9]\d*$/.test(value) ? Number(value) : null);
+      return Number.isSafeInteger(id) && id > 0 ? id : null;
+    };
+    const rawProjectIds = options.projectIds !== undefined
+      ? toQueryValueList(options.projectIds)
+      : toQueryValueList(options.projectId);
+    const projectIds = [...new Set(rawProjectIds.map(toProjectId).filter((id) => id !== null))]
+      .sort((left, right) => left - right);
+    const projectTypes = [...new Set(toQueryValueList(options.projectTypes)
+      .filter((value) => typeof value === 'string' && value !== ''))]
+      .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+    return { projectIds, projectTypes };
+  }
+
+  /**
+   * WP13: the complete Calendar Project Type options (stable catalogue
+   * values, never labels), independent of the current calendar results.
+   * @param {string[]} [selectedProjectTypes]
+   * @returns {Array<{ value: string, label: string, selected: boolean }>}
+   */
+  function getProjectTypeFilterOptions(selectedProjectTypes = []) {
+    const catalogue = typeof projectOptionCatalogueService?.getProjectTypeCatalogue === 'function'
+      ? projectOptionCatalogueService.getProjectTypeCatalogue()
+      : [];
+    const selected = new Set(toQueryValueList(selectedProjectTypes));
+    return catalogue
+      .filter((entry) => typeof entry?.value === 'string' && entry.value !== '')
+      .map((entry) => ({ value: entry.value, label: entry.label ?? entry.value, selected: selected.has(entry.value) }));
+  }
+
   function getReleaseCalendar(month, options = {}) {
     const today = options.today || defaultToday();
     const validated = parseMonth(month);
@@ -1699,12 +1799,8 @@ export function createWorkflowQueryService({
     }
     const endDate = `${endYear}-${String(endMonth).padStart(2, '0')}-01`;
 
-    const projectId = typeof options.projectId === 'number'
-      ? options.projectId
-      : (typeof options.projectId === 'string' && /^[1-9]\d*$/.test(options.projectId)
-        ? Number(options.projectId) : null);
     const rows = attachReleaseSocialPreparation(releaseRepository.findCalendarRange(
-      startDate, endDate, Number.isSafeInteger(projectId) && projectId > 0 ? projectId : null
+      startDate, endDate, normalizeCalendarRangeSelection(options)
     ), { selectedOnly: true, allowActions: false });
     const projectsById = new Map(attachPrimaryImages(
       [...new Map(rows.map((row) => [row.project_id, { id: row.project_id }])).values()]
@@ -2892,6 +2988,8 @@ function normalizeAssetBrowserQuery(
     enrichProjectAssetInformationAssets,
     getReleaseList,
     getReleaseCalendar,
+    normalizeProjectTypeSelection,
+    getProjectTypeFilterOptions,
     getProjectAssetBrowser,
     getProjectAutoRenameCategory,
     getProjectAssetIds(projectId) {

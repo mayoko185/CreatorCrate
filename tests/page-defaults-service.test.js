@@ -9,6 +9,7 @@ import { createProjectRepository } from '../src/data/project-repository.js';
 import { createProjectPageDefaultRepository } from '../src/data/project-page-default-repository.js';
 import {
   createPageDefaultsService,
+  PageDefaultsGenerationConflictError,
   PageDefaultValidationError,
   PAGE_DEFAULT_DEFINITIONS,
 } from '../src/services/page-defaults-service.js';
@@ -1444,6 +1445,119 @@ describe('page defaults saved-state metadata and scoped reset (WP1)', () => {
     });
     expect(() => service.resetGlobalPageDefaults('settings')).toThrow(PageDefaultValidationError);
     expect(() => service.resetGlobalPageDefaults('__proto__')).toThrow(PageDefaultValidationError);
+  });
+
+  // WP12: Releases Reset defaults deletes exactly its two keys (Sort, Order);
+  // its durable mutation generation lives beside them, is never deleted or
+  // reported as a saved setting, and fences only Releases mutations.
+  it('resets only the Releases Sort/Order keys and fences them with a separate releases generation', () => {
+    const releasesKeys = PAGE_DEFAULT_DEFINITIONS.releases;
+    expect(Object.keys(releasesKeys)).toEqual(['sort', 'order']);
+    service.saveDefault('releases', 'sort', 'title');
+    service.saveDefault('releases', 'order', releasesKeys.order.fallback);
+    service.saveDefault('projects', 'sort', 'title');
+    service.saveDefault('assetViewer', 'sort', 'size');
+    writeRaw('page_defaults.releases.legacy_option', 'kept');
+
+    expect(service.getMutationGeneration('releases')).toBe(0);
+    expect(service.advanceMutationGeneration('releases', 0)).toBe(1);
+    expect(() => service.advanceMutationGeneration('releases', 0)).toThrow(PageDefaultsGenerationConflictError);
+    expect(() => service.advanceMutationGeneration('releases', null)).toThrow(PageDefaultsGenerationConflictError);
+    // Each page's generation is independent.
+    expect(service.getMutationGeneration('projects')).toBe(0);
+    expect(service.getMutationGeneration('assetViewer')).toBe(0);
+    expect(appMeta.getValue('page_defaults_generation.releases')).not.toBeUndefined();
+
+    // An explicitly saved fallback-equal value is stored (saved), not inferred.
+    const described = service.describeSavedDefaults('releases');
+    expect(described.options.order.global).toMatchObject({ stored: true, valid: true });
+    expect(Object.keys(described.options)).toEqual(['sort', 'order']);
+
+    expect(service.resetGlobalPageDefaults('releases')).toEqual({
+      page: 'releases', scope: 'global', changed: true, deletedOptions: ['sort', 'order'],
+    });
+    expect(appMeta.getValue(releasesKeys.sort.key)).toBeUndefined();
+    expect(appMeta.getValue(releasesKeys.order.key)).toBeUndefined();
+    expect(appMeta.getValue(PAGE_DEFAULT_DEFINITIONS.projects.sort.key)).toBe('title');
+    expect(appMeta.getValue(PAGE_DEFAULT_DEFINITIONS.assetViewer.sort.key)).toBe('size');
+    expect(appMeta.getValue('page_defaults.releases.legacy_option')).toBe('kept');
+    // Reset defaults never deletes the generation it is fenced by.
+    expect(service.getMutationGeneration('releases')).toBe(1);
+    expect(service.resolveGlobalPageDefaults('releases')).toEqual({
+      sort: releasesKeys.sort.fallback, order: releasesKeys.order.fallback,
+    });
+    expect(service.resetGlobalPageDefaults('releases')).toEqual({
+      page: 'releases', scope: 'global', changed: false, deletedOptions: [],
+    });
+  });
+
+  // WP14a: Calendar's three Global keys (View, Release status, Week start)
+  // get their own durable generation; Reset defaults deletes exactly those
+  // keys and never the generation.
+  it('resets only the three Calendar keys and fences them with a separate calendar generation', () => {
+    const calendarKeys = PAGE_DEFAULT_DEFINITIONS.calendar;
+    expect(Object.keys(calendarKeys)).toEqual(['view', 'status', 'weekStart']);
+    expect([calendarKeys.view.key, calendarKeys.status.key, calendarKeys.weekStart.key]).toEqual([
+      'page_defaults.calendar.view', 'page_defaults.calendar.status', 'page_defaults.calendar.week_start',
+    ]);
+    service.saveDefault('calendar', 'view', 'list');
+    service.saveDefault('calendar', 'status', calendarKeys.status.fallback);
+    service.saveDefault('calendar', 'weekStart', 'sunday');
+    service.saveDefault('releases', 'sort', 'title');
+    service.saveDefault('projects', 'sort', 'title');
+
+    expect(service.getMutationGeneration('calendar')).toBe(0);
+    expect(service.advanceMutationGeneration('calendar', 0)).toBe(1);
+    expect(() => service.advanceMutationGeneration('calendar', 0)).toThrow(PageDefaultsGenerationConflictError);
+    expect(() => service.advanceMutationGeneration('calendar', null)).toThrow(PageDefaultsGenerationConflictError);
+    expect(service.getMutationGeneration('releases')).toBe(0);
+    expect(appMeta.getValue('page_defaults_generation.calendar')).toBe('1');
+
+    // A saved fallback-equal value is still a saved value.
+    const described = service.describeSavedDefaults('calendar');
+    expect(described.options.status.global).toMatchObject({ stored: true, valid: true });
+    expect(Object.keys(described.options)).toEqual(['view', 'status', 'weekStart']);
+
+    expect(service.resetGlobalPageDefaults('calendar')).toEqual({
+      page: 'calendar', scope: 'global', changed: true, deletedOptions: ['view', 'status', 'weekStart'],
+    });
+    expect(service.resolveGlobalPageDefaults('calendar')).toEqual({ view: 'grid', status: 'all', weekStart: 'monday' });
+    expect(appMeta.getValue(PAGE_DEFAULT_DEFINITIONS.releases.sort.key)).toBe('title');
+    expect(appMeta.getValue(PAGE_DEFAULT_DEFINITIONS.projects.sort.key)).toBe('title');
+    expect(service.getMutationGeneration('calendar')).toBe(1);
+  });
+
+  it('records an unfenced legacy write by advancing only that page generation', () => {
+    expect(service.recordUnfencedMutation('calendar')).toBe(1);
+    expect(service.recordUnfencedMutation('calendar')).toBe(2);
+    // An explicit request prepared before the legacy write is now stale.
+    expect(() => service.advanceMutationGeneration('calendar', 1)).toThrow(PageDefaultsGenerationConflictError);
+    expect(service.advanceMutationGeneration('calendar', 2)).toBe(3);
+    expect(service.getMutationGeneration('releases')).toBe(0);
+    // A page without a generation is untouched; an unknown page is rejected.
+    expect(service.recordUnfencedMutation('new_project')).toBeNull();
+    expect(appMeta.getValue('page_defaults_generation.new_project')).toBeUndefined();
+    expect(() => service.recordUnfencedMutation('settings')).toThrow(PageDefaultValidationError);
+    // Inside a rolled-back transaction the advance is rolled back too.
+    expect(() => db.transaction(() => {
+      service.recordUnfencedMutation('calendar');
+      throw new Error('rollback');
+    })()).toThrow('rollback');
+    expect(service.getMutationGeneration('calendar')).toBe(3);
+  });
+
+  // C2: the same unfenced-write record applies to the Releases generation.
+  it('records an unfenced legacy Releases write without touching the Calendar generation', () => {
+    service.saveDefault('releases', 'sort', 'title');
+    expect(service.recordUnfencedMutation('releases')).toBe(1);
+    expect(() => service.advanceMutationGeneration('releases', 0)).toThrow(PageDefaultsGenerationConflictError);
+    expect(service.getMutationGeneration('calendar')).toBe(0);
+    expect(service.resolve('releases', 'sort')).toBe('title');
+    expect(() => db.transaction(() => {
+      service.recordUnfencedMutation('releases');
+      throw new Error('rollback');
+    })()).toThrow('rollback');
+    expect(service.getMutationGeneration('releases')).toBe(1);
   });
 
   it('leaves every Global key in place when one deletion fails', () => {

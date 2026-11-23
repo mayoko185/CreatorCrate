@@ -41,6 +41,36 @@ import { removeStatusRetry, showStatusRetry } from './status-retry.js';
 // The Edit Release dialog has no return location (Release Detail's ?edit=1
 // deep link opens it in place), so a dismissal never leaves the page and no
 // return veto is registered here.
+// Calendar M1 P3-A: dispatched synchronously when an Archive (or Delete,
+// release-delete.js) outcome becomes unresolved, just before its uncertainty
+// is written to the page feedback. A host that ties page feedback to its
+// latest release action (Calendar) lets this newer, unconfirmed action own
+// that feedback, so an older action's late refresh report cannot replace the
+// warning or its Check again. detail: { releaseId, action }.
+//
+// Calendar M1 late verification: each Check again of that unresolved action
+// claims the feedback the same way (it writes Checking… there). A host that
+// ties the feedback to its latest action answers by setting
+// detail.ownsFeedback to a predicate for this claim, which the dispatcher
+// returns (always true on hosts without one). A Check again answer arriving
+// after a newer release action took the feedback still settles its own
+// record and this release's dialog, but never writes the page feedback, its
+// Check again or focus there.
+export const RELEASE_ACTION_UNRESOLVED_EVENT = 'release-action-unresolved';
+
+const ALWAYS_OWNS_FEEDBACK = () => true;
+
+export function dispatchReleaseActionUnresolved(document, releaseId, action) {
+  const windowObject = document?.defaultView || globalThis;
+  if (typeof windowObject.CustomEvent !== 'function') return ALWAYS_OWNS_FEEDBACK;
+  const event = new windowObject.CustomEvent(RELEASE_ACTION_UNRESOLVED_EVENT, {
+    detail: { releaseId, action },
+  });
+  document.dispatchEvent?.(event);
+  const ownsFeedback = event.detail?.ownsFeedback;
+  return typeof ownsFeedback === 'function' ? ownsFeedback : ALWAYS_OWNS_FEEDBACK;
+}
+
 const ARCHIVE_FORM_SELECTOR = 'form[data-release-archive-form]';
 const STATE_KEY = '__creatorCrateReleaseArchive';
 const DIALOG_RETRY_KEY = 'dialogCheckButton';
@@ -267,7 +297,15 @@ function enhance(document, dialog, dialogState, controller) {
   // Check again in the dialog (while it is open for this release) and in the
   // page feedback (where the warning stays after the dialog is dismissed, and
   // which no sticky dialog footer can cover).
-  function offerCheck(releaseId, { focusResult = false } = {}) {
+  // Without the page feedback (a newer release action owns it) only the
+  // dialog open for this release offers it.
+  // Calendar M1 feedback ownership: the page-level Check again belongs to the
+  // feedback its Archive owns. Once a newer release action owns that feedback
+  // (the host retires the control then), a click on it, or on a captured
+  // copy, is inert: it neither reads nor reclaims the newer report. This
+  // release's dialog stays its recovery surface. Each page control removes
+  // only itself, never a newer one.
+  function offerCheck(releaseId, { focusResult = false, feedback: inFeedback = true } = {}) {
     const onRetry = ({ wasFocused }) => check(releaseId, { focusResult: wasFocused });
     let focusTarget = null;
     if (dialog.open && currentId() === releaseId) {
@@ -280,16 +318,33 @@ function enhance(document, dialog, dialogState, controller) {
         onRetry,
       });
     }
-    const feedback = document.querySelector('[data-dialog-feedback]');
-    const feedbackRetry = feedback ? showStatusRetry({
-      state: ui,
-      status: feedback,
-      attribute: 'data-release-archive-feedback-check',
-      key: FEEDBACK_RETRY_KEY,
-      label: 'Check again',
-      onRetry,
-    }) : null;
+    const feedback = inFeedback ? document.querySelector('[data-dialog-feedback]') : null;
+    let feedbackRetry = null;
+    if (feedback) {
+      removeStatusRetry(ui, FEEDBACK_RETRY_KEY);
+      feedbackRetry = showStatusRetry({
+        state: {},
+        status: feedback,
+        attribute: 'data-release-archive-feedback-check',
+        key: FEEDBACK_RETRY_KEY,
+        label: 'Check again',
+        onRetry: ({ wasFocused }) => {
+          const current = ui[FEEDBACK_RETRY_KEY] === feedbackRetry;
+          if (current) ui[FEEDBACK_RETRY_KEY] = null;
+          if (current && !lostFeedback(releaseId)) return onRetry({ wasFocused });
+          if (wasFocused) document.getElementById('main-content')?.focus?.({ preventScroll: true });
+          return undefined;
+        },
+      });
+      ui[FEEDBACK_RETRY_KEY] = feedbackRetry;
+    }
     if (focusResult) (focusTarget || feedbackRetry)?.focus?.({ preventScroll: true });
+  }
+
+  // Whether a newer release action owns the page feedback this Archive's
+  // latest check claimed (always false on hosts without an owner).
+  function lostFeedback(releaseId) {
+    return recordFor(releaseId)?.ownsFeedback?.() === false;
   }
 
   // Shown wherever the release's standing state is reported.
@@ -299,7 +354,7 @@ function enhance(document, dialog, dialogState, controller) {
     if (dialog.open && currentId() === releaseId) setStatus(message, tone);
     // Never a success tone: report() only carries unproven or refused states.
     if (feedback) setFeedback(message, tone !== 'success');
-    if (retry) offerCheck(releaseId, { focusResult });
+    if (retry) offerCheck(releaseId, { focusResult, feedback });
   }
 
   function dispatchArchived(releaseId, detail) {
@@ -369,26 +424,35 @@ function enhance(document, dialog, dialogState, controller) {
 
   // An unresolved Archive settled by an authoritative read (Check again, or a
   // reopened dialog's load) that shows nothing it could still change.
-  function settleObserved(releaseId, kind, { focusResult = false } = {}) {
+  // feedback: false when a newer release action owns the page feedback: the
+  // record and this release's dialog still settle, and the hosts still re-read
+  // their content; the event says feedback: false so they keep that newer report.
+  function settleObserved(releaseId, kind, { focusResult = false, feedback = true } = {}) {
     const record = recordFor(releaseId);
     if (record?.phase !== 'unresolved') return false;
+    const ownership = feedback ? {} : { feedback: false };
     if (kind === 'archived' || kind === 'project-archived') {
       record.phase = kind;
       if (currentId() === releaseId) holdButton(kind);
       const lead = kind === 'archived'
         ? RELEASE_ARCHIVE_MESSAGES.observedArchived : RELEASE_ARCHIVE_MESSAGES.observedProjectArchived;
-      report(releaseId, `${lead} ${RELEASE_ARCHIVE_MESSAGES.draftsUnsaveable}`, 'error', { focusResult });
+      report(releaseId, `${lead} ${RELEASE_ARCHIVE_MESSAGES.draftsUnsaveable}`, 'error', { focusResult, feedback });
       dispatchArchived(releaseId, {
-        projectId: null, release: null, message: lead, outcome: `observed-${kind}`, confirmed: false,
+        projectId: null, release: null, message: lead, outcome: `observed-${kind}`, confirmed: false, ...ownership,
       });
       return true;
     }
     if (kind === 'missing') {
       record.phase = 'missing';
       if (currentId() === releaseId) holdButton('missing');
-      report(releaseId, RELEASE_ARCHIVE_MESSAGES.goneUnconfirmed, 'error', { focusResult });
+      report(releaseId, RELEASE_ARCHIVE_MESSAGES.goneUnconfirmed, 'error', { focusResult, feedback });
       dispatchArchived(releaseId, {
-        projectId: null, release: null, message: RELEASE_ARCHIVE_MESSAGES.goneUnconfirmed, outcome: 'missing', confirmed: false,
+        projectId: null,
+        release: null,
+        message: RELEASE_ARCHIVE_MESSAGES.goneUnconfirmed,
+        outcome: 'missing',
+        confirmed: false,
+        ...ownership,
       });
       return true;
     }
@@ -407,6 +471,16 @@ function enhance(document, dialog, dialogState, controller) {
     const record = recordFor(releaseId);
     if (record?.phase !== 'unresolved') return Promise.resolve();
     const attempt = record.attempt;
+    // Calendar M1 P3: each check is numbered. An older check's answer that
+    // proves nothing (still active, unreadable, lost) never replaces a newer
+    // check's result; one showing the release archived or gone still settles
+    // the record (LV-7), since no later read can undo that.
+    record.checks = (record.checks || 0) + 1;
+    const checkNumber = record.checks;
+    // This check writes the page feedback now, so it claims it for this
+    // Archive (P3-A); an answer writes there only while this Archive's latest
+    // claim still owns it (a newer check of it claims for the same Archive).
+    record.ownsFeedback = dispatchReleaseActionUnresolved(document, releaseId, 'archive');
     report(releaseId, `${RELEASE_ARCHIVE_MESSAGES.unconfirmed} ${RELEASE_ARCHIVE_MESSAGES.checking}`, 'pending');
     return Promise.resolve()
       .then(() => windowObject.fetch(`/releases/${releaseId}/edit`, {
@@ -424,16 +498,22 @@ function enhance(document, dialog, dialogState, controller) {
       .then(({ response, payload }) => {
         const current = recordFor(releaseId);
         if (current !== record || current.attempt !== attempt || current.phase !== 'unresolved') return;
-        if (settleObserved(releaseId, observedKind(response, payload), { focusResult })) return;
+        const kind = observedKind(response, payload);
+        if (!kind && current.checks !== checkNumber) return;
+        // A newer release action's report (with its recovery and focus) stays;
+        // this answer still settles the record and this release's dialog.
+        const feedback = record.ownsFeedback?.() !== false;
+        const settle = { focusResult: feedback && focusResult, feedback };
+        if (settleObserved(releaseId, kind, settle)) return;
         if (response?.ok && payload?.status === 'success' && String(payload.release?.id) === releaseId) {
           // An observation only: the lost request may not have run yet.
           report(releaseId, `${RELEASE_ARCHIVE_MESSAGES.unconfirmed} ${RELEASE_ARCHIVE_MESSAGES.stillActive}`, 'error', {
-            focusResult, retry: true,
+            ...settle, retry: true,
           });
           return;
         }
         report(releaseId, `${RELEASE_ARCHIVE_MESSAGES.unconfirmed} ${RELEASE_ARCHIVE_MESSAGES.checkFailed}`, 'error', {
-          focusResult, retry: true,
+          ...settle, retry: true,
         });
       });
   }
@@ -531,6 +611,9 @@ function enhance(document, dialog, dialogState, controller) {
         }
         record.phase = 'unresolved';
         holdButton('unresolved');
+        // P3-A: this unconfirmed Archive owns the page feedback from here on;
+        // its first check claims it (release-action-unresolved) before it
+        // writes the uncertainty there.
         void check(releaseId);
       });
   }
@@ -619,11 +702,15 @@ function enhance(document, dialog, dialogState, controller) {
     holdButton(record.phase);
     if (record.drafts && record.phase !== 'pending') applyAppDialogDraft(document, RELEASE_EDIT_DIALOG_ID, record.drafts);
     if (record.message) setStatus(record.message, 'error');
-    if (record.phase === 'unresolved') offerCheck(releaseId);
+    // Calendar M1 feedback ownership: reopening never reclaims page feedback a
+    // newer release action owns; Check again is then offered in this dialog only.
+    if (record.phase === 'unresolved') offerCheck(releaseId, { feedback: !lostFeedback(releaseId) });
   };
 
   // A reopened dialog whose load is refused because the release is archived
   // (or its project, or it is gone) is an authoritative read like Check again.
+  // It settles the record and the hosts still re-read their content, but it
+  // writes the page feedback only while this Archive still owns it.
   controller.onLoadRefused = (releaseIdValue, status, payload) => {
     const releaseId = String(releaseIdValue);
     const record = recordFor(releaseId);
@@ -632,7 +719,7 @@ function enhance(document, dialog, dialogState, controller) {
       return;
     }
     holdButton(record.phase);
-    settleObserved(releaseId, observedKind({ status }, payload));
+    settleObserved(releaseId, observedKind({ status }, payload), { feedback: !lostFeedback(releaseId) });
   };
 
   return { check, refusal };

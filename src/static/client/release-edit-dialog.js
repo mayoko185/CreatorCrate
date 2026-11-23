@@ -357,7 +357,10 @@ function createController(document, dialog) {
     controller.loadSequence = linkSequence;
     clearLinkGuard();
     setReady(false);
-    openAppDialogById(document, RELEASE_EDIT_DIALOG_ID, opener);
+    const focusFallbacks = opener?.closest?.('[data-calendar-live-region]')
+      ? ['[data-dialog-open="calendar-month-dialog"]', '#main-content']
+      : null;
+    openAppDialogById(document, RELEASE_EDIT_DIALOG_ID, opener, { focusFallbacks });
     setStatus(dialog, 'Loading release…');
 
     const windowObject = document.defaultView || globalThis;

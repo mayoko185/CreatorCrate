@@ -140,6 +140,12 @@ const DEFAULTS_POST_SECTIONS = Object.freeze([
   Object.freeze({ page: 'calendar' }),
 ]);
 
+// WP14a: legacy-posted pages whose explicit Save / Reset defaults transport is
+// generation-fenced. Their legacy writes advance that generation.
+// C2: Releases joins Calendar, so a legacy Releases Sort/Order write fences an
+// older explicit Releases Save / Reset defaults.
+const LEGACY_FENCED_DEFAULTS_PAGES = new Set(['releases', 'calendar']);
+
 const NOTE_REVISION_RETENTION_FIELD = 'noteRevisionRetention';
 const CLOCK_FORMAT_FIELD = 'clockFormat';
 
@@ -1711,6 +1717,13 @@ export function createSettingsRouter({
         }
 
         for (const { page } of DEFAULTS_POST_SECTIONS) {
+          // WP14a / C2: a legacy write of Releases or Calendar defaults
+          // advances that page's defaults generation in this same
+          // transaction, so an explicit Save / Reset defaults prepared before
+          // it is rejected as stale (409) instead of overwriting it.
+          if (LEGACY_FENCED_DEFAULTS_PAGES.has(page) && defaultsPageWasSubmitted(req.body, page)) {
+            service.recordUnfencedMutation(page);
+          }
           for (const option of Object.keys(PAGE_DEFAULT_DEFINITIONS[page])) {
             if (!defaultsPageWasSubmitted(req.body, page)) continue;
 

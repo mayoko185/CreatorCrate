@@ -52,6 +52,11 @@ function element(tagName = 'div', attributes = {}) {
       if (['value', 'type', 'name'].includes(name)) this[name] = String(value);
       if (name.startsWith('data-')) this.dataset[name.slice(5).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())] = String(value);
     },
+    get tabIndex() {
+      if (attrs.has('tabindex')) return Number(attrs.get('tabindex'));
+      return this.tagName === 'BUTTON' || (this.tagName === 'A' && attrs.has('href')) ? 0 : -1;
+    },
+    set tabIndex(index) { this.setAttribute('tabindex', index); },
     getAttribute(name) { return attrs.get(name) ?? null; },
     hasAttribute(name) { return attrs.has(name); },
     removeAttribute(name) {
@@ -65,6 +70,7 @@ function element(tagName = 'div', attributes = {}) {
       if (name.startsWith('data-')) delete this.dataset[name.slice(5).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())];
     },
     matches(selector) {
+      if (selector === ':disabled') return this.disabled;
       return selector.split(',').some((part) => {
         const candidate = part.trim();
         const tag = candidate.match(/^[a-z][\w-]*/i)?.[0];
@@ -386,6 +392,173 @@ describe('shared app confirmation dialog', () => {
     expect(page.confirm.disabled).toBe(true);
     page.cancel.click();
     await expect(second).resolves.toBe(false);
+  });
+});
+
+describe('app dialog focus fallback', () => {
+  function focusPage(opener = element('button')) {
+    const page = confirmationPage();
+    const { document, dialog } = page;
+    const openerGroup = document.body.appendChild(element('div'));
+    openerGroup.appendChild(opener);
+    const monthGroup = document.body.appendChild(element('div'));
+    const month = monthGroup.appendChild(element('button', { id: 'choose-month' }));
+    const main = document.body.appendChild(element('main', { id: 'main-content', tabindex: '-1' }));
+    const open = (focusFallbacks = ['#choose-month', '#main-content']) =>
+      openAppDialogById(document, dialog.id, opener, { focusFallbacks });
+    const escape = () => dialog.dispatch('keydown', { key: 'Escape' });
+    return { ...page, openerGroup, opener, monthGroup, month, main, open, escape };
+  }
+
+  it('returns to the opener once per close, by Escape or Close', () => {
+    const page = focusPage();
+    const focused = vi.spyOn(page.opener, 'focus');
+    const fallbackFocused = vi.spyOn(page.month, 'focus');
+    const submitted = vi.fn();
+    page.dialog.addEventListener('submit', submitted);
+
+    page.open();
+    expect(page.escape().defaultPrevented).toBe(true);
+    expect(page.document.activeElement).toBe(page.opener);
+    expect(page.dialog.open).toBe(false);
+    page.open();
+    expect(page.cancel.click().defaultPrevented).toBe(true);
+    expect(page.document.activeElement).toBe(page.opener);
+    expect(page.dialog.open).toBe(false);
+    expect(focused).toHaveBeenCalledTimes(2);
+    expect(page.dialog.close).toHaveBeenCalledTimes(2);
+    expect(fallbackFocused).not.toHaveBeenCalled();
+    expect(submitted).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['detached', ({ openerGroup }) => openerGroup.replaceChildren()],
+    ['hidden', ({ opener }) => opener.setAttribute('hidden', '')],
+    ['hidden by an ancestor', ({ openerGroup }) => openerGroup.setAttribute('hidden', '')],
+    ['inside an inert ancestor', ({ openerGroup }) => openerGroup.setAttribute('inert', '')],
+    ['removed from the tab order', ({ opener }) => { opener.tabIndex = -1; }],
+    ['disabled', ({ opener }) => { opener.disabled = true; }],
+  ])('skips a %s opener', (_reason, invalidate) => {
+    const page = focusPage();
+    page.open();
+    invalidate(page);
+    const openerFocused = vi.spyOn(page.opener, 'focus');
+    page.escape();
+    expect(page.dialog.open).toBe(false);
+    expect(page.document.activeElement).toBe(page.month);
+    expect(openerFocused).not.toHaveBeenCalled();
+  });
+
+  it('restores a naturally tabbable link without querying any fallback selectors', () => {
+    const page = focusPage(element('a', { href: '/calendar' }));
+    const query = vi.spyOn(page.document, 'querySelector');
+    page.open(['[', '#main-content']);
+    page.cancel.click();
+
+    expect(page.document.activeElement).toBe(page.opener);
+    expect(query).not.toHaveBeenCalledWith('[');
+    expect(query).not.toHaveBeenCalledWith('#main-content');
+  });
+
+  it('skips a malformed selector and resolves only as far as the first successful fallback', () => {
+    const page = focusPage();
+    const querySelector = page.document.querySelector.bind(page.document);
+    const query = vi.spyOn(page.document, 'querySelector').mockImplementation((selector) => {
+      if (selector === '[') throw new DOMException('Invalid selector', 'SyntaxError');
+      return querySelector(selector);
+    });
+    page.open(['[', '#main-content', '#choose-month']);
+    page.openerGroup.replaceChildren();
+    page.cancel.click();
+
+    expect(page.dialog.open).toBe(false);
+    expect(page.document.activeElement).toBe(page.main);
+    expect(page.main.tabIndex).toBe(-1);
+    expect(query.mock.calls.filter(([selector]) => ['[', '#main-content', '#choose-month'].includes(selector)))
+      .toEqual([['['], ['#main-content']]);
+  });
+
+  const throwOnFocus = () => { throw new Error('focus failed'); };
+
+  it.each([
+    ['throws', throwOnFocus],
+    ['does nothing', () => {}],
+  ])('uses Choose month when the opener focus method %s', (_reason, focus) => {
+    const page = focusPage();
+    const attempt = vi.spyOn(page.opener, 'focus').mockImplementation(focus);
+    page.open();
+    page.cancel.click();
+
+    expect(page.dialog.open).toBe(false);
+    expect(attempt).toHaveBeenCalledOnce();
+    expect(page.document.activeElement).toBe(page.month);
+  });
+
+  it.each([undefined, 0])('prefers an eligible button with tabindex %s over the main landmark', (tabIndex) => {
+    const page = focusPage();
+    if (tabIndex !== undefined) page.month.tabIndex = tabIndex;
+    page.open();
+    page.opener.tabIndex = -1;
+    const query = vi.spyOn(page.document, 'querySelector');
+    page.escape();
+
+    expect(page.dialog.open).toBe(false);
+    expect(page.document.activeElement).toBe(page.month);
+    expect(query).not.toHaveBeenCalledWith('#main-content');
+  });
+
+  it.each([
+    ['removed from the tab order', ({ month }) => { month.tabIndex = -1; }],
+    ['disabled', ({ month }) => { month.disabled = true; }],
+    ['hidden', ({ month }) => { month.setAttribute('hidden', ''); }],
+    ['inside an inert ancestor', ({ monthGroup }) => { monthGroup.setAttribute('inert', ''); }],
+    ['detached', ({ monthGroup }) => monthGroup.replaceChildren()],
+  ])('uses the main landmark when the preferred fallback is %s', (_reason, invalidate) => {
+    const page = focusPage();
+    page.open();
+    page.opener.tabIndex = -1;
+    invalidate(page);
+    const preferred = vi.spyOn(page.month, 'focus');
+    page.cancel.click();
+
+    expect(page.dialog.open).toBe(false);
+    expect(page.document.activeElement).toBe(page.main);
+    expect(preferred).not.toHaveBeenCalled();
+    expect(page.main.tabIndex).toBe(-1);
+  });
+
+  it.each([
+    ['throws', throwOnFocus],
+    ['does nothing', () => {}],
+  ])('uses the main landmark when the preferred focus method %s', (_reason, focus) => {
+    const page = focusPage();
+    const preferred = vi.spyOn(page.month, 'focus').mockImplementation(focus);
+    page.open();
+    page.openerGroup.replaceChildren();
+    page.cancel.click();
+
+    expect(preferred).toHaveBeenCalledOnce();
+    expect(page.dialog.open).toBe(false);
+    expect(page.document.activeElement).toBe(page.main);
+    expect(page.main.tabIndex).toBe(-1);
+  });
+
+  it('ignores a queued close after a newer dialog has opened and closed', () => {
+    const page = focusPage();
+    const newer = page.document.body.appendChild(element('dialog', { id: 'newer-dialog', 'data-app-dialog': '' }));
+    const newerClose = newer.appendChild(element('button', { 'data-dialog-close': '' }));
+    enhanceAppDialogs(page.document);
+    page.dialog.close.mockImplementation(() => page.dialog.removeAttribute('open'));
+    page.open();
+    page.openerGroup.replaceChildren();
+    page.escape();
+    openAppDialogById(page.document, newer.id);
+    newerClose.click();
+    page.document.body.focus();
+    const focused = vi.spyOn(page.month, 'focus');
+    page.dialog.dispatch('close');
+    expect(focused).not.toHaveBeenCalled();
+    expect(page.document.activeElement).toBe(page.document.body);
   });
 });
 

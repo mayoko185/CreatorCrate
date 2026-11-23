@@ -34,8 +34,11 @@ import {
   dismissActiveGridInfoCard,
 } from './info-cards.js';
 import { enhanceNumberInputs } from './number-input.js';
+import { parseCalendarDefaultsAuthority, supportsCalendarDefaultsValue } from './calendar-filters-defaults.js';
 import {
+  CC_DROPDOWN_CARRIED_VALUE_ATTRIBUTE,
   CC_DROPDOWN_SELECTOR,
+  creatorCrateFormOwnedControls,
   enhanceAssetViewerFilterDisclosures,
   enhanceDropdowns,
   enhanceProjectAssetCategoryFilter,
@@ -63,6 +66,7 @@ import {
 import { refreshReleaseAssetsViewer } from './release-assets-viewer.js';
 import { enhanceNotesCodeBlocks } from './notes-editor.js';
 import { RELEASE_ARCHIVED_EVENT, RELEASE_DELETED_EVENT, RELEASE_EDIT_SAVED_EVENT } from './release-edit-dialog.js';
+import { RELEASE_ACTION_UNRESOLVED_EVENT } from './release-archive.js';
 import { removeStatusRetry, showStatusRetry } from './status-retry.js';
 const PROJECTS_LIVE_REGION_SELECTOR = '[data-projects-live-region]';
 const PROJECTS_FILTER_SELECTOR = '#project-filters';
@@ -78,10 +82,19 @@ const RELEASES_LIVE_REGION_SELECTOR = '[data-releases-live-region]';
 const RELEASES_FILTER_SELECTOR = '[data-releases-filter]';
 const RELEASES_LIVE_STATUS_SELECTOR = '[data-releases-live-status]';
 const RELEASES_LIVE_STATE_ATTRIBUTE = 'data-releases-live-state';
-const RELEASES_DEFAULTS_FORM_SELECTOR = '#releases-defaults-form';
+// WP12: the results Search of the combined Filters & Defaults dialog (never
+// the option-search inputs inside its dropdowns, which have no name).
+const RELEASES_SEARCH_SELECTOR = '#releases-search';
+const RELEASES_DROPDOWN_SEARCH_SELECTOR = '#list-releases-filter [data-cc-dropdown-search]';
+const RELEASES_LIVE_DEBOUNCE_MS = 350;
 const CALENDAR_LIVE_REGION_SELECTOR = '[data-calendar-live-region]';
 const CALENDAR_FILTER_SELECTOR = '#calendar-filters';
-const CALENDAR_RESET_SELECTOR = '[data-calendar-reset]';
+// WP14b: the combined dialog's footer Reset filters (GET form); the legacy
+// `[data-calendar-reset]` hook is still recognised for its form action.
+const CALENDAR_RESET_SELECTOR = '[data-calendar-filters-reset], [data-calendar-reset]';
+const CALENDAR_DROPDOWN_SEARCH_SELECTOR = '#calendar-filters [data-cc-dropdown-search]';
+// Calendar has no results Search field; this never matches.
+const CALENDAR_NO_RESULTS_SEARCH_SELECTOR = '#calendar-filters [data-calendar-results-search]';
 const CALENDAR_MONTH_DIALOG_ID = 'calendar-month-dialog';
 const RELEASE_ASSETS_LIVE_REGION_SELECTOR = '[data-release-assets-live-region]';
 const RELEASE_ASSETS_LIVE_FILTER_SELECTOR = '[data-release-assets-live-filter]';
@@ -316,11 +329,16 @@ export function createLiveRegionEngine(config) {
       params.delete('page');
     }
 
-    const emptyKeys = [];
-    for (const [key, value] of params.entries()) {
-      if (value === '') emptyKeys.push(key);
-    }
-    emptyKeys.forEach((key) => params.delete(key));
+    // R9: an empty value (a Select all / "All" placeholder, an empty Search) is
+    // left out on its own; it never removes nonempty values of the same name,
+    // such as a hidden intent carrier holding a requested restriction without a
+    // rendered option (Releases / Calendar pending history). R10: the dropdown
+    // counts such a carrier as selected, so Select all stays unchecked beside
+    // it; a deliberate Select all removes the carriers and unchecks every
+    // individual value in its change handler, so it clears in one action.
+    const nonEmpty = Array.from(params.entries()).filter(([, value]) => value !== '');
+    Array.from(new Set(params.keys())).forEach((key) => params.delete(key));
+    nonEmpty.forEach(([key, value]) => params.append(key, value));
 
     url.search = params.toString();
     url.hash = '';
@@ -468,9 +486,16 @@ export function createLiveRegionEngine(config) {
   // The last valid results stay installed and the requested controls stay as
   // chosen. state.loadFailure owns the request Retry repeats until any newer
   // load or filter change supersedes it; only a successful install commits it.
-  function reportLoadFailure(state, url, historyMode, generation = state.generation) {
+  // C-F1: a caller whose failed intent is not a plain GET of `url` (the
+  // Calendar picker's server-year lookup) supplies its own message and Retry;
+  // `detail` is merged into the failure record it owns.
+  function reportLoadFailure(state, url, historyMode, generation = state.generation, {
+    message: customMessage = null,
+    onRetry: customRetry = null,
+    detail = null,
+  } = {}) {
     const region = regionFor(state.document);
-    const message = loadFailureMessage(state, url, historyMode);
+    const message = customMessage ?? loadFailureMessage(state, url, historyMode);
     region?.removeAttribute?.('aria-busy');
     status(region, message, 'error');
     clearLoadFailure(state);
@@ -485,7 +510,7 @@ export function createLiveRegionEngine(config) {
     text.textContent = message;
     notice.appendChild?.(text);
     // generation: the failed load, so a Retry can carry that load's ownership.
-    const failure = { url, historyMode, notice, generation };
+    const failure = { ...(detail || {}), url, historyMode, notice, generation };
     state.loadFailure = failure;
     placeLoadFailureNotice(state);
 
@@ -500,13 +525,17 @@ export function createLiveRegionEngine(config) {
         if (state.loadFailure !== failure) return;
         if (state.timer) state.window.clearTimeout?.(state.timer);
         state.timer = null;
-        invalidate(state);
-        // onLoadStart reads which failed load this Retry repeats.
-        state.retryingLoadFailure = failure;
-        try {
-          load(state, failure.url, failure.historyMode, null);
-        } finally {
-          state.retryingLoadFailure = null;
+        if (customRetry) {
+          customRetry(failure);
+        } else {
+          invalidate(state);
+          // onLoadStart reads which failed load this Retry repeats.
+          state.retryingLoadFailure = failure;
+          try {
+            load(state, failure.url, failure.historyMode, null);
+          } finally {
+            state.retryingLoadFailure = null;
+          }
         }
         if (!wasFocused) return;
         state.loadFailureFocusRetry = true;
@@ -681,7 +710,9 @@ export function createLiveRegionEngine(config) {
         if (searchSelector && event.target?.matches?.(searchSelector)) return;
         if (changeSelector && !event.target?.matches?.(changeSelector)) return;
         if (!event.target?.name && !event.target?.getAttribute?.('name')) return;
-        onFormChange?.(state, form, event, engine);
+        // C-F1 P2: a page may continue the edit through its own pending intent
+        // (the Calendar picker's unresolved month); false means it did.
+        if (onFormChange?.(state, form, event, engine) === false) return;
         schedule(state, form);
       });
       if (searchSelector && form.querySelector?.(searchSelector)) {
@@ -794,6 +825,8 @@ export function createLiveRegionEngine(config) {
     invalidate,
     installRegion,
     load,
+    clearLoadFailure,
+    reportLoadFailure,
     // WP7: a control associated with a live form through form="…" but placed
     // outside it changes the view the same way the form's own controls do.
     schedule,
@@ -970,12 +1003,299 @@ function restoreCalendarView(state, nextRegion, snapshot) {
   state.window.scrollTo?.(snapshot.scrollX, snapshot.scrollY);
 }
 
+/*
+ * R2: Calendar month and filter navigation compose the latest intent.
+ *
+ * The Calendar has no debounced edits: every filter or presentation change in
+ * #calendar-filters is requested at once, so the engine's in-flight (or
+ * failed) request URL is always the latest intended Calendar — month,
+ * repeated Projects / Project Types, status, View and week start, or a Reset
+ * filters / defaults refresh address. Two rendered surfaces lag behind it:
+ *
+ *   - The Previous / Today / Next and toolbar View links are rendered for the
+ *     installed Calendar. calendarNavigationLinkDestination applies only what
+ *     the clicked link changes (its month, or its View) to the in-flight or
+ *     failed request; an idle page keeps the link's own canonical address.
+ *     A link month omitted (Today) stays omitted: the server resolves it.
+ *   - The filter form was rendered for the installed Calendar.
+ *     syncCalendarIntendedControls (R4) mirrors EVERY dimension of each
+ *     request into the form as the request starts — month, repeated Projects
+ *     and Project Types, status, View and week start — so a later filter edit
+ *     or month-picker choice changes only its own dimension of a Reset
+ *     filters, Back / Forward, month or filter navigation still pending or
+ *     failed (see syncCalendarIntendedControls).
+ *
+ * No second store: the form and the engine's request own the intent; the
+ * response reconciliation still replaces the form with the installed one.
+ * The legacy [data-calendar-reset] link keeps its own address.
+ */
+function calendarNavigationLinkDestination(state, link, url) {
+  const monthLink = link?.matches?.('[data-calendar-navigation]');
+  const viewLink = !monthLink && link?.closest?.('.calendar-view-switcher');
+  if (!monthLink && !viewLink) return url;
+  let base = null;
+  if (state.controller && state.requestedUrl) base = state.requestedUrl;
+  else if (state.loadFailure) base = state.loadFailure.url || state.requestedUrl;
+  // C-F1 P3: a picked month whose refresh-owned lookup failed is still the
+  // latest intent until a newer navigation; so is a refresh-owned explicit
+  // GET that failed (P2-C).
+  else base = calendarPickerYearRecovery(state)?.base || calendarLoadRecovery(state)?.url || null;
+  if (!base) return url;
+  const destination = new URL(base.href, state.window.location?.href || base.href);
+  if (destination.pathname !== url.pathname) return url;
+  const key = monthLink ? 'month' : 'view';
+  destination.searchParams.delete(key);
+  const value = url.searchParams.get(key);
+  if (value !== null && value !== '') destination.searchParams.set(key, value);
+  destination.hash = '';
+  // C-F1 P2: a toolbar View is a presentation edit: it keeps a picked month
+  // still waiting for its server year (a month link replaces that month).
+  if (viewLink && continueCalendarPickerYearIntent(state, destination) !== null) return false;
+  return destination;
+}
+
+/*
+ * R4: the latest requested Calendar is authoritative for every dimension a
+ * later action does not change.
+ *
+ *   - Projects / Project Types: the request's repeated values are checked and
+ *     every other option unchecked (none: Select all), so a Reset filters or
+ *     history destination that cleared a restriction is not reinstated by the
+ *     next submission. A requested value without a rendered option travels in
+ *     a hidden carrier until that dimension is edited or a response installs.
+ *   - Status / View / week start present in the request are checked as is.
+ *     One the request OMITS (Reset filters, a defaults refresh, a history entry
+ *     the server left implicit) is the saved / fallback default the server
+ *     resolves: it is recorded in state.calendarOmittedPresentation and left
+ *     out of every later form submission (transformParams) until the user
+ *     edits that control or a response installs, so the server resolves it
+ *     again. Its control shows the effective default where readable: a
+ *     confirmed defaults authority newer than the installed page (P2), else
+ *     the installed authority's (never during a defaults refresh, whose
+ *     controls already show what was just saved).
+ *
+ * Programmatic `checked` / `value` writes dispatch no change event: nothing is
+ * requested or saved. Typed dropdown search text and focus are untouched.
+ */
+const CALENDAR_INTENT_MULTI_FIELDS = ['project', 'type'];
+const CALENDAR_INTENT_PRESENTATION_FIELDS = ['status', 'view', 'weekStart'];
+const CALENDAR_INTENT_CARRIER_ATTRIBUTE = 'data-calendar-intended-carrier';
+
+function calendarInstalledAuthority(state) {
+  const script = calendarLiveEngine.getRegion(state.document)
+    ?.querySelector?.('script[data-calendar-defaults-authority]');
+  return parseCalendarDefaultsAuthority(script?.textContent, { requireCurrent: true });
+}
+
+function isCalendarDefaultsGeneration(value) {
+  return Number.isSafeInteger(value) && value >= 0;
+}
+
+/*
+ * Post-Reset presentation authority (cumulative closure P2).
+ *
+ * A confirmed defaults mutation (Reset defaults, or Save) acknowledges the
+ * server's defaults authority at a NEWER defaults generation than the
+ * installed page's script carries. Until a response at least that new
+ * installs, the installed script still names the old saved values (after a
+ * Reset: a deleted saved Published status), so an omitted Status / View /
+ * week start must show the confirmed authority's effective value instead.
+ * The record is paired with its defaults generation, never a Boolean: an
+ * installed authority at (or past) that generation supersedes it, and an
+ * older acknowledgement never replaces a newer one. It only decides what an
+ * OMITTED field shows; an explicit request value (a newer user choice, a
+ * history entry) is always shown as is.
+ */
+function recordCalendarConfirmedDefaults(state, authority) {
+  if (!authority || typeof authority !== 'object' || !isCalendarDefaultsGeneration(authority.generation)) return;
+  const defaults = authority.defaults;
+  if (!defaults || typeof defaults !== 'object') return;
+  if (CALENDAR_INTENT_PRESENTATION_FIELDS.some((name) => !supportsCalendarDefaultsValue(name, defaults[name]))) return;
+  if (state.calendarInstalledDefaults?.generation >= authority.generation) return;
+  const known = state.calendarConfirmedDefaults;
+  if (known && known.generation >= authority.generation) return;
+  state.calendarConfirmedDefaults = {
+    generation: authority.generation,
+    defaults: Object.fromEntries(CALENDAR_INTENT_PRESENTATION_FIELDS.map((name) => [name, defaults[name]])),
+  };
+}
+
+// Only an authoritative install at or past the known generation can replace
+// the cached defaults and settle a confirmed mutation.
+function settleCalendarConfirmedDefaults(state) {
+  const installed = calendarInstalledAuthority(state);
+  if (!installed || installed.generation < state.calendarInstalledDefaults?.generation
+    || installed.generation < state.calendarMetadataFallbacks?.generation) return;
+  const confirmed = state.calendarConfirmedDefaults;
+  if (confirmed && installed.generation < confirmed.generation) return;
+  state.calendarInstalledDefaults = installed;
+  state.calendarConfirmedDefaults = null;
+}
+
+// The effective saved / fallback presentation an omitted field resolves to:
+// the confirmed authority while it is newer than the installed page, else the
+// installed page's own.
+function calendarEffectiveDefaults(state) {
+  return state.calendarConfirmedDefaults?.defaults ?? state.calendarInstalledDefaults?.defaults ?? null;
+}
+
+function calendarFieldInputs(form, name) {
+  return Array.from(form?.querySelectorAll?.(`input[name="${name}"]`) || [])
+    .filter((input) => !input.hasAttribute?.(CALENDAR_INTENT_CARRIER_ATTRIBUTE));
+}
+
+function calendarRefreshDropdowns(inputs) {
+  const dropdowns = new Set(inputs.map((input) => input.closest?.(CC_DROPDOWN_SELECTOR)).filter(Boolean));
+  dropdowns.forEach((dropdown) => initializeCreatorCrateDropdown(dropdown));
+}
+
+// P3-C1 follow-up: only carriers whose form owner is `form` (including ones
+// outside it that name it with form="") belong to this dimension; a carrier
+// inside `form` but owned by another form is left untouched.
+function removeCalendarIntentCarriers(form, name) {
+  creatorCrateFormOwnedControls(form, `input[${CALENDAR_INTENT_CARRIER_ATTRIBUTE}]`)
+    .filter((input) => (input.getAttribute?.('name') ?? input.name) === name)
+    .forEach((input) => input.remove?.());
+}
+
+function syncCalendarMultiField(form, name, values) {
+  const wanted = new Set(values.filter((value) => value !== ''));
+  const inputs = calendarFieldInputs(form, name)
+    .filter((input) => input.type === 'checkbox' || input.type === 'radio');
+  removeCalendarIntentCarriers(form, name);
+  if (inputs.length === 0) return;
+  const rendered = new Set();
+  inputs.forEach((input) => {
+    const value = String(input.value ?? '');
+    // The empty value is Select all (or the single-select "All"): checked
+    // exactly when the request carries no restriction.
+    input.checked = value === '' ? wanted.size === 0 : wanted.has(value);
+    if (value !== '') rendered.add(value);
+  });
+  wanted.forEach((value) => {
+    if (rendered.has(value)) return;
+    const carrier = form.ownerDocument?.createElement?.('input');
+    if (!carrier) return;
+    carrier.setAttribute('type', 'hidden');
+    carrier.setAttribute('name', name);
+    carrier.setAttribute('value', value);
+    carrier.setAttribute(CALENDAR_INTENT_CARRIER_ATTRIBUTE, '');
+    // R10: the multi-select counts it as selected (never All / Select all).
+    carrier.setAttribute(CC_DROPDOWN_CARRIED_VALUE_ATTRIBUTE, '');
+    carrier.value = value;
+    form.appendChild?.(carrier);
+  });
+  calendarRefreshDropdowns(inputs);
+}
+
+function syncCalendarPresentationField(form, name, value) {
+  const inputs = calendarFieldInputs(form, name);
+  const choices = inputs.filter((input) => input.type === 'radio');
+  if (choices.length > 0) {
+    const target = choices.find((input) => input.value === value);
+    if (!target) return;
+    if (name === 'view') {
+      syncProjectsViewControl(form, value);
+      return;
+    }
+    if (target.checked) return;
+    choices.forEach((input) => { input.checked = input === target; });
+    calendarRefreshDropdowns([target]);
+    return;
+  }
+  inputs.filter((input) => input.type === 'hidden').forEach((input) => { input.value = value; });
+}
+
+function syncCalendarIntendedControls(state, url, generation) {
+  const form = calendarLiveEngine.getForm(calendarLiveEngine.getRegion(state.document));
+  if (!form || !url) return;
+  const monthField = form.querySelector?.('input[name="month"]');
+  if (monthField) {
+    const month = url.searchParams.get('month') || '';
+    monthField.value = month;
+  }
+  CALENDAR_INTENT_MULTI_FIELDS.forEach((name) => {
+    syncCalendarMultiField(form, name, url.searchParams.getAll(name));
+  });
+  const omitted = new Set();
+  const defaultsRefresh = state.calendarDefaultsRefreshGeneration === generation;
+  const installedDefaults = defaultsRefresh ? null : calendarEffectiveDefaults(state);
+  CALENDAR_INTENT_PRESENTATION_FIELDS.forEach((name) => {
+    const value = url.searchParams.get(name);
+    if (value) {
+      syncCalendarPresentationField(form, name, value);
+      return;
+    }
+    omitted.add(name);
+    const effective = installedDefaults?.[name];
+    if (typeof effective === 'string' && effective) syncCalendarPresentationField(form, name, effective);
+  });
+  state.calendarOmittedPresentation = omitted;
+}
+
+// The form's own serialization (filter edits and the month picker) leaves out
+// a presentation field the latest destination omitted and nobody edited since.
+function omitCalendarDeferredPresentation(params, form) {
+  const state = liveRegionDocument(form)?.__creatorCrateCalendarLiveFiltering;
+  state?.calendarOmittedPresentation?.forEach((name) => params.delete(name));
+}
+
+function noteCalendarControlEdited(state, event) {
+  const name = event?.target?.getAttribute?.('name') ?? event?.target?.name;
+  if (!name) return;
+  state.calendarOmittedPresentation?.delete(name);
+  if (CALENDAR_INTENT_MULTI_FIELDS.includes(name)) {
+    removeCalendarIntentCarriers(calendarLiveEngine.getForm(calendarLiveEngine.getRegion(state.document)), name);
+  }
+}
+
+// A failed load (or C-F1 server-year lookup) owned by a Calendar refresh
+// reports through that refresh; returns whether it did.
+function failCalendarRefresh(state, generation) {
+  if (state.calendarDefaultsRefreshGeneration !== generation) return false;
+  const notifyRefreshError = state.calendarDefaultsRefreshError;
+  const message = state.calendarDefaultsRefreshMessage ?? CALENDAR_DEFAULTS_REFRESH_FAILURE;
+  resetCalendarRefresh(state);
+  const region = calendarLiveEngine.getRegion(state.document);
+  region?.removeAttribute?.('aria-busy');
+  calendarLiveEngine.status(region, message, 'error');
+  // Final P3-A: a release refresh whose action no longer owns the page
+  // feedback (a newer release action does) answers false; the failure is then
+  // Calendar's own, reported with its own Retry, never silently dropped.
+  return notifyRefreshError?.() !== false;
+}
+
+function notifyCalendarLive(state, detail) {
+  state.calendarObservers?.forEach((listener) => {
+    try {
+      listener(detail);
+    } catch {
+      // A transport observer must never break live filtering.
+    }
+  });
+}
+
 const calendarLiveEngine = createLiveRegionEngine({
   regionSelector: CALENDAR_LIVE_REGION_SELECTOR,
   formSelector: CALENDAR_FILTER_SELECTOR,
   formScope: 'document',
   linkSelector: '[data-calendar-navigation], [data-calendar-reset], .calendar-view-switcher a',
   linkScope: 'document',
+  linkDestination: calendarNavigationLinkDestination,
+  transformParams: omitCalendarDeferredPresentation,
+  onFormChange(state, form, event) {
+    noteCalendarControlEdited(state, event);
+    // C-F1 P2: a filter / presentation edit made while a picked month waits
+    // for (or failed to get) its server year changes only its own dimension:
+    // the picked month continues under this newer intent.
+    let base = null;
+    try {
+      base = calendarLiveEngine.url(form, state.window);
+    } catch {
+      return undefined;
+    }
+    return continueCalendarPickerYearIntent(state, base) === null ? undefined : false;
+  },
   defaultAction: '/calendar',
   stateKey: '__creatorCrateCalendarLiveFiltering',
   historyState: { calendar: true },
@@ -989,19 +1309,69 @@ const calendarLiveEngine = createLiveRegionEngine({
   onCreate(state) {
     resetCalendarRefresh(state);
     state.calendarHistoryMode = null;
+    state.calendarPickerYearRecovery = null;
+    state.calendarLoadRecovery = null;
     state.calendarStaleNoticeClear = null;
+    // WP14a: request-lifecycle observers of the explicit Calendar defaults
+    // transport (calendar-filters-defaults.js). Observation only.
+    state.calendarObservers = new Set();
+    state.calendarLoading = false;
+    // R4: presentation fields the latest destination left to the server.
+    state.calendarOmittedPresentation = new Set();
+    // P2: confirmed defaults authority newer than the installed page.
+    state.calendarConfirmedDefaults = null;
+    state.calendarInstalledDefaults = calendarInstalledAuthority(state);
+    state.calendarMetadataFallbacks = null;
   },
   onInvalidate(state) {
+    const supersededLoading = state.calendarLoading;
+    state.calendarLoading = false;
+    // C-F1: any newer navigation (or the picker's own next choice) ends a
+    // pending server-year lookup; its late answer is ignored by generation.
+    // A carried picked month is read before this runs (see
+    // continueCalendarPickerYearIntent); otherwise the newer navigation owns
+    // the month, as does a refresh-failed lookup's recovery (P3).
+    state.calendarPickerYear = null;
+    state.calendarPickerYearRecovery = null;
+    state.calendarLoadRecovery = null;
+    notifyCalendarLive(state, { phase: 'superseded', generation: state.generation, loading: supersededLoading });
     resetCalendarRefresh(state);
+    // Calendar M1 P3-B: the generation this ends is the only one a release
+    // refresh's Retry may repeat, so that Retry is retired with it.
+    retireCalendarReleaseRetry(state);
   },
-  onLoadStart(state, _generation, _url, historyMode) {
+  onLoadStart(state, generation, url, historyMode) {
     state.calendarHistoryMode = historyMode;
+    state.calendarLoading = true;
+    syncCalendarIntendedControls(state, url, generation);
+    notifyCalendarLive(state, { phase: 'started', generation, url: url?.href ?? null });
   },
   onResponseParsed(state, parsed) {
+    // WP14b: the combined dialog's GET form is reconciled to the installed
+    // response (repeated Projects/Types, status, View, week start and the
+    // hidden month); typed dropdown option-search text survives it.
+    const drafts = captureFilterDialogDrafts(state.document, CALENDAR_DROPDOWN_SEARCH_SELECTOR, CALENDAR_NO_RESULTS_SEARCH_SELECTOR);
     reconcileExternalFilterForm(state, parsed, CALENDAR_FILTER_SELECTOR);
+    restoreFilterDialogDrafts(state.document, drafts, CALENDAR_DROPDOWN_SEARCH_SELECTOR, CALENDAR_NO_RESULTS_SEARCH_SELECTOR);
+    // R4: the installed form now shows the server's effective values.
+    state.calendarOmittedPresentation = new Set();
+    // The footer Reset filters form (outside the live region) follows the
+    // installed month: its action and hidden fields come from the response.
     const resetForm = state.document.querySelector?.(CALENDAR_RESET_SELECTOR)?.closest?.('form');
     const nextResetForm = parsed.querySelector?.(CALENDAR_RESET_SELECTOR)?.closest?.('form');
-    if (resetForm && nextResetForm) resetForm.setAttribute('action', nextResetForm.getAttribute('action'));
+    if (resetForm && nextResetForm) {
+      resetForm.setAttribute('action', nextResetForm.getAttribute('action'));
+      nextResetForm.querySelectorAll?.('input[type="hidden"][name]').forEach((nextField) => {
+        const name = nextField.getAttribute?.('name') ?? nextField.name;
+        const field = Array.from(resetForm.querySelectorAll?.('input[type="hidden"][name]') || [])
+          .find((candidate) => (candidate.getAttribute?.('name') ?? candidate.name) === name);
+        const value = nextField.getAttribute?.('value') ?? nextField.value ?? '';
+        if (field) {
+          field.value = value;
+          field.setAttribute?.('value', value);
+        }
+      });
+    }
     state.calendarFocusWasInRegion = calendarLiveEngine.getRegion(state.document)
       ?.contains?.(state.document.activeElement) || false;
     if (state.calendarRefreshPreservesView) state.calendarViewSnapshot = captureCalendarView(state);
@@ -1013,6 +1383,9 @@ const calendarLiveEngine = createLiveRegionEngine({
     state.calendarFocusWasInRegion = false;
   },
   onLoadComplete(state, generation) {
+    state.calendarLoading = false;
+    settleCalendarConfirmedDefaults(state);
+    notifyCalendarLive(state, { phase: 'installed', generation, url: state.window?.location?.href ?? null });
     // Any completed load shows current data, so a stale-data notice ends.
     const clearStaleNotice = state.calendarStaleNoticeClear;
     state.calendarStaleNoticeClear = null;
@@ -1022,16 +1395,14 @@ const calendarLiveEngine = createLiveRegionEngine({
     resetCalendarRefresh(state);
     notifyRefreshed?.();
   },
-  onLoadError(state, generation) {
-    if (state.calendarDefaultsRefreshGeneration !== generation) return false;
-    const notifyRefreshError = state.calendarDefaultsRefreshError;
-    const message = state.calendarDefaultsRefreshMessage ?? CALENDAR_DEFAULTS_REFRESH_FAILURE;
-    resetCalendarRefresh(state);
-    const region = calendarLiveEngine.getRegion(state.document);
-    region?.removeAttribute?.('aria-busy');
-    calendarLiveEngine.status(region, message, 'error');
-    notifyRefreshError?.();
-    return true;
+  onLoadError(state, generation, error, _form, url, historyMode) {
+    state.calendarLoading = false;
+    // P2-C: recorded before observers hear of the failure (as P2-B).
+    recordCalendarLoadRecovery(state, generation, error, url, historyMode);
+    notifyCalendarLive(state, {
+      phase: 'failed', generation, url: url?.href ?? null, aborted: error?.name === 'AbortError',
+    });
+    return failCalendarRefresh(state, generation);
   },
   isCurrentUrl(url) {
     return url.pathname === '/calendar';
@@ -1045,6 +1416,306 @@ const calendarLiveEngine = createLiveRegionEngine({
     return liveFilterFailureMessage('Calendar')(state, url, historyMode);
   },
 });
+
+/*
+ * R6: the month picker opens on the latest intended Calendar month.
+ *
+ * The owning destination is the failed request Retry repeats, else the
+ * in-flight request, else (no newer navigation) the installed Calendar. A
+ * destination's explicit valid month is its month. One without a valid month
+ * — the monthless Today link, a history entry left implicit, an invalid
+ * month — is the month the server resolves for it: the current Calendar
+ * month (getReleaseCalendar's fallback). The installed response renders that
+ * server-resolved month as data-calendar-current-month, so no second date or
+ * timezone calculation runs here. Never the abandoned installed month: when
+ * the current month is unreadable, null leaves the picker without a choice.
+ */
+const CALENDAR_PICKER_MONTH_PATTERN = /^[1-9]\d{3}-(0[1-9]|1[0-2])$/;
+
+/*
+ * C-F1: the installed data-calendar-current-month is what the server resolved
+ * when the INSTALLED Calendar rendered. While a monthless destination is
+ * pending or failed, the server's date may have moved on since (December 31
+ * → January 1), so a year taken from it is only a hint shown in the picker
+ * (`implicit`), never the year a picked month navigates to. That year comes
+ * from the server: see startCalendarPickerYearLookup.
+ */
+function calendarPickerYearLookupIntent(state) {
+  const pending = state?.calendarPickerYear;
+  if (pending && pending.generation === state.generation) return pending;
+  return state?.loadFailure?.calendarPickerYear || calendarPickerYearRecovery(state);
+}
+
+/*
+ * C-F1 P3: a lookup a Calendar refresh (a saved release edit) adopted reports
+ * its failure through that refresh, not the engine's load failure. The picked
+ * month, its lookup base (the refresh's filters / presentation), history mode
+ * and onYear are kept here for the refresh's Retry — valid only while the
+ * failed lookup's generation still owns the Calendar (any newer navigation
+ * invalidates, which also clears it).
+ */
+function calendarPickerYearRecovery(state) {
+  const recovery = state?.calendarPickerYearRecovery;
+  return recovery && recovery.generation === state.generation ? recovery : null;
+}
+
+/*
+ * P2-C: an explicit Calendar GET a refresh owned (a saved release edit's
+ * refresh that took over a month / filter navigation, or continued a picked
+ * month after its server year resolved) reports its failure through that
+ * refresh, not the engine's load failure. Its complete address (explicit
+ * month, repeated Projects / Types, status, View, week start) and history
+ * mode are kept here for the refresh's Retry, the defaults snapshot, month
+ * links and the picker — valid only while the failed generation still owns
+ * the Calendar (any newer navigation invalidates, which also clears it). A
+ * refresh of the installed address itself is not a newer intent: its failure
+ * leaves the installed Calendar authoritative (C-F2).
+ */
+function calendarLoadRecovery(state) {
+  const recovery = state?.calendarLoadRecovery;
+  return recovery && recovery.generation === state.generation ? recovery : null;
+}
+
+function recordCalendarLoadRecovery(state, generation, error, url, historyMode) {
+  if (state.calendarDefaultsRefreshGeneration !== generation || error?.name === 'AbortError') return;
+  if (!url || url.pathname !== '/calendar' || liveRegionSameAddress(url, state.window?.location?.href)) return;
+  const failed = new URL(url.href);
+  failed.hash = '';
+  state.calendarLoadRecovery = { generation, url: failed, historyMode: historyMode || 'replace' };
+}
+
+/*
+ * C-F1 P2: a newer filter or presentation intent (`base`, a Calendar address
+ * without an explicit month) made while a picked month still waits for — or
+ * failed to get — its server year keeps that month: a new lookup owns the new
+ * generation with `base` as its destination (older lookup aborted, its late
+ * answer ignored; a stale failure notice and its Retry removed). One explicit
+ * navigation follows the lookup, as one new history entry. Returns the owning
+ * generation, or null when no picked month is waiting or `base` names its own
+ * month (an explicit month replaces the picked one).
+ */
+function continueCalendarPickerYearIntent(state, base) {
+  const intent = calendarPickerYearLookupIntent(state);
+  if (!intent || !base || base.pathname !== '/calendar') return null;
+  if (CALENDAR_PICKER_MONTH_PATTERN.test(base.searchParams.get('month') || '')) return null;
+  const generation = startCalendarPickerYearLookup(state, intent.month, { base, historyMode: 'push', onYear: intent.onYear });
+  // P2-A: the new lookup's destination (e.g. a toolbar View choice) is the
+  // Calendar's intent: mirror it into the filter form (R4) so a later edit
+  // there changes only its own dimension instead of reverting this one.
+  const owner = state.calendarPickerYear;
+  if (generation !== null && owner?.generation === generation) syncCalendarIntendedControls(state, owner.base, generation);
+  return generation;
+}
+
+function calendarPickerIntendedSelection(state, document) {
+  const region = calendarLiveEngine.getRegion(document);
+  const current = region?.getAttribute?.('data-calendar-current-month') || '';
+  const currentYear = CALENDAR_PICKER_MONTH_PATTERN.test(current) ? current.slice(0, 4) : null;
+  // A picked month still waiting for (or failed to get) the server's year.
+  const lookup = calendarPickerYearLookupIntent(state);
+  if (lookup) return { month: currentYear ? `${currentYear}-${lookup.month}` : null, implicit: true };
+  let destination = null;
+  if (state?.loadFailure) destination = state.loadFailure.url || state.requestedUrl;
+  else if (state?.controller) destination = state.requestedUrl;
+  // P2-C: a refresh-owned explicit GET that failed is still the intent.
+  else destination = calendarLoadRecovery(state)?.url || null;
+  const installed = region?.getAttribute?.('data-calendar-month') || '';
+  if (!destination) {
+    return { month: CALENDAR_PICKER_MONTH_PATTERN.test(installed) ? installed : null, implicit: false };
+  }
+  const requested = destination.searchParams?.get?.('month') || '';
+  if (CALENDAR_PICKER_MONTH_PATTERN.test(requested)) return { month: requested, implicit: false };
+  return { month: currentYear ? current : null, implicit: true };
+}
+
+const CALENDAR_PICKER_YEAR_FAILURE = "The selected month couldn't be loaded because the current year couldn't be confirmed. The previously displayed month is still shown.";
+const CALENDAR_PICKER_YEAR_INVALID = 'Calendar year lookup did not return the current month.';
+
+/*
+ * C-F1: one read-only GET of the existing Calendar page, used only for the
+ * server-local current month it renders as data-calendar-current-month. It
+ * requests the displayed month (an explicit YYYY-MM the route accepts), is
+ * same-origin with the session's credentials and uncached, and accepts only a
+ * successful text/html Calendar response at /calendar (a login redirect or an
+ * error page is rejected). The HTML is parsed inertly (DOMParser runs no
+ * scripts) and never inserted; nothing here touches history or the page.
+ */
+function requestCalendarServerMonth(state, signal) {
+  const base = state.window.location?.href || '/calendar';
+  const url = new URL('/calendar', base);
+  const displayed = calendarLiveEngine.getRegion(state.document)?.getAttribute?.('data-calendar-month') || '';
+  if (CALENDAR_PICKER_MONTH_PATTERN.test(displayed)) url.searchParams.set('month', displayed);
+  const options = {
+    method: 'GET',
+    credentials: 'same-origin',
+    redirect: 'follow',
+    cache: 'no-store',
+    headers: { Accept: 'text/html' },
+  };
+  if (signal) options.signal = signal;
+  return Promise.resolve()
+    .then(() => state.window.fetch(url.href, options))
+    .then((response) => {
+      if (!response?.ok || typeof response.text !== 'function') throw new Error(CALENDAR_PICKER_YEAR_INVALID);
+      const finalUrl = new URL(response.url || url.href, url.href);
+      if (finalUrl.origin !== url.origin || finalUrl.pathname !== '/calendar') throw new Error(CALENDAR_PICKER_YEAR_INVALID);
+      const type = String(response.headers?.get?.('content-type') || '').trim().toLowerCase();
+      if (!/^text\/html\s*(;|$)/.test(type)) throw new Error(CALENDAR_PICKER_YEAR_INVALID);
+      return response.text();
+    })
+    .then((text) => {
+      const parsed = new state.window.DOMParser().parseFromString(String(text), 'text/html');
+      const region = parsed?.querySelector?.(CALENDAR_LIVE_REGION_SELECTOR);
+      const month = region?.getAttribute?.('data-calendar-month') || '';
+      const current = region?.getAttribute?.('data-calendar-current-month') || '';
+      if (!CALENDAR_PICKER_MONTH_PATTERN.test(month) || !CALENDAR_PICKER_MONTH_PATTERN.test(current)) {
+        throw new Error(CALENDAR_PICKER_YEAR_INVALID);
+      }
+      return current;
+    });
+}
+
+/*
+ * C-F1: a month picked while the picker's year is implicit (a pending or
+ * failed monthless Today / history destination, or an earlier picked month
+ * still waiting for its year) becomes the Calendar's intent AT ONCE, through
+ * the one Calendar engine: the older navigation is invalidated (its request
+ * aborted, its late response ignored by generation) and this intent owns the
+ * new generation, requestedUrl (`base`, monthless until the year is known),
+ * history mode and AbortController — so Back / Forward, links, Today, Reset
+ * filters, filter edits, a newer picked month or a defaults refresh supersede
+ * it exactly as they supersede a pending GET. One server-year lookup runs
+ * meanwhile; only while this generation still owns the Calendar does its
+ * answer continue the SAME generation as one explicit load of
+ * `base` + month=<server year>-<picked month> (the only user navigation). A
+ * failed lookup never guesses a year: the installed Calendar stays, and the
+ * engine's failure notice offers Retry, which repeats the lookup (GET only).
+ * Returns the owning generation, or null when live navigation is unavailable.
+ */
+function startCalendarPickerYearLookup(state, month, { base = null, historyMode = 'push', onYear = null } = {}) {
+  const region = calendarLiveEngine.getRegion(state?.document);
+  if (!state || !region || !calendarLiveEngine.capabilities(state.window)) return null;
+  let destination = base;
+  if (!destination) {
+    const form = calendarLiveEngine.getForm(region);
+    if (!form) return null;
+    try {
+      destination = calendarLiveEngine.url(form, state.window);
+    } catch {
+      return null;
+    }
+  }
+  destination = new URL(destination.href);
+  destination.searchParams.delete('month');
+  destination.hash = '';
+  if (state.timer) state.window.clearTimeout?.(state.timer);
+  state.timer = null;
+  calendarLiveEngine.invalidate(state);
+  calendarLiveEngine.clearLoadFailure(state);
+  const generation = state.generation;
+  const lookup = { generation, month, base: destination, historyMode, onYear };
+  state.calendarPickerYear = lookup;
+  state.response = null;
+  state.requestedUrl = destination;
+  state.requestedHistoryMode = historyMode;
+  state.calendarHistoryMode = historyMode;
+  state.controller = calendarLiveEngine.controller(state.window);
+  state.calendarLoading = true;
+  calendarLiveEngine.status(region, 'Loading calendar.', 'loading');
+  region.setAttribute?.('aria-busy', 'true');
+  notifyCalendarLive(state, { phase: 'started', generation, url: destination.href });
+
+  const owns = () => state.generation === generation && state.calendarPickerYear === lookup;
+  requestCalendarServerMonth(state, state.controller?.signal).then((current) => {
+    if (!owns()) return;
+    const year = current.slice(0, 4);
+    const params = new URLSearchParams();
+    params.set('month', `${year}-${lookup.month}`);
+    lookup.base.searchParams.forEach((value, key) => { if (key !== 'month') params.append(key, value); });
+    const final = new URL(lookup.base.href);
+    final.search = params.toString();
+    state.calendarPickerYear = null;
+    try { lookup.onYear?.(year); } catch { /* the picker's echo never blocks navigation */ }
+    calendarLiveEngine.load(state, final, lookup.historyMode,
+      calendarLiveEngine.getForm(calendarLiveEngine.getRegion(state.document)));
+  }, (error) => {
+    if (!owns()) return;
+    state.calendarPickerYear = null;
+    state.controller = null;
+    state.calendarLoading = false;
+    // P3: a refresh that adopted this lookup reports the failure; the picked
+    // month stays recoverable for its Retry (and for any newer filter edit).
+    // P2-B: recorded before observers hear of the failure, so the snapshot
+    // they read already reports this recoverable intent as failed.
+    if (state.calendarDefaultsRefreshGeneration === generation) {
+      state.calendarPickerYearRecovery = {
+        generation, month: lookup.month, base: new URL(lookup.base.href), historyMode: lookup.historyMode, onYear: lookup.onYear,
+      };
+    }
+    notifyCalendarLive(state, {
+      phase: 'failed', generation, url: lookup.base.href, aborted: error?.name === 'AbortError',
+    });
+    if (failCalendarRefresh(state, generation)) return;
+    reportCalendarPickerYearFailure(state, lookup, generation);
+  });
+  return generation;
+}
+
+// A failed server-year lookup's own failure notice; its Retry repeats only
+// the read-only lookup for the picked month.
+function reportCalendarPickerYearFailure(state, { base, historyMode, month, onYear }, generation) {
+  calendarLiveEngine.reportLoadFailure(state, base, historyMode, generation, {
+    message: CALENDAR_PICKER_YEAR_FAILURE,
+    detail: { calendarPickerYear: { month, onYear } },
+    onRetry: (failure) => {
+      startCalendarPickerYearLookup(state, failure.calendarPickerYear.month, {
+        base: failure.url, historyMode: failure.historyMode, onYear: failure.calendarPickerYear.onYear,
+      });
+    },
+  });
+}
+
+/*
+ * C-F1: a GET-only refresh (a confirmed defaults Save / Reset, a saved release
+ * edit) taking over while a picked month waits for its server year. A
+ * monthless refresh destination can only name the picker's pending intent
+ * (C-F2 makes an idle installed destination explicit), whose month the
+ * lookup resolves: the refresh's address replaces the lookup's base (its
+ * filters / presentation) and keeps that month, instead of resolving the
+ * server's current month. A failed lookup restarts with that base. Returns
+ * the owning generation, or null when `url` is not the picker's destination.
+ */
+function adoptCalendarPickerYearLookup(state, url, historyMode) {
+  if (url.pathname !== '/calendar' || url.searchParams.has('month')) return null;
+  const pending = state.calendarPickerYear;
+  if (pending && pending.generation === state.generation) {
+    pending.base = new URL(url.href);
+    pending.base.hash = '';
+    pending.historyMode = historyMode;
+    state.requestedUrl = pending.base;
+    state.requestedHistoryMode = historyMode;
+    state.calendarHistoryMode = historyMode;
+    // P2-B (post-Reset authority): the adopted address (e.g. a confirmed Reset
+    // defaults refresh that omits status / View / week start) is now the
+    // Calendar's intent. Mirror it into the filter form (R4), as a load start
+    // would, so a later filter edit serializes it instead of the obsolete
+    // pre-Reset presentation still checked there.
+    syncCalendarIntendedControls(state, pending.base, state.generation);
+    return state.generation;
+  }
+  const recovery = state.loadFailure ? null : calendarPickerYearRecovery(state);
+  const failed = state.loadFailure?.calendarPickerYear || recovery;
+  if (!failed) return null;
+  // P2-B: a refresh-failed pick (its recovery record) is still the user's own
+  // navigation, never installed: a later GET-only refresh that resolves it (a
+  // Reset defaults refresh) adds the history entry that pick was owed.
+  const mode = recovery?.historyMode || historyMode;
+  const generation = startCalendarPickerYearLookup(state, failed.month, { base: url, historyMode: mode, onYear: failed.onYear });
+  // Likewise the restarted lookup's destination is the intent the form mirrors.
+  const owner = state.calendarPickerYear;
+  if (generation !== null && owner?.generation === generation) syncCalendarIntendedControls(state, owner.base, generation);
+  return generation;
+}
 
 export function enhanceCalendarLiveFiltering(scope = globalThis.document) {
   const count = calendarLiveEngine.enhance(scope);
@@ -1060,12 +1731,35 @@ export function enhanceCalendarLiveFiltering(scope = globalThis.document) {
   const dropdown = pickerForm.querySelector('#calendar-month-select');
   // Enter can also emit change and submit before the live region is replaced.
   let enterCommittedYear = false;
+  // C-F1: the Year shown for a pending / failed monthless destination, until
+  // the user edits it. A month picked with that Year untouched navigates in
+  // the SERVER's current year (startCalendarPickerYearLookup), not this one.
+  let implicitYear = null;
+  // The lookup's answer replaces an untouched implicit Year still on show.
+  const showResolvedYear = (year) => {
+    if (!yearInput || implicitYear === null || yearInput.value !== implicitYear) return;
+    yearInput.value = year;
+    yearInput.setCustomValidity?.('');
+    implicitYear = null;
+  };
   dialogState.onOpen = () => {
     enterCommittedYear = false;
-    // A month that failed to load stays the pending choice until it resolves.
-    const shownMonth = document.__creatorCrateCalendarLiveFiltering?.loadFailure?.url?.searchParams?.get?.('month')
-      || calendarLiveEngine.getRegion(document)?.getAttribute?.('data-calendar-month');
-    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(shownMonth || '')) return;
+    implicitYear = null;
+    // A month that failed to load stays the pending choice until it resolves;
+    // R2: so does a month still loading. R6: a monthless (Today) destination
+    // is the current Calendar month, not the installed one.
+    const selection = calendarPickerIntendedSelection(document.__creatorCrateCalendarLiveFiltering, document);
+    const shownMonth = selection.month;
+    if (!shownMonth) {
+      // Unresolvable: offer no stale year or month; the required Year asks.
+      dropdown?.querySelectorAll?.('input[type="radio"]').forEach((option) => { option.checked = false; });
+      initializeCreatorCrateDropdown(dropdown);
+      if (yearInput) {
+        yearInput.value = '';
+        yearInput.setCustomValidity?.('');
+      }
+      return;
+    }
     const [year, month] = shownMonth.split('-');
     dropdown?.querySelectorAll?.('input[type="radio"]').forEach((option) => {
       option.checked = option.value === month;
@@ -1074,25 +1768,49 @@ export function enhanceCalendarLiveFiltering(scope = globalThis.document) {
     if (yearInput) {
       yearInput.value = year;
       yearInput.setCustomValidity?.('');
+      if (selection.implicit) implicitYear = year;
     }
   };
   yearInput?.addEventListener?.('input', () => {
     enterCommittedYear = false;
+    // A typed Year is the user's explicit choice.
+    implicitYear = null;
     yearInput.setCustomValidity?.('');
   });
   const applySelection = () => {
     const month = dropdown?.querySelector?.('input[type="radio"]:checked')?.value;
-    const year = yearInput?.value?.trim();
+    let year = yearInput?.value?.trim();
     if (!/^\d{4}$/.test(year || '') || Number(year) < 1000 || Number(year) > 9999 || !yearInput.checkValidity()) {
       yearInput.setCustomValidity?.('Enter a year from 1000 to 9999.');
       yearInput.reportValidity?.();
       return;
     }
     if (!/^(0[1-9]|1[0-2])$/.test(month || '')) return;
+    const liveState = document.__creatorCrateCalendarLiveFiltering;
+    if (implicitYear !== null && year === implicitYear) {
+      // C-F1: the shown Year was only the installed page's hint.
+      const now = calendarPickerIntendedSelection(liveState, document);
+      if (now.implicit) {
+        // The monthless destination is still pending / failed: its year is
+        // the server's. A choice equal to the one already waiting keeps it.
+        const waiting = liveState?.calendarPickerYear;
+        if (waiting && waiting.generation === liveState.generation && waiting.month === month) return;
+        startCalendarPickerYearLookup(liveState, month, { onYear: showResolvedYear });
+        return;
+      }
+      // That destination has installed since: its month now owns the year.
+      if (now.month) {
+        year = now.month.slice(0, 4);
+        yearInput.value = year;
+        implicitYear = null;
+      }
+    }
     const selectedMonth = `${year}-${month}`;
     const region = calendarLiveEngine.getRegion(document);
+    // R2: the displayed month is a real choice while another month is still
+    // loading or failed; it supersedes that navigation.
     if (selectedMonth === region?.getAttribute?.('data-calendar-month')
-      && !document.__creatorCrateCalendarLiveFiltering?.loadFailure) return;
+      && !liveState?.loadFailure && !liveState?.controller && !calendarLoadRecovery(liveState)) return;
     const filterForm = calendarLiveEngine.getForm(region);
     const monthField = filterForm?.querySelector?.('input[name="month"]');
     if (!monthField || !filterForm?.requestSubmit) return;
@@ -1118,6 +1836,159 @@ export function enhanceCalendarLiveFiltering(scope = globalThis.document) {
   return count;
 }
 
+function calendarLiveState(scope) {
+  const document = liveRegionDocument(scope);
+  const region = calendarLiveEngine.getRegion(document);
+  if (!document || !region) return null;
+  calendarLiveEngine.enhance(document);
+  const state = document.__creatorCrateCalendarLiveFiltering;
+  if (!state || !calendarLiveEngine.capabilities(state.window)) return null;
+  return state;
+}
+
+export function calendarLiveApplicationFallbacks(scope) {
+  const state = calendarLiveState(scope);
+  const installed = state?.calendarInstalledDefaults;
+  const cached = state?.calendarMetadataFallbacks;
+  if (cached && (!installed || cached.generation >= installed.generation)) return cached.fallbacks;
+  return installed?.fallbacks ?? null;
+}
+
+export function rememberCalendarApplicationFallbacks(scope, { generation, fallbacks }) {
+  const state = calendarLiveState(scope);
+  if (!state || generation < state.calendarInstalledDefaults?.generation
+    || generation < state.calendarConfirmedDefaults?.generation
+    || generation < state.calendarMetadataFallbacks?.generation) return;
+  // An acknowledgement can advance the controller's generation without
+  // carrying metadata. Keep the last validated application fallbacks.
+  state.calendarMetadataFallbacks = { generation, fallbacks };
+}
+
+/**
+ * WP14a read-only Calendar request state for the explicit defaults
+ * transport. `pending` is an in-flight GET (Calendar has no debounced
+ * edits); `failed` means the installed Calendar is not the latest intent.
+ * `intendedUrl` is the pending or failed request, else the installed
+ * location, so a Save or Reset defaults never restores an older month.
+ *
+ * C-F2: the installed location names the DISPLAYED month explicitly. A
+ * monthless (or invalid-month) location was resolved by the server when it
+ * rendered; requested again after the server's date has moved on (the Save
+ * refresh, the Reset defaults returnTo / refreshUrl), it would resolve to a
+ * different month the user never asked for. The installed region's
+ * data-calendar-month is that resolution. A pending or failed monthless
+ * request (Today, an implicit history entry) is a newer explicit intent and
+ * keeps the server's resolution.
+ */
+function calendarInstalledIntendedUrl(state, location) {
+  if (!location) return location;
+  const displayed = calendarLiveEngine.getRegion(state.document)?.getAttribute?.('data-calendar-month') || '';
+  if (!CALENDAR_PICKER_MONTH_PATTERN.test(displayed)) return location;
+  try {
+    const url = new URL(location);
+    if (url.pathname !== '/calendar' || url.searchParams.getAll('month').join('\n') === displayed) return location;
+    url.searchParams.delete('month');
+    url.searchParams.set('month', displayed);
+    return url.href;
+  } catch {
+    return location;
+  }
+}
+
+export function calendarLiveSnapshot(scope = globalThis.document) {
+  const state = calendarLiveState(scope);
+  if (!state) return null;
+  const pending = Boolean(state.calendarLoading || state.timer);
+  // P2-B: a picked month whose refresh-adopted server-year lookup failed is
+  // still the latest intent while its recovery is current (until a newer
+  // navigation): the installed Calendar is not it. Its monthless lookup base
+  // is the failed destination, as for an engine load failure.
+  const recovery = pending || state.loadFailure ? null : calendarPickerYearRecovery(state);
+  // P2-C: likewise a refresh-owned explicit GET that failed: its complete
+  // explicit address is the failed destination.
+  const loadRecovery = pending || state.loadFailure || recovery ? null : calendarLoadRecovery(state);
+  const failedUrl = state.loadFailure?.url?.href ?? recovery?.base?.href ?? loadRecovery?.url?.href ?? null;
+  const location = state.window?.location?.href ?? null;
+  // Cumulative P2-B: the history entry the latest intent still owes, paired
+  // with intendedUrl. A pending navigation (or a scheduled filter edit) owns
+  // its push; a failed one keeps it until a GET of that intent installs (the
+  // engine's push then commits it once) or a newer navigation supersedes it
+  // (invalidate / a newer load clears the failure and the recoveries). An
+  // installed Calendar owes nothing, so a defaults refresh only replaces. Only
+  // 'push' is reported: a pending or failed Back / Forward ('none') or a
+  // refresh's 'replace' owes no new entry, and the shared controller's
+  // 'replace' default keeps a refresh destination's address current.
+  let owed = null;
+  if (pending) owed = state.timer ? 'push' : state.requestedHistoryMode;
+  else if (state.loadFailure) owed = state.loadFailure.historyMode;
+  else owed = recovery?.historyMode ?? loadRecovery?.historyMode ?? null;
+  return {
+    generation: state.generation,
+    pending,
+    failed: Boolean(state.loadFailure || recovery || loadRecovery),
+    failedUrl,
+    requestedHistoryMode: state.requestedHistoryMode ?? null,
+    outstandingHistoryMode: owed === 'push' ? 'push' : null,
+    intendedUrl: (pending && state.requestedUrl?.href) || failedUrl || calendarInstalledIntendedUrl(state, location),
+  };
+}
+
+export function subscribeCalendarLive(scope = globalThis.document, listener) {
+  const state = calendarLiveState(scope);
+  if (!state || typeof listener !== 'function') return null;
+  state.calendarObservers.add(listener);
+  return () => state.calendarObservers.delete(listener);
+}
+
+/**
+ * WP14a canonical GET navigation through the one Calendar engine: it
+ * supersedes any older pending GET and returns the owning generation. GET
+ * only; a failed load keeps the engine's GET-only Retry.
+ *
+ * `defaultsAuthority` (P2): the defaults controller's confirmed authority. One
+ * newer than the installed page decides what the omitted presentation fields
+ * show from this navigation on (see recordCalendarConfirmedDefaults).
+ */
+export function navigateCalendarLive(
+  scope = globalThis.document,
+  destination,
+  { historyMode = 'push', defaultsAuthority = null } = {},
+) {
+  const state = calendarLiveState(scope);
+  if (!state) return { status: 'unavailable' };
+  let url;
+  try {
+    url = new URL(destination, state.window.location?.href || '/calendar');
+  } catch {
+    return { status: 'unavailable' };
+  }
+  if (url.pathname !== '/calendar') return { status: 'unavailable' };
+  recordCalendarConfirmedDefaults(state, defaultsAuthority);
+  let mode = ['push', 'replace', 'none'].includes(historyMode) ? historyMode : 'push';
+  // P2-C: a refresh-failed explicit GET was never installed: a later GET of
+  // the same explicit month (a confirmed Reset defaults refresh resolving it)
+  // adds the history entry that navigation was owed.
+  const loadRecovery = calendarLoadRecovery(state);
+  const recoveredMonth = loadRecovery?.url.searchParams.get('month');
+  if (loadRecovery && mode !== 'push' && recoveredMonth && url.searchParams.get('month') === recoveredMonth) {
+    mode = loadRecovery.historyMode;
+  }
+  // C-F1: a monthless refresh keeps a picked month waiting for its year.
+  const adopted = adoptCalendarPickerYearLookup(state, url, mode);
+  if (adopted !== null) return { status: 'started', generation: adopted };
+  if (state.timer) state.window.clearTimeout?.(state.timer);
+  state.timer = null;
+  calendarLiveEngine.invalidate(state);
+  const generation = state.generation;
+  calendarLiveEngine.load(
+    state,
+    url,
+    mode,
+    calendarLiveEngine.getForm(calendarLiveEngine.getRegion(state.document)),
+  );
+  return { status: 'started', generation };
+}
+
 export function beginCalendarDefaultsLiveRefresh(scope = globalThis.document) {
   const document = liveRegionDocument(scope);
   const region = calendarLiveEngine.getRegion(document);
@@ -1125,7 +1996,31 @@ export function beginCalendarDefaultsLiveRefresh(scope = globalThis.document) {
   calendarLiveEngine.enhance(document);
   const state = document.__creatorCrateCalendarLiveFiltering;
   if (!state || !calendarLiveEngine.capabilities(state.window)) return null;
-  if (state.calendarDefaultsRefreshGeneration !== null) calendarLiveEngine.invalidate(state);
+  if (state.calendarDefaultsRefreshGeneration === null) return state.generation;
+  // C-F1: a newer refresh (a second confirmed release action) supersedes the
+  // older refresh's ownership, not the user's navigation. A picked month that
+  // refresh adopted while it waits for its server year is still the latest
+  // Calendar intent: it continues as a new lookup owning a newer generation
+  // (older lookup aborted, its late answer ignored), with the same month,
+  // destination (filters / presentation), history mode and picker echo, for
+  // the newer refresh to adopt (adoptCalendarPickerYearLookup).
+  const pending = state.calendarPickerYear;
+  if (pending && pending.generation === state.generation) {
+    const generation = startCalendarPickerYearLookup(state, pending.month, {
+      base: pending.base, historyMode: pending.historyMode, onYear: pending.onYear,
+    });
+    if (generation !== null) return generation;
+  }
+  // Likewise a GET that refresh owns (the picked month after its server year,
+  // or a month / filter navigation it took over) is still the latest intent:
+  // only the older refresh's ownership ends here. The newer refresh
+  // (refreshCalendarLiveRegion) supersedes that GET under a newer generation
+  // with the same destination and history mode.
+  if (state.controller && state.requestedUrl) {
+    resetCalendarRefresh(state);
+    return state.generation;
+  }
+  calendarLiveEngine.invalidate(state);
   return state.generation;
 }
 
@@ -1152,9 +2047,17 @@ export function refreshCalendarLiveRegion(
   if (state.generation !== authorityGeneration) return 'superseded';
 
   const inFlight = Boolean((state.controller || state.loadFailure) && state.requestedUrl);
-  const url = inFlight
-    ? new URL(state.requestedUrl.href)
-    : new URL(state.window.location.href);
+  // C-F1 P3: a picked month whose refresh-owned lookup failed is the intent a
+  // later refresh (its Retry refresh) continues, not the installed address.
+  const recovery = inFlight || !preserveFilters ? null : calendarPickerYearRecovery(state);
+  // P2-C: likewise a refresh-owned explicit GET that failed: its Retry
+  // refresh repeats that exact address and history mode (no year lookup).
+  const loadRecovery = inFlight || !preserveFilters || recovery ? null : calendarLoadRecovery(state);
+  let url;
+  if (inFlight) url = new URL(state.requestedUrl.href);
+  else if (recovery) url = new URL(recovery.base.href);
+  else if (loadRecovery) url = new URL(loadRecovery.url.href);
+  else url = new URL(state.window.location.href);
   if (url.pathname !== '/calendar') return 'unavailable';
   if (!preserveFilters) {
     url.searchParams.delete('status');
@@ -1162,7 +2065,21 @@ export function refreshCalendarLiveRegion(
     if (acknowledgedControls?.has('calendarView')) url.searchParams.delete('view');
   }
   // Taking over a pending month or filter navigation keeps its history entry.
-  const historyMode = preserveFilters && inFlight ? state.calendarHistoryMode || 'replace' : 'replace';
+  let historyMode = 'replace';
+  if (preserveFilters && inFlight) historyMode = state.calendarHistoryMode || 'replace';
+  else if (recovery) historyMode = recovery.historyMode || 'replace';
+  else if (loadRecovery) historyMode = loadRecovery.historyMode || 'replace';
+  // C-F1: a monthless refresh keeps a picked month waiting for its year; the
+  // refresh owns that generation's install or failure.
+  const adopted = adoptCalendarPickerYearLookup(state, url, historyMode);
+  if (adopted !== null) {
+    state.calendarDefaultsRefreshGeneration = adopted;
+    state.calendarDefaultsRefreshError = typeof onError === 'function' ? onError : null;
+    state.calendarDefaultsRefreshSuccess = typeof onSuccess === 'function' ? onSuccess : null;
+    state.calendarDefaultsRefreshMessage = failureMessage;
+    state.calendarRefreshPreservesView = preserveFilters;
+    return 'started';
+  }
   if (state.timer) state.window.clearTimeout?.(state.timer);
   state.timer = null;
   calendarLiveEngine.invalidate(state);
@@ -1237,6 +2154,101 @@ function setCalendarEditFeedback(document, message, error) {
   return notice;
 }
 
+// P3-B: each acknowledged release action (Edit save, Archive, Delete) owns
+// the page feedback its Calendar refresh writes until a newer one begins. A
+// Retry refresh continues its own action. Calendar navigation never changes
+// this owner: it only decides which refresh a Retry may still repeat (P3-A).
+function beginCalendarReleaseAction(document) {
+  const action = {};
+  document.__creatorCrateCalendarReleaseAction = action;
+  retireCalendarReleaseFeedbackChecks(document);
+  return action;
+}
+
+// Calendar M1 feedback ownership: the page feedback's controls belong to the
+// action that owns it. A newer release action (Edit save, Archive, Delete, or
+// an unresolved Archive / Delete claiming it) retires an older Archive /
+// Delete page-level Check again, so it never sits beside the newer report.
+// The release keeps its record and its Check again in its own Edit Release
+// dialog; a claimant offers its own control again after this. Focus on a
+// retired control moves to the main content, not the body.
+const CALENDAR_RELEASE_FEEDBACK_CHECK_SELECTOR = '[data-release-archive-feedback-check], [data-release-delete-feedback-check]';
+
+function retireCalendarReleaseFeedbackChecks(document) {
+  const notice = document.querySelector?.('[data-dialog-feedback]');
+  const checks = Array.from(notice?.querySelectorAll?.(CALENDAR_RELEASE_FEEDBACK_CHECK_SELECTOR) ?? []);
+  if (checks.length === 0) return;
+  const hadFocus = checks.includes(document.activeElement);
+  checks.forEach((check) => check.remove?.());
+  if (hadFocus) document.getElementById?.('main-content')?.focus?.({ preventScroll: true });
+}
+
+// Calendar M1 P3-B: a release refresh's Retry repeats only the refresh that
+// failed at its generation (P3-A guard in its handler). Once that generation
+// is superseded (any newer navigation, filter edit, Back / Forward, lookup or
+// refresh) or a newer release action owns the feedback, the control is
+// removed rather than left focusable and inert. The stale notice text stays:
+// the release was saved and the Calendar shown may still be out of date; a
+// later completed load still clears it while its action owns the feedback.
+// Focus on the removed control moves to the main content, not the body.
+function retireCalendarReleaseRetry(state) {
+  const button = state?.calendarEditRetryButton;
+  if (!button) return;
+  const hadFocus = state.document?.activeElement === button;
+  removeStatusRetry(state, 'calendarEditRetryButton');
+  if (hadFocus) state.document.getElementById?.('main-content')?.focus?.({ preventScroll: true });
+}
+
+// Calendar M1 P3-A: an Archive or Delete whose outcome became unresolved
+// writes its uncertainty (and Check again) to the page feedback without a
+// Calendar refresh. It is still the newer release action: it takes ownership
+// so an older action's late refresh failure, Retry or stale-notice clear
+// cannot replace that warning. Its own Check again keeps updating it.
+// Navigation is untouched: an older refresh still in flight keeps its
+// generation, and its later failure becomes Calendar's own failure notice
+// (failCalendarRefresh). An older refresh that already failed loses its
+// Retry refresh here; the failed request it repeated stays recoverable
+// through Calendar's own failure notice and Retry (GET only, same address
+// and history mode: the picked month's lookup, the failed explicit GET, or
+// the installed address).
+// Returns the claiming action (each Check again of that Archive / Delete claims
+// again before it writes Checking…).
+function claimCalendarReleaseFeedback(document) {
+  const action = beginCalendarReleaseAction(document);
+  const state = document.__creatorCrateCalendarLiveFiltering;
+  if (!state?.calendarEditRetryButton) return action;
+  retireCalendarReleaseRetry(state);
+  if (state.loadFailure || state.controller || !state.window?.location) return action;
+  const lookup = calendarPickerYearRecovery(state);
+  if (lookup) {
+    reportCalendarPickerYearFailure(state, lookup, state.generation);
+    return action;
+  }
+  const load = calendarLoadRecovery(state);
+  const url = new URL(load ? load.url.href : state.window.location.href);
+  if (url.pathname !== '/calendar') return action;
+  calendarLiveEngine.reportLoadFailure(state, url, load?.historyMode || 'replace', state.generation);
+  return action;
+}
+
+// Calendar M1 late verification: an older Archive / Delete Check again that
+// observes its release archived or gone after a newer release action took the
+// page feedback (event detail feedback: false). The Calendar still re-reads
+// with the same GET-only refresh (month, filters, view, week start, a pending
+// navigation or picked month and its history mode), but the newer action
+// keeps the feedback owner, its report and its own stale-notice clear. A
+// failure of this refresh is Calendar's own (failCalendarRefresh, final
+// P3-A), reported in the region with its own GET-only Retry.
+function refreshCalendarAfterObservedRelease(document) {
+  const generation = beginCalendarDefaultsLiveRefresh(document);
+  if (generation === null) return;
+  refreshCalendarLiveRegion(document, null, generation, {
+    preserveFilters: true,
+    failureMessage: '',
+    onError: () => false,
+  });
+}
+
 /**
  * Refreshes Calendar with a GET after an acknowledged Edit Release save,
  * keeping the month, view, filters, week start, scroll and focus. The save is
@@ -1244,27 +2256,54 @@ function setCalendarEditFeedback(document, message, error) {
  * stale Calendar and offers Retry refresh, which only refreshes again. A
  * newer refresh or navigation supersedes an older one through the live
  * engine's generation, and any later completed load clears the stale notice.
+ * Only the latest release action writes the feedback (P3-B); a Retry repeats
+ * its refresh only while the failed generation still owns Calendar (P3-A).
  */
-function refreshCalendarAfterReleaseEdit(document, { focusResult = false, messages = CALENDAR_EDIT_MESSAGES } = {}) {
+function refreshCalendarAfterReleaseEdit(document, {
+  focusResult = false,
+  messages = CALENDAR_EDIT_MESSAGES,
+  action = beginCalendarReleaseAction(document),
+} = {}) {
+  const ownsFeedback = () => document.__creatorCrateCalendarReleaseAction === action;
   // A stale notice from an earlier failure stays armed: this refresh, or any
   // later completed load, clears it.
   removeStatusRetry(document.__creatorCrateCalendarLiveFiltering, 'calendarEditRetryButton');
   const fail = () => {
+    // A newer release action's report stays (P3-B), including an unresolved
+    // Archive / Delete (final P3-A); the failure is then Calendar's own.
+    if (!ownsFeedback()) return false;
     const current = document.__creatorCrateCalendarLiveFiltering;
     const notice = setCalendarEditFeedback(document, messages.stale, true);
     if (!current || !notice) return;
+    const noticeText = notice.querySelector?.('[data-dialog-feedback-text]');
+    // The notice is still this action's while it shows its own stale or
+    // refreshing report; anything newer written there (another action's
+    // confirmation or failure) is never replaced by this older success.
+    const showsOwnReport = () => [messages.stale, messages.refreshing].includes(noticeText?.textContent);
     current.calendarStaleNoticeClear = () => {
+      if (!ownsFeedback() || !showsOwnReport()) return;
       removeStatusRetry(current, 'calendarEditRetryButton');
       setCalendarEditFeedback(document, messages.saved, messages.savedError);
     };
+    // P3-A: this Retry repeats the refresh that failed at this generation. A
+    // newer navigation, filter edit, Back / Forward or refresh moves the
+    // generation on and owns Calendar: the Retry is then inert (no GET, no
+    // abort of that newer request, no feedback or history change).
+    const failedGeneration = current.generation;
+    let retried = false;
     const retry = showStatusRetry({
       state: current,
       status: notice,
       attribute: 'data-calendar-edit-refresh-retry',
       key: 'calendarEditRetryButton',
       onRetry: ({ wasFocused }) => {
+        if (retried) return;
+        if (!ownsFeedback()
+          || document.__creatorCrateCalendarLiveFiltering !== current
+          || current.generation !== failedGeneration) return;
+        retried = true;
         setCalendarEditFeedback(document, messages.refreshing, messages.savedError);
-        refreshCalendarAfterReleaseEdit(document, { focusResult: wasFocused, messages });
+        refreshCalendarAfterReleaseEdit(document, { focusResult: wasFocused, messages, action });
       },
     });
     if (focusResult) retry?.focus?.();
@@ -1291,11 +2330,29 @@ function enhanceCalendarReleaseEditRefresh(document) {
   // An archived release (release-archive.js) leaves the Calendar through the
   // same GET-only refresh, keeping the month, view and filters.
   document.addEventListener?.(RELEASE_ARCHIVED_EVENT, (event) => {
+    if (event.detail?.feedback === false) {
+      refreshCalendarAfterObservedRelease(document);
+      return;
+    }
     refreshCalendarAfterReleaseEdit(document, { messages: calendarArchiveMessages(event.detail ?? {}) });
   });
   // A deleted release (release-delete.js) leaves it the same way.
   document.addEventListener?.(RELEASE_DELETED_EVENT, (event) => {
+    if (event.detail?.feedback === false) {
+      refreshCalendarAfterObservedRelease(document);
+      return;
+    }
     refreshCalendarAfterReleaseEdit(document, { messages: calendarDeleteMessages(event.detail ?? {}) });
+  });
+  // An Archive or Delete left unresolved (or its Check again) claims the
+  // feedback without a refresh (P3-A): nothing it could prove has changed the
+  // Calendar yet. Its answer writes the feedback only while this claim owns
+  // it (release-archive.js dispatchReleaseActionUnresolved).
+  document.addEventListener?.(RELEASE_ACTION_UNRESOLVED_EVENT, (event) => {
+    const action = claimCalendarReleaseFeedback(document);
+    if (event?.detail && typeof event.detail === 'object') {
+      event.detail.ownsFeedback = () => document.__creatorCrateCalendarReleaseAction === action;
+    }
   });
 }
 
@@ -1765,13 +2822,299 @@ function enhanceReleasesLiveRegion(region) {
   enhanceDropdowns(liveRegionDocument(region));
 }
 
-// The Defaults form lives outside the live region, but its action carries the
-// list's asset scope; adopt the response's action so a save after Reset or
-// Back/Forward cannot restore a scope the list no longer has.
-function reconcileReleasesDefaultsAction(state, parsed) {
-  const currentForm = state.document?.querySelector?.(RELEASES_DEFAULTS_FORM_SELECTOR);
-  const action = parsed?.querySelector?.(RELEASES_DEFAULTS_FORM_SELECTOR)?.getAttribute?.('action');
-  if (currentForm && action) currentForm.setAttribute?.('action', action);
+function notifyReleasesLive(state, detail) {
+  state.releasesObservers?.forEach((listener) => {
+    try {
+      listener(detail);
+    } catch {
+      // A transport observer must never break live filtering.
+    }
+  });
+}
+
+/*
+ * R1: a pagination link is rendered against the installed page, so it knows
+ * nothing of a filter edit that is still debounced, in flight or failed.
+ * The clicked page is applied to the latest intended filter destination, in
+ * the precedence releasesLiveSnapshot() reports as `intendedUrl`:
+ *   - a debounced edit not yet requested: the filter form (every repeated
+ *     Project / Project Type value, exact asset and page size included);
+ *   - an in-flight or failed GET: the URL it requested (or its Retry URL);
+ *   - otherwise (idle): the link's own canonical address.
+ * Only `page` comes from the link; an omitted page is page one. The server
+ * keeps clamping out-of-range pages. The Reset filters link is unchanged.
+ */
+function releasesPaginationLinkDestination(state, link, url) {
+  if (!link?.closest?.('.pagination')) return url;
+  let base = null;
+  if (state.timer) {
+    base = releasesLiveEngine.url(
+      releasesLiveEngine.getForm(releasesLiveEngine.getRegion(state.document)),
+      state.window,
+    );
+  } else if (state.controller && state.requestedUrl) {
+    base = state.requestedUrl;
+  } else if (state.loadFailure) {
+    base = state.loadFailure.url || state.requestedUrl;
+  }
+  if (!base) return url;
+  const destination = new URL(base.href, state.window.location?.href || base.href);
+  if (destination.pathname !== url.pathname) return url;
+  destination.searchParams.delete('page');
+  const page = url.searchParams.get('page');
+  if (page !== null && page !== '') destination.searchParams.set('page', page);
+  destination.hash = '';
+  return destination;
+}
+
+/*
+ * R7: the latest requested Releases destination is authoritative for every
+ * filter dimension a later action does not change. The filter form was
+ * rendered for the INSTALLED Releases, so without this a Search typed (or a
+ * Project, Type, Schedule, Include archived, Sort or Order chosen) while a
+ * Reset filters, history or filter GET is pending or failed re-serialized the
+ * installed restrictions that destination had cleared.
+ *
+ * syncReleasesIntendedControls mirrors each request into the form as it
+ * starts (no second store: the form and the engine's request own intent):
+ *   - Search text (written only when it differs, so typing is undisturbed).
+ *   - Projects / Project Types: the request's repeated values are checked and
+ *     every other option unchecked (none: Select all). A requested value
+ *     without a rendered option travels in a hidden carrier until that
+ *     dimension is edited or a response installs.
+ *   - Schedule (none or unsupported: All, as the server resolves it) and
+ *     Include archived.
+ *   - The exact-asset scope and URL page size (hidden fields): a rendered
+ *     field the request does not carry is disabled (left out of FormData),
+ *     a requested value with no matching field travels in a carrier.
+ *   - Sort / Order present in the request are checked as is. One the request
+ *     OMITS (Reset filters, a defaults refresh) is resolved by the server from
+ *     the saved defaults: it is recorded in state.releasesOmittedPresentation
+ *     and left out of every later form submission (transformParams) until the
+ *     user edits that control or a response installs. Its control shows the
+ *     installed authority's effective default where readable (never during a
+ *     defaults refresh). No guessed default is written into a URL.
+ *
+ * Programmatic `checked` / `value` / `disabled` writes dispatch no change
+ * event: nothing is requested or saved. The response reconciliation still
+ * replaces the form with the installed one.
+ */
+const RELEASES_INTENT_MULTI_FIELDS = ['project', 'type'];
+const RELEASES_INTENT_PRESENTATION_FIELDS = ['sort', 'order'];
+const RELEASES_INTENT_HIDDEN_FIELDS = ['asset', 'pageSize'];
+const RELEASES_INTENT_CARRIER_ATTRIBUTE = 'data-releases-intended-carrier';
+
+function releasesInstalledDefaults(state) {
+  const script = releasesLiveEngine.getRegion(state.document)
+    ?.querySelector?.('script[data-releases-defaults-authority]');
+  try {
+    const defaults = JSON.parse(script?.textContent || 'null')?.defaults;
+    return defaults && typeof defaults === 'object' ? defaults : null;
+  } catch {
+    return null;
+  }
+}
+
+function releasesFieldInputs(form, name) {
+  return Array.from(form?.querySelectorAll?.(`input[name="${name}"]`) || [])
+    .filter((input) => !input.hasAttribute?.(RELEASES_INTENT_CARRIER_ATTRIBUTE));
+}
+
+function releasesRefreshDropdowns(inputs) {
+  const dropdowns = new Set(inputs.map((input) => input.closest?.(CC_DROPDOWN_SELECTOR)).filter(Boolean));
+  dropdowns.forEach((dropdown) => initializeCreatorCrateDropdown(dropdown));
+}
+
+// P3-C1 follow-up: only carriers whose form owner is `form` (including ones
+// outside it that name it with form="") belong to this dimension; a carrier
+// inside `form` but owned by another form is left untouched.
+function removeReleasesIntentCarriers(form, name) {
+  creatorCrateFormOwnedControls(form, `input[${RELEASES_INTENT_CARRIER_ATTRIBUTE}]`)
+    .filter((input) => (input.getAttribute?.('name') ?? input.name) === name)
+    .forEach((input) => input.remove?.());
+}
+
+function addReleasesIntentCarrier(form, name, value, { dropdownSelection = false } = {}) {
+  const carrier = form.ownerDocument?.createElement?.('input');
+  if (!carrier) return;
+  carrier.setAttribute('type', 'hidden');
+  carrier.setAttribute('name', name);
+  carrier.setAttribute('value', value);
+  carrier.setAttribute(RELEASES_INTENT_CARRIER_ATTRIBUTE, '');
+  // R10: a Project / Type carrier is counted by its multi-select as selected.
+  if (dropdownSelection) carrier.setAttribute(CC_DROPDOWN_CARRIED_VALUE_ATTRIBUTE, '');
+  carrier.value = value;
+  form.appendChild?.(carrier);
+}
+
+function syncReleasesMultiField(form, name, values) {
+  const wanted = new Set(values.filter((value) => value !== ''));
+  const inputs = releasesFieldInputs(form, name)
+    .filter((input) => input.type === 'checkbox' || input.type === 'radio');
+  removeReleasesIntentCarriers(form, name);
+  const rendered = new Set();
+  inputs.forEach((input) => {
+    const value = String(input.value ?? '');
+    // The empty value is Select all: checked exactly when the request
+    // carries no restriction.
+    input.checked = value === '' ? wanted.size === 0 : wanted.has(value);
+    if (value !== '') rendered.add(value);
+  });
+  wanted.forEach((value) => {
+    if (!rendered.has(value)) addReleasesIntentCarrier(form, name, value, { dropdownSelection: true });
+  });
+  releasesRefreshDropdowns(inputs);
+}
+
+// A single-choice radio group (Schedule, Sort, Order). The empty value is
+// Schedule's "All". A value without a rendered choice travels in a carrier.
+function syncReleasesChoiceField(form, name, value) {
+  const choices = releasesFieldInputs(form, name).filter((input) => input.type === 'radio');
+  removeReleasesIntentCarriers(form, name);
+  if (choices.length === 0) return;
+  const target = choices.find((input) => String(input.value ?? '') === value) || null;
+  if (target?.checked && choices.every((input) => input === target || !input.checked)) return;
+  choices.forEach((input) => { input.checked = input === target; });
+  if (!target && value !== '') addReleasesIntentCarrier(form, name, value);
+  releasesRefreshDropdowns(choices);
+}
+
+function syncReleasesHiddenField(form, name, value) {
+  removeReleasesIntentCarriers(form, name);
+  let carried = false;
+  releasesFieldInputs(form, name).filter((input) => input.type === 'hidden').forEach((input) => {
+    const matches = Boolean(value) && !carried && String(input.value ?? '') === value;
+    input.disabled = !matches;
+    if (matches) carried = true;
+  });
+  if (value && !carried) addReleasesIntentCarrier(form, name, value);
+}
+
+// P3: the Schedule values the server accepts (workflow-query-service's
+// release list normalization: an exact, single, case-sensitive match). Any
+// other Schedule — unsupported, empty or repeated (Express parses a repeated
+// value as an array) — is served unrestricted, so the pending control shows
+// All and no carrier re-sends the raw value with a later edit. A supported
+// value is mirrored as is (a carrier when its option is not rendered).
+const RELEASES_SUPPORTED_SCHEDULES = Object.freeze(['overdue', 'today', 'upcoming', 'unscheduled']);
+
+function releasesEffectiveSchedule(params) {
+  const values = params.getAll('schedule');
+  return values.length === 1 && RELEASES_SUPPORTED_SCHEDULES.includes(values[0]) ? values[0] : '';
+}
+
+function syncReleasesIntendedControls(state, url, generation) {
+  const form = releasesLiveEngine.getForm(releasesLiveEngine.getRegion(state.document));
+  if (!form || !url) return;
+  const params = url.searchParams;
+
+  const search = form.querySelector?.(RELEASES_SEARCH_SELECTOR);
+  const searchValue = params.get('search') ?? '';
+  if (search && String(search.value ?? '') !== searchValue) search.value = searchValue;
+
+  RELEASES_INTENT_MULTI_FIELDS.forEach((name) => {
+    syncReleasesMultiField(form, name, params.getAll(name));
+  });
+  syncReleasesChoiceField(form, 'schedule', releasesEffectiveSchedule(params));
+  releasesFieldInputs(form, 'includeArchived')
+    .filter((input) => input.type === 'checkbox')
+    .forEach((input) => { input.checked = params.get('includeArchived') === String(input.value ?? '1'); });
+
+  RELEASES_INTENT_HIDDEN_FIELDS.forEach((name) => {
+    syncReleasesHiddenField(form, name, params.get(name) || '');
+  });
+  const assetScope = form.querySelector?.('[data-releases-asset-scope]');
+  if (assetScope) {
+    assetScope.hidden = !releasesFieldInputs(form, 'asset').some((input) => input.type === 'hidden' && !input.disabled);
+  }
+
+  const omitted = new Set();
+  const defaultsRefresh = state.releasesDefaultsRefreshGeneration === generation;
+  const installedDefaults = defaultsRefresh ? null : releasesInstalledDefaults(state);
+  RELEASES_INTENT_PRESENTATION_FIELDS.forEach((name) => {
+    const value = params.get(name);
+    if (value) {
+      syncReleasesChoiceField(form, name, value);
+      return;
+    }
+    omitted.add(name);
+    const effective = installedDefaults?.[name];
+    if (typeof effective === 'string' && effective) syncReleasesChoiceField(form, name, effective);
+  });
+  state.releasesOmittedPresentation = omitted;
+}
+
+// The form's own serialization (Search and filter edits, and R1 pagination of
+// a debounced edit) leaves out a Sort / Order the latest destination omitted
+// and nobody edited since.
+function omitReleasesDeferredPresentation(params, form) {
+  const state = liveRegionDocument(form)?.__creatorCrateReleasesLiveFiltering;
+  state?.releasesOmittedPresentation?.forEach((name) => params.delete(name));
+}
+
+/*
+ * P3 correction 5: the native Reset filters form (the dialog footer's GET
+ * form) sits outside the live region and is the recovery path once live
+ * enhancement is unavailable. Its hidden page size must follow the most
+ * recently INSTALLED Releases page, never a pending, failed or superseded
+ * request. The server renders that form for every response with the
+ * effective size (none for the default 25); the parsed response's value is
+ * captured with its generation and applied only when that same generation
+ * completes installation (onLoadComplete). A stale or failed response never
+ * reaches onLoadComplete. The form itself is kept (no recreation): its one
+ * pageSize field is updated, added before the submit control or removed.
+ */
+const RELEASES_NATIVE_RESET_FORM_SELECTOR = 'form.releases-filter-reset';
+
+function captureReleasesNativeResetPageSize(state, parsed) {
+  const form = parsed?.querySelector?.(RELEASES_NATIVE_RESET_FORM_SELECTOR);
+  if (!form) {
+    state.releasesNativeResetPageSize = null;
+    return;
+  }
+  const value = Array.from(form.querySelectorAll?.('input[name="pageSize"]') || [])
+    .filter((input) => input.type === 'hidden' && !input.disabled)
+    .map((input) => String(input.value ?? ''))
+    .find((candidate) => candidate !== '') ?? '';
+  state.releasesNativeResetPageSize = { generation: state.generation, value };
+}
+
+function syncReleasesNativeResetPageSize(state, generation) {
+  const captured = state.releasesNativeResetPageSize;
+  state.releasesNativeResetPageSize = null;
+  if (!captured || captured.generation !== generation) return;
+  const form = state.document?.querySelector?.(RELEASES_NATIVE_RESET_FORM_SELECTOR);
+  if (!form) return;
+  const fields = Array.from(form.querySelectorAll?.('input[name="pageSize"]') || []);
+  if (!captured.value) {
+    fields.forEach((field) => field.remove?.());
+    return;
+  }
+  const [field, ...duplicates] = fields;
+  duplicates.forEach((duplicate) => duplicate.remove?.());
+  if (field) {
+    field.setAttribute('type', 'hidden');
+    field.setAttribute('value', captured.value);
+    field.value = captured.value;
+    field.disabled = false;
+    return;
+  }
+  const created = form.ownerDocument?.createElement?.('input');
+  if (!created) return;
+  created.setAttribute('type', 'hidden');
+  created.setAttribute('name', 'pageSize');
+  created.setAttribute('value', captured.value);
+  created.value = captured.value;
+  const submit = form.querySelector?.('[type="submit"]');
+  if (submit && submit.parentNode === form) form.insertBefore?.(created, submit);
+  else form.appendChild?.(created);
+}
+
+function noteReleasesControlEdited(state, event) {
+  const name = event?.target?.getAttribute?.('name') ?? event?.target?.name;
+  if (!name) return;
+  state.releasesOmittedPresentation?.delete(name);
+  removeReleasesIntentCarriers(releasesLiveEngine.getForm(releasesLiveEngine.getRegion(state.document)), name);
 }
 
 const releasesLiveEngine = createLiveRegionEngine({
@@ -1780,6 +3123,13 @@ const releasesLiveEngine = createLiveRegionEngine({
   formScope: 'document',
   linkSelector: '.pagination a, [data-releases-reset]',
   linkScope: 'document',
+  linkDestination: releasesPaginationLinkDestination,
+  transformParams: omitReleasesDeferredPresentation,
+  onFormChange(state, _form, event) {
+    noteReleasesControlEdited(state, event);
+  },
+  searchSelector: RELEASES_SEARCH_SELECTOR,
+  debounceMs: RELEASES_LIVE_DEBOUNCE_MS,
   defaultAction: '/releases',
   stateKey: '__creatorCrateReleasesLiveFiltering',
   historyState: { releases: true },
@@ -1795,19 +3145,53 @@ const releasesLiveEngine = createLiveRegionEngine({
     state.releasesDefaultsRefreshError = null;
     state.releasesDefaultsRefreshFailureMessage = null;
     state.releasesDefaultsRefreshSuccess = null;
+    // WP12: request-lifecycle observers of the combined dialog's explicit
+    // defaults transport (releases-filters-defaults.js).
+    state.releasesObservers = new Set();
+    state.releasesLoading = false;
+    // R7: Sort / Order the latest destination left to the server.
+    state.releasesOmittedPresentation = new Set();
+    // P3 correction 5: the parsed native Reset size awaiting installation.
+    state.releasesNativeResetPageSize = null;
+    enhanceDropdowns(state.document);
+    enhanceAssetViewerFilterDisclosures(state.document);
   },
   onInvalidate(state) {
+    const supersededLoading = state.releasesLoading;
+    state.releasesLoading = false;
+    notifyReleasesLive(state, { phase: 'superseded', generation: state.generation, loading: supersededLoading });
     if (state.releasesDefaultsRefreshGeneration === null) return;
     state.releasesDefaultsRefreshGeneration = null;
     state.releasesDefaultsRefreshError = null;
     state.releasesDefaultsRefreshFailureMessage = null;
     state.releasesDefaultsRefreshSuccess = null;
   },
+  onLoadStart(state, generation, url) {
+    state.releasesLoading = true;
+    state.releasesNativeResetPageSize = null;
+    syncReleasesIntendedControls(state, url, generation);
+    notifyReleasesLive(state, { phase: 'started', generation, url: url?.href ?? null });
+  },
   onResponseParsed(state, parsed) {
+    // WP12: the combined dialog's GET form is reconciled to the installed
+    // response (repeated Projects/Types, exact-asset and page-size hidden
+    // fields included); typed option-search text and a still-typed results
+    // Search (only trimmed by the server) survive it.
+    const drafts = captureFilterDialogDrafts(state.document, RELEASES_DROPDOWN_SEARCH_SELECTOR, RELEASES_SEARCH_SELECTOR);
     reconcileExternalFilterForm(state, parsed, RELEASES_FILTER_SELECTOR);
-    reconcileReleasesDefaultsAction(state, parsed);
+    restoreFilterDialogDrafts(state.document, drafts, RELEASES_DROPDOWN_SEARCH_SELECTOR, RELEASES_SEARCH_SELECTOR);
+    // R7: the installed form now shows the server's effective values.
+    state.releasesOmittedPresentation = new Set();
+    // P3 correction 5: held until this generation is installed.
+    captureReleasesNativeResetPageSize(state, parsed);
+  },
+  onRegionReplaced(state) {
+    // History is already installed before the load-complete notification runs.
+    state.releasesLoading = false;
   },
   onLoadComplete(state, generation) {
+    syncReleasesNativeResetPageSize(state, generation);
+    notifyReleasesLive(state, { phase: 'installed', generation, url: state.window?.location?.href ?? null });
     if (state.releasesDefaultsRefreshGeneration !== generation) return;
     const notifyRefreshed = state.releasesDefaultsRefreshSuccess;
     state.releasesDefaultsRefreshGeneration = null;
@@ -1816,7 +3200,11 @@ const releasesLiveEngine = createLiveRegionEngine({
     state.releasesDefaultsRefreshSuccess = null;
     notifyRefreshed?.();
   },
-  onLoadError(state, generation) {
+  onLoadError(state, generation, error, form, url) {
+    state.releasesLoading = false;
+    notifyReleasesLive(state, {
+      phase: 'failed', generation, url: url?.href ?? null, aborted: error?.name === 'AbortError',
+    });
     if (state.releasesDefaultsRefreshGeneration !== generation) return false;
     const notifyRefreshError = state.releasesDefaultsRefreshError;
     // An empty message keeps the region quiet for callers that report the
@@ -4610,6 +5998,89 @@ export function refreshProjectsLiveRegion(
 
 export function enhanceReleasesLiveFiltering(scope = globalThis.document) {
   return releasesLiveEngine.enhance(scope);
+}
+
+function releasesLiveState(scope) {
+  const document = liveRegionDocument(scope);
+  const region = releasesLiveEngine.getRegion(document);
+  if (!document || !region) return null;
+  releasesLiveEngine.enhance(document);
+  const state = document.__creatorCrateReleasesLiveFiltering;
+  if (!state || !releasesLiveEngine.capabilities(state.window)) return null;
+  return state;
+}
+
+/**
+ * WP12 read-only request state. `pending` covers an in-flight GET and a
+ * debounced Search edit not yet requested; `failed` means the installed
+ * results are not the latest intent. `intendedUrl` is the latest intended
+ * destination: a debounced edit (the filter form, as schedule() would push
+ * it), else the pending or failed request, else the installed location.
+ */
+export function releasesLiveSnapshot(scope = globalThis.document) {
+  const state = releasesLiveState(scope);
+  if (!state) return null;
+  const failure = state.loadFailure?.generation === state.generation ? state.loadFailure : null;
+  const failedUrl = failure?.url?.href ?? null;
+  const pending = Boolean(state.releasesLoading || state.timer);
+  const location = state.window?.location?.href ?? null;
+  let debouncedUrl = null;
+  if (state.timer) {
+    try {
+      debouncedUrl = releasesLiveEngine.url(
+        releasesLiveEngine.getForm(releasesLiveEngine.getRegion(state.document)),
+        state.window,
+      )?.href ?? null;
+    } catch {
+      debouncedUrl = null;
+    }
+  }
+  return {
+    generation: state.generation,
+    pending,
+    failed: Boolean(failure),
+    failedUrl,
+    requestedHistoryMode: debouncedUrl ? 'push' : state.requestedHistoryMode ?? null,
+    // A failure still owns its history intent. An installed load has already used it.
+    outstandingHistoryMode: debouncedUrl ? 'push'
+      : state.releasesLoading ? state.requestedHistoryMode : failure?.historyMode ?? null,
+    intendedUrl: debouncedUrl || (pending && state.requestedUrl?.href) || failedUrl || location,
+  };
+}
+
+export function subscribeReleasesLive(scope = globalThis.document, listener) {
+  const state = releasesLiveState(scope);
+  if (!state || typeof listener !== 'function') return null;
+  state.releasesObservers.add(listener);
+  return () => state.releasesObservers.delete(listener);
+}
+
+/**
+ * WP12 canonical GET navigation through the one Releases engine: it
+ * supersedes any older pending GET (or debounced edit) and returns the owning
+ * generation. GET only; a failed load keeps the engine's GET-only Retry.
+ */
+export function navigateReleasesLive(scope = globalThis.document, destination, { historyMode = 'push' } = {}) {
+  const state = releasesLiveState(scope);
+  if (!state) return { status: 'unavailable' };
+  let url;
+  try {
+    url = new URL(destination, state.window.location?.href || '/releases');
+  } catch {
+    return { status: 'unavailable' };
+  }
+  if (url.pathname !== '/releases') return { status: 'unavailable' };
+  if (state.timer) state.window.clearTimeout?.(state.timer);
+  state.timer = null;
+  releasesLiveEngine.invalidate(state);
+  const generation = state.generation;
+  releasesLiveEngine.load(
+    state,
+    url,
+    ['push', 'replace', 'none'].includes(historyMode) ? historyMode : 'push',
+    releasesLiveEngine.getForm(releasesLiveEngine.getRegion(state.document)),
+  );
+  return { status: 'started', generation };
 }
 
 export function beginReleasesDefaultsLiveRefresh(scope = globalThis.document) {

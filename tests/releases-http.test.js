@@ -190,7 +190,26 @@ function extractReleaseProjectField(html) {
 
 function extractReleaseFilterProjectField(html) {
   const dialog = html.match(/<dialog id="releases-filter-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
-  return dialog.match(/<fieldset class="[^"]*asset-viewer-project-filter[^"]*">[\s\S]*?<\/fieldset>/)?.[0] || '';
+  return dialog.match(/<fieldset class="[^"]*releases-filter-field--project[^"]*"[^>]*>[\s\S]*?<\/fieldset>/)?.[0] || '';
+}
+
+// WP12: the Project Types multi-select of the combined dialog.
+function extractReleaseFilterTypeField(html) {
+  const dialog = html.match(/<dialog id="releases-filter-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+  return dialog.match(/<fieldset class="[^"]*releases-filter-field--type[^"]*"[^>]*>[\s\S]*?<\/fieldset>/)?.[0] || '';
+}
+
+// WP12: the authority JSON the combined dialog's explicit defaults transport reads.
+function releasesDefaultsAuthority(html) {
+  const json = html.match(/<script type="application\/json" data-releases-defaults-authority>([\s\S]*?)<\/script>/)?.[1];
+  return json ? JSON.parse(json) : null;
+}
+
+function checkedValues(field, name) {
+  return [...field.matchAll(new RegExp(`<input[^>]*name="${name}"[^>]*>`, 'g'))]
+    .map(([input]) => input)
+    .filter((input) => /\schecked(?:\s|>|$)/.test(input))
+    .map((input) => input.match(/value="([^"]*)"/)?.[1]);
 }
 
 function releaseProjectRadioInputs(html) {
@@ -1037,26 +1056,38 @@ describe('release HTTP workflow', () => {
   it('builds Reset Filters as the canonical Releases URL without explicit filter overrides', async () => {
     const res = await agent.get('/releases?search=needle&project=1&schedule=today&sort=title&order=desc&includeArchived=1&page=4&pageSize=50').expect(200);
     const filterDialog = res.text.match(/<dialog id="releases-filter-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
-    const resetUrl = filterDialog.match(/<form class="releases-filter-reset app-dialog-footer" method="get" action="([^"]+)">/)?.[1];
+    // WP12: the controller's GET destination is the installed page's
+    // authority; the native GET fallback form carries the URL page size as a
+    // hidden field (a GET form's action query string would be replaced).
+    const resetUrl = releasesDefaultsAuthority(res.text)?.resetFiltersUrl;
+    const resetForm = filterDialog.match(/<form class="releases-filter-reset filters-defaults-reset-form" method="get" action="([^"]+)">([\s\S]*?)<\/form>/);
 
     expect(resetUrl).toBe('/releases?pageSize=50');
+    expect(resetForm?.[1]).toBe('/releases');
+    expect(resetForm?.[2]).toContain('<input type="hidden" name="pageSize" value="50">');
+    expect(resetForm?.[2]).toContain('<button class="button button-primary" type="submit" data-releases-filters-reset>Reset filters</button>');
     expect(filterDialog).not.toContain('form.reset');
 
     const reset = await agent.get(resetUrl).expect(200);
-    expect(reset.text).not.toMatch(/<input[^>]*name="search"/);
+    expect(reset.text).toMatch(/<input id="releases-search" name="search" type="search" value=""/);
     expect(reset.text).not.toMatch(/id="list-includeArchived"[^>]*checked/);
     expect(reset.text).toMatch(/id="list-schedule-trigger"[^>]*title="All"/);
     expect(reset.text).toContain('<input type="hidden" name="pageSize" value="50">');
   });
 
-  it('falls back to All projects when the selected Project is nonexistent', async () => {
+  // WP11/WP12: an unknown Project ID stays a restriction (it matches nothing),
+  // so the combined dialog never claims "All projects" for it: it shows a
+  // checked unavailable choice the user can clear, which survives the next
+  // filter change instead of silently broadening the results.
+  it('keeps a nonexistent selected Project as a checked unavailable restriction', async () => {
     const res = await agent.get('/releases?project=999999').expect(200);
     const projectField = extractReleaseFilterProjectField(res.text);
 
-    expect(projectField).toContain('aria-label="Project filter: All projects"');
-    expect(projectField).toContain('data-cc-dropdown-summary-current class="asset-filter-multiselect-summary-current">All projects</span>');
-    expect(projectField).toContain('name="project" type="radio" value="" checked');
-    expect(projectField).not.toContain('value="999999"');
+    expect(projectField).toContain('aria-label="Projects filter: Unavailable project (ID 999999)"');
+    expect(projectField).toContain('data-cc-dropdown-summary-current class="asset-filter-multiselect-summary-current">Unavailable project (ID 999999)</span>');
+    expect(projectField).toMatch(/name="project" type="checkbox" value="999999"[^>]*checked[^>]*data-releases-unavailable-project/);
+    expect(checkedValues(projectField, 'project')).toEqual(['999999']);
+    expect(res.text).toContain('0 releases found');
   });
 
   it('renders an active selected Project as the checked filter option', async () => {
@@ -1064,10 +1095,10 @@ describe('release HTTP workflow', () => {
     const res = await agent.get(`/releases?project=${activeProjectId}`).expect(200);
     const projectField = extractReleaseFilterProjectField(res.text);
 
-    expect(projectField).toContain(`name="project" type="radio" value="${activeProjectId}" checked`);
+    expect(projectField).toMatch(new RegExp(`name="project" type="checkbox" value="${activeProjectId}"[^>]*checked`));
     expect(projectField).toContain('>Active selected project</span>');
-    expect(projectField).toContain('aria-label="Project filter: Active selected project"');
-    expect(projectField).not.toContain('name="project" type="radio" value="" checked');
+    expect(projectField).toContain('aria-label="Projects filter: Active selected project"');
+    expect(checkedValues(projectField, 'project')).toEqual([String(activeProjectId)]);
   });
 
   it('renders only the archived selected Project as a checked, submittable filter option', async () => {
@@ -1085,14 +1116,17 @@ describe('release HTTP workflow', () => {
     const res = await agent.get(`/releases?project=${archivedProjectId}&schedule=today`).expect(200);
     const projectField = extractReleaseFilterProjectField(res.text);
 
-    expect(projectField).toContain(`name="project" type="radio" value="${archivedProjectId}" checked`);
+    expect(projectField).toMatch(new RegExp(`name="project" type="checkbox" value="${archivedProjectId}"[^>]*checked`));
     expect(projectField).toContain('>Archived selected project</span>');
-    expect(projectField).toContain('aria-label="Project filter: Archived selected project"');
+    expect(projectField).toContain('aria-label="Projects filter: Archived selected project"');
+    expect(checkedValues(projectField, 'project')).toEqual([String(archivedProjectId)]);
     expect(projectField).not.toContain(`value="${otherArchivedProjectId}"`);
     expect(projectField).not.toContain('Other archived project');
   });
 
-  it('uses the filtered empty state for a zero-result legacy search without exposing Search and retains its recovery Reset', async () => {
+  // WP12: Search is now a visible results control of the combined dialog; the
+  // zero-result state keeps its recovery Reset.
+  it('uses the filtered empty state for a zero-result search, shows it in the dialog Search and retains its recovery Reset', async () => {
     const projectId = await createTestProject('Legacy search project');
     await agent
       .post('/releases')
@@ -1108,7 +1142,9 @@ describe('release HTTP workflow', () => {
     expect(res.text).toContain('Reset Filters');
     expect(res.text).toContain('data-releases-reset');
     expect(res.text).not.toContain('No releases yet');
-    expect(res.text).not.toMatch(/<input[^>]*name="search"/);
+    expect(res.text.match(/<input[^>]*name="search"[^>]*>/g)).toEqual([
+      '<input id="releases-search" name="search" type="search" value="no-match" autocomplete="off" data-releases-search>',
+    ]);
   });
 
   // ─── Create release ────────────────────────────────────────────────────────
@@ -2104,75 +2140,123 @@ describe('release HTTP workflow', () => {
     });
   });
 
+  // WP12: every Save / Reset defaults request carries the durable `releases`
+  // defaults generation it was prepared from (missing/stale = 409).
+  function withReleasesDefaultsGeneration(body) {
+    return { ...body, defaultsGeneration: String(app.locals.pageDefaultsService.getMutationGeneration('releases')) };
+  }
+
+  function storedReleasesDefault(option) {
+    return db.prepare('SELECT value FROM app_meta WHERE key = ?')
+      .get(PAGE_DEFAULT_DEFINITIONS.releases[option].key)?.value;
+  }
+
   describe('/releases defaults and live-region markup', () => {
-    it('activates Projects-style autosave for the rendered Releases defaults form', async () => {
+
+    it('renders one combined Filters & Defaults dialog with explicit-save defaults and no autosave', async () => {
       const res = await agent.get('/releases').expect(200);
       const displayControls = res.text.match(/<div class="asset-viewer-display-controls">[\s\S]*?<\/div>\s*<\/div>/)?.[0] || '';
       const filterDialog = res.text.match(/<dialog id="releases-filter-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
       const filterForm = filterDialog.match(/<form id="list-releases-filter"[\s\S]*?<\/form>/)?.[0] || '';
-      const defaultsDialog = res.text.match(/<dialog id="releases-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+      const defaultsForm = filterDialog.match(/<form id="releases-defaults-form"[\s\S]*?<\/form>/)?.[0] || '';
+      const footer = filterDialog.match(/<footer class="app-dialog-footer filters-defaults-footer">[\s\S]*?<\/footer>/)?.[0] || '';
       const createDialog = res.text.match(/<dialog id="release-create-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
 
-      expect(displayControls).toContain('href="#releases-filter-dialog" aria-label="Filter releases"');
-      expect(displayControls).toContain('data-dialog-open="releases-filter-dialog"');
+      // One entry point, in the existing toolbar location; the separate
+      // Defaults entry and dialog are retired.
+      expect(displayControls).toContain('href="#releases-filter-dialog" aria-label="Filters &amp; Defaults"');
+      expect(displayControls).toContain('data-dialog-open="releases-filter-dialog" data-tooltip="Filters &amp; Defaults"');
+      expect(displayControls.match(/data-dialog-open=/g)).toHaveLength(1);
       expect(displayControls).not.toContain('data-releases-reset');
-      expect(filterDialog).toContain('class="app-dialog app-dialog--utility" data-app-dialog');
+      expect(res.text).not.toContain('releases-defaults-dialog');
+      expect(res.text).not.toContain('/releases?defaults=1');
+
+      expect(filterDialog).toContain('class="app-dialog app-dialog--utility app-dialog--filters-defaults releases-filters-defaults" data-app-dialog');
       expect(filterDialog).toContain('aria-labelledby="releases-filter-dialog-title"');
-      expect(filterDialog).toContain('data-dialog-close aria-label="Close Filter"');
-      expect(filterForm).toContain('class="app-dialog-form project-form"');
-      expect(filterForm).toContain('<div class="app-dialog-body">');
-      expect(filterForm).toContain('<div class="page-defaults-grid">');
-      expect(filterForm).not.toMatch(/<input[^>]*name="search"/);
-      for (const name of ['project', 'schedule', 'sort', 'order', 'includeArchived']) {
-        expect(filterForm).toMatch(new RegExp(`name="${name}"`));
+      expect(filterDialog).toContain('<h2 id="releases-filter-dialog-title">Filters &amp; Defaults</h2>');
+      expect(filterDialog).toContain('<p class="app-dialog-subtitle">Releases</p>');
+      expect(filterDialog.match(/data-dialog-close/g)).toHaveLength(1);
+      expect(filterDialog).toContain('data-dialog-close aria-label="Close Filters &amp; Defaults"');
+
+      // Sections: Filters, then Sort options; no Miscellaneous/View/page size.
+      const headings = [...filterDialog.matchAll(/<h3 id="[^"]+">([^<]+)<\/h3>/g)].map(([, heading]) => heading);
+      expect(headings).toEqual(['Filters', 'Sort options']);
+      expect(filterDialog).not.toContain('Miscellaneous');
+      expect(filterDialog).not.toMatch(/name="view"/);
+      expect(filterDialog).not.toMatch(/<(?:select|input)(?![^>]*type="hidden")[^>]*name="pageSize"/);
+      const filtersSection = filterForm.match(/aria-labelledby="releases-filters-heading">[\s\S]*?<\/section>/)?.[0] || '';
+      const sortSection = filterForm.match(/aria-labelledby="releases-sort-heading">[\s\S]*?<\/section>/)?.[0] || '';
+      for (const name of ['search', 'project', 'type', 'schedule', 'includeArchived']) {
+        expect(filtersSection).toMatch(new RegExp(`name="${name}"`));
+        expect(sortSection).not.toMatch(new RegExp(`name="${name}"`));
       }
-      expect(filterDialog).toContain('<form class="releases-filter-reset app-dialog-footer" method="get" action="/releases">');
-      expect(filterDialog).toContain('type="submit" aria-label="Reset filters" data-tooltip="Reset filters" data-releases-reset>Reset filters</button>');
-      expect(filterDialog).not.toContain('class="filters asset-viewer-filters asset-viewer-filters--releases"');
+      for (const name of ['sort', 'order']) {
+        expect(sortSection).toMatch(new RegExp(`name="${name}"`));
+        expect(filtersSection).not.toMatch(new RegExp(`name="${name}"`));
+      }
+      expect(filtersSection).toContain('<label for="releases-search">Search</label>');
+      expect(filtersSection).toContain('>Include archived</span>');
+      expect(sortSection).toMatch(/id="list-sort-trigger"[^>]*aria-label="Sort by filter: Planned"/);
+      expect(sortSection).toMatch(/id="list-order-trigger"[^>]*aria-label="Sort order filter: Ascending"/);
+      // The results Search is the only named search input: the option-search
+      // fields inside the dropdowns never join the GET.
+      expect(filterForm.match(/<input[^>]*name="search"[^>]*>/g)).toHaveLength(1);
+      expect(filterForm).not.toMatch(/id="release-(?:project|type)-filter-search"[^>]*\bname=/);
+      expect(filterForm).not.toContain('page-defaults-grid');
+
+      // The defaults form has no native mutation: no action, no saveable
+      // fields, no generation/returnTo, no autosave marker.
+      expect(defaultsForm).toContain('<form id="releases-defaults-form" method="dialog" class="filters-defaults-defaults-form"');
+      expect(defaultsForm).toContain('data-dialog-form data-dialog-async="false" data-defaults-explicit-save novalidate');
+      expect(defaultsForm).not.toContain('data-releases-defaults-autosave');
+      expect(defaultsForm).not.toContain('data-autosubmit');
+      expect(defaultsForm).not.toMatch(/name="(?:sort|order|defaultsGeneration|defaultsOperation|returnTo)"/);
+      expect(defaultsForm).toContain('data-settings-fetch-save-status role="status" aria-live="polite" aria-atomic="true"');
+      expect(defaultsForm).toContain('<p class="filters-defaults-saved-indicator" data-releases-defaults-indicator>No saved defaults.</p>');
+      expect(res.text).not.toContain('data-releases-defaults-autosave');
+
+      // Footer: exactly Save new defaults, Reset defaults, Reset filters in
+      // that DOM order; Save/Reset defaults JS-only (disabled type=button).
+      const footerButtons = [...footer.matchAll(/<button class="([^"]+)" type="([^"]+)"([^>]*)>([^<]+)<\/button>/g)]
+        .map(([, classes, type, attributes, label]) => ({ classes, type, attributes, label }));
+      expect(footerButtons.map(({ label }) => label)).toEqual(['Save new defaults', 'Reset defaults', 'Reset filters']);
+      expect(footerButtons[0]).toMatchObject({ classes: 'button button-secondary', type: 'button' });
+      expect(footerButtons[0].attributes).toContain('disabled data-releases-defaults-save');
+      expect(footerButtons[1]).toMatchObject({ classes: 'button button-secondary', type: 'button' });
+      expect(footerButtons[1].attributes).toContain('disabled data-releases-defaults-reset');
+      expect(footerButtons[2]).toMatchObject({ classes: 'button button-primary', type: 'submit' });
+      expect(footerButtons[2].attributes).toContain('data-releases-filters-reset');
+      expect(footer).not.toMatch(/>\s*(?:Cancel|Apply|Done|Close)\s*</);
+      expect(footer).toContain('<form class="releases-filter-reset filters-defaults-reset-form" method="get" action="/releases">');
+
+      // The authority JSON lives inside the live region.
+      const region = res.text.match(/<div data-releases-live-region>[\s\S]*?<section class="project-detail-section releases-results-section"/)?.[0] || '';
+      expect(region).toContain('<script type="application/json" data-releases-defaults-authority>');
+      expect(releasesDefaultsAuthority(res.text)).toMatchObject({
+        page: 'releases',
+        fields: ['sort', 'order'],
+        multiFields: [],
+        fallbacks: { sort: 'planned', order: 'asc' },
+        defaults: { sort: 'planned', order: 'asc' },
+        current: { sort: 'planned', order: 'asc' },
+        saved: { sort: { stored: false, valid: false }, order: { stored: false, valid: false } },
+        savedKeys: [],
+        hasSavedDefaults: false,
+        generation: 0,
+        currentUrl: '/releases',
+        resetFiltersUrl: '/releases',
+      });
+
       expect(createDialog).not.toBe('');
       expect(createDialog).not.toContain('releases-filter-dialog');
       expect(res.text.match(/id="release-create-dialog"/g)).toHaveLength(1);
       expect(res.text.match(/id="releases-filter-dialog"/g)).toHaveLength(1);
       expectUniqueValidIdReferences(res.text);
 
-      expect(defaultsDialog).not.toMatch(/<button[^>]*>\s*Cancel\s*<\/button>/);
-      expect(defaultsDialog.match(/data-dialog-close/g)).toHaveLength(1);
-      expect(defaultsDialog).toContain('aria-label="Close Releases defaults"');
-      expect(defaultsDialog).toContain('<form id="releases-defaults-form" method="post" action="/releases/defaults"');
-      expect(defaultsDialog).toContain('data-dialog-form data-dialog-async="false" data-releases-defaults-autosave');
-      expect(defaultsDialog).not.toContain('data-dialog-submit');
-      expect(defaultsDialog).not.toContain('Save defaults');
-      expect(defaultsDialog).not.toMatch(/<button[^>]*>\s*(?:Apply|Cancel)\s*<\/button>/);
-      expect(defaultsDialog).not.toContain('<footer class="app-dialog-footer">');
-      expect(defaultsDialog).toContain('data-settings-fetch-save-status');
-      expect(defaultsDialog).toContain('role="status" aria-live="polite" aria-atomic="true"');
-      expect(defaultsDialog).not.toContain('data-dialog-status');
-
       expect(res.text).toContain('data-releases-live-region');
       expect(res.text).toContain('data-releases-filter');
       expect(res.text).not.toContain('data-releases-view-link');
       expect(res.text).not.toContain('class="view-switcher"');
-      expect(res.text).toContain('data-releases-reset');
-      expect(res.text).toContain('aria-label="Reset filters"');
-      expect(res.text).toContain('data-tooltip="Reset filters"');
-      expect(defaultsDialog).toContain('class="page-defaults-grid"');
-      expect(defaultsDialog).toMatch(/<details(?=[^>]*id="releases-default-sort-dropdown")(?=[^>]*data-cc-dropdown)(?=[^>]*hidden)[^>]*>/);
-      expect(defaultsDialog).toMatch(/<details(?=[^>]*id="releases-default-order-dropdown")(?=[^>]*data-cc-dropdown)(?=[^>]*hidden)[^>]*>/);
-      expect(defaultsDialog).toMatch(/<select(?=[^>]*id="releases-default-sort")(?=[^>]*name="sort")(?=[^>]*class="cc-dropdown-native-select")(?=[^>]*required)[^>]*>/);
-      expect(defaultsDialog).toMatch(/<select(?=[^>]*id="releases-default-order")(?=[^>]*name="order")(?=[^>]*class="cc-dropdown-native-select")(?=[^>]*required)[^>]*>/);
-      for (const field of ['sort', 'order']) {
-        expect(defaultsDialog).toMatch(new RegExp(
-          `<select(?=[^>]*id="releases-default-${field}")(?=[^>]*name="${field}")(?=[^>]*data-autosubmit="fetch")[^>]*>`,
-        ));
-        expect(defaultsDialog).toMatch(new RegExp(
-          `id="releases-default-${field}-dropdown"[^>]*data-cc-dropdown-dispatch-native-change`,
-        ));
-        expect((defaultsDialog.match(new RegExp(`name="${field}"`, 'g')) || [])).toHaveLength(1);
-      }
-      expect(sliceSelect(defaultsDialog, 'releases-default-sort')).toContain('<option value="planned" selected>Planned</option>');
-      expect(sliceSelect(defaultsDialog, 'releases-default-order')).toContain('<option value="asc" selected>Ascending</option>');
-      expect(defaultsDialog).not.toContain('id="releases-default-view"');
-      expect(defaultsDialog).not.toMatch(/<input[^>]*name="search"/);
       expect(res.text).not.toContain('pageSize');
 
       const enhancedMarkup = res.text.replace(/<noscript>[\s\S]*?<\/noscript>/g, '');
@@ -2180,89 +2264,210 @@ describe('release HTTP workflow', () => {
       expect(enhancedMarkup).not.toContain('>Clear</a>');
 
       const css = (await agent.get('/creatorcrate.css').expect(200)).text;
-      expect(css).toMatch(/#releases-filter-dialog \.page-defaults-grid > \.asset-viewer-filter-field\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*none;/);
+      expect(css).toMatch(/\.app-dialog--filters-defaults\.releases-filters-defaults \.asset-viewer-project-filter\s*\{[^}]*z-index:\s*auto;/);
+      expect(css).not.toContain('#releases-filter-dialog .page-defaults-grid');
       expect(css).not.toMatch(/\.asset-viewer-filters--releases\s*[,\{]/);
     });
 
-    it('opens defaults=1 without saved-default canonicalization and keeps defaults out of filter forms', async () => {
+    it('opens defaults=1 as the combined dialog without saved-default canonicalization', async () => {
       app.locals.pageDefaultsService.saveDefault('releases', 'sort', 'title');
       app.locals.pageDefaultsService.saveDefault('releases', 'order', 'desc');
 
       const res = await agent.get('/releases?defaults=1').expect(200);
 
       expect(res.headers.location).toBeUndefined();
-      expect(res.text).toMatch(/<dialog id="releases-defaults-dialog"[^>]*data-app-dialog[^>]*open/);
+      expect(res.text).toMatch(/<dialog id="releases-filter-dialog"[^>]*data-app-dialog[^>]*open/);
       expect(res.text).not.toContain('name="view"');
       const filterDialog = res.text.match(/<dialog id="releases-filter-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
       expect(filterDialog).toContain('id="list-releases-filter"');
       expect(filterDialog).not.toContain('name="defaults"');
+      expect(filterDialog).toContain('data-releases-defaults-indicator>Defaults saved.</p>');
+      expect(releasesDefaultsAuthority(res.text)).toMatchObject({
+        savedKeys: ['sort', 'order'], defaults: { sort: 'title', order: 'desc' }, current: { sort: 'title', order: 'desc' },
+      });
     });
 
-    it('saves releases defaults through the narrow endpoint and redirects with a trusted notice', async () => {
-      const renderedPage = await agent.get('/releases').expect(200);
-      const defaultsForm = renderedPage.text.match(/<form[^>]+action="\/releases\/defaults"[\s\S]*?<\/form>/)?.[0] || '';
-      expect(defaultsForm).not.toBe('');
-      const renderedCsrfToken = extractCsrfToken(defaultsForm);
-      expect(renderedCsrfToken).not.toBe('');
+    it('serves the read-only defaults authority as JSON and redirects a typed URL to the dialog', async () => {
+      app.locals.pageDefaultsService.saveDefault('releases', 'order', 'asc');
+      const json = await agent.get('/releases/defaults').set('Accept', 'application/json').expect(200);
+      expect(json.headers['cache-control']).toBe('no-store');
+      expect(json.body).toMatchObject({
+        status: 'success',
+        authority: {
+          page: 'releases',
+          fields: ['sort', 'order'],
+          // An explicitly saved fallback-equal value still reports saved.
+          saved: { sort: { stored: false }, order: { stored: true, valid: true } },
+          savedKeys: ['order'],
+          generation: 0,
+        },
+      });
+      expect(json.body.authority).not.toHaveProperty('current');
 
+      const typed = await agent.get('/releases/defaults').set('Accept', 'text/html').expect(302);
+      expect(typed.headers.location).toBe('/releases?defaults=1');
+    });
+
+    it('saves only Sort and Order through the fenced JSON transport with a correlated acknowledgement', async () => {
+      app.locals.pageDefaultsService.saveDefault('projects', 'sort', 'title');
+      const response = await agent
+        .post('/releases/defaults')
+        .set('Accept', 'application/json')
+        .type('form')
+        .send(withReleasesDefaultsGeneration({
+          _csrf: csrfToken,
+          sort: 'title',
+          order: 'desc',
+          defaultsOperation: 'op-save-1',
+          returnTo: '/releases?search=x&project=3&type=comic&schedule=today&includeArchived=1&pageSize=50',
+          // Temporary filters are never saveable, even when sent.
+          search: 'x',
+          project: '3',
+          type: 'comic',
+          schedule: 'today',
+          includeArchived: '1',
+          pageSize: '50',
+        }))
+        .expect(200);
+
+      expect(response.body).toMatchObject({
+        status: 'success',
+        values: { sort: 'title', order: 'desc' },
+        operation: {
+          id: 'op-save-1', kind: 'save', result: 'committed', committed: true, expectedGeneration: 0, generation: 1,
+        },
+        authority: {
+          page: 'releases', generation: 1, savedKeys: ['sort', 'order'], defaults: { sort: 'title', order: 'desc' },
+        },
+      });
+      expect(Object.keys(response.body.values).sort()).toEqual(['order', 'sort']);
+      expect(storedReleasesDefault('sort')).toBe('title');
+      expect(storedReleasesDefault('order')).toBe('desc');
+      const releasesKeys = db.prepare("SELECT key FROM app_meta WHERE key LIKE 'page_defaults.releases.%'").all()
+        .map(({ key }) => key).sort();
+      expect(releasesKeys).toEqual([PAGE_DEFAULT_DEFINITIONS.releases.order.key, PAGE_DEFAULT_DEFINITIONS.releases.sort.key].sort());
+      expect(app.locals.pageDefaultsService.getMutationGeneration('releases')).toBe(1);
+      // Another page's saved defaults and generation are untouched.
+      expect(app.locals.pageDefaultsService.resolve('projects', 'sort')).toBe('title');
+      expect(app.locals.pageDefaultsService.getMutationGeneration('projects')).toBe(0);
+
+      const bare = await agent.get('/releases').expect(302);
+      expect(bare.headers.location).toBe('/releases?sort=title&order=desc');
+      const bareRendered = await agent.get(bare.headers.location).expect(200);
+      expect(bareRendered.text).toMatch(/id="list-sort-trigger"[^>]*aria-label="Sort by filter: Title"/);
+      expect(bareRendered.text).toMatch(/id="list-order-trigger"[^>]*aria-label="Sort order filter: Descending"/);
+    });
+
+    it('rejects a missing or stale generation with a correlated 409 and writes nothing', async () => {
+      const missing = await agent
+        .post('/releases/defaults')
+        .set('Accept', 'application/json')
+        .type('form')
+        .send({ _csrf: csrfToken, sort: 'title', order: 'desc', defaultsOperation: 'op-missing' })
+        .expect(409);
+      expect(missing.body).toMatchObject({
+        status: 'error',
+        code: 'DEFAULTS_GENERATION_CONFLICT',
+        operation: { id: 'op-missing', kind: 'save', result: 'conflict', committed: false, expectedGeneration: null, generation: 0 },
+        authority: { page: 'releases', generation: 0, savedKeys: [] },
+      });
+
+      await agent.post('/releases/defaults').set('Accept', 'application/json').type('form')
+        .send(withReleasesDefaultsGeneration({ _csrf: csrfToken, sort: 'updated', order: 'asc', defaultsOperation: 'op-first' }))
+        .expect(200);
+      const stale = await agent
+        .post('/releases/defaults')
+        .set('Accept', 'application/json')
+        .type('form')
+        .send({ _csrf: csrfToken, sort: 'title', order: 'desc', defaultsGeneration: '0', defaultsOperation: 'op-stale' })
+        .expect(409);
+      expect(stale.body.operation).toMatchObject({ id: 'op-stale', result: 'conflict', expectedGeneration: 0, generation: 1 });
+      expect(storedReleasesDefault('sort')).toBe('updated');
+      expect(storedReleasesDefault('order')).toBe('asc');
+
+      // A native stale post re-renders Releases with the conflict, never a redirect.
+      const native = await agent.post('/releases/defaults').type('form')
+        .send({ _csrf: csrfToken, sort: 'title', order: 'desc', defaultsGeneration: '0' })
+        .expect(409);
+      expect(native.text).toMatch(/<dialog id="releases-filter-dialog"[^>]*open/);
+      expect(native.text).toContain('Releases defaults changed since this page was loaded.');
+      expect(storedReleasesDefault('sort')).toBe('updated');
+    });
+
+    // C2: a legacy Settings write of Releases Sort/Order advances the Releases
+    // generation, so the authority a dialog reads afterwards is current and a
+    // Save prepared before it is stale.
+    it('treats a legacy Settings Releases write as a newer authority generation', async () => {
+      const before = await agent.get('/releases/defaults').set('Accept', 'application/json').expect(200);
+      expect(before.body.authority.generation).toBe(0);
+
+      await agent.post('/settings/defaults').type('form')
+        .send({ _csrf: csrfToken, releasesSort: 'title', releasesOrder: 'desc' })
+        .expect(302);
+
+      const after = await agent.get('/releases/defaults').set('Accept', 'application/json').expect(200);
+      expect(after.body.authority).toMatchObject({ page: 'releases', generation: 1, savedKeys: ['sort', 'order'] });
+
+      const stale = await agent.post('/releases/defaults').set('Accept', 'application/json').type('form')
+        .send({ _csrf: csrfToken, sort: 'updated', order: 'asc', defaultsGeneration: '0', defaultsOperation: 'op-pre-legacy' })
+        .expect(409);
+      expect(stale.body.operation).toMatchObject({ id: 'op-pre-legacy', result: 'conflict', committed: false, generation: 1 });
+      expect(storedReleasesDefault('sort')).toBe('title');
+      expect(storedReleasesDefault('order')).toBe('desc');
+
+      const bare = await agent.get('/releases').expect(302);
+      expect(bare.headers.location).toBe('/releases?sort=title&order=desc');
+    });
+
+    it('keeps the native success redirect with a trusted notice for a fenced post', async () => {
       const response = await agent
         .post('/releases/defaults')
         .set('Accept', 'text/html')
         .type('form')
-        .send({ _csrf: renderedCsrfToken, sort: 'title', order: 'desc' })
+        .send(withReleasesDefaultsGeneration({ _csrf: csrfToken, sort: 'title', order: 'desc' }))
         .expect(302);
 
       expect(response.headers.location)
         .toBe('/releases?sort=title&order=desc&notice=releases_defaults_saved');
-      expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
-        .get(PAGE_DEFAULT_DEFINITIONS.releases.sort.key).value).toBe('title');
+      expect(storedReleasesDefault('sort')).toBe('title');
 
       const rendered = await agent.get(response.headers.location).expect(200);
       expect(rendered.headers.location).toBeUndefined();
       expect(rendered.text).toContain('Releases defaults saved successfully.');
-      const savedDefaultsDialog = rendered.text.match(/<dialog id="releases-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
-      expect(sliceSelect(savedDefaultsDialog, 'releases-default-sort')).toContain('<option value="title" selected>Title</option>');
-      expect(sliceSelect(savedDefaultsDialog, 'releases-default-order')).toContain('<option value="desc" selected>Descending</option>');
-      const bare = await agent.get('/releases').expect(302);
-      expect(bare.headers.location).toBe('/releases?sort=title&order=desc');
-      const bareRendered = await agent.get(bare.headers.location).expect(200);
-      expect(bareRendered.headers.location).toBeUndefined();
-      expect(bareRendered.text).not.toContain('name="view"');
-      expect(bareRendered.text).toMatch(/id="list-sort-trigger"[^>]*aria-label="Sort filter: Title"/);
-      expect(bareRendered.text).toMatch(/id="list-order-trigger"[^>]*aria-label="Sort order filter: Desc"/);
+      expect(rendered.text).toContain('data-releases-defaults-indicator>Defaults saved.</p>');
     });
 
-    it('returns the generic JSON success and 422 contracts without partial saves', async () => {
-      const valid = await agent
-        .post('/releases/defaults')
-        .set('Accept', 'application/json')
-        .type('form')
-        .send({ _csrf: csrfToken, sort: 'planned', order: 'asc' })
+    it('returns the generic JSON 422 contract without partial saves', async () => {
+      await agent.post('/releases/defaults').set('Accept', 'application/json').type('form')
+        .send(withReleasesDefaultsGeneration({ _csrf: csrfToken, sort: 'planned', order: 'asc' }))
         .expect(200);
-      expect(valid.body).toMatchObject({ status: 'success', values: { sort: 'planned', order: 'asc' } });
 
       const invalid = await agent
         .post('/releases/defaults')
         .set('Accept', 'application/json')
         .type('form')
-        .send({ _csrf: csrfToken, sort: 'invalid', order: 'asc' })
+        .send(withReleasesDefaultsGeneration({ _csrf: csrfToken, sort: 'invalid', order: 'desc', defaultsOperation: 'op-invalid' }))
         .expect(422);
-      expect(invalid.body).toMatchObject({ status: 'error', values: { sort: 'invalid', order: 'asc' } });
-      expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
-        .get(PAGE_DEFAULT_DEFINITIONS.releases.sort.key).value).toBe('planned');
+      expect(invalid.body).toMatchObject({
+        status: 'error',
+        values: { sort: 'invalid', order: 'desc' },
+        operation: { id: 'op-invalid', kind: 'save', result: 'invalid', committed: false },
+      });
+      expect(storedReleasesDefault('sort')).toBe('planned');
+      expect(storedReleasesDefault('order')).toBe('asc');
+      expect(app.locals.pageDefaultsService.getMutationGeneration('releases')).toBe(1);
     });
 
-    it('keeps a normal invalid defaults POST on the page with the dialog open and submitted value marker', async () => {
+    it('keeps a normal invalid defaults POST on the page with the combined dialog open and the field error', async () => {
       const invalid = await agent
         .post('/releases/defaults')
         .type('form')
-        .send({ _csrf: csrfToken, sort: 'invalid', order: 'desc' })
+        .send(withReleasesDefaultsGeneration({ _csrf: csrfToken, sort: 'invalid', order: 'desc' }))
         .expect(422);
 
-      expect(invalid.text).toMatch(/<dialog id="releases-defaults-dialog"[^>]*open/);
-      expect(invalid.text).toContain('data-dialog-submitted-value');
-      expect(invalid.text).toContain('Submitted value: invalid');
-      expect(invalid.text).toContain('releases.sort');
+      expect(invalid.text).toMatch(/<dialog id="releases-filter-dialog"[^>]*open/);
+      expect(invalid.text).toMatch(/data-releases-defaults-field-error="sort">Sort: [^<]+<\/p>/);
+      expect(storedReleasesDefault('sort')).toBeUndefined();
     });
 
     it('rejects a Releases defaults POST without CSRF', async () => {
@@ -2271,6 +2476,80 @@ describe('release HTTP workflow', () => {
         .type('form')
         .send({ sort: 'planned', order: 'asc' })
         .expect(403);
+      await agent
+        .post('/releases/defaults/reset')
+        .type('form')
+        .send({ defaultsGeneration: '0' })
+        .expect(403);
+    });
+
+    it('Reset defaults deletes only the Releases keys and keeps the temporary context in its refresh', async () => {
+      app.locals.pageDefaultsService.saveDefault('releases', 'sort', 'title');
+      app.locals.pageDefaultsService.saveDefault('releases', 'order', 'desc');
+      app.locals.pageDefaultsService.saveDefault('projects', 'sort', 'title');
+      app.locals.pageDefaultsService.saveDefault('assetViewer', 'sort', 'size');
+      const projectsSortKey = PAGE_DEFAULT_DEFINITIONS.projects.sort.key;
+
+      const reset = await agent
+        .post('/releases/defaults/reset')
+        .set('Accept', 'application/json')
+        .type('form')
+        .send(withReleasesDefaultsGeneration({
+          _csrf: csrfToken,
+          defaultsOperation: 'op-reset-1',
+          returnTo: '/releases?search=%20needle%20&project=12&project=7&type=comic&schedule=today&includeArchived=1&sort=title&order=desc&page=3&pageSize=50',
+        }))
+        .expect(200);
+
+      expect(reset.body).toMatchObject({
+        status: 'success',
+        operation: { id: 'op-reset-1', kind: 'resetDefaults', result: 'committed', committed: true, expectedGeneration: 0, generation: 1 },
+        reset: { page: 'releases', scope: 'global', changed: true, deletedOptions: ['sort', 'order'] },
+        refreshUrl: '/releases?search=needle&project=7&project=12&type=comic&schedule=today&includeArchived=1&pageSize=50',
+        authority: { page: 'releases', generation: 1, savedKeys: [], defaults: { sort: 'planned', order: 'asc' } },
+      });
+      expect(storedReleasesDefault('sort')).toBeUndefined();
+      expect(storedReleasesDefault('order')).toBeUndefined();
+      expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(projectsSortKey)?.value).toBe('title');
+      expect(app.locals.pageDefaultsService.resolve('assetViewer', 'sort')).toBe('size');
+
+      // A no-op Reset (nothing saved) still advances the generation; a stale
+      // request is rejected without deleting anything.
+      const noop = await agent.post('/releases/defaults/reset').set('Accept', 'application/json').type('form')
+        .send(withReleasesDefaultsGeneration({ _csrf: csrfToken, defaultsOperation: 'op-reset-2' }))
+        .expect(200);
+      expect(noop.body).toMatchObject({ reset: { changed: false }, refreshUrl: '/releases', operation: { generation: 2 } });
+      app.locals.pageDefaultsService.saveDefault('releases', 'sort', 'updated');
+      const stale = await agent.post('/releases/defaults/reset').set('Accept', 'application/json').type('form')
+        .send({ _csrf: csrfToken, defaultsGeneration: '1', defaultsOperation: 'op-reset-stale' })
+        .expect(409);
+      expect(stale.body.operation).toMatchObject({ kind: 'resetDefaults', result: 'conflict', generation: 2 });
+      expect(storedReleasesDefault('sort')).toBe('updated');
+    });
+
+    it('Reset defaults keeps an exact-asset scope exactly as supplied, never widening it', async () => {
+      const projectId = insertProjectDirect(db, { title: 'Reset Scope Owner' });
+      const assetId = insertAssetDirect(db, projectId, 'reset-scope.png').id;
+      const scoped = await agent.post('/releases/defaults/reset').set('Accept', 'application/json').type('form')
+        .send(withReleasesDefaultsGeneration({
+          _csrf: csrfToken,
+          defaultsOperation: 'op-scope',
+          returnTo: `/releases?asset=${assetId}&project=${projectId}&sort=title&page=2`,
+        }))
+        .expect(200);
+      expect(scoped.body.refreshUrl).toBe(`/releases?asset=${assetId}&project=${projectId}`);
+
+      const malformed = await agent.post('/releases/defaults/reset').set('Accept', 'application/json').type('form')
+        .send(withReleasesDefaultsGeneration({ _csrf: csrfToken, defaultsOperation: 'op-bad', returnTo: '/releases?asset=abc' }))
+        .expect(200);
+      // The GET itself rejects the scope (400) rather than listing everything.
+      expect(malformed.body.refreshUrl).toBe('/releases?asset=abc');
+      await agent.get(malformed.body.refreshUrl).expect(400);
+
+      const foreign = await agent.post('/releases/defaults/reset').set('Accept', 'application/json').type('form')
+        .send(withReleasesDefaultsGeneration({ _csrf: csrfToken, defaultsOperation: 'op-foreign', returnTo: 'https://evil.example/releases?asset=1' }))
+        .expect(200);
+      expect(foreign.body.refreshUrl).toBe('/releases');
     });
 
     it('keeps Calendar navigation available from canonical Releases', async () => {
@@ -2375,25 +2654,32 @@ describe('release HTTP workflow', () => {
       const second = await agent.get(nextHref).expect(200);
       expect(releaseTitles(second.text)).toEqual(['Paged 0', 'Paged 1']);
 
-      const resetAction = filterDialog(first.text)
-        .match(/<form class="releases-filter-reset app-dialog-footer" method="get" action="([^"]+)">/)?.[1];
-      expect(resetAction).toBe('/releases?pageSize=2');
+      // WP12: Reset filters (the installed authority's GET destination) drops
+      // the scope and keeps only the URL page size.
+      expect(releasesDefaultsAuthority(first.text)?.resetFiltersUrl).toBe('/releases?pageSize=2');
+      const reset = await agent.get('/releases?pageSize=2').expect(200);
+      expect(filterDialog(reset.text)).not.toContain('name="asset"');
+      expect(filterDialog(reset.text)).not.toContain('data-releases-asset-scope');
 
       app.locals.pageDefaultsService.saveDefault('releases', 'sort', 'title');
       const redirected = await agent.get(`/releases?asset=${assetId}&includeArchived=1`).expect(302);
       expect(new URL(redirected.headers.location, 'http://x').searchParams.get('asset')).toBe(String(assetId));
     });
 
+    // WP12: the combined dialog saves through JSON (the page keeps its own
+    // scoped location); the native scoped success redirect is still honoured
+    // for a fenced post that carries the scope in its query.
     it('keeps the scope through a Defaults save without making it a saved default', async () => {
       const page = await agent.get(`/releases?asset=${assetId}&project=${projectId}&includeArchived=1&page=1`).expect(200);
-      const action = page.text.match(/<form id="releases-defaults-form" method="post" action="([^"]+)"/)?.[1]
-        ?.replace(/&amp;/g, '&');
-      expect(action).toBe(`/releases/defaults?asset=${assetId}&project=${projectId}&includeArchived=1`);
+      expect(releasesDefaultsAuthority(page.text)?.currentUrl)
+        .toBe(`/releases?asset=${assetId}&project=${projectId}&includeArchived=1`);
+      expect(page.text).not.toMatch(/<form id="releases-defaults-form"[^>]*action=/);
+      const action = `/releases/defaults?asset=${assetId}&project=${projectId}&includeArchived=1`;
 
       const saved = await agent
         .post(action)
         .type('form')
-        .send({ _csrf: csrfToken, sort: 'title', order: 'desc' })
+        .send(withReleasesDefaultsGeneration({ _csrf: csrfToken, sort: 'title', order: 'desc' }))
         .expect(302);
       expect(saved.headers.location).toBe(
         `/releases?asset=${assetId}&project=${projectId}&includeArchived=1&sort=title&order=desc&notice=releases_defaults_saved`,
@@ -2404,13 +2690,533 @@ describe('release HTTP workflow', () => {
       const bare = await agent.get('/releases').expect(302);
       expect(bare.headers.location).toBe('/releases?sort=title&order=desc');
       const unscoped = await agent.get(bare.headers.location).expect(200);
-      expect(unscoped.text).toContain('action="/releases/defaults"');
+      expect(releasesDefaultsAuthority(unscoped.text)?.currentUrl).toBe('/releases?sort=title&order=desc');
       expect(filterDialog(unscoped.text)).not.toContain('name="asset"');
 
       await agent.post('/releases/defaults?asset=abc').type('form')
-        .send({ _csrf: csrfToken, sort: 'planned', order: 'asc' }).expect(400);
+        .send(withReleasesDefaultsGeneration({ _csrf: csrfToken, sort: 'planned', order: 'asc' })).expect(400);
       expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
         .get(PAGE_DEFAULT_DEFINITIONS.releases.sort.key).value).toBe('title');
+    });
+  });
+
+  describe('/releases repeated Project and Project Type filters (WP11)', () => {
+    let comicA;
+    let comicB;
+    let animation;
+    let images;
+    let archivedComic;
+
+    function createTypedProject(title, projectType, overrides = {}) {
+      const id = insertProjectDirect(db, { title, ...overrides });
+      db.prepare('UPDATE projects SET project_type = ? WHERE id = ?').run(projectType, id);
+      return id;
+    }
+
+    function createRelease(ownerId, title, plannedDate = null) {
+      return releaseRepository.create({ projectId: ownerId, title, description: '', notes: '', plannedDate });
+    }
+
+    function releaseTitles(html) {
+      return [...extractReleasesResultsBody(html).matchAll(/<a href="\/releases\/\d+">([^<]+)<\/a>/g)]
+        .map(([, title]) => title);
+    }
+
+    function filterDialog(html) {
+      return html.match(/<dialog id="releases-filter-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+    }
+
+    function decodeHref(href) {
+      return href?.replace(/&amp;/g, '&');
+    }
+
+    function paginationHref(html, label) {
+      return decodeHref(html.match(new RegExp(`<a class="button" href="([^"]+)">${label}</a>`))?.[1]);
+    }
+
+    // WP12: Reset filters is the installed page authority's GET destination.
+    function resetAction(html) {
+      return releasesDefaultsAuthority(html)?.resetFiltersUrl;
+    }
+
+    function searchParamsOf(href) {
+      return new URL(href, 'http://x').searchParams;
+    }
+
+    beforeEach(() => {
+      comicA = createTypedProject('WP11 Comic A', 'comic');
+      comicB = createTypedProject('WP11 Comic B', 'comic');
+      animation = createTypedProject('WP11 Animation', 'animation');
+      images = createTypedProject('WP11 Images', 'images');
+      archivedComic = createTypedProject('WP11 Archived Comic', 'comic', {
+        status: 'archived', archivedAt: '2025-01-01T00:00:00Z',
+      });
+      createRelease(comicA, 'CA One', '2000-01-01');
+      createRelease(comicA, 'CA Two', '2999-01-01');
+      createRelease(comicB, 'CB One');
+      createRelease(animation, 'AN One', '2000-01-02');
+      createRelease(images, 'IM One');
+      createRelease(archivedComic, 'AC One');
+    });
+
+    it('keeps the legacy single-Project URL as one checked Project in the multi-select', async () => {
+      const res = await agent.get(`/releases?project=${comicB}`).expect(200);
+      expect(releaseTitles(res.text)).toEqual(['CB One']);
+      const projectField = extractReleaseFilterProjectField(res.text);
+      expect(projectField).toContain('WP11 Comic B');
+      expect(checkedValues(projectField, 'project')).toEqual([String(comicB)]);
+      expect(projectField).toContain('aria-label="Projects filter: WP11 Comic B"');
+      expect(checkedValues(extractReleaseFilterTypeField(res.text), 'type')).toEqual(['']);
+      expect(filterDialog(res.text)).not.toMatch(/<input type="hidden" name="type"/);
+    });
+
+    it('renders every selected Project checked with the N projects selected summary', async () => {
+      const res = await agent.get(`/releases?project=${comicB}&project=${comicA}&project=${archivedComic}`).expect(200);
+      const projectField = extractReleaseFilterProjectField(res.text);
+      expect(checkedValues(projectField, 'project').sort())
+        .toEqual([comicA, comicB, archivedComic].map(String).sort());
+      expect(projectField).toContain('aria-label="Projects filter: 3 projects selected"');
+      // Unrestricted Select all is the empty value, unchecked while any
+      // individual Project is checked.
+      expect(projectField).toMatch(/name="project" type="checkbox" value="" data-cc-dropdown-select-all(?![^>]*checked)[^>]*>/);
+      // Options come from the backend (active + selected historical), never
+      // from the current results page.
+      for (const title of ['WP11 Comic A', 'WP11 Comic B', 'WP11 Animation', 'WP11 Images', 'WP11 Archived Comic']) {
+        expect(projectField).toContain(`>${title}</span>`);
+      }
+    });
+
+    it('ORs two Projects, ignoring duplicates and order, with canonical repeated values', async () => {
+      const [low, high] = [comicA, animation].sort((a, b) => a - b);
+      const first = await agent.get(`/releases?project=${high}&project=${low}&project=${high}&sort=title&order=asc`).expect(200);
+      const second = await agent.get(`/releases?project=${low}&project=${high}&sort=title&order=asc`).expect(200);
+      expect(releaseTitles(first.text)).toEqual(['AN One', 'CA One', 'CA Two']);
+      expect(releaseTitles(second.text)).toEqual(releaseTitles(first.text));
+      expect(first.text).toContain('3 releases found');
+
+      const reset = resetAction(first.text);
+      expect(reset).toBe('/releases');
+      expect(checkedValues(extractReleaseFilterProjectField(first.text), 'project').sort())
+        .toEqual([String(low), String(high)].sort());
+      expect(decodeHref(releasesDefaultsAuthority(first.text)?.currentUrl))
+        .toBe(`/releases?project=${low}&project=${high}&sort=title`);
+    });
+
+    it('keeps unknown Project IDs restrictive and drops malformed values individually', async () => {
+      const unknown = await agent.get('/releases?project=999999').expect(200);
+      expect(releaseTitles(unknown.text)).toEqual([]);
+      expect(unknown.text).toContain('No releases match the current filters');
+
+      const mixed = await agent.get(`/releases?project=999999&project=${images}`).expect(200);
+      expect(releaseTitles(mixed.text)).toEqual(['IM One']);
+
+      const malformed = await agent.get(`/releases?project=abc&project=${images}&project=1junk`).expect(200);
+      expect(releaseTitles(malformed.text)).toEqual(['IM One']);
+
+      // Established fallback: a lone malformed value is unrestricted.
+      const loneMalformed = await agent.get('/releases?project=abc&sort=title&order=asc').expect(200);
+      expect(releaseTitles(loneMalformed.text)).toEqual(['AN One', 'CA One', 'CA Two', 'CB One', 'IM One']);
+    });
+
+    it('keeps a selected historical (archived) Project in the options without listing its releases', async () => {
+      const res = await agent.get(`/releases?project=${archivedComic}&project=${comicB}`).expect(200);
+      expect(releaseTitles(res.text)).toEqual(['CB One']);
+      const projectField = extractReleaseFilterProjectField(res.text);
+      expect(projectField).toContain('WP11 Archived Comic');
+      expect(projectField).toContain('WP11 Comic B');
+      expect(projectField).not.toContain('999999');
+    });
+
+    it('filters one or more Project Types by catalogue value and drops stale values', async () => {
+      // WP12: the visible Project Types multi-select is the one authority for
+      // `type` (the WP11 hidden compatibility inputs are retired).
+      const one = await agent.get('/releases?type=comic&sort=title&order=asc').expect(200);
+      expect(releaseTitles(one.text)).toEqual(['CA One', 'CA Two', 'CB One']);
+      const oneField = extractReleaseFilterTypeField(one.text);
+      expect(checkedValues(oneField, 'type')).toEqual(['comic']);
+      expect(filterDialog(one.text)).not.toMatch(/<input type="hidden" name="type"/);
+      expect(filterDialog(one.text).match(/name="type"[^>]*value="comic"/g)).toHaveLength(1);
+
+      const two = await agent.get('/releases?type=comic&type=animation&type=comic&sort=title&order=asc').expect(200);
+      expect(releaseTitles(two.text)).toEqual(['AN One', 'CA One', 'CA Two', 'CB One']);
+      const twoField = extractReleaseFilterTypeField(two.text);
+      expect(checkedValues(twoField, 'type').sort()).toEqual(['animation', 'comic']);
+      expect(twoField).toContain('aria-label="Project Types filter: 2 types selected"');
+      // Options are the catalogue's stable values with their display labels.
+      const catalogue = app.locals.projectOptionCatalogueService.getProjectTypeCatalogue();
+      expect([...twoField.matchAll(/name="type" type="checkbox" value="([^"]+)"/g)].map(([, value]) => value))
+        .toEqual(catalogue.map(({ value }) => value));
+
+      const stale = await agent.get('/releases?type=no-such-type&type=Comic&sort=title&order=asc').expect(200);
+      expect(releaseTitles(stale.text)).toEqual(['AN One', 'CA One', 'CA Two', 'CB One', 'IM One']);
+      expect(checkedValues(extractReleaseFilterTypeField(stale.text), 'type')).toEqual(['']);
+      expect(extractReleaseFilterTypeField(stale.text)).toContain('aria-label="Project Types filter: All types"');
+    });
+
+    it('ANDs Projects with Types and composes with search, schedule and include archived', async () => {
+      const base = `project=${comicA}&project=${images}&type=comic&type=animation`;
+      const combined = await agent.get(`/releases?${base}&sort=title&order=asc`).expect(200);
+      expect(releaseTitles(combined.text)).toEqual(['CA One', 'CA Two']);
+
+      const searched = await agent.get(`/releases?${base}&search=Two`).expect(200);
+      expect(releaseTitles(searched.text)).toEqual(['CA Two']);
+
+      const scheduled = await agent.get(`/releases?${base}&schedule=overdue`).expect(200);
+      expect(releaseTitles(scheduled.text)).toEqual(['CA One']);
+
+      const archivedRelease = releaseRepository.findPage({ search: 'CA Two', today: '2025-01-01' })[0];
+      releaseRepository.archive(archivedRelease.id);
+      const active = await agent.get(`/releases?${base}`).expect(200);
+      expect(releaseTitles(active.text)).toEqual(['CA One']);
+      const withArchived = await agent.get(`/releases?${base}&includeArchived=1&sort=title&order=asc`).expect(200);
+      expect(releaseTitles(withArchived.text)).toEqual(['CA One', 'CA Two']);
+
+      const empty = await agent.get(`/releases?project=${images}&type=comic`).expect(200);
+      expect(releaseTitles(empty.text)).toEqual([]);
+      expect(empty.text).toContain('No releases match the current filters');
+    });
+
+    it('treats a multi-Project or Type-only selection as active filters in the empty state', async () => {
+      const multi = await agent.get(`/releases?project=${images}&project=999999&search=nomatch`).expect(200);
+      expect(multi.text).toContain('No releases match the current filters');
+      const multiOnly = await agent.get('/releases?project=999998&project=999999').expect(200);
+      expect(multiOnly.text).toContain('No releases match the current filters');
+      const typeOnly = await agent.get('/releases?type=wallpaper').expect(200);
+      expect(typeOnly.text).toContain('No releases match the current filters');
+    });
+
+    it('agrees on count and pages and preserves every selection through pagination and sort', async () => {
+      for (let i = 0; i < 3; i++) {
+        createRelease(comicB, `CB Extra ${i}`);
+        createRelease(images, `IM Extra ${i}`);
+      }
+      const query = `project=${comicB}&project=${comicA}&type=comic&type=animation&pageSize=2&sort=title&order=asc&search=C`;
+      const first = await agent.get(`/releases?${query}`).expect(200);
+      expect(first.text).toContain('6 releases found');
+      expect(releaseTitles(first.text)).toEqual(['CA One', 'CA Two']);
+
+      const nextHref = paginationHref(first.text, 'Next');
+      const params = searchParamsOf(nextHref);
+      expect(params.getAll('project')).toEqual([String(Math.min(comicA, comicB)), String(Math.max(comicA, comicB))]);
+      expect(params.getAll('type')).toEqual(['animation', 'comic']);
+      expect(params.get('pageSize')).toBe('2');
+      expect(params.get('sort')).toBe('title');
+      // `asc` is the Releases order fallback, so the canonical URL omits it.
+      expect(params.has('order')).toBe(false);
+      expect(params.get('search')).toBe('C');
+      expect(params.get('page')).toBe('2');
+      expect(nextHref).not.toContain('%2C');
+
+      const second = await agent.get(nextHref).expect(200);
+      expect(releaseTitles(second.text)).toEqual(['CB Extra 0', 'CB Extra 1']);
+      const third = await agent.get(paginationHref(second.text, 'Next')).expect(200);
+      expect(releaseTitles(third.text)).toEqual(['CB Extra 2', 'CB One']);
+      expect(paginationHref(third.text, 'Next')).toBeUndefined();
+      const previousParams = searchParamsOf(paginationHref(third.text, 'Previous'));
+      expect(previousParams.getAll('project')).toHaveLength(2);
+      expect(previousParams.getAll('type')).toEqual(['animation', 'comic']);
+
+      // Out-of-range page clamps to the last filtered page.
+      const clamped = await agent.get(`/releases?${query}&page=99`).expect(200);
+      expect(releaseTitles(clamped.text)).toEqual(['CB Extra 2', 'CB One']);
+
+      // Hidden page-size input and Reset keep page size but clear Project/Type.
+      expect(filterDialog(first.text)).toContain('<input type="hidden" name="pageSize" value="2">');
+      expect(resetAction(first.text)).toBe('/releases?pageSize=2');
+    });
+
+    it('preserves repeated selections through a saved-default redirect', async () => {
+      app.locals.pageDefaultsService.saveDefault('releases', 'sort', 'title');
+      const redirected = await agent.get(`/releases?project=${comicA}&project=${comicB}&type=comic`).expect(302);
+      const params = searchParamsOf(redirected.headers.location);
+      expect(params.getAll('project')).toEqual([String(Math.min(comicA, comicB)), String(Math.max(comicA, comicB))]);
+      expect(params.getAll('type')).toEqual(['comic']);
+      expect(params.get('sort')).toBe('title');
+    });
+
+    it('keeps exact-asset scope restrictive with repeated Projects and Types', async () => {
+      const assetId = insertAssetDirect(db, comicA, 'wp11-scope.png').id;
+      const member = releaseRepository.findPage({ search: 'CA One', today: '2025-01-01' })[0];
+      releaseRepository.addReleaseAsset(member.id, assetId, 'primary', 0);
+      const foreign = releaseRepository.findPage({ search: 'CB One', today: '2025-01-01' })[0];
+      db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)')
+        .run(foreign.id, assetId, 'attachment', 0);
+
+      const oneProject = await agent.get(`/releases?asset=${assetId}&project=${comicA}`).expect(200);
+      expect(releaseTitles(oneProject.text)).toEqual(['CA One']);
+      const twoProjects = await agent.get(`/releases?asset=${assetId}&project=${comicA}&project=${comicB}`).expect(200);
+      expect(releaseTitles(twoProjects.text)).toEqual(['CA One']);
+      const otherProjects = await agent.get(`/releases?asset=${assetId}&project=${comicB}&project=${images}`).expect(200);
+      expect(releaseTitles(otherProjects.text)).toEqual([]);
+      const typed = await agent.get(`/releases?asset=${assetId}&type=comic&type=images`).expect(200);
+      expect(releaseTitles(typed.text)).toEqual(['CA One']);
+      const wrongType = await agent.get(`/releases?asset=${assetId}&type=images`).expect(200);
+      expect(releaseTitles(wrongType.text)).toEqual([]);
+      const scheduled = await agent.get(`/releases?asset=${assetId}&type=comic&schedule=overdue`).expect(200);
+      expect(releaseTitles(scheduled.text)).toEqual(['CA One']);
+      const upcoming = await agent.get(`/releases?asset=${assetId}&type=comic&schedule=upcoming`).expect(200);
+      expect(releaseTitles(upcoming.text)).toEqual([]);
+
+      db.prepare("UPDATE projects SET status = 'archived', archived_at = datetime('now') WHERE id = ?").run(comicA);
+      const historical = await agent.get(`/releases?asset=${assetId}&project=${comicA}&project=${comicB}&type=comic&includeArchived=1`).expect(200);
+      expect(releaseTitles(historical.text)).toEqual(['CA One']);
+
+      await agent.get(`/releases?asset=abc&project=${comicA}&project=${comicB}`).expect(400);
+      await agent.get(`/releases?asset=999999&type=comic`).expect(404);
+    });
+
+    it('carries repeated selections through an asset-scoped defaults save and its Reset defaults refresh', async () => {
+      const assetId = insertAssetDirect(db, comicA, 'wp11-defaults.png').id;
+      for (const title of ['CA One', 'CA Two']) {
+        const release = releaseRepository.findPage({ search: title, today: '2025-01-01' })[0];
+        releaseRepository.addReleaseAsset(release.id, assetId, 'primary', 0);
+      }
+      const [low, high] = [comicA, comicB].sort((a, b) => a - b);
+      const page = await agent.get(`/releases?asset=${assetId}&project=${high}&project=${low}&type=comic&type=animation`).expect(200);
+      const currentUrl = releasesDefaultsAuthority(page.text)?.currentUrl;
+      expect(currentUrl).toBe(`/releases?asset=${assetId}&project=${low}&project=${high}&type=animation&type=comic`);
+      const action = currentUrl.replace('/releases?', '/releases/defaults?');
+
+      const saved = await agent.post(action).type('form')
+        .send(withReleasesDefaultsGeneration({ _csrf: csrfToken, sort: 'title', order: 'desc' })).expect(302);
+      expect(saved.headers.location).toBe(
+        `/releases?asset=${assetId}&project=${low}&project=${high}&type=animation&type=comic&sort=title&order=desc&notice=releases_defaults_saved`,
+      );
+      expect(releaseTitles((await agent.get(saved.headers.location).expect(200)).text)).toEqual(['CA Two', 'CA One']);
+      // Only sort/order became saved defaults.
+      const savedKeys = db.prepare("SELECT key FROM app_meta WHERE key LIKE 'page_defaults.releases.%'").all()
+        .map(({ key }) => key).sort();
+      expect(savedKeys).toEqual([PAGE_DEFAULT_DEFINITIONS.releases.order.key, PAGE_DEFAULT_DEFINITIONS.releases.sort.key].sort());
+
+      // WP12 Reset defaults keeps the scope and every repeated selection.
+      const reset = await agent.post('/releases/defaults/reset').set('Accept', 'application/json').type('form')
+        .send(withReleasesDefaultsGeneration({ _csrf: csrfToken, defaultsOperation: 'op-wp12', returnTo: saved.headers.location }))
+        .expect(200);
+      expect(reset.body.refreshUrl)
+        .toBe(`/releases?asset=${assetId}&project=${low}&project=${high}&type=animation&type=comic`);
+      expect(db.prepare("SELECT key FROM app_meta WHERE key LIKE 'page_defaults.releases.%'").all()).toEqual([]);
+    });
+
+    // C1-A: nested query keys (`project[1][]=2`) parse to ['1', ['2']]. A nested
+    // entry must be dropped, never stringified into an extra selected Project.
+    describe('nested Project query entries (C1-A)', () => {
+      const enc = (key) => key.replace(/\[/g, '%5B').replace(/\]/g, '%5D');
+
+      async function listed(query) {
+        const res = await agent.get(`/releases?${query}&sort=title`).expect(200);
+        return {
+          titles: releaseTitles(res.text),
+          text: res.text,
+          checked: checkedValues(extractReleaseFilterProjectField(res.text), 'project'),
+          currentUrl: releasesDefaultsAuthority(res.text)?.currentUrl,
+        };
+      }
+
+      it('keeps legacy, repeated, duplicate and reordered flat Projects working', async () => {
+        const [low, high] = [comicA, animation].sort((a, b) => a - b);
+        const single = await listed(`project=${comicA}`);
+        expect(single.titles).toEqual(['CA One', 'CA Two']);
+        expect(single.currentUrl).toBe(`/releases?project=${comicA}&sort=title`);
+
+        for (const query of [
+          `project=${low}&project=${high}`,
+          `project=${high}&project=${low}`,
+          `project=${high}&project=${low}&project=${high}&project=${low}`,
+        ]) {
+          const result = await listed(query);
+          expect(result.titles).toEqual(['AN One', 'CA One', 'CA Two']);
+          expect(result.text).toContain('3 releases found');
+          expect(result.currentUrl).toBe(`/releases?project=${low}&project=${high}&sort=title`);
+        }
+      });
+
+      it('does not coerce the reviewed nested reproduction into a second Project', async () => {
+        // Reviewed: project[0]=A&project[1][]=B previously returned A's and B's releases.
+        const result = await listed(`${enc('project[0]')}=${comicA}&${enc('project[1][]')}=${animation}`);
+        expect(result.titles).toEqual(['CA One', 'CA Two']);
+        expect(result.titles).not.toContain('AN One');
+        expect(result.text).toContain('2 releases found');
+        expect(result.checked).toEqual([String(comicA)]);
+        expect(result.currentUrl).toBe(`/releases?project=${comicA}&sort=title`);
+      });
+
+      it('drops nested arrays and objects carrying numeric-looking IDs alongside a valid scalar', async () => {
+        for (const nested of [
+          `${enc('project[1][]')}=${animation}`, // nested array
+          `${enc('project[1][0]')}=${animation}`, // nested indexed array
+          `${enc('project[1][x]')}=${animation}`, // nested object
+        ]) {
+          const result = await listed(`${enc('project[0]')}=${comicA}&${nested}`);
+          expect(result.titles).toEqual(['CA One', 'CA Two']);
+          expect(result.checked).toEqual([String(comicA)]);
+          expect(result.currentUrl).toBe(`/releases?project=${comicA}&sort=title`);
+        }
+        // Repeated flat scalar plus a nested entry: the flat values alone remain.
+        const [low, high] = [comicA, images].sort((a, b) => a - b);
+        const mixed = await listed(`project=${high}&project=${low}&${enc('project[2][]')}=${animation}`);
+        expect(mixed.titles).toEqual(['CA One', 'CA Two', 'IM One']);
+        expect(mixed.titles).not.toContain('AN One');
+        expect(mixed.currentUrl).toBe(`/releases?project=${low}&project=${high}&sort=title`);
+      });
+
+      it('keeps the malformed/unsafe policy and unknown-Project restriction with nested entries', async () => {
+        // Unsafe and malformed scalars are dropped individually beside a valid one.
+        const unsafe = await listed(`project=9007199254740993&project=1junk&project=${comicB}`);
+        expect(unsafe.titles).toEqual(['CB One']);
+        expect(unsafe.currentUrl).toBe(`/releases?project=${comicB}&sort=title`);
+        // A valid but unknown ID stays restrictive; the nested entry cannot widen it.
+        const unknown = await listed(`project=999999&${enc('project[1][]')}=${comicA}`);
+        expect(unknown.titles).toEqual([]);
+        expect(unknown.text).toContain('0 releases found');
+        expect(unknown.currentUrl).toBe('/releases?project=999999&sort=title');
+        // Only nested (malformed) entries: the established lone-malformed
+        // fallback (no Project restriction), never the nested ID alone.
+        const nestedOnly = await listed(`${enc('project[0][]')}=${animation}`);
+        expect(nestedOnly.checked).toEqual(['']);
+        expect(nestedOnly.currentUrl).toBe('/releases?sort=title');
+      });
+    });
+
+    it('preserves the canonical temporary filters on a native defaults save without asset scope', async () => {
+      createRelease(comicA, 'Match Comic', '2999-01-01');
+      releaseRepository.archive(createRelease(comicA, 'Match Archived', '2999-01-01').id);
+      createRelease(animation, 'Match Animation', '2999-01-02');
+      createRelease(comicB, 'Match Other Project', '2999-01-02');
+      createRelease(comicA, 'Match Unscheduled');
+      createRelease(animation, 'Different Title', '2999-01-02');
+
+      const context = new URLSearchParams([
+        ['search', ' Match '], ['project', String(animation)], ['project', ''], ['project', String(comicA)],
+        ['project', 'bad'], ['type', 'comic'], ['type', ''], ['type', 'animation'], ['type', 'unknown'],
+        ['schedule', 'upcoming'], ['includeArchived', '1'], ['pageSize', '1'], ['page', '2'],
+        ['sort', 'created'], ['order', 'asc'], ['notice', 'untrusted notice'],
+      ]);
+      const action = `/releases/defaults?${context}`;
+      const form = new URLSearchParams(withReleasesDefaultsGeneration({
+        _csrf: csrfToken, sort: 'title', order: 'desc', defaultsOperation: 'native-save',
+        returnTo: 'https://example.invalid/releases?search=untrusted',
+        search: 'ignore body search', project: String(comicB), asset: '12345', pageSize: '100',
+      }));
+
+      const missingGeneration = new URLSearchParams(form);
+      missingGeneration.delete('defaultsGeneration');
+      await agent.post(action).type('form').send(missingGeneration.toString()).expect(409);
+      const invalidCsrf = new URLSearchParams(form);
+      invalidCsrf.set('_csrf', 'invalid');
+      await agent.post(action).type('form').send(invalidCsrf.toString()).expect(403);
+      expect(app.locals.pageDefaultsService.getMutationGeneration('releases')).toBe(0);
+      expect(storedReleasesDefault('sort')).toBeUndefined();
+      expect(storedReleasesDefault('order')).toBeUndefined();
+
+      const saved = await agent.post(action).set('Accept', 'text/html').type('form').send(form.toString()).expect(302);
+      const expectedContext = `/releases?search=Match&project=${comicA}&project=${animation}&type=animation&type=comic`
+        + '&schedule=upcoming&includeArchived=1';
+      expect(saved.headers.location).toBe(
+        expectedContext + '&pageSize=1&sort=title&order=desc&notice=releases_defaults_saved',
+      );
+      const followed = await agent.get(saved.headers.location).expect(200);
+      expect(releaseTitles(followed.text)).toEqual(['Match Comic']);
+      expect(followed.text).toContain('2 releases found');
+      expect(followed.text).toContain('Releases defaults saved successfully.');
+      expect(followed.text).not.toContain('untrusted notice');
+      const next = paginationHref(followed.text, 'Next');
+      expect(next).toBe(expectedContext + '&sort=title&order=desc&pageSize=1&page=2');
+      expect(releaseTitles((await agent.get(next).expect(200)).text)).toEqual(['Match Animation']);
+
+      expect(db.prepare("SELECT key, value FROM app_meta WHERE key LIKE 'page_defaults.releases.%' ORDER BY key").all())
+        .toEqual([
+          { key: PAGE_DEFAULT_DEFINITIONS.releases.order.key, value: 'desc' },
+          { key: PAGE_DEFAULT_DEFINITIONS.releases.sort.key, value: 'title' },
+        ]);
+      expect(app.locals.pageDefaultsService.getMutationGeneration('releases')).toBe(1);
+    });
+
+    it('uses the Releases GET normalization for unsupported native defaults context', async () => {
+      const action = '/releases/defaults?search=+++&project=99999&project=0&type=unknown'
+        + '&schedule=unknown&includeArchived=true&pageSize=1junk&page=9';
+      const saved = await agent.post(action).type('form').send(withReleasesDefaultsGeneration({
+        _csrf: csrfToken, sort: 'planned', order: 'asc', defaultsOperation: 'native-normalization',
+      })).expect(302);
+
+      expect(saved.headers.location).toBe('/releases?project=99999&sort=planned&order=asc&notice=releases_defaults_saved');
+      expect(releaseTitles((await agent.get(saved.headers.location).expect(200)).text)).toEqual([]);
+    });
+
+    // C1-B: the legacy native asset-scoped defaults POST redirects with the
+    // canonical Project/Type selections, not the submitted duplicates/empties.
+    it('normalizes repeated Project/Type selections in the legacy asset-scoped defaults redirect', async () => {
+      const assetId = insertAssetDirect(db, comicA, 'c1b-defaults.png').id;
+      for (const title of ['CA One', 'CA Two', 'IM One', 'AN One']) {
+        const release = releaseRepository.findPage({ search: title, today: '2025-01-01' })[0];
+        db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)')
+          .run(release.id, assetId, 'attachment', 0);
+      }
+      const [low, high] = [comicA, images].sort((a, b) => a - b);
+      const context = new URLSearchParams([
+        ['asset', String(assetId)],
+        ['project', String(high)], ['project', String(low)], ['project', String(high)],
+        ['type', 'images'], ['type', ''], ['type', 'comic'], ['type', 'images'],
+        ['search', 'One'], ['includeArchived', '1'], ['pageSize', '10'], ['page', '3'],
+      ]);
+      const saved = await agent.post(`/releases/defaults?${context.toString()}`).type('form')
+        .send(withReleasesDefaultsGeneration({ _csrf: csrfToken, sort: 'title', order: 'desc' }))
+        .expect(302);
+
+      const location = saved.headers.location;
+      expect(location).toBe(
+        `/releases?asset=${assetId}&search=One&project=${low}&project=${high}&type=comic&type=images`
+          + '&includeArchived=1&pageSize=10&sort=title&order=desc&notice=releases_defaults_saved',
+      );
+      const params = searchParamsOf(location);
+      expect(params.getAll('asset')).toEqual([String(assetId)]);
+      expect(params.getAll('project')).toEqual([String(low), String(high)]);
+      expect(params.getAll('type')).toEqual(['comic', 'images']);
+      expect(location).not.toMatch(/%2C|,/);
+      expect(location).not.toMatch(/type=(&|$)/);
+
+      // The resulting GET is the intended restricted subset: the exact asset
+      // scope (its own Project only), the selected Projects/Types and Search
+      // ('One') together leave CA One; foreign-Project links never leak in.
+      const followed = await agent.get(location).expect(200);
+      expect(releaseTitles(followed.text)).toEqual(['CA One']);
+      expect(followed.text).toContain('1 release found containing asset <strong>c1b-defaults.png</strong>');
+
+      // Only Sort and Order became saved defaults.
+      const savedKeys = db.prepare("SELECT key FROM app_meta WHERE key LIKE 'page_defaults.releases.%'").all()
+        .map(({ key }) => key).sort();
+      expect(savedKeys).toEqual([PAGE_DEFAULT_DEFINITIONS.releases.order.key, PAGE_DEFAULT_DEFINITIONS.releases.sort.key].sort());
+    });
+
+    it('re-renders a failed New Release with the repeated list context', async () => {
+      const returnTo = `/releases?project=${comicA}&project=${animation}&type=comic`;
+      const res = await agent
+        .post('/releases')
+        .type('form')
+        .send({ _csrf: csrfToken, projectId: String(comicA), title: '', returnTo })
+        .expect(422);
+      expect(releaseTitles(res.text).sort()).toEqual(['CA One', 'CA Two']);
+      expect(checkedValues(extractReleaseFilterTypeField(res.text), 'type')).toEqual(['comic']);
+      expect(checkedValues(extractReleaseFilterProjectField(res.text), 'project').sort())
+        .toEqual([String(comicA), String(animation)].sort());
+    });
+  });
+
+  describe('shared buildPageUrl array serialization (WP11)', () => {
+    it('serializes scalar queries exactly like URLSearchParams(object) for legacy callers', async () => {
+      const { buildPageUrl } = await import('../src/routes/releases.js');
+      const scalar = { month: '2025-06', status: 'planned', weekStart: 'sunday', view: 'list', project: '7' };
+      const pageUrl = buildPageUrl({ baseUrl: '/calendar', path: '/' }, scalar);
+      expect(pageUrl({})).toBe(`/calendar?${new URLSearchParams(scalar).toString()}`);
+      expect(pageUrl({ month: '2025-07' })).toBe('/calendar?month=2025-07&status=planned&weekStart=sunday&view=list&project=7');
+      expect(pageUrl({ project: null, page: 1 })).toBe('/calendar?month=2025-06&status=planned&weekStart=sunday&view=list');
+    });
+
+    it('serializes arrays as repeated values and never comma-joins', async () => {
+      const { buildPageUrl } = await import('../src/routes/releases.js');
+      const pageUrl = buildPageUrl({ baseUrl: '/releases', path: '/' }, { project: ['7', '12'], type: ['comic', 'images'], search: 'a b&c' });
+      expect(pageUrl({ page: 2 })).toBe('/releases?project=7&project=12&type=comic&type=images&search=a+b%26c&page=2');
+      expect(pageUrl({ type: null })).toBe('/releases?project=7&project=12&search=a+b%26c');
+      expect(pageUrl({ project: ['3'] })).toBe('/releases?project=3&type=comic&type=images&search=a+b%26c');
     });
   });
 

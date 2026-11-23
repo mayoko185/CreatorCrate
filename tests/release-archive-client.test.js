@@ -542,9 +542,51 @@ describe('Release Archive in place', () => {
       await flush();
       expect(releaseArchiveState(t.document, '12').phase).toBe('unresolved');
       expect(t.dialog.open).toBe(true);
-      expect(t.document.events).toHaveLength(0);
+      // Never a host re-read: only the unresolved claim (Calendar M1 P3-A).
+      expect(t.document.events.map(({ type }) => type)).toEqual(['release-action-unresolved']);
       expect(t.archivePosts()).toHaveLength(1);
     }
+  });
+
+  it('Calendar M1 P3-A — an unresolved Archive tells the host once, before its uncertainty reaches the page feedback; confirmed, refused and canceled Archives never do', async () => {
+    const t = setup();
+    const seen = [];
+    t.document.dispatchEvent = function dispatchEvent(event) {
+      this.events.push(event);
+      seen.push({ type: event.type, feedback: dialogs.feedback.length });
+    };
+    t.fetch.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    const check = deferred();
+    t.fetch.mockReturnValueOnce(check.promise);
+    t.confirmAndSubmit();
+    await flush();
+    expect(seen).toEqual([{ type: 'release-action-unresolved', feedback: 0 }]);
+    expect(t.document.events[0].detail).toEqual({ releaseId: '12', action: 'archive' });
+    expect(dialogs.feedback.at(-1)).toEqual({ message: `${M.unconfirmed} ${M.checking}`, error: true });
+    // Check again's answers update the Archive's own feedback; no second claim.
+    check.resolve(jsonResponse(200, { status: 'success', release: { id: 12 } }));
+    await flush();
+    expect(dialogs.feedback.at(-1).message).toContain(M.stillActive);
+    expect(t.document.events).toHaveLength(1);
+    expect(t.archivePosts()).toHaveLength(1);
+
+    const confirmed = setup();
+    confirmed.fetch.mockResolvedValueOnce(jsonResponse(200, ARCHIVED_BODY));
+    confirmed.confirmAndSubmit();
+    await flush();
+    expect(confirmed.document.events.map(({ type }) => type)).toEqual(['release-archived']);
+
+    const refused = setup();
+    refused.fetch.mockResolvedValueOnce(jsonResponse(403, { status: 'error', message: 'Invalid or missing CSRF token.' }));
+    refused.confirmAndSubmit();
+    await flush();
+    expect(refused.document.events).toHaveLength(0);
+
+    const canceled = setup();
+    canceled.describe();
+    expect(canceled.dismiss()).toBe(true);
+    expect(canceled.fetch).not.toHaveBeenCalled();
+    expect(canceled.document.events).toHaveLength(0);
   });
 
   it('C7 / C9 — dismissal while unresolved keeps the drafts for the next open of that release, with Check again', async () => {
@@ -679,6 +721,338 @@ describe('Release Archive — other release mutations while held (C15 / C16)', (
     await flush();
     expect(t.publishForm.dispatch('submit').defaultPrevented).toBe(true);
     expect(t.publishStatus.textContent).toBe(M.archived);
+  });
+});
+
+// Calendar M1 late verification (P2): a Check again answer that arrives after
+// a newer release action took the page feedback. The host stand-in answers
+// release-action-unresolved exactly as Calendar does (live-regions.js): each
+// claim begins a newer owner and detail.ownsFeedback names it. The ownership
+// checks under test are release-archive.js's own.
+function calendarHost(t) {
+  const host = { owner: null, claims: [] };
+  t.document.dispatchEvent = function dispatchEvent(event) {
+    this.events.push(event);
+    if (event.type !== 'release-action-unresolved') return;
+    const action = {};
+    host.owner = action;
+    host.claims.push(event.detail);
+    event.detail.ownsFeedback = () => host.owner === action;
+  };
+  // A newer release action on release 7 (Edit save, confirmed Archive or
+  // Delete): the dialog moved to it, its report owns the page feedback, and
+  // an Edit refresh failure adds its own Retry refresh.
+  host.newerAction = (message, { retry = false } = {}) => {
+    editController.current.releaseId = '7';
+    t.dialog.open = false;
+    host.owner = {};
+    t.feedback.querySelector('[data-dialog-feedback-text]').textContent = message;
+    host.retry = retry
+      ? t.feedback.appendChild(new FakeNode('button', { type: 'button', 'data-calendar-edit-refresh-retry': '' }))
+      : null;
+    if (host.retry) host.retry.textContent = 'Retry refresh';
+  };
+  return host;
+}
+
+const STILL_ACTIVE = { status: 'success', release: { id: 12 } };
+const feedbackText = (t) => t.feedback.querySelector('[data-dialog-feedback-text]').textContent;
+const feedbackControls = (t) => t.feedback.querySelectorAll('button')
+  .map((node) => [...node.attributes.keys()].find((name) => name.startsWith('data-')));
+
+// An unresolved Archive of release 12 whose first check showed it active,
+// then a Check again from the page feedback held on its GET.
+async function heldCheckAgain() {
+  const t = setup();
+  const host = calendarHost(t);
+  t.fetch.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+  t.fetch.mockResolvedValueOnce(jsonResponse(200, STILL_ACTIVE));
+  t.confirmAndSubmit();
+  await flush();
+  const held = deferred();
+  t.fetch.mockReturnValueOnce(held.promise);
+  const check = t.feedback.querySelector('[data-release-archive-feedback-check]');
+  check.focus();
+  check.click();
+  await flush();
+  expect(feedbackText(t)).toBe(`${M.unconfirmed} ${M.checking}`);
+  expect(host.claims).toHaveLength(2);
+  return { t, host, held };
+}
+
+describe('Release Archive — late Check again after a newer release action (Calendar M1 P2)', () => {
+  it('LV-A / LV-C / LV-D — a late "still active" answer keeps the newer Edit report; the Archive keeps its own result', async () => {
+    const { t, host, held } = await heldCheckAgain();
+    host.newerAction('Release updated.');
+    const focused = t.document.activeElement;
+    held.resolve(jsonResponse(200, STILL_ACTIVE));
+    await flush();
+    expect(feedbackText(t)).toBe('Release updated.');
+    expect(feedbackControls(t)).toEqual([]);
+    expect(t.document.activeElement).toBe(focused);
+    // The verification result is kept for the release it belongs to.
+    const record = releaseArchiveState(t.document, '12');
+    expect(record.phase).toBe('unresolved');
+    expect(record.message).toBe(`${M.unconfirmed} ${M.stillActive}`);
+    expect(t.archivePosts()).toHaveLength(1);
+    expect(t.gets()).toHaveLength(2);
+    expect(t.document.events.filter(({ type }) => type === 'release-archived')).toHaveLength(0);
+    // Reopening release 12 shows that result with its GET-only Check again.
+    editController.current.releaseId = '12';
+    t.reopen();
+    expect(t.status.textContent).toBe(`${M.unconfirmed} ${M.stillActive}Check again`);
+    expect(t.status.querySelector('[data-release-archive-check]')).not.toBeNull();
+  });
+
+  it('LV-E / LV-M — a newer Edit refresh failure keeps its warning and its only Retry refresh', async () => {
+    const { t, host, held } = await heldCheckAgain();
+    host.newerAction('Release saved, but Calendar could not refresh. The calendar shown may be out of date.', { retry: true });
+    host.retry.focus();
+    held.resolve(jsonResponse(200, STILL_ACTIVE));
+    await flush();
+    expect(feedbackText(t)).toBe('Release saved, but Calendar could not refresh. The calendar shown may be out of date.');
+    expect(feedbackControls(t)).toEqual(['data-calendar-edit-refresh-retry']);
+    expect(t.document.activeElement).toBe(host.retry);
+    expect(t.archivePosts()).toHaveLength(1);
+  });
+
+  it('LV-K — a late failed check never replaces the newer report', async () => {
+    const { t, host, held } = await heldCheckAgain();
+    host.newerAction('Release archived.');
+    held.reject(new TypeError('Failed to fetch'));
+    await flush();
+    expect(feedbackText(t)).toBe('Release archived.');
+    expect(feedbackControls(t)).toEqual([]);
+    expect(releaseArchiveState(t.document, '12').message).toBe(`${M.unconfirmed} ${M.checkFailed}`);
+    expect(t.archivePosts()).toHaveLength(1);
+  });
+
+  it('LV-I — a late read showing the release archived settles it and still re-reads the host, without its feedback', async () => {
+    const { t, host, held } = await heldCheckAgain();
+    host.newerAction('Release updated.');
+    held.resolve(jsonResponse(409, { status: 'error', code: 'RELEASE_ARCHIVED' }));
+    await flush();
+    expect(releaseArchiveState(t.document, '12').phase).toBe('archived');
+    expect(feedbackText(t)).toBe('Release updated.');
+    const archived = t.document.events.filter(({ type }) => type === 'release-archived');
+    expect(archived).toHaveLength(1);
+    expect(archived[0].detail).toEqual({
+      releaseId: '12', projectId: null, release: null, message: M.observedArchived,
+      outcome: 'observed-archived', confirmed: false, feedback: false,
+    });
+    expect(t.archivePosts()).toHaveLength(1);
+  });
+
+  it('LV-I2 — a late read finding the release gone settles it as missing, without its feedback', async () => {
+    const { t, host, held } = await heldCheckAgain();
+    host.newerAction('Release updated.');
+    held.resolve(jsonResponse(404, { status: 'error', code: 'RELEASE_NOT_FOUND' }));
+    await flush();
+    expect(releaseArchiveState(t.document, '12').phase).toBe('missing');
+    expect(feedbackText(t)).toBe('Release updated.');
+    expect(t.document.events.at(-1).detail).toMatchObject({ outcome: 'missing', confirmed: false, feedback: false });
+  });
+
+  it('LV-H — with no newer action the answer still reports in the page feedback, with Check again and focus', async () => {
+    const { t, held } = await heldCheckAgain();
+    held.resolve(jsonResponse(200, STILL_ACTIVE));
+    await flush();
+    expect(feedbackText(t)).toBe(`${M.unconfirmed} ${M.stillActive}`);
+    const check = t.feedback.querySelector('[data-release-archive-feedback-check]');
+    expect(check).not.toBeNull();
+    // The dialog is still open for this release: its Check again takes focus.
+    expect(t.document.activeElement).toBe(t.status.querySelector('[data-release-archive-check]'));
+    // An observed Archive keeps the host's ordinary (feedback-owning) refresh.
+    t.fetch.mockResolvedValueOnce(jsonResponse(409, { status: 'error', code: 'RELEASE_ARCHIVED' }));
+    check.click();
+    await flush();
+    expect(t.document.events.at(-1).detail).not.toHaveProperty('feedback');
+    expect(feedbackText(t)).toBe(`${M.observedArchived} ${M.draftsUnsaveable}`);
+    expect(t.archivePosts()).toHaveLength(1);
+  });
+
+  it('LV-6 — a superseded answer with the dialog open for that release writes only the dialog, without moving focus', async () => {
+    const { t, host, held } = await heldCheckAgain();
+    host.newerAction('Release updated.');
+    editController.current.releaseId = '12';
+    t.dialog.open = true;
+    const focused = t.document.activeElement;
+    held.resolve(jsonResponse(200, STILL_ACTIVE));
+    await flush();
+    expect(t.status.textContent).toBe(`${M.unconfirmed} ${M.stillActive}Check again`);
+    expect(feedbackText(t)).toBe('Release updated.');
+    expect(feedbackControls(t)).toEqual([]);
+    expect(t.document.activeElement).toBe(focused);
+    // That dialog Check again claims the feedback again and reports there.
+    t.fetch.mockResolvedValueOnce(jsonResponse(200, STILL_ACTIVE));
+    t.status.querySelector('[data-release-archive-check]').click();
+    await flush();
+    expect(host.claims).toHaveLength(3);
+    expect(feedbackText(t)).toBe(`${M.unconfirmed} ${M.stillActive}`);
+    expect(t.archivePosts()).toHaveLength(1);
+    expect(t.gets()).toHaveLength(3);
+  });
+
+  it('LV-7 — an older Check again answering after a newer Check again of the same release is ignored', async () => {
+    const { t, held } = await heldCheckAgain();
+    editController.current.releaseId = '12';
+    const newer = deferred();
+    t.fetch.mockReturnValueOnce(newer.promise);
+    t.handle.check('12');
+    newer.resolve(jsonResponse(200, STILL_ACTIVE));
+    await flush();
+    expect(feedbackText(t)).toBe(`${M.unconfirmed} ${M.stillActive}`);
+    // The older (held) answer, archived, still settles the record (Archive
+    // records have no check number). The feedback belongs to this same
+    // Archive's latest claim, so it reports there as before, and the host
+    // refreshes with that report; no stale "still active" Check again stays.
+    held.resolve(jsonResponse(409, { status: 'error', code: 'RELEASE_ARCHIVED' }));
+    await flush();
+    expect(releaseArchiveState(t.document, '12').phase).toBe('archived');
+    expect(feedbackText(t)).toBe(`${M.observedArchived} ${M.draftsUnsaveable}`);
+    expect(feedbackControls(t)).toEqual([]);
+    expect(t.document.events.at(-1).detail).toMatchObject({ outcome: 'observed-archived' });
+    expect(t.document.events.at(-1).detail).not.toHaveProperty('feedback');
+    expect(t.archivePosts()).toHaveLength(1);
+  });
+});
+
+// Calendar Correction M1: feedback control ownership (P2) and same-release
+// verification ordering (P3). Release 12's Archive is unresolved with a page
+// Check again; a newer action on release 7 then owns the page feedback.
+const A_STALE = 'Release saved, but Calendar could not refresh. The calendar shown may be out of date.';
+
+async function unresolvedThenNewer({ retry = true } = {}) {
+  const t = setup();
+  const host = calendarHost(t);
+  t.fetch.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+  t.fetch.mockResolvedValueOnce(jsonResponse(200, STILL_ACTIVE));
+  t.confirmAndSubmit();
+  await flush();
+  const oldCheck = t.feedback.querySelector('[data-release-archive-feedback-check]');
+  expect(oldCheck).not.toBeNull();
+  host.newerAction(A_STALE, { retry });
+  return { t, host, oldCheck };
+}
+
+describe('Release Archive — Calendar Correction M1 feedback ownership (P2) and check ordering (P3)', () => {
+  it('P2-H — a retained or captured old page Check again is inert: no GET, no claim, the newer notice and Retry stay', async () => {
+    const { t, host, oldCheck } = await unresolvedThenNewer();
+    host.retry.focus();
+    oldCheck.focus();
+    oldCheck.click();
+    await flush();
+    expect(t.gets()).toHaveLength(1);
+    expect(host.claims).toHaveLength(1);
+    expect(feedbackText(t)).toBe(A_STALE);
+    expect(feedbackControls(t)).toEqual(['data-calendar-edit-refresh-retry']);
+    expect(t.document.activeElement?.id).toBe('main-content');
+    expect(t.archivePosts()).toHaveLength(1);
+  });
+
+  it('P2-B / P2-C — reopening after the loss offers Check again in the dialog only; closing leaves the newer notice', async () => {
+    const { t, host } = await unresolvedThenNewer();
+    // Simulate the host having retired the old page control (live-regions).
+    t.feedback.querySelector('[data-release-archive-feedback-check]').remove();
+    host.retry.focus();
+    editController.current.releaseId = '12';
+    t.reopen();
+    expect(t.status.textContent).toBe(`${M.unconfirmed} ${M.stillActive}Check again`);
+    expect(t.status.querySelector('[data-release-archive-check]')).not.toBeNull();
+    expect(feedbackText(t)).toBe(A_STALE);
+    expect(feedbackControls(t)).toEqual(['data-calendar-edit-refresh-retry']);
+    t.dismiss();
+    await flush();
+    expect(feedbackText(t)).toBe(A_STALE);
+    expect(feedbackControls(t)).toEqual(['data-calendar-edit-refresh-retry']);
+    expect(t.status.querySelector('[data-release-archive-check]')).toBeNull();
+    expect(t.gets()).toHaveLength(1);
+    expect(host.claims).toHaveLength(1);
+    expect(t.archivePosts()).toHaveLength(1);
+  });
+
+  it('P2-E / P2-G — a reopen whose load is refused 409 after the loss settles the record and re-reads data only', async () => {
+    const { t, host } = await unresolvedThenNewer({ retry: false });
+    t.feedback.querySelector('[data-release-archive-feedback-check]').remove();
+    host.owner = {};
+    t.feedback.querySelector('[data-dialog-feedback-text]').textContent = 'Release updated.';
+    editController.current.releaseId = '12';
+    t.reopen({ refused: { status: 409, body: { status: 'error', code: 'RELEASE_ARCHIVED' } } });
+    await flush();
+    expect(releaseArchiveState(t.document, '12').phase).toBe('archived');
+    expect(t.status.textContent).toBe(`${M.observedArchived} ${M.draftsUnsaveable}`);
+    expect(feedbackText(t)).toBe('Release updated.');
+    expect(feedbackControls(t)).toEqual([]);
+    const archived = t.document.events.filter(({ type }) => type === 'release-archived');
+    expect(archived).toHaveLength(1);
+    expect(archived[0].detail).toMatchObject({ releaseId: '12', outcome: 'observed-archived', confirmed: false, feedback: false });
+    expect(t.gets()).toHaveLength(1);
+    expect(t.archivePosts()).toHaveLength(1);
+  });
+
+  it('P2-E control — with no newer action a refused reopen still reports in the page feedback', async () => {
+    const t = setup();
+    calendarHost(t);
+    t.fetch.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    t.fetch.mockResolvedValueOnce(jsonResponse(200, STILL_ACTIVE));
+    t.confirmAndSubmit();
+    await flush();
+    t.dismiss();
+    t.reopen({ refused: { status: 409, body: { status: 'error', code: 'RELEASE_ARCHIVED' } } });
+    await flush();
+    expect(feedbackText(t)).toBe(`${M.observedArchived} ${M.draftsUnsaveable}`);
+    expect(t.document.events.at(-1).detail).not.toHaveProperty('feedback');
+  });
+
+  it('P3-A — an older nonterminal 503 answering after a newer 200 of the same release is ignored', async () => {
+    const { t, host, held } = await heldCheckAgain();
+    editController.current.releaseId = '12';
+    t.reopen();
+    const newer = deferred();
+    t.fetch.mockReturnValueOnce(newer.promise);
+    t.status.querySelector('[data-release-archive-check]').click();
+    newer.resolve(jsonResponse(200, STILL_ACTIVE));
+    await flush();
+    expect(t.status.textContent).toBe(`${M.unconfirmed} ${M.stillActive}Check again`);
+    held.resolve(jsonResponse(503, { status: 'error', message: 'Service unavailable' }));
+    await flush();
+    const record = releaseArchiveState(t.document, '12');
+    expect(record.phase).toBe('unresolved');
+    expect(record.message).toBe(`${M.unconfirmed} ${M.stillActive}`);
+    expect(t.status.textContent).toBe(`${M.unconfirmed} ${M.stillActive}Check again`);
+    expect(feedbackText(t)).toBe(`${M.unconfirmed} ${M.stillActive}`);
+    expect(feedbackControls(t)).toEqual(['data-release-archive-feedback-check']);
+    expect(host.claims).toHaveLength(3);
+    expect(t.gets()).toHaveLength(3);
+    expect(t.archivePosts()).toHaveLength(1);
+    expect(t.document.events.filter(({ type }) => type === 'release-archived')).toHaveLength(0);
+  });
+
+  it('P3-A2 — an older lost answer after a newer one is ignored too; the latest check still reports its own failure', async () => {
+    const { t, held } = await heldCheckAgain();
+    const newer = deferred();
+    t.fetch.mockReturnValueOnce(newer.promise);
+    t.handle.check('12');
+    held.reject(new TypeError('Failed to fetch'));
+    await flush();
+    expect(feedbackText(t)).toBe(`${M.unconfirmed} ${M.checking}`);
+    newer.resolve(jsonResponse(503, { status: 'error' }));
+    await flush();
+    expect(feedbackText(t)).toBe(`${M.unconfirmed} ${M.checkFailed}`);
+    expect(t.archivePosts()).toHaveLength(1);
+  });
+
+  it('P3-B — an older terminal answer after a newer 200 still settles the record (LV-7 contract)', async () => {
+    const { t, held } = await heldCheckAgain();
+    const newer = deferred();
+    t.fetch.mockReturnValueOnce(newer.promise);
+    t.handle.check('12');
+    newer.resolve(jsonResponse(200, STILL_ACTIVE));
+    await flush();
+    held.resolve(jsonResponse(409, { status: 'error', code: 'RELEASE_ARCHIVED' }));
+    await flush();
+    expect(releaseArchiveState(t.document, '12').phase).toBe('archived');
+    expect(t.archivePosts()).toHaveLength(1);
   });
 });
 

@@ -158,7 +158,11 @@ describe('Releases HTTP route', () => {
     const search = await agent.get('/releases?search=Findable').expect(200);
     expect(search.text).toContain('Findable Release');
     expect(search.text).not.toContain('Other Release');
-    expect(search.text).not.toMatch(/<input[^>]*name="search"/);
+    // WP12: Search is a visible results control of the combined Filters &
+    // Defaults dialog and shows the active search.
+    expect(search.text.match(/<input[^>]*name="search"[^>]*>/g)).toEqual([
+      '<input id="releases-search" name="search" type="search" value="Findable" autocomplete="off" data-releases-search>',
+    ]);
 
     for (let index = 0; index < 26; index += 1) {
       await createRelease({

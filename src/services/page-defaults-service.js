@@ -142,6 +142,11 @@ const PAGE_DEFAULTS_GENERATION_KEYS = Object.freeze({
   // WP10b: the Projects combined dialog uses the same fenced explicit Save /
   // Reset defaults protocol.
   [PROJECTS]: 'page_defaults_generation.projects',
+  // WP12: the Releases combined dialog (Sort/Order only, Global defaults).
+  [RELEASES]: 'page_defaults_generation.releases',
+  // WP14a: the Calendar explicit Save / Reset defaults transport (View,
+  // Release status, Week start; Global defaults only).
+  [CALENDAR]: 'page_defaults_generation.calendar',
 });
 
 export class PageDefaultsGenerationConflictError extends Error {
@@ -705,6 +710,27 @@ export function createPageDefaultsService({
     return outcome.current;
   }
 
+  /**
+   * WP14a: records a defaults write made OUTSIDE the fenced explicit protocol
+   * (the legacy Settings `/settings/defaults` writer) by advancing the page's
+   * generation unconditionally, so an explicit Save or Reset defaults prepared
+   * before that write is rejected as stale instead of silently overwriting
+   * it. Call it inside the same transaction as the write. Pages without a
+   * generation are untouched (returns null).
+   */
+  function recordUnfencedMutation(page) {
+    requirePageDefinition(page);
+    if (!Object.hasOwn(PAGE_DEFAULTS_GENERATION_KEYS, page)) return null;
+    const key = requireGenerationKey(page);
+    const outcome = repository.compareAndIncrement(key, repository.getCounter(key));
+    if (!outcome.advanced) {
+      throw new PageDefaultsGenerationConflictError({
+        page, expectedGeneration: null, currentGeneration: outcome.current,
+      });
+    }
+    return outcome.current;
+  }
+
   function clearProjectPageDefaults(page, context) {
     requirePageDefinition(page);
     const projectId = requireProjectId(context);
@@ -733,5 +759,6 @@ export function createPageDefaultsService({
     resetProjectPageDefaults,
     getMutationGeneration,
     advanceMutationGeneration,
+    recordUnfencedMutation,
   };
 }

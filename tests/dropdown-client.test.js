@@ -1342,3 +1342,400 @@ describe('searchable multi-select filter dropdowns (Filters & Defaults M3 WP9b)'
     expect(fixture.checkedValues()).toEqual(['']);
   });
 });
+
+describe('carried hidden selections (Filters & Defaults M3 R10)', () => {
+  // A pending Releases / Calendar destination keeps a Project without a
+  // rendered option in a hidden form input marked data-cc-dropdown-carried-value.
+  function carriedFixture(selectedValues, carriedValues, { carriedName = 'project' } = {}) {
+    const fixture = makeDropdown('multiple', [
+      { value: '', label: 'Select all' },
+      { value: '1', label: 'Alpha Project' },
+      { value: '2', label: 'Beta Project' },
+    ], selectedValues);
+    const { dropdown, inputs, summary } = fixture;
+    dropdown.dataset.ccDropdownSelectAll = '';
+    dropdown.dataset.ccDropdownEmptySummary = 'All projects';
+    dropdown.dataset.ccDropdownCountLabel = 'projects';
+    inputs[0].hasAttribute = (name) => name === 'data-cc-dropdown-select-all';
+    inputs.forEach((input) => { input.name = 'project'; });
+    const carriers = [];
+    const carriedSelector = 'input[data-cc-dropdown-carried-value]';
+    // P3-C1 follow-up: a minimal document models HTML form ownership. Carriers can
+    // sit inside the dropdown's form, outside it, or inside another real form, and
+    // a form="" attribute names their owner by id. No carrier reports `.form`
+    // unless a spec gives one, so ownership is never inferred from containment.
+    const isInside = (node, ancestor) => {
+      let current = node?.parentNode;
+      while (current) {
+        if (current === ancestor) return true;
+        current = current.parentNode;
+      }
+      return false;
+    };
+    const document = {
+      nodeType: 9,
+      getElementById: (id) => [form, otherForm].find((candidate) => candidate.id === id) || null,
+      querySelectorAll: (selector) => (selector === carriedSelector ? carriers.slice() : []),
+    };
+    const form = {
+      tagName: 'FORM', id: 'list-releases-filter', nodeType: 1, ownerDocument: document, parentNode: document, children: [],
+      querySelectorAll: (selector) => (selector === carriedSelector
+        ? carriers.filter((carrier) => isInside(carrier, form)) : []),
+    };
+    const otherForm = {
+      tagName: 'FORM', id: 'other-form', nodeType: 1, ownerDocument: document, parentNode: document, children: [],
+      querySelectorAll: (selector) => (selector === carriedSelector
+        ? carriers.filter((carrier) => isInside(carrier, otherForm)) : []),
+    };
+    const outside = { tagName: 'DIV', nodeType: 1, ownerDocument: document, parentNode: document, children: [] };
+    const places = { inside: form, outside, other: otherForm };
+    carriedValues.forEach((spec) => {
+      // P3: a spec is a value or { value, disabled, fieldset: { disabled, inLegend }, form,
+      // place: 'inside' | 'outside' | 'other', formAttr }.
+      const {
+        value, disabled = false, fieldset = null, form: owner, place = 'inside', formAttr = null,
+      } = typeof spec === 'string' ? { value: spec } : spec;
+      let parentNode = places[place];
+      if (fieldset) {
+        const fieldsetNode = {
+          tagName: 'FIELDSET', disabled: Boolean(fieldset.disabled), parentNode, children: [],
+          hasAttribute: (name) => name === 'disabled' && Boolean(fieldset.disabled),
+        };
+        parentNode.children.push(fieldsetNode);
+        parentNode = fieldsetNode;
+        if (fieldset.inLegend) {
+          const legend = { tagName: 'LEGEND', parentNode: fieldsetNode, children: [] };
+          fieldsetNode.children.push(legend);
+          parentNode = legend;
+        }
+      }
+      const carrier = {
+        type: 'hidden',
+        value,
+        disabled,
+        parentNode,
+        ownerDocument: document,
+        getAttribute: (name) => {
+          if (name === 'name') return carriedName;
+          if (name === 'form') return formAttr;
+          return null;
+        },
+        hasAttribute: (name) => (name === 'disabled' && carrier.disabled) || (name === 'form' && formAttr !== null),
+        remove() {
+          carriers.splice(carriers.indexOf(carrier), 1);
+          carrier.parentNode.children.splice(carrier.parentNode.children.indexOf(carrier), 1);
+          carrier.parentNode = null;
+        },
+      };
+      if (owner !== undefined) carrier.form = owner === 'self' ? form : owner;
+      parentNode.children?.push(carrier);
+      carriers.push(carrier);
+    });
+    dropdown.closest = (selector) => (selector === 'form' ? form : null);
+    const checkedValues = () => inputs.filter((input) => input.checked).map((input) => input.value);
+    return { ...fixture, carriers, checkedValues, summary, form, otherForm, document };
+  }
+
+  // Test oracle: the HTML form owner (form="" by id, else the nearest ancestor form)
+  // and native FormData eligibility, written independently of the product helper.
+  function ownerOf(fixture, carrier) {
+    if (carrier.form !== undefined) return carrier.form;
+    const formAttr = carrier.getAttribute('form');
+    if (formAttr !== null) return fixture.document.getElementById(formAttr);
+    let node = carrier.parentNode;
+    while (node && node.tagName !== 'FORM') node = node.parentNode;
+    return node || null;
+  }
+
+  function submittedTo(fixture, targetForm) {
+    return fixture.carriers
+      .filter((carrier) => {
+        if (carrier.disabled) return false;
+        if (ownerOf(fixture, carrier) !== targetForm) return false;
+        let child = carrier;
+        let node = carrier.parentNode;
+        while (node && node.nodeType !== 9) {
+          const legend = node.tagName === 'FIELDSET' ? node.children.find((element) => element.tagName === 'LEGEND') : null;
+          if (node.tagName === 'FIELDSET' && node.disabled && legend !== child) return false;
+          child = node;
+          node = node.parentNode;
+        }
+        return true;
+      })
+      .map((carrier) => carrier.value);
+  }
+
+  it('a hidden-only selection is restricted: Select all unchecked, summary never All', () => {
+    const fixture = carriedFixture([], ['999999']);
+    enhanceDropdowns(fixture.scope);
+    expect(fixture.inputs[0].checked).toBe(false);
+    expect(fixture.currentSummary.textContent).toBe('1 project selected');
+    expect(fixture.summaryAttrs['aria-label']).toBe('Tag filter: 1 project selected');
+  });
+
+  it('one Select all activation (pointer or Space) is not cancelled and clears the carried value', () => {
+    const fixture = carriedFixture([], ['999999', '888888']);
+    enhanceDropdowns(fixture.scope);
+    expect(fixture.currentSummary.textContent).toBe('2 projects selected');
+    // The browser toggles the box to checked before the click event.
+    fixture.inputs[0].checked = true;
+    expect(fixture.scope.dispatch('click', fixture.inputs[0]).defaultPrevented).toBe(false);
+    fixture.scope.dispatch('change', fixture.inputs[0]);
+    expect(fixture.carriers).toHaveLength(0);
+    expect(fixture.checkedValues()).toEqual(['']);
+    expect(fixture.currentSummary.textContent).toBe('All projects');
+    // Genuinely unrestricted again: the existing no-op guard applies.
+    fixture.inputs[0].checked = false;
+    expect(fixture.scope.dispatch('click', fixture.inputs[0]).defaultPrevented).toBe(true);
+  });
+
+  it('mixed visible + carried values count once each; choosing a value replaces the carried intent', () => {
+    const fixture = carriedFixture(['2'], ['999999', '2']);
+    enhanceDropdowns(fixture.scope);
+    expect(fixture.inputs[0].checked).toBe(false);
+    expect(fixture.currentSummary.textContent).toBe('2 projects selected');
+    fixture.inputs[1].checked = true;
+    fixture.scope.dispatch('change', fixture.inputs[1]);
+    expect(fixture.carriers).toHaveLength(0);
+    expect(fixture.checkedValues()).toEqual(['1', '2']);
+    expect(fixture.currentSummary.textContent).toBe('2 projects selected');
+  });
+
+  /*
+   * P3 correction 1: only a carrier native submission would include counts.
+   * submitted() mirrors FormData for these carriers so the display is compared
+   * with what the form actually sends.
+   */
+  describe('P3: disabled carriers are not active selections', () => {
+    const submitted = (fixture) => submittedTo(fixture, fixture.form);
+
+    it('a disabled-only carrier is unrestricted: All, Select all checked, its click stays a no-op', () => {
+      const fixture = carriedFixture([], [{ value: '999999', disabled: true }]);
+      enhanceDropdowns(fixture.scope);
+      expect(submitted(fixture)).toEqual([]);
+      expect(fixture.inputs[0].checked).toBe(true);
+      expect(fixture.currentSummary.textContent).toBe('All projects');
+      // Pointer click or Space on the checked Select all (the browser unchecks first).
+      fixture.inputs[0].checked = false;
+      expect(fixture.scope.dispatch('click', fixture.inputs[0]).defaultPrevented).toBe(true);
+      // The intentionally disabled input is neither re-enabled nor removed.
+      expect(fixture.carriers).toHaveLength(1);
+      expect(fixture.carriers[0].disabled).toBe(true);
+    });
+
+    it('an enabled-only carrier stays restricted and one Select all activation clears it', () => {
+      const fixture = carriedFixture([], [{ value: '999999', disabled: false }]);
+      enhanceDropdowns(fixture.scope);
+      expect(submitted(fixture)).toEqual(['999999']);
+      expect(fixture.inputs[0].checked).toBe(false);
+      expect(fixture.currentSummary.textContent).toBe('1 project selected');
+      fixture.inputs[0].checked = true;
+      expect(fixture.scope.dispatch('click', fixture.inputs[0]).defaultPrevented).toBe(false);
+      fixture.scope.dispatch('change', fixture.inputs[0]);
+      expect(fixture.carriers).toHaveLength(0);
+      expect(fixture.currentSummary.textContent).toBe('All projects');
+    });
+
+    it('mixed enabled + disabled carriers count only distinct enabled values', () => {
+      const fixture = carriedFixture(['2'], [
+        '999999',
+        { value: '999999', disabled: true },
+        { value: '888888', disabled: true },
+        '777777',
+        '777777',
+        '2',
+      ]);
+      enhanceDropdowns(fixture.scope);
+      // Rendered 2 + carried 999999, 777777 (888888 is disabled; duplicates count once).
+      expect(new Set(submitted(fixture).filter((value) => value !== '2'))).toEqual(new Set(['999999', '777777']));
+      expect(fixture.currentSummary.textContent).toBe('3 projects selected');
+      expect(fixture.inputs[0].checked).toBe(false);
+      // Select all clears this dimension's active carriers; disabled ones are left untouched.
+      fixture.inputs[0].checked = true;
+      expect(fixture.scope.dispatch('click', fixture.inputs[0]).defaultPrevented).toBe(false);
+      fixture.scope.dispatch('change', fixture.inputs[0]);
+      expect(fixture.checkedValues()).toEqual(['']);
+      expect(fixture.carriers.map((carrier) => [carrier.value, carrier.disabled]))
+        .toEqual([['999999', true], ['888888', true]]);
+      expect(submitted(fixture)).toEqual([]);
+      expect(fixture.currentSummary.textContent).toBe('All projects');
+    });
+
+    it('a carrier inside a disabled fieldset does not count; one in its first legend does', () => {
+      const disabledFieldset = carriedFixture([], [{ value: '999999', fieldset: { disabled: true } }]);
+      enhanceDropdowns(disabledFieldset.scope);
+      expect(submitted(disabledFieldset)).toEqual([]);
+      expect(disabledFieldset.inputs[0].checked).toBe(true);
+      expect(disabledFieldset.currentSummary.textContent).toBe('All projects');
+
+      const enabledFieldset = carriedFixture([], [{ value: '999999', fieldset: { disabled: false } }]);
+      enhanceDropdowns(enabledFieldset.scope);
+      expect(submitted(enabledFieldset)).toEqual(['999999']);
+      expect(enabledFieldset.currentSummary.textContent).toBe('1 project selected');
+
+      const legend = carriedFixture([], [{ value: '999999', fieldset: { disabled: true, inLegend: true } }]);
+      enhanceDropdowns(legend.scope);
+      expect(submitted(legend)).toEqual(['999999']);
+      expect(legend.inputs[0].checked).toBe(false);
+      expect(legend.currentSummary.textContent).toBe('1 project selected');
+    });
+
+    it('a carrier owned by another form (form="" attribute) does not count', () => {
+      const other = {};
+      const fixture = carriedFixture([], [{ value: '999999', form: other }, { value: '777777', form: 'self' }]);
+      enhanceDropdowns(fixture.scope);
+      expect(submitted(fixture)).toEqual(['777777']);
+      expect(fixture.currentSummary.textContent).toBe('1 project selected');
+
+      const orphan = carriedFixture([], [{ value: '999999', form: null }]);
+      enhanceDropdowns(orphan.scope);
+      expect(orphan.currentSummary.textContent).toBe('All projects');
+      expect(orphan.inputs[0].checked).toBe(true);
+    });
+
+    it('a carrier disabled after enhancement stops counting on the next refresh', () => {
+      const fixture = carriedFixture([], ['999999', '888888']);
+      enhanceDropdowns(fixture.scope);
+      expect(fixture.currentSummary.textContent).toBe('2 projects selected');
+      fixture.carriers[0].disabled = true;
+      fixture.carriers[1].disabled = true;
+      enhanceDropdowns(fixture.scope);
+      expect(fixture.inputs[0].checked).toBe(true);
+      expect(fixture.currentSummary.textContent).toBe('All projects');
+      fixture.carriers[1].disabled = false;
+      enhanceDropdowns(fixture.scope);
+      expect(fixture.inputs[0].checked).toBe(false);
+      expect(fixture.currentSummary.textContent).toBe('1 project selected');
+    });
+  });
+
+  describe('P3-C1 follow-up: carriers follow their HTML form owner, not DOM containment', () => {
+    const external = (value, extra = {}) => ({ value, place: 'outside', formAttr: 'list-releases-filter', ...extra });
+    const foreignInside = (value, extra = {}) => ({ value, place: 'inside', formAttr: 'other-form', ...extra });
+    const activateSelectAll = (fixture) => {
+      // Pointer or Space: the browser toggles the box, then dispatches click and change.
+      fixture.inputs[0].checked = true;
+      const click = fixture.scope.dispatch('click', fixture.inputs[0]);
+      fixture.scope.dispatch('change', fixture.inputs[0]);
+      return click;
+    };
+
+    it('1. a carrier outside the form but owned by it (form="") is counted and submitted', () => {
+      const fixture = carriedFixture([], [external('999999')]);
+      enhanceDropdowns(fixture.scope);
+      expect(submittedTo(fixture, fixture.form)).toEqual(['999999']);
+      expect(fixture.inputs[0].checked).toBe(false);
+      expect(fixture.currentSummary.textContent).toBe('1 project selected');
+      expect(fixture.summaryAttrs['aria-label']).toBe('Tag filter: 1 project selected');
+    });
+
+    it('2. a carrier inside the form but owned by another form is not counted', () => {
+      const fixture = carriedFixture([], [foreignInside('999999')]);
+      enhanceDropdowns(fixture.scope);
+      expect(submittedTo(fixture, fixture.form)).toEqual([]);
+      expect(submittedTo(fixture, fixture.otherForm)).toEqual(['999999']);
+      expect(fixture.inputs[0].checked).toBe(true);
+      expect(fixture.currentSummary.textContent).toBe('All projects');
+      // Genuinely unrestricted: the checked Select all stays a no-op.
+      fixture.inputs[0].checked = false;
+      expect(fixture.scope.dispatch('click', fixture.inputs[0]).defaultPrevented).toBe(true);
+      expect(fixture.carriers).toHaveLength(1);
+    });
+
+    it('3. editing the first form does not remove the second form carrier', () => {
+      const fixture = carriedFixture([], ['777777', foreignInside('999999'), { value: '888888', place: 'other' }]);
+      enhanceDropdowns(fixture.scope);
+      expect(fixture.currentSummary.textContent).toBe('1 project selected');
+      fixture.inputs[1].checked = true;
+      fixture.scope.dispatch('change', fixture.inputs[1]);
+      expect(fixture.carriers.map((carrier) => carrier.value)).toEqual(['999999', '888888']);
+      expect(submittedTo(fixture, fixture.otherForm)).toEqual(['999999', '888888']);
+      expect(submittedTo(fixture, fixture.form)).toEqual([]);
+      expect(fixture.checkedValues()).toEqual(['1']);
+      expect(fixture.currentSummary.textContent).toBe('Alpha Project');
+    });
+
+    it('4. one Select all activation removes the external carrier it owns', () => {
+      const fixture = carriedFixture([], [external('999999'), foreignInside('555555')]);
+      enhanceDropdowns(fixture.scope);
+      expect(fixture.currentSummary.textContent).toBe('1 project selected');
+      expect(activateSelectAll(fixture).defaultPrevented).toBe(false);
+      expect(fixture.carriers.map((carrier) => carrier.value)).toEqual(['555555']);
+      expect(submittedTo(fixture, fixture.form)).toEqual([]);
+      expect(fixture.checkedValues()).toEqual(['']);
+      expect(fixture.currentSummary.textContent).toBe('All projects');
+    });
+
+    it('5. a disabled external carrier (or one in a disabled fieldset) is ignored and left in place', () => {
+      const fixture = carriedFixture([], [
+        external('999999', { disabled: true }),
+        external('888888', { fieldset: { disabled: true } }),
+      ]);
+      enhanceDropdowns(fixture.scope);
+      expect(submittedTo(fixture, fixture.form)).toEqual([]);
+      expect(fixture.inputs[0].checked).toBe(true);
+      expect(fixture.currentSummary.textContent).toBe('All projects');
+      fixture.inputs[0].checked = false;
+      expect(fixture.scope.dispatch('click', fixture.inputs[0]).defaultPrevented).toBe(true);
+      expect(fixture.carriers).toHaveLength(2);
+      expect(fixture.carriers[0].disabled).toBe(true);
+
+      const legend = carriedFixture([], [external('777777', { fieldset: { disabled: true, inLegend: true } })]);
+      enhanceDropdowns(legend.scope);
+      expect(submittedTo(legend, legend.form)).toEqual(['777777']);
+      expect(legend.currentSummary.textContent).toBe('1 project selected');
+
+      // A foreign-owned carrier in a disabled fieldset inside this form neither counts nor submits.
+      const foreignDisabled = carriedFixture([], [foreignInside('666666', { fieldset: { disabled: true } })]);
+      enhanceDropdowns(foreignDisabled.scope);
+      expect(foreignDisabled.currentSummary.textContent).toBe('All projects');
+      expect(submittedTo(foreignDisabled, foreignDisabled.otherForm)).toEqual([]);
+    });
+
+    it('6. mixed visible, internal and external carriers count distinct submitted values once', () => {
+      const fixture = carriedFixture(['2'], [
+        '999999',
+        external('999999'),
+        external('777777'),
+        external('2'),
+        foreignInside('444444'),
+        { value: '333333', place: 'outside' },
+        external('111111', { disabled: true }),
+      ]);
+      enhanceDropdowns(fixture.scope);
+      // Rendered 2 + carried 999999, 777777 (the unowned 333333, foreign 444444 and
+      // disabled 111111 never submit with this form).
+      expect(new Set(submittedTo(fixture, fixture.form))).toEqual(new Set(['999999', '777777', '2']));
+      expect(fixture.currentSummary.textContent).toBe('3 projects selected');
+      expect(fixture.inputs[0].checked).toBe(false);
+      // An unrelated refresh keeps the restriction.
+      enhanceDropdowns(fixture.scope);
+      expect(fixture.currentSummary.textContent).toBe('3 projects selected');
+    });
+
+    it('7. Select all (keyboard Space) clears only this dimension and owner', () => {
+      const fixture = carriedFixture([], [external('999999'), foreignInside('555555')]);
+      enhanceDropdowns(fixture.scope);
+      // A Type carrier owned by the same form belongs to another dimension.
+      const typeFixture = carriedFixture([], [external('audio')], { carriedName: 'type' });
+      enhanceDropdowns(typeFixture.scope);
+      expect(typeFixture.currentSummary.textContent).toBe('All projects');
+
+      expect(activateSelectAll(fixture).defaultPrevented).toBe(false);
+      expect(fixture.carriers.map((carrier) => carrier.value)).toEqual(['555555']);
+      expect(fixture.currentSummary.textContent).toBe('All projects');
+      activateSelectAll(typeFixture);
+      expect(typeFixture.carriers.map((carrier) => carrier.value)).toEqual(['audio']);
+    });
+  });
+
+  it('a carrier of another field name is ignored', () => {
+    const fixture = carriedFixture([], ['audio'], { carriedName: 'type' });
+    enhanceDropdowns(fixture.scope);
+    expect(fixture.inputs[0].checked).toBe(true);
+    expect(fixture.currentSummary.textContent).toBe('All projects');
+    fixture.inputs[0].checked = false;
+    expect(fixture.scope.dispatch('click', fixture.inputs[0]).defaultPrevented).toBe(true);
+    expect(fixture.carriers).toHaveLength(1);
+  });
+});

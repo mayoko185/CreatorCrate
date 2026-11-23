@@ -7,7 +7,12 @@ import {
 } from './app-dialogs.js';
 import { describeAppConfirmation } from './confirm-dialog.js';
 import { isEnhancementBound, markEnhancementBound } from './dom.js';
-import { enhanceReleaseArchive, releaseArchiveState, unsavedReleaseEditLabels } from './release-archive.js';
+import {
+  dispatchReleaseActionUnresolved,
+  enhanceReleaseArchive,
+  releaseArchiveState,
+  unsavedReleaseEditLabels,
+} from './release-archive.js';
 import { retireReleaseDetailRefresh } from './release-detail-refresh.js';
 import {
   enhanceReleaseEditDialog,
@@ -308,7 +313,9 @@ function enhance(document, dialog, dialogState, controller) {
   // Check again in the dialog (while it is open for this release) and in the
   // page feedback (where the warning stays after the dialog is dismissed, and
   // which no sticky dialog footer can cover).
-  function offerCheck(releaseId, { focusResult = false } = {}) {
+  // Without the page feedback (a newer release action owns it) only the
+  // dialog open for this release offers it.
+  function offerCheck(releaseId, { focusResult = false, feedback: inFeedback = true } = {}) {
     const onRetry = ({ wasFocused }) => check(releaseId, { focusResult: wasFocused });
     let focusTarget = null;
     if (dialog.open && currentId() === releaseId) {
@@ -321,16 +328,36 @@ function enhance(document, dialog, dialogState, controller) {
         onRetry,
       });
     }
-    const feedback = document.querySelector('[data-dialog-feedback]');
-    const feedbackRetry = feedback ? showStatusRetry({
-      state: ui,
-      status: feedback,
-      attribute: 'data-release-delete-feedback-check',
-      key: FEEDBACK_RETRY_KEY,
-      label: 'Check again',
-      onRetry,
-    }) : null;
+    // Calendar M1 feedback ownership: as in release-archive.js, a page-level
+    // Check again whose feedback a newer release action owns (or a captured
+    // copy of one) is inert, and removes only itself.
+    const feedback = inFeedback ? document.querySelector('[data-dialog-feedback]') : null;
+    let feedbackRetry = null;
+    if (feedback) {
+      removeStatusRetry(ui, FEEDBACK_RETRY_KEY);
+      feedbackRetry = showStatusRetry({
+        state: {},
+        status: feedback,
+        attribute: 'data-release-delete-feedback-check',
+        key: FEEDBACK_RETRY_KEY,
+        label: 'Check again',
+        onRetry: ({ wasFocused }) => {
+          const current = ui[FEEDBACK_RETRY_KEY] === feedbackRetry;
+          if (current) ui[FEEDBACK_RETRY_KEY] = null;
+          if (current && !lostFeedback(releaseId)) return onRetry({ wasFocused });
+          if (wasFocused) document.getElementById('main-content')?.focus?.({ preventScroll: true });
+          return undefined;
+        },
+      });
+      ui[FEEDBACK_RETRY_KEY] = feedbackRetry;
+    }
     if (focusResult) (focusTarget || feedbackRetry)?.focus?.({ preventScroll: true });
+  }
+
+  // Whether a newer release action owns the page feedback this Delete's
+  // latest check claimed (always false on hosts without an owner).
+  function lostFeedback(releaseId) {
+    return recordFor(releaseId)?.ownsFeedback?.() === false;
   }
 
   // Shown wherever the release's standing state is reported; never a success.
@@ -339,7 +366,7 @@ function enhance(document, dialog, dialogState, controller) {
     if (record) record.message = message;
     if (dialog.open && currentId() === releaseId) setStatus(message, tone);
     if (feedback) setFeedback(message, true);
-    if (retry) offerCheck(releaseId, { focusResult });
+    if (retry) offerCheck(releaseId, { focusResult, feedback });
   }
 
   // The release is gone. Surviving hosts refresh from the event; Release
@@ -450,18 +477,24 @@ function enhance(document, dialog, dialogState, controller) {
 
   // An unresolved Delete settled by an authoritative read (Check again, or a
   // reopened dialog's load) that shows the release gone.
-  function settleObservedMissing(releaseId, { focusResult = false } = {}) {
+  // feedback: false when a newer release action owns the page feedback: the
+  // record and this release's dialog still settle, and the hosts still re-read
+  // their content; the event says feedback: false so they keep that newer report.
+  function settleObservedMissing(releaseId, { focusResult = false, feedback = true } = {}) {
     const record = recordFor(releaseId);
     if (record?.phase !== 'unresolved') return false;
     record.phase = 'missing';
     if (currentId() === releaseId) holdButton('missing');
-    report(releaseId, `${RELEASE_DELETE_MESSAGES.observedMissing} ${RELEASE_DELETE_MESSAGES.draftsGone}`, 'error', { focusResult });
+    report(releaseId, `${RELEASE_DELETE_MESSAGES.observedMissing} ${RELEASE_DELETE_MESSAGES.draftsGone}`, 'error', {
+      focusResult, feedback,
+    });
     settleGone(releaseId, {
       projectId: null,
       title: record.title,
       message: RELEASE_DELETE_MESSAGES.observedMissing,
       outcome: 'observed-missing',
       confirmed: false,
+      ...(feedback ? {} : { feedback: false }),
     });
     return true;
   }
@@ -473,6 +506,10 @@ function enhance(document, dialog, dialogState, controller) {
     const attempt = record.attempt;
     record.checks = (record.checks || 0) + 1;
     const checkNumber = record.checks;
+    // This check writes the page feedback now, so it claims it for this
+    // Delete (P3-A); its answer writes there only while this Delete's latest
+    // claim still owns it (a newer check of it retires this answer anyway).
+    record.ownsFeedback = dispatchReleaseActionUnresolved(document, releaseId, 'delete');
     report(releaseId, `${RELEASE_DELETE_MESSAGES.unconfirmed} ${RELEASE_DELETE_MESSAGES.checking}`, 'pending');
     return Promise.resolve()
       .then(() => windowObject.fetch(`/releases/${releaseId}/edit`, {
@@ -492,8 +529,12 @@ function enhance(document, dialog, dialogState, controller) {
         // A newer check, or the Delete's own answer, owns the record now.
         if (current !== record || current.attempt !== attempt || current.phase !== 'unresolved'
           || current.checks !== checkNumber) return;
+        // A newer release action's report (with its recovery and focus) stays;
+        // this answer still settles the record and this release's dialog.
+        const feedback = record.ownsFeedback?.() !== false;
+        const settle = { focusResult: feedback && focusResult, feedback };
         if (response?.status === 404 && payload?.code === 'RELEASE_NOT_FOUND') {
-          settleObservedMissing(releaseId, { focusResult });
+          settleObservedMissing(releaseId, settle);
           return;
         }
         const present = (response?.ok && payload?.status === 'success' && String(payload.release?.id) === releaseId)
@@ -501,12 +542,12 @@ function enhance(document, dialog, dialogState, controller) {
         if (present) {
           // An observation only: the lost request may not have run yet.
           report(releaseId, `${RELEASE_DELETE_MESSAGES.unconfirmed} ${RELEASE_DELETE_MESSAGES.stillPresent}`, 'error', {
-            focusResult, retry: true,
+            ...settle, retry: true,
           });
           return;
         }
         report(releaseId, `${RELEASE_DELETE_MESSAGES.unconfirmed} ${RELEASE_DELETE_MESSAGES.checkFailed}`, 'error', {
-          focusResult, retry: true,
+          ...settle, retry: true,
         });
       });
   }
@@ -611,6 +652,9 @@ function enhance(document, dialog, dialogState, controller) {
         }
         record.phase = 'unresolved';
         holdButton('unresolved');
+        // Calendar M1 P3-A: this unconfirmed Delete owns the page feedback;
+        // its first check claims it (release-action-unresolved) before it
+        // writes the uncertainty there.
         void check(releaseId);
       });
   }
@@ -698,11 +742,15 @@ function enhance(document, dialog, dialogState, controller) {
     holdButton(record.phase);
     if (record.drafts && record.phase !== 'pending') applyAppDialogDraft(document, RELEASE_EDIT_DIALOG_ID, record.drafts);
     if (record.message) setStatus(record.message, 'error');
-    if (record.phase === 'unresolved') offerCheck(releaseId);
+    // Calendar M1 feedback ownership: reopening never reclaims page feedback a
+    // newer release action owns; Check again is then offered in this dialog only.
+    if (record.phase === 'unresolved') offerCheck(releaseId, { feedback: !lostFeedback(releaseId) });
   };
 
   // A reopened dialog whose load finds the release gone is an authoritative
-  // read like Check again.
+  // read like Check again. It settles the record and the hosts still re-read
+  // their content, but it writes the page feedback only while this Delete
+  // still owns it.
   const previousOnLoadRefused = controller.onLoadRefused;
   controller.onLoadRefused = (releaseIdValue, status, payload) => {
     previousOnLoadRefused?.(releaseIdValue, status, payload);
@@ -713,7 +761,9 @@ function enhance(document, dialog, dialogState, controller) {
       return;
     }
     holdButton(record.phase);
-    if (status === 404 && payload?.code === 'RELEASE_NOT_FOUND') settleObservedMissing(releaseId);
+    if (status === 404 && payload?.code === 'RELEASE_NOT_FOUND') {
+      settleObservedMissing(releaseId, { feedback: !lostFeedback(releaseId) });
+    }
   };
 
   return { check, refusal };

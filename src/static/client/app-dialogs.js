@@ -184,7 +184,25 @@ function appDialogBodyLock(state, locked) {
   else if (!state.document.querySelector?.(`${APP_DIALOG_SELECTOR}[open]`)) body.classList.remove('app-dialog-open');
 }
 
+function appDialogTryFocus(document, target) {
+  if (typeof target?.focus !== 'function' || !document.contains(target) || target.disabled
+    || target.matches?.(':disabled')
+    || target.closest?.('[hidden], [inert], [aria-hidden="true"], [aria-disabled="true"]')
+    || target.getClientRects?.().length === 0) return false;
+
+  const visibility = document.defaultView?.getComputedStyle(target).visibility;
+  if (visibility === 'hidden' || visibility === 'collapse') return false;
+
+  try {
+    target.focus({ preventScroll: true });
+  } catch {
+    return false;
+  }
+  return document.activeElement === target;
+}
+
 function appDialogRestoreFocus(state) {
+  const { document, dialog, focusFallbacks, focusReturnGeneration } = state;
   const opener = state.opener && state.document.contains?.(state.opener)
     ? state.opener
     : (state.openerAllowsFallback
@@ -192,6 +210,31 @@ function appDialogRestoreFocus(state) {
       : null);
   state.opener = null;
   state.openerAllowsFallback = true;
+  state.focusFallbacks = null;
+  state.focusReturnGeneration = null;
+  if (focusFallbacks) {
+    const active = document.activeElement;
+    // Native close queues its event. Keep focus if another interaction has
+    // already taken it, including a newer dialog that has since closed.
+    if ((focusReturnGeneration !== null && focusReturnGeneration !== appDialogOpenCount(document))
+      || (active && active !== document.body && !dialog.contains?.(active))) return;
+
+    if (opener?.tabIndex >= 0 && appDialogTryFocus(document, opener)) return;
+
+    for (const selector of focusFallbacks) {
+      let target;
+      try {
+        target = document.querySelector(selector);
+      } catch (error) {
+        if (error.name !== 'SyntaxError') throw error;
+        continue;
+      }
+      // The page landmark is intentionally focusable outside the tab order.
+      const isMainLandmark = target?.tagName === 'MAIN' && target.id === 'main-content';
+      if ((target?.tabIndex >= 0 || isMainLandmark) && appDialogTryFocus(document, target)) return;
+    }
+    return;
+  }
   opener?.focus?.({ preventScroll: true });
 }
 
@@ -310,6 +353,7 @@ function appDialogCloseOpenDropdown(state) {
 
 function appDialogClose(state, returnLocation = null) {
   state.pendingReturnLocation = returnLocation;
+  state.focusReturnGeneration = appDialogOpenCount(state.document);
   if (typeof state.dialog.close === 'function' && state.dialog.open) {
     state.dialog.close();
     return;
@@ -1162,7 +1206,7 @@ export function appDialogOpenCount(document) {
   return appDialogOpenCounts.get(document) ?? 0;
 }
 
-function appDialogOpen(state, opener = null, openerAllowsFallback = true) {
+function appDialogOpen(state, opener = null, openerAllowsFallback = true, focusFallbacks = null) {
   appDialogOpenCounts.set(state.document, appDialogOpenCount(state.document) + 1);
   // An accepted close whose native close event is still queued must finish
   // (reset, onClose, focus) before the next lifecycle begins; its late event
@@ -1180,6 +1224,8 @@ function appDialogOpen(state, opener = null, openerAllowsFallback = true) {
     ? state.document.querySelector?.(`${APP_DIALOG_TRIGGER_SELECTOR}[data-dialog-open="${state.dialog.id}"]`)
     : null);
   state.openerAllowsFallback = openerAllowsFallback;
+  state.focusFallbacks = focusFallbacks;
+  state.focusReturnGeneration = null;
   if (!appDialogRetainsDraft(state)) {
     appDialogApplyValues(state.form, state.savedValues || {});
     state.onOpen?.();
@@ -1310,11 +1356,11 @@ function appDialogBind(state) {
   if (state.dialog.hasAttribute?.('open')) appDialogOpen(state);
 }
 
-export function openAppDialogById(document, id, opener = null) {
+export function openAppDialogById(document, id, opener = null, { focusFallbacks = null } = {}) {
   const dialog = document?.getElementById?.(id);
   const state = dialog?.__creatorCrateAppDialogState;
   if (!state) return false;
-  appDialogOpen(state, opener, false);
+  appDialogOpen(state, opener, false, focusFallbacks);
   return true;
 }
 
@@ -1393,6 +1439,8 @@ export function enhanceAppDialogs(scope = globalThis.document) {
       form: null,
       opener: null,
       openerAllowsFallback: true,
+      focusFallbacks: null,
+      focusReturnGeneration: null,
       savedValues: null,
       authoritativeBaseline: false,
       open: false,

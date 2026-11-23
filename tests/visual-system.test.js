@@ -1100,21 +1100,23 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       expect(gridRule).toContain('min-width: 0;');
       expect(gridFieldRule).toContain('min-width: 0;');
       expect(css).toMatch(/@media\s*\(max-width:\s*540px\)[\s\S]*?\.page-defaults-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
-      for (const templatePath of [
-        'releases/index.njk',
-        'releases/calendar.njk',
+      // The Calendar month picker still lays out in the page defaults grid.
+      const calendarSource = fs.readFileSync(path.join(VIEWS_DIR, 'releases/calendar.njk'), 'utf8');
+      const calendarDialog = (id) => calendarSource.match(new RegExp(`dialog\\.render\\('${id}'[\\s\\S]*?\\{% endcall %\\}`))?.[0] || '';
+      expect(calendarDialog('calendar-month-dialog')).toContain('<div class="page-defaults-grid">');
+      // WP7 / WP9b / WP10b / WP12 / WP14b: Project Assets, the Asset Library,
+      // Projects, Releases and the Calendar Filters & Defaults dialog lay their
+      // controls out in the Filters & Defaults sections' three-column grid instead.
+      for (const source of [
+        ...['projects/assets.njk', 'assets/index.njk', 'projects/index.njk', 'releases/index.njk']
+          .map((templatePath) => fs.readFileSync(path.join(VIEWS_DIR, templatePath), 'utf8')),
+        calendarDialog('calendar-filter-dialog'),
       ]) {
-        expect(fs.readFileSync(path.join(VIEWS_DIR, templatePath), 'utf8'))
-          .toContain('<div class="page-defaults-grid">');
-      }
-      // WP7 / WP9b / WP10b: Project Assets, the Asset Library and Projects lay
-      // their controls out in the Filters & Defaults sections' three-column
-      // grid instead.
-      for (const templatePath of ['projects/assets.njk', 'assets/index.njk', 'projects/index.njk']) {
-        const source = fs.readFileSync(path.join(VIEWS_DIR, templatePath), 'utf8');
         expect(source).toContain('<div class="filters-defaults-grid">');
         expect(source).not.toContain('<div class="page-defaults-grid">');
       }
+      expect(calendarSource).not.toContain("dialog.render('calendar-defaults-dialog'");
+      expect(css).toMatch(/@media\s*\(max-width:\s*540px\)[\s\S]*?\.app-dialog--filters-defaults \.filters-defaults-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
       expect(css).not.toMatch(/\.project-assets-defaults-grid\b/);
     });
 

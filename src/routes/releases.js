@@ -24,6 +24,10 @@ import {
   handlePageDefaultsPost,
 } from './page-defaults.js';
 import {
+  PAGE_DEFAULT_DEFINITIONS,
+  PageDefaultsGenerationConflictError,
+} from '../services/page-defaults-service.js';
+import {
   buildCreateReleaseFormModel,
   getReleasePlatformChoices,
   getReleaseSignatureConfiguration,
@@ -57,6 +61,25 @@ const RELEASES_DEFAULT_LABELS = Object.freeze({
 const RELEASES_NOTICES = Object.freeze({
   defaultsSaved: 'Releases defaults saved successfully.',
 });
+// WP12: the two saveable Releases settings (Sort by, Sort order), in the page
+// definition's order. Search, Projects, Project Types, Schedule, Include
+// archived, the exact-asset scope and the URL page size are temporary and
+// never saved. Releases uses Global page defaults only.
+const RELEASES_DEFAULT_FIELDS = Object.freeze(Object.keys(PAGE_DEFAULT_DEFINITIONS[RELEASES_PAGE_DEFAULTS]));
+// WP12 mutation protocol (the reviewed WP9a F6/F7 contract, on the Releases
+// page key): every Save / Reset defaults request carries the durable defaults
+// generation it was prepared from and a client-chosen operation identity; the
+// write is fenced inside its transaction and every JSON answer echoes the
+// identity, so a late or duplicate request can never overwrite a newer write.
+const RELEASES_DEFAULTS_GENERATION_FIELD = 'defaultsGeneration';
+const RELEASES_DEFAULTS_OPERATION_FIELD = 'defaultsOperation';
+const RELEASES_DEFAULTS_OPERATION_PATTERN = /^[A-Za-z0-9_-]{1,100}$/;
+const RELEASES_DEFAULTS_CONFLICT_CODE = 'DEFAULTS_GENERATION_CONFLICT';
+const RELEASES_DEFAULTS_CONFLICT_MESSAGE = 'Releases defaults changed since this page was loaded. '
+  + 'No changes were made. Review the current defaults and try again.';
+const RELEASES_DEFAULTS_RESET_MESSAGE = 'Releases defaults reset to the application defaults.';
+// The temporary (never saved) Releases context a Reset defaults refresh keeps.
+const RELEASES_TEMPORARY_REPEATED_KEYS = Object.freeze(['project', 'type']);
 const SELECTED_ASSETS_RELEASE_CREATE_FLOW = 'selected-assets';
 const SCHEDULE_REQUEST_FIELDS = Object.freeze(['plannedDate', 'plannedTime', 'expectedPlannedDate', 'expectedPlannedTime']);
 // The user-editable New Release controls a dialog reopened after a successful
@@ -138,19 +161,109 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
     });
   });
 
-  router.post('/defaults', (req, res, next) => {
-    let assetScope;
+  // WP12 read-only authority: the current saved-state metadata, for reopening
+  // Filters & Defaults or reconciling an uncertain Save / Reset defaults
+  // outcome. It never writes. A non-JSON request (a typed URL) opens Releases
+  // with the dialog instead.
+  router.get('/defaults', (req, res, next) => {
+    if (!isEnhancedReleasesDefaultsRequest(req)) {
+      res.redirect('/releases?defaults=1');
+      return;
+    }
     try {
-      assetScope = resolveReleaseListAssetScope(req, req.query);
+      res.set('Cache-Control', 'no-store');
+      res.json({
+        status: 'success',
+        authority: buildReleasesDefaultsAuthority(getReleasePageDefaultsService(req, RELEASES_PAGE_DEFAULTS)),
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // A stale or missing generation: nothing was written (the fence threw inside
+  // the write transaction, which rolled back). JSON clients get a correlated
+  // 409 with the current authority when it can be read; a native post
+  // re-renders Releases with the conflict, never a success redirect.
+  function respondReleasesDefaultsConflict(req, res, next, { kind, mutation, err, enhanced }) {
+    if (enhanced) {
+      let authority = null;
+      try {
+        authority = buildReleasesDefaultsAuthority(getReleasePageDefaultsService(req, RELEASES_PAGE_DEFAULTS));
+      } catch {
+        authority = null;
+      }
+      res.status(409).json({
+        ...releasesDefaultsOperationAcknowledgement(kind, mutation, {
+          result: 'conflict', generation: err.currentGeneration,
+        }),
+        status: 'error',
+        code: RELEASES_DEFAULTS_CONFLICT_CODE,
+        message: RELEASES_DEFAULTS_CONFLICT_MESSAGE,
+        ...(authority && authority.generation === err.currentGeneration ? { authority } : {}),
+      });
+      return;
+    }
+    handleReleaseList(req, res, next, {
+      appName,
+      projectService,
+      workflowQueryService,
+      status: 409,
+      defaultsDialogOpen: true,
+      allowSavedDefaultsRedirect: false,
+      notice: RELEASES_DEFAULTS_CONFLICT_MESSAGE,
+      pagePath: '/',
+      listQuery: readReleasesReturnQuery(req) ?? req.query,
+    });
+  }
+
+  router.post('/defaults', (req, res, next) => {
+    let nativeRedirectParams;
+    try {
+      resolveReleaseListAssetScope(req, req.query);
+      if (!isEnhancedReleasesDefaultsRequest(req)) {
+        // Native forms carry list context in the action query and return to page one.
+        const filters = workflowQueryService.normalizeListFilters(req.query);
+        nativeRedirectParams = toRepeatedSearchParams(buildReleaseManagementUrlQuery(filters, null, 1));
+      }
     } catch (err) {
       return next(err);
     }
+    const pageDefaultsService = getReleasePageDefaultsService(req, RELEASES_PAGE_DEFAULTS);
+    const mutation = readReleasesDefaultsMutationRequest(req);
     handlePageDefaultsPost(req, res, next, {
       db,
-      pageDefaultsService: getReleasePageDefaultsService(req, RELEASES_PAGE_DEFAULTS),
+      pageDefaultsService,
       page: RELEASES_PAGE_DEFAULTS,
       successMessage: RELEASES_NOTICES.defaultsSaved,
       saveErrorMessage: 'Releases defaults could not be saved. No changes were made.',
+      validateSubmission: () => ({ generation: null }),
+      // The generation fence runs inside the same transaction as the two
+      // writes; a stale generation throws before anything is written, and any
+      // later failure rolls the generation back with the writes. Only Sort and
+      // Order are ever written (the page definition's allowlist).
+      saveValidatedValues: ({ validatedValues, submission }) => {
+        submission.generation = pageDefaultsService.advanceMutationGeneration(
+          RELEASES_PAGE_DEFAULTS, mutation.expectedGeneration,
+        );
+        for (const option of RELEASES_DEFAULT_FIELDS) {
+          pageDefaultsService.saveDefault(RELEASES_PAGE_DEFAULTS, option, validatedValues[option]);
+        }
+      },
+      enhancedOperationPayload: ({ outcome, submission }) => releasesDefaultsOperationAcknowledgement('save', mutation, {
+        result: outcome,
+        generation: outcome === 'committed' ? submission?.generation ?? null : null,
+      }),
+      handleSaveError: ({ err, enhanced }) => {
+        if (!(err instanceof PageDefaultsGenerationConflictError)) return false;
+        respondReleasesDefaultsConflict(req, res, next, { kind: 'save', mutation, err, enhanced });
+        return true;
+      },
+      // The JSON acknowledgement carries the post-commit authority so the
+      // client updates the saved-state indicator without a second request.
+      enhancedSuccessPayload: () => ({
+        authority: buildReleasesDefaultsAuthority(getReleasePageDefaultsService(req, RELEASES_PAGE_DEFAULTS)),
+      }),
       onValidationError: ({ submittedValues, errors }) => {
         handleReleaseList(req, res, next, {
           appName,
@@ -166,13 +279,88 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
         });
       },
       onSuccess: ({ validatedValues }) => {
-        const params = buildReleasesDefaultsScopeParams(req.query, assetScope);
-        params.set('sort', validatedValues.sort);
-        params.set('order', validatedValues.order);
-        params.set('notice', 'releases_defaults_saved');
-        res.redirect(`/releases?${params.toString()}`);
+        nativeRedirectParams.set('sort', validatedValues.sort);
+        nativeRedirectParams.set('order', validatedValues.order);
+        nativeRedirectParams.set('notice', 'releases_defaults_saved');
+        res.redirect(`/releases?${nativeRedirectParams.toString()}`);
       },
     });
+  });
+
+  // WP12 Reset defaults: deletes only the allowlisted Releases keys (Sort and
+  // Order, from PAGE_DEFAULT_DEFINITIONS, never the request). Every other
+  // page's defaults and app settings stay. The refresh destination keeps the
+  // temporary context of `returnTo` (exact asset, Search, Projects, Project
+  // Types, Schedule, Include archived, page size) and lets Sort/Order resolve
+  // to their application fallbacks, page 1.
+  router.post('/defaults/reset', (req, res, next) => {
+    const enhanced = isEnhancedReleasesDefaultsRequest(req);
+    let pageDefaultsService;
+    let refreshUrl;
+    try {
+      pageDefaultsService = getReleasePageDefaultsService(req, RELEASES_PAGE_DEFAULTS);
+      refreshUrl = buildReleasesTemporaryContextUrl(readReleasesReturnQuery(req), workflowQueryService);
+    } catch (err) {
+      next(err);
+      return;
+    }
+    const mutation = readReleasesDefaultsMutationRequest(req);
+
+    let reset;
+    let generation = null;
+    try {
+      // Fence and deletion in one transaction. A no-op Reset (no saved keys)
+      // still advances the generation, so an older request prepared before it
+      // is rejected as stale.
+      reset = db.transaction(() => {
+        generation = pageDefaultsService.advanceMutationGeneration(
+          RELEASES_PAGE_DEFAULTS, mutation.expectedGeneration,
+        );
+        return pageDefaultsService.resetGlobalPageDefaults(RELEASES_PAGE_DEFAULTS);
+      })();
+    } catch (err) {
+      if (err instanceof PageDefaultsGenerationConflictError) {
+        respondReleasesDefaultsConflict(req, res, next, { kind: 'resetDefaults', mutation, err, enhanced });
+        return;
+      }
+      if (enhanced) {
+        res.status(500).json({
+          ...releasesDefaultsOperationAcknowledgement('resetDefaults', mutation, { result: 'failed' }),
+          status: 'error',
+          message: 'Releases defaults could not be reset. No changes were made.',
+        });
+        return;
+      }
+      next(err);
+      return;
+    }
+
+    if (!enhanced) {
+      res.redirect(refreshUrl);
+      return;
+    }
+
+    try {
+      res.json({
+        ...releasesDefaultsOperationAcknowledgement('resetDefaults', mutation, { result: 'committed', generation }),
+        status: 'success',
+        message: RELEASES_DEFAULTS_RESET_MESSAGE,
+        reset,
+        refreshUrl,
+        authority: buildReleasesDefaultsAuthority(pageDefaultsService),
+      });
+    } catch {
+      // The deletion committed; only the follow-up read failed. Say so rather
+      // than claiming nothing changed, so the client never repeats it.
+      res.status(500).json({
+        ...releasesDefaultsOperationAcknowledgement('resetDefaults', mutation, { result: 'committed', generation }),
+        status: 'error',
+        committed: true,
+        message: 'Releases defaults were reset, but the updated defaults could not be read. Reload the page.',
+        reset,
+        refreshUrl,
+      });
+    }
   });
 
   // GET /releases/calendar — Phase 2D: compatibility redirect. The
@@ -1355,13 +1543,16 @@ function handleReleaseList(
       order: presentation.order,
     };
     const normalizedFilters = workflowQueryService.normalizeListFilters(effectiveQuery);
-    const projectOptions = workflowQueryService.getProjectsPageFilterOptions(normalizedFilters.projectId);
+    const projectOptions = workflowQueryService.getProjectsPageFilterOptions(normalizedFilters.projectIds);
     const basePath = req.baseUrl;
     const pageUrlRequest = pagePath === req.path ? req : { baseUrl: req.baseUrl, path: pagePath };
 
     // Release lists always use the list presentation; legacy view query values
     // are intentionally ignored so existing board URLs remain safe.
-    const { releases, total, page, pageSize, pageCount, today, hasAnyReleases } = workflowQueryService.getReleaseList(effectiveQuery);
+    const { releases, total, page, pageSize, pageCount, today, hasAnyReleases } = workflowQueryService.getReleaseList(
+      effectiveQuery,
+      { normalizedFilters },
+    );
     const urlQuery = buildReleaseManagementUrlQuery(normalizedFilters, presentation, page);
     if (allowSavedDefaultsRedirect && shouldRedirectToSavedReleaseManagementDefaults(
       normalizedRawQuery,
@@ -1380,6 +1571,20 @@ function handleReleaseList(
         page,
       ),
     )(buildReleaseManagementClearOverrides());
+    // WP12: the authority JSON of this rendered page (saved-key presence,
+    // durable generation, the effective Sort/Order this page shows). A read
+    // failure fails closed: the dialog cannot save without it.
+    let releasesDefaultsAuthority = null;
+    try {
+      releasesDefaultsAuthority = buildReleasesDefaultsAuthority(pageDefaultsService, {
+        current: { sort: presentation.sort, order: presentation.order },
+        currentUrl: pageUrl({}),
+        resetFiltersUrl: clearUrl,
+      });
+    } catch {
+      releasesDefaultsAuthority = null;
+    }
+    const projectFilter = buildReleasesProjectFilterModel(projectOptions, normalizedFilters.projectIds);
 
     res.status(status).render('releases/index.njk', {
       appName,
@@ -1394,9 +1599,15 @@ function handleReleaseList(
       clearUrl,
       query,
       projectOptions,
+      projectFilterOptions: projectFilter.options,
+      projectFilterSelectedValues: projectFilter.selectedValues,
+      projectTypeOptions: buildReleasesProjectTypeOptions(req, normalizedFilters.projectTypes),
       selectedProjectId: normalizedFilters.projectId,
       assetScope,
-      releasesDefaultsAction: buildReleasesDefaultsAction(urlQuery),
+      releasesDefaultsAuthority,
+      releasesDefaultsAuthorityJson: releasesDefaultsAuthority
+        ? serializeReleasesAuthorityJson(releasesDefaultsAuthority)
+        : '',
       sortOptions: SORT_OPTIONS,
       basePath,
       releasesLiveFiltering: true,
@@ -1422,6 +1633,168 @@ function handleReleaseList(
 
 function resolveReleasesNotice(code) {
   return code === 'releases_defaults_saved' ? RELEASES_NOTICES.defaultsSaved : null;
+}
+
+function isEnhancedReleasesDefaultsRequest(req) {
+  return String(req.get?.('Accept') || '').toLowerCase().includes('application/json');
+}
+
+function readReleasesDefaultsMutationRequest(req) {
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const generation = body[RELEASES_DEFAULTS_GENERATION_FIELD];
+  const operation = body[RELEASES_DEFAULTS_OPERATION_FIELD];
+  const parsedGeneration = typeof generation === 'string' && /^(0|[1-9]\d*)$/.test(generation)
+    ? Number(generation)
+    : Number.NaN;
+  return {
+    // Missing or malformed: null, which never matches the stored generation.
+    expectedGeneration: Number.isSafeInteger(parsedGeneration) ? parsedGeneration : null,
+    operationId: typeof operation === 'string' && RELEASES_DEFAULTS_OPERATION_PATTERN.test(operation)
+      ? operation
+      : null,
+  };
+}
+
+// The request-correlated acknowledgement. `generation` is the stored
+// generation this answer establishes: the new one after a commit, the current
+// one on a conflict, and null when the handler made no claim about it.
+function releasesDefaultsOperationAcknowledgement(kind, mutation, { result, generation = null }) {
+  return {
+    operation: {
+      id: mutation.operationId,
+      kind,
+      result,
+      committed: result === 'committed',
+      expectedGeneration: mutation.expectedGeneration,
+      generation,
+    },
+  };
+}
+
+// The Releases list location a defaults mutation was made from (`returnTo`),
+// as a raw query object; null unless it is a same-origin /releases address.
+function readReleasesReturnQuery(req) {
+  const candidate = req.body?.returnTo;
+  if (typeof candidate !== 'string' || !isSafeRedirectTarget(candidate)) return null;
+  try {
+    const url = new URL(candidate, 'http://creatorcrate.local');
+    if (url.origin !== 'http://creatorcrate.local' || url.pathname !== '/releases') return null;
+    return releaseListQueryFromSearchParams(url.searchParams);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The Reset defaults refresh destination: the temporary (never saved) context
+ * of `rawQuery` in canonical form — the exact-asset scope exactly as supplied
+ * (validated by the GET itself, so an invalid scope is never widened into an
+ * unrestricted listing), Search, repeated Projects and Project Types,
+ * Schedule, Include archived and the URL page size. Sort/Order are left to
+ * resolve from the (now deleted) defaults, page 1.
+ */
+function buildReleasesTemporaryContextUrl(rawQuery, workflowQueryService) {
+  const source = rawQuery && typeof rawQuery === 'object' ? rawQuery : {};
+  const temporary = {};
+  for (const key of ['search', ...RELEASES_TEMPORARY_REPEATED_KEYS, 'schedule', 'includeArchived', 'pageSize']) {
+    if (Object.hasOwn(source, key)) temporary[key] = source[key];
+  }
+  const query = {};
+  if (Object.hasOwn(source, 'asset')) {
+    query.asset = Array.isArray(source.asset) ? source.asset.map(String) : String(source.asset ?? '');
+  }
+  Object.assign(query, buildReleaseManagementUrlQuery(workflowQueryService.normalizeListFilters(temporary), null, 1));
+  const search = toRepeatedSearchParams(query).toString();
+  return search ? `/releases?${search}` : '/releases';
+}
+
+function fingerprintReleasesDefaults(text) {
+  // FNV-1a (32-bit): a compact revision token, not a security boundary.
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
+}
+
+/**
+ * WP12 authoritative Releases defaults metadata. Saved status is stored key
+ * presence (describeSavedDefaults), never a comparison with the fallback, so
+ * an explicitly saved fallback-equal value still reports saved. Releases
+ * defaults are Global only: there is no Project scope here.
+ */
+function buildReleasesDefaultsAuthority(pageDefaultsService, extra = {}) {
+  const description = pageDefaultsService.describeSavedDefaults(RELEASES_PAGE_DEFAULTS);
+  const defaults = pageDefaultsService.resolveGlobalPageDefaults(RELEASES_PAGE_DEFAULTS);
+  const fallbacks = Object.fromEntries(RELEASES_DEFAULT_FIELDS.map((field) => [
+    field,
+    pageDefaultsService.getFallback(RELEASES_PAGE_DEFAULTS, field),
+  ]));
+  const saved = Object.fromEntries(RELEASES_DEFAULT_FIELDS.map((field) => [field, {
+    stored: description.options[field].global.stored,
+    valid: description.options[field].global.valid,
+  }]));
+  const savedKeys = RELEASES_DEFAULT_FIELDS.filter((field) => saved[field].stored);
+  return {
+    page: RELEASES_PAGE_DEFAULTS,
+    fields: [...RELEASES_DEFAULT_FIELDS],
+    multiFields: [],
+    fallbacks,
+    defaults,
+    saved,
+    savedKeys,
+    hasSavedDefaults: savedKeys.length > 0,
+    generation: pageDefaultsService.getMutationGeneration(RELEASES_PAGE_DEFAULTS),
+    revision: fingerprintReleasesDefaults(JSON.stringify({ defaults, saved })),
+    resetFiltersUrl: '/releases',
+    ...extra,
+  };
+}
+
+function serializeReleasesAuthorityJson(authority) {
+  return JSON.stringify(authority).replace(/</g, '\\u003c');
+}
+
+// The Projects multi-select model: every option the backend offers (active
+// Projects plus selected historical ones, never derived from the current
+// results page) and, first, each selected ID the backend could not resolve,
+// as a checked "Unavailable project" row so the restriction survives the next
+// filter change instead of silently broadening the results.
+function buildReleasesProjectFilterModel(projectOptions, selectedProjectIds) {
+  const selectedValues = (selectedProjectIds ?? []).map(String);
+  const known = new Set(projectOptions.map((project) => String(project.id)));
+  const unavailable = selectedValues
+    .filter((value) => !known.has(value))
+    .map((value) => ({
+      value,
+      label: `Unavailable project (ID ${value})`,
+      selected: true,
+      classes: 'releases-project-option--unavailable',
+      attributes: [['data-releases-unavailable-project', true]],
+    }));
+  return {
+    options: [
+      ...unavailable,
+      ...projectOptions.map((project) => ({
+        value: String(project.id),
+        label: project.title,
+        selected: selectedValues.includes(String(project.id)),
+      })),
+    ],
+    selectedValues,
+  };
+}
+
+// The Project Types multi-select options: the stable catalogue values (never
+// display labels) from projectOptionCatalogueService.getProjectTypeCatalogue().
+function buildReleasesProjectTypeOptions(req, selectedProjectTypes) {
+  const service = req.app?.locals?.projectOptionCatalogueService;
+  const catalogue = typeof service?.getProjectTypeCatalogue === 'function' ? service.getProjectTypeCatalogue() : [];
+  const selected = new Set(selectedProjectTypes ?? []);
+  return catalogue
+    .filter((entry) => typeof entry?.value === 'string' && entry.value !== '' && entry.value !== 'all')
+    .map((entry) => ({ value: entry.value, label: entry.label ?? entry.value, selected: selected.has(entry.value) }));
 }
 
 function buildReleasesRenderExtras({
@@ -1489,28 +1862,6 @@ function resolveReleaseListAssetScope(req, rawQuery, projectService = null) {
   };
 }
 
-// An asset-scoped list keeps its scope (and the filters that accompany it)
-// through a defaults save; the save itself replaces sort/order and starts
-// from the first page. Unscoped saves keep returning to the defaults-only URL.
-function buildReleasesDefaultsAction(urlQuery) {
-  if (!urlQuery.asset) return '/releases/defaults';
-  const scopeQuery = { ...urlQuery };
-  delete scopeQuery.sort;
-  delete scopeQuery.order;
-  delete scopeQuery.page;
-  return `/releases/defaults?${new URLSearchParams(scopeQuery).toString()}`;
-}
-
-function buildReleasesDefaultsScopeParams(rawQuery, assetScope) {
-  const params = new URLSearchParams();
-  if (!assetScope) return params;
-  params.set('asset', String(assetScope.id));
-  for (const key of ['search', 'project', 'schedule', 'includeArchived', 'pageSize']) {
-    if (typeof rawQuery[key] === 'string') params.set(key, rawQuery[key]);
-  }
-  return params;
-}
-
 function resolveReleasePresentation(rawQuery, pageDefaultsService, pageDefaultsKey) {
   const query = rawQuery && typeof rawQuery === 'object' ? rawQuery : {};
   const presentation = {};
@@ -1549,11 +1900,20 @@ function buildReleaseManagementUrlQuery(
 
   if (normalizedFilters.assetId != null) query.asset = String(normalizedFilters.assetId);
   if (normalizedFilters.search) query.search = normalizedFilters.search;
-  if (normalizedFilters.projectId !== null) query.project = String(normalizedFilters.projectId);
+  // One selection keeps the legacy scalar form; several serialize as repeated
+  // values (never comma-joined) in the normalized deterministic order.
+  const projectValues = (normalizedFilters.projectIds ?? []).map(String);
+  if (projectValues.length === 1) query.project = projectValues[0];
+  else if (projectValues.length > 1) query.project = projectValues;
+  const typeValues = [...(normalizedFilters.projectTypes ?? [])];
+  if (typeValues.length === 1) query.type = typeValues[0];
+  else if (typeValues.length > 1) query.type = typeValues;
   if (normalizedFilters.schedule !== null) query.schedule = normalizedFilters.schedule;
   if (normalizedFilters.includeArchived) query.includeArchived = '1';
-  if (shouldIncludeReleaseManagementOption(presentation, 'sort')) query.sort = presentation.sort;
-  if (shouldIncludeReleaseManagementOption(presentation, 'order')) query.order = presentation.order;
+  // A null presentation (the Reset defaults temporary context) leaves
+  // Sort/Order to the defaults.
+  if (presentation && shouldIncludeReleaseManagementOption(presentation, 'sort')) query.sort = presentation.sort;
+  if (presentation && shouldIncludeReleaseManagementOption(presentation, 'order')) query.order = presentation.order;
   if (currentPage > 1) query.page = String(currentPage);
   if (normalizedFilters.pageSize !== PAGE_SIZE) query.pageSize = String(normalizedFilters.pageSize);
   return query;
@@ -1563,7 +1923,11 @@ function buildReleaseManagementRenderQuery(normalizedFilters, presentation, curr
   return {
     asset: normalizedFilters.assetId == null ? undefined : String(normalizedFilters.assetId),
     search: normalizedFilters.search || undefined,
+    // Legacy scalar alias (exactly one selection) for the single-select
+    // Project control; projectIds/type carry the full selections.
     project: normalizedFilters.projectId === null ? undefined : String(normalizedFilters.projectId),
+    projectIds: (normalizedFilters.projectIds ?? []).map(String),
+    type: [...(normalizedFilters.projectTypes ?? [])],
     schedule: normalizedFilters.schedule || undefined,
     includeArchived: normalizedFilters.includeArchived ? '1' : undefined,
     sort: presentation.sort,
@@ -1578,6 +1942,7 @@ function buildReleaseManagementClearOverrides() {
     asset: null,
     search: null,
     project: null,
+    type: null,
     schedule: null,
     includeArchived: null,
     sort: null,
@@ -3083,12 +3448,33 @@ function buildPageUrl(req, baseQuery = req.query) {
       if (value === undefined || value === null || value === '' || (key === 'page' && value == 1)) {
         delete query[key];
       } else {
-        query[key] = String(value);
+        query[key] = Array.isArray(value) ? value.map(String) : String(value);
       }
     }
-    const search = new URLSearchParams(query).toString();
+    const search = toRepeatedSearchParams(query).toString();
     return search ? `${cleanPath}?${search}` : cleanPath;
   };
+}
+
+/**
+ * Serialize a query object whose values are scalars or arrays. Arrays become
+ * repeated parameters (`project=7&project=12`), never String(array); scalar
+ * values serialize exactly as `new URLSearchParams(object)` would, so legacy
+ * scalar callers (Calendar) keep byte-identical URLs.
+ *
+ * @param {Record<string, unknown>} query
+ * @returns {URLSearchParams}
+ */
+function toRepeatedSearchParams(query) {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (Array.isArray(value)) {
+      for (const entry of value) params.append(key, String(entry));
+    } else {
+      params.append(key, String(value));
+    }
+  }
+  return params;
 }
 
 /**

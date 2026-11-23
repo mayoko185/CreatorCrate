@@ -90,7 +90,7 @@ function validValues(page, values) {
   if (!isRecord(values)) return false;
   return page.fields.every((field) => (
     page.multiFields.has(field) ? isMultiValue(values[field]) : isScalar(values[field])
-  ));
+  ) && (page.supportsValue?.(field, values[field]) ?? true));
 }
 
 function copyValues(page, values) {
@@ -140,7 +140,8 @@ export function parseExplicitPageDefaultsAuthority(page, value, { requireCurrent
   if (!savedComplete) return null;
   const savedKeys = page.fields.filter((field) => authority.saved[field].stored);
   if (savedKeys.join() !== authority.savedKeys.join()) return null;
-  if (requireCurrent && (!validValues(page, authority.current) || typeof authority.currentUrl !== 'string')) return null;
+  if ((requireCurrent || (page.supportsValue && Object.hasOwn(authority, 'current')))
+    && (!validValues(page, authority.current) || typeof authority.currentUrl !== 'string')) return null;
   return authority;
 }
 
@@ -154,6 +155,32 @@ function defaultCsrfToken(document, form) {
   const field = form?.querySelector?.('input[name="_csrf"]')
     || document?.querySelector?.('input[name="_csrf"]');
   return field?.value || field?.getAttribute?.('value') || '';
+}
+
+/**
+ * Whether a raw URL reference names something other than the base it would
+ * be resolved against. The URL parser trims leading/trailing C0 controls and
+ * spaces and drops every ASCII tab/newline before resolving; a reference left
+ * empty, or holding only a fragment, then resolves to the base itself, query
+ * included. Query-only and path-bearing references are meaningful (they
+ * replace the base's query).
+ *
+ * P3-C3 follow-up: a scheme followed by nothing or only a fragment ("http:",
+ * "HTTPS:#x") is just as empty — when the scheme matches the base's, the
+ * parser resolves it relative to the base and inherits the current query —
+ * so the remainder after a leading scheme must itself be meaningful.
+ */
+const URL_SCHEME_PREFIX = /^[A-Za-z][A-Za-z0-9+.-]*:/;
+
+function meaningfulUrlReference(value) {
+  if (typeof value !== 'string') return false;
+  let start = 0;
+  let end = value.length;
+  while (start < end && value.charCodeAt(start) <= 0x20) start += 1;
+  while (end > start && value.charCodeAt(end - 1) <= 0x20) end -= 1;
+  const reference = value.slice(start, end).replace(/[\t\n\r]/g, '');
+  const remainder = reference.replace(URL_SCHEME_PREFIX, '');
+  return remainder !== '' && !remainder.startsWith('#');
 }
 
 function pathOf(url, base) {
@@ -276,6 +303,7 @@ export function createExplicitPageDefaults(document, page, options = {}) {
       }
     }
     state.metadata = { authority: authority || null, order, generation: offered };
+    if (authority) page.onMetadataAccepted?.(document, authority);
     return true;
   }
 
@@ -516,10 +544,13 @@ export function createExplicitPageDefaults(document, page, options = {}) {
     const liveState = snapshotLive();
     const url = destination || liveState?.intendedUrl || baseUrl();
     operation.refreshDestination = url;
-    const historyMode = liveState?.pending && liveState.requestedHistoryMode === 'push' ? 'push' : 'replace';
+    let historyMode = liveState?.outstandingHistoryMode;
+    if (historyMode === undefined && liveState?.pending && liveState.requestedHistoryMode === 'push') {
+      historyMode = 'push';
+    }
     let outcome;
     try {
-      outcome = live.navigate(document, url, { historyMode });
+      outcome = live.navigate(document, url, { historyMode: historyMode ?? 'replace' });
     } catch {
       outcome = { status: 'unavailable' };
     }
@@ -709,13 +740,46 @@ export function createExplicitPageDefaults(document, page, options = {}) {
     return { outcome: reject(operation, messages.notSaved), snapshot };
   }
 
+  // A same-origin address of this page's own path; anything else is treated
+  // as no destination at all. P3 correction 3: checked BEFORE resolution, a
+  // reference the URL parser would reduce to nothing or to a bare fragment
+  // (empty, whitespace, "#…") resolves to the CURRENT address — its temporary
+  // restrictions included — and so is no Reset destination. P3-C3 follow-up:
+  // so is a scheme-only reference ("http:", "http:#x"), and so is any address
+  // carrying userinfo — origin ignores credentials, but the request engine
+  // cannot fetch such a URL, so the Reset would never be issued.
+  function pageResetDestination(value) {
+    if (!meaningfulUrlReference(value)) return false;
+    try {
+      const base = new URL(baseUrl());
+      const url = new URL(value, base);
+      if (url.username !== '' || url.password !== '') return false;
+      return url.origin === base.origin && url.pathname === page.basePath;
+    } catch {
+      return false;
+    }
+  }
+
   function resetFilters() {
     if (state.destroyed) return { outcome: 'unavailable' };
     if (operationBusy()) {
       report(messages.busy, 'error');
       return { outcome: 'blocked' };
     }
-    const destination = readAuthority()?.resetFiltersUrl || page.resetFiltersUrl;
+    // The installed authority's destination; without one (authority missing,
+    // unparseable or carrying no destination, or — P3-B — one that does not
+    // address this page) a page may derive its Reset from the installed page
+    // (C4: Calendar keeps the displayed month; P3-B: Releases keeps the
+    // intended page size), and refuses rather than navigate somewhere wrong
+    // when it cannot.
+    const authorityDestination = readAuthority()?.resetFiltersUrl;
+    const destination = pageResetDestination(authorityDestination)
+      ? authorityDestination
+      : (typeof page.resetFiltersFallback === 'function' ? page.resetFiltersFallback(document) : page.resetFiltersUrl);
+    if (!destination) {
+      report(messages.resetFiltersUnavailable, 'error');
+      return { outcome: 'blocked' };
+    }
     let outcome;
     try {
       outcome = live.navigate(document, destination, { historyMode: 'push' });
@@ -726,7 +790,9 @@ export function createExplicitPageDefaults(document, page, options = {}) {
     // The session Grid style yields to the saved one; a choice made after
     // this point is newer and wins.
     state.gridStyleIntent = null;
-    state.filtersReset = { id: state.seq += 1, generation: outcome.generation, phase: 'pending' };
+    state.filtersReset = {
+      id: state.seq += 1, generation: outcome.generation, phase: 'pending', destination: pathOf(destination, baseUrl()),
+    };
     changed();
     return { outcome: 'started', generation: outcome.generation };
   }
@@ -792,6 +858,9 @@ export function createExplicitPageDefaults(document, page, options = {}) {
   function retryRefresh() {
     const operation = state.operation;
     if (!operation || operation.phase !== 'refresh-failed') return 'unavailable';
+    const liveState = snapshotLive();
+    // A newer edit can already own a debounced GET before its started event.
+    if (liveState?.outstandingHistoryMode != null && liveState.pending) return 'superseded';
     report(operation.kind === 'save'
       ? messages.saving
       : messages.resettingDefaults, 'pending');
@@ -832,7 +901,12 @@ export function createExplicitPageDefaults(document, page, options = {}) {
         operation.refreshGeneration = generation;
         if (typeof detail.url === 'string') operation.refreshDestination = detail.url;
       }
-      if (reset && reset.phase !== 'pending' && pathOf(detail.url, baseUrl()) === page.resetFiltersUrl) {
+      // The engine's GET Retry of a failed Reset filters repeats its address:
+      // the page's fixed Reset address, or (WP12 Releases, whose Reset keeps
+      // the URL page size) the exact destination that Reset requested.
+      const startedPath = pathOf(detail.url, baseUrl());
+      if (reset && reset.phase !== 'pending'
+        && (startedPath === page.resetFiltersUrl || (reset.destination && startedPath === reset.destination))) {
         reset.generation = generation;
         reset.phase = 'pending';
       }

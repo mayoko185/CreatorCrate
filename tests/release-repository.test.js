@@ -325,6 +325,86 @@ describe('release repository', () => {
       expect(releaseRepo.findCalendarRange('2025-01-01', '2025-02-01').map((row) => row.id)).toEqual([late.id]);
     });
 
+    describe('WP13 Project and Project Type selections', () => {
+      let alpha;
+      let bravo;
+      let charlie;
+      let delta;
+      let ids;
+
+      beforeEach(() => {
+        // projectId ('Parent Project', images) stays as an unselected bystander.
+        alpha = projectRepo.create(sampleProject({ title: 'WP13 Alpha', projectType: 'images' }));
+        bravo = projectRepo.create(sampleProject({ title: 'WP13 Bravo', projectType: 'comic' }));
+        charlie = projectRepo.create(sampleProject({ title: 'WP13 Charlie', projectType: 'animation' }));
+        delta = projectRepo.create(sampleProject({ title: 'WP13 Delta', projectType: 'comic' }));
+        // Calendar keeps releases of archived parents in its candidate set.
+        db.prepare("UPDATE projects SET status = 'archived', archived_at = '2025-05-01 00:00:00' WHERE id = ?")
+          .run(charlie.id);
+        const make = (owner, title, fields) => releaseRepo.create({ projectId: owner.id, ...sampleRelease({ title, ...fields }) }).id;
+        ids = {
+          bystander: make({ id: projectId }, 'Bystander', { plannedDate: '2025-06-15', plannedTime: '07:00' }),
+          alpha: make(alpha, 'Alpha 15th', { plannedDate: '2025-06-15', plannedTime: '08:00' }),
+          bravo: make(bravo, 'Bravo 15th', { plannedDate: '2025-06-15', plannedTime: '09:00' }),
+          // Publication wins over plan and moves it into June (30th).
+          bravoPublishedIn: make(bravo, 'Bravo published in', { plannedDate: '2025-07-02', publishedDate: '2025-06-30' }),
+          // Publication moves it out of June into July.
+          bravoPublishedOut: make(bravo, 'Bravo published out', { plannedDate: '2025-06-29', publishedDate: '2025-07-01' }),
+          bravoArchived: make(bravo, 'Bravo archived', { plannedDate: '2025-06-15', plannedTime: '06:00' }),
+          charlie: make(charlie, 'Charlie archived parent', { plannedDate: '2025-06-01' }),
+          delta: make(delta, 'Delta 20th', { plannedDate: '2025-06-20' }),
+          deltaJuly: make(delta, 'Delta July', { plannedDate: '2025-07-01' }),
+        };
+        releaseRepo.archive(ids.bravoArchived);
+      });
+
+      const june = (filters) => releaseRepo.findCalendarRange('2025-06-01', '2025-07-01', filters).map((row) => row.id);
+
+      it('keeps the unrestricted candidate set for absent, null and empty selections', () => {
+        const all = [ids.charlie, ids.bystander, ids.alpha, ids.bravo, ids.delta, ids.bravoPublishedIn];
+        expect(june()).toEqual(all);
+        expect(june(null)).toEqual(all);
+        expect(june({ projectIds: [], projectTypes: [] })).toEqual(all);
+      });
+
+      it('accepts the legacy scalar Project ID as a one-Project selection', () => {
+        expect(june(alpha.id)).toEqual([ids.alpha]);
+        expect(june({ projectIds: [alpha.id] })).toEqual([ids.alpha]);
+      });
+
+      it('ORs Project IDs and keeps the effective-date order on a shared day', () => {
+        expect(june({ projectIds: [bravo.id, alpha.id] })).toEqual([ids.alpha, ids.bravo, ids.bravoPublishedIn]);
+      });
+
+      it('ORs Project Types against projects.project_type', () => {
+        expect(june({ projectTypes: ['comic'] })).toEqual([ids.bravo, ids.delta, ids.bravoPublishedIn]);
+        expect(june({ projectTypes: ['animation', 'comic'] }))
+          .toEqual([ids.charlie, ids.bravo, ids.delta, ids.bravoPublishedIn]);
+      });
+
+      it('ANDs Projects with Types and returns nothing for an empty intersection', () => {
+        expect(june({ projectIds: [alpha.id, bravo.id], projectTypes: ['comic'] }))
+          .toEqual([ids.bravo, ids.bravoPublishedIn]);
+        expect(june({ projectIds: [alpha.id], projectTypes: ['comic'] })).toEqual([]);
+        expect(june({ projectTypes: ['wallpaper'] })).toEqual([]);
+      });
+
+      it('keeps archived-parent releases and excludes archived releases under a selection', () => {
+        const rows = releaseRepo.findCalendarRange('2025-06-01', '2025-07-01', { projectIds: [charlie.id] });
+        expect(rows.map((row) => row.id)).toEqual([ids.charlie]);
+        expect(rows[0]).toMatchObject({ project_status: 'archived', project_archived_at: '2025-05-01 00:00:00' });
+        expect(june({ projectIds: [bravo.id] })).not.toContain(ids.bravoArchived);
+      });
+
+      it('keeps month boundaries and publication precedence, without duplicates', () => {
+        const july = releaseRepo.findCalendarRange('2025-07-01', '2025-08-01', { projectTypes: ['comic'] });
+        expect(july.map((row) => row.id)).toEqual([ids.bravoPublishedOut, ids.deltaJuly]);
+        const both = june({ projectIds: [alpha.id, bravo.id, charlie.id, delta.id], projectTypes: ['animation', 'comic', 'images'] });
+        expect(new Set(both).size).toBe(both.length);
+        expect(both).toEqual([ids.charlie, ids.alpha, ids.bravo, ids.delta, ids.bravoPublishedIn]);
+        expect(releaseRepo.findCalendarRange('2099-01-01', '2099-02-01', { projectTypes: ['comic'] })).toEqual([]);
+      });
+    });
   });
 
   describe('findReleaseAssetsByReleaseIds', () => {
@@ -1196,6 +1276,135 @@ describe('release repository', () => {
       expect(releaseRepo.countFiltered({ today: TODAY })).toBe(2);
       expect(releaseRepo.countFiltered({ assetId: null, today: TODAY })).toBe(2);
       expect(releaseRepo.findPage({ assetId: null, today: TODAY })).toHaveLength(2);
+    });
+  });
+
+  // ─── Filters & Defaults M3 WP11: repeated Project IDs + Project Types ─────
+
+  describe('findPage / countFiltered — projectIds and projectTypes (WP11)', () => {
+    const TODAY = '2025-06-15';
+    let comicA;
+    let comicB;
+    let animation;
+    let images;
+    const titles = (rows) => rows.map((row) => row.title);
+
+    beforeEach(() => {
+      comicA = projectRepo.create(sampleProject({ title: 'WP11 Comic A', projectType: 'comic' }));
+      comicB = projectRepo.create(sampleProject({ title: 'WP11 Comic B', projectType: 'comic' }));
+      animation = projectRepo.create(sampleProject({ title: 'WP11 Animation', projectType: 'animation' }));
+      images = projectRepo.create(sampleProject({ title: 'WP11 Images', projectType: 'images' }));
+      releaseRepo.create({ projectId: comicA.id, ...sampleRelease({ title: 'CA Alpha', plannedDate: '2025-06-01' }) });
+      releaseRepo.create({ projectId: comicA.id, ...sampleRelease({ title: 'CA Beta', plannedDate: '2025-07-01' }) });
+      releaseRepo.create({ projectId: comicB.id, ...sampleRelease({ title: 'CB Alpha' }) });
+      releaseRepo.create({ projectId: animation.id, ...sampleRelease({ title: 'AN Alpha', plannedDate: '2025-06-02' }) });
+      releaseRepo.create({ projectId: images.id, ...sampleRelease({ title: 'IM Alpha' }) });
+    });
+
+    it('ORs repeated project IDs and agrees with countFiltered', () => {
+      const filters = { projectIds: [comicA.id, animation.id], sortBy: 'title', order: 'asc', today: TODAY };
+      expect(titles(releaseRepo.findPage(filters))).toEqual(['AN Alpha', 'CA Alpha', 'CA Beta']);
+      expect(releaseRepo.countFiltered(filters)).toBe(3);
+    });
+
+    it('lets projectIds win over a legacy projectId instead of applying both', () => {
+      const filters = { projectId: images.id, projectIds: [comicB.id], sortBy: 'title', order: 'asc', today: TODAY };
+      expect(titles(releaseRepo.findPage(filters))).toEqual(['CB Alpha']);
+      expect(releaseRepo.countFiltered(filters)).toBe(1);
+      // An empty array keeps the legacy scalar equality.
+      expect(titles(releaseRepo.findPage({ projectId: images.id, projectIds: [], today: TODAY }))).toEqual(['IM Alpha']);
+    });
+
+    it('keeps unknown project IDs as a restriction that matches nothing', () => {
+      expect(releaseRepo.countFiltered({ projectIds: [999999], today: TODAY })).toBe(0);
+      expect(releaseRepo.findPage({ projectIds: [999999], today: TODAY })).toEqual([]);
+      expect(titles(releaseRepo.findPage({ projectIds: [999999, images.id], today: TODAY }))).toEqual(['IM Alpha']);
+    });
+
+    it('ORs repeated project types against projects.project_type', () => {
+      const one = { projectTypes: ['comic'], sortBy: 'title', order: 'asc', today: TODAY };
+      expect(titles(releaseRepo.findPage(one))).toEqual(['CA Alpha', 'CA Beta', 'CB Alpha']);
+      expect(releaseRepo.countFiltered(one)).toBe(3);
+      const two = { projectTypes: ['animation', 'comic'], sortBy: 'title', order: 'asc', today: TODAY };
+      expect(titles(releaseRepo.findPage(two))).toEqual(['AN Alpha', 'CA Alpha', 'CA Beta', 'CB Alpha']);
+      expect(releaseRepo.countFiltered(two)).toBe(4);
+      expect(releaseRepo.countFiltered({ projectTypes: ['wallpaper'], today: TODAY })).toBe(0);
+    });
+
+    it('ANDs the project and type dimensions with each other', () => {
+      const filters = {
+        projectIds: [comicA.id, images.id],
+        projectTypes: ['animation', 'comic'],
+        sortBy: 'title',
+        order: 'asc',
+        today: TODAY,
+      };
+      expect(titles(releaseRepo.findPage(filters))).toEqual(['CA Alpha', 'CA Beta']);
+      expect(releaseRepo.countFiltered(filters)).toBe(2);
+      // Disjoint dimensions produce an empty subset, not a broadened list.
+      expect(releaseRepo.countFiltered({ projectIds: [images.id], projectTypes: ['comic'], today: TODAY })).toBe(0);
+    });
+
+    it('composes with search, schedule and include archived', () => {
+      const base = { projectIds: [comicA.id, comicB.id, animation.id], projectTypes: ['comic', 'animation'], today: TODAY };
+      expect(titles(releaseRepo.findPage({ ...base, search: 'Alpha', sortBy: 'title', order: 'asc' })))
+        .toEqual(['AN Alpha', 'CA Alpha', 'CB Alpha']);
+      expect(releaseRepo.countFiltered({ ...base, search: 'Alpha' })).toBe(3);
+      expect(titles(releaseRepo.findPage({ ...base, schedule: 'overdue', sortBy: 'title', order: 'asc' })))
+        .toEqual(['AN Alpha', 'CA Alpha']);
+      expect(releaseRepo.countFiltered({ ...base, schedule: 'upcoming' })).toBe(1);
+      expect(releaseRepo.countFiltered({ ...base, schedule: 'unscheduled' })).toBe(1);
+
+      const archivedRelease = releaseRepo.findPage({ ...base, search: 'CA Beta' })[0];
+      releaseRepo.archive(archivedRelease.id);
+      expect(releaseRepo.countFiltered(base)).toBe(3);
+      expect(releaseRepo.countFiltered({ ...base, includeArchived: true })).toBe(4);
+      // Schedule filters keep excluding archived releases even with includeArchived.
+      expect(releaseRepo.countFiltered({ ...base, includeArchived: true, schedule: 'upcoming' })).toBe(0);
+    });
+
+    it('keeps archived-parent restrictions for selected historical projects', () => {
+      projectRepo.archive(animation.id);
+      const filters = { projectIds: [animation.id], today: TODAY };
+      // Active-workflow listing hides archived parents; schedule filters always do.
+      expect(releaseRepo.countFiltered({ ...filters, activeScheduleFilter: true })).toBe(0);
+      expect(releaseRepo.countFiltered({ ...filters, activeScheduleFilter: false })).toBe(1);
+      expect(releaseRepo.countFiltered({ ...filters, schedule: 'overdue' })).toBe(0);
+    });
+
+    it('paginates the filtered set before LIMIT/OFFSET with deterministic ordering', () => {
+      for (let i = 0; i < 4; i++) {
+        releaseRepo.create({ projectId: comicB.id, ...sampleRelease({ title: `CB Extra ${i}` }) });
+        releaseRepo.create({ projectId: images.id, ...sampleRelease({ title: `IM Extra ${i}` }) });
+      }
+      const filters = { projectIds: [comicA.id, comicB.id], projectTypes: ['comic'], sortBy: 'title', order: 'asc', today: TODAY };
+      const total = releaseRepo.countFiltered(filters);
+      expect(total).toBe(7);
+      const page1 = releaseRepo.findPage({ ...filters, limit: 3, offset: 0 });
+      const page2 = releaseRepo.findPage({ ...filters, limit: 3, offset: 3 });
+      const page3 = releaseRepo.findPage({ ...filters, limit: 3, offset: 6 });
+      expect(titles(page1)).toEqual(['CA Alpha', 'CA Beta', 'CB Alpha']);
+      expect(titles(page2)).toEqual(['CB Extra 0', 'CB Extra 1', 'CB Extra 2']);
+      expect(titles(page3)).toEqual(['CB Extra 3']);
+      const ids = [...page1, ...page2, ...page3].map((row) => row.id);
+      expect(new Set(ids).size).toBe(total);
+    });
+
+    it('intersects with the exact-asset scope without leaking other projects', () => {
+      const asset = assetRepo.upsert(comicA.id, 'wp11.txt', sampleAsset(comicA.id, { relativePath: 'wp11.txt' }));
+      const scoped = releaseRepo.findPage({ projectIds: [comicA.id], today: TODAY, sortBy: 'title', order: 'asc' })[0];
+      releaseRepo.addReleaseAsset(scoped.id, asset.id, 'primary', 0);
+      const foreign = releaseRepo.findPage({ projectIds: [comicB.id], today: TODAY })[0];
+      db.prepare('INSERT INTO release_assets (release_id, asset_id, role, sort_order) VALUES (?, ?, ?, ?)')
+        .run(foreign.id, asset.id, 'attachment', 0);
+
+      expect(titles(releaseRepo.findPage({ assetId: asset.id, projectIds: [comicA.id], today: TODAY }))).toEqual(['CA Alpha']);
+      expect(titles(releaseRepo.findPage({ assetId: asset.id, projectIds: [comicA.id, comicB.id], today: TODAY }))).toEqual(['CA Alpha']);
+      expect(releaseRepo.countFiltered({ assetId: asset.id, projectIds: [comicB.id, images.id], today: TODAY })).toBe(0);
+      expect(releaseRepo.countFiltered({ assetId: asset.id, projectTypes: ['comic'], today: TODAY })).toBe(1);
+      expect(releaseRepo.countFiltered({ assetId: asset.id, projectTypes: ['images'], today: TODAY })).toBe(0);
+      expect(releaseRepo.countFiltered({ assetId: asset.id, projectTypes: ['comic'], schedule: 'overdue', today: TODAY })).toBe(1);
+      expect(releaseRepo.countFiltered({ assetId: asset.id, projectTypes: ['comic'], schedule: 'upcoming', today: TODAY })).toBe(0);
     });
   });
 

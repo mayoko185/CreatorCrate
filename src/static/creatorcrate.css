@@ -5350,18 +5350,6 @@
       #asset-viewer-filter-dialog .asset-filter-multiselect--sized summary {
         width: 100%;
       }
-      #releases-filter-dialog .page-defaults-grid > .asset-viewer-filter-field {
-        width: 100%;
-        max-width: none;
-      }
-      #releases-filter-dialog .page-defaults-grid > .releases-filter-field--search,
-      #releases-filter-dialog .page-defaults-grid > .releases-filter-field--project {
-        grid-column: 1 / -1;
-      }
-      #releases-filter-dialog .asset-filter-multiselect--sized,
-      #releases-filter-dialog .asset-filter-multiselect--sized summary {
-        width: 100%;
-      }
       #project-assets-defaults-dialog .page-defaults-scope {
         min-width: 0;
         margin: 0;
@@ -5433,7 +5421,6 @@
         font-size: 0.875rem;
       }
       .app-dialog[data-dialog-state="error"] .app-dialog-status { color: var(--danger); }
-      #calendar-defaults-form[data-settings-fetch-save-state="error"] > .app-dialog-status,
       #projects-defaults-form[data-settings-fetch-save-state="error"] > .projects-defaults-save-status {
         color: var(--danger);
       }
@@ -17798,5 +17785,51 @@ html:has(.unified-viewer-dialog > .app-dialog-card:fullscreen) {
 }
 .app-dialog--filters-defaults.projects-filters-defaults .filters-defaults-recovery[hidden],
 .app-dialog--filters-defaults.projects-filters-defaults .filters-defaults-recovery > [hidden] {
+  display: none;
+}
+
+/* ── Releases Filters & Defaults (Filters & Defaults M3 WP12) ──
+   The same shared combined-dialog layout as Asset Library and Projects. The
+   searchable Projects and Project Types selectors keep no stacking context of
+   their own inside the dialog, so a later field never paints over an earlier
+   one's open overlay. Unavailable selected Projects read as a restriction. */
+.app-dialog--filters-defaults.releases-filters-defaults .asset-viewer-project-filter {
+  z-index: auto;
+}
+.app-dialog--filters-defaults.releases-filters-defaults .releases-project-option--unavailable label > span {
+  color: var(--muted);
+  font-style: italic;
+}
+.app-dialog--filters-defaults.releases-filters-defaults .filters-defaults-recovery {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+.app-dialog--filters-defaults.releases-filters-defaults .filters-defaults-recovery[hidden],
+.app-dialog--filters-defaults.releases-filters-defaults .filters-defaults-recovery > [hidden] {
+  display: none;
+}
+
+/* ── Calendar Filters & Defaults (Filters & Defaults M3 WP14b) ──
+   The same shared combined-dialog layout as Asset Library, Projects and
+   Releases. The searchable Projects and Project Types selectors keep no
+   stacking context of their own inside the dialog, so a later field never
+   paints over an earlier one's open overlay. Archived Projects stay
+   selectable and read "Archived" beside the title. */
+.app-dialog--filters-defaults.calendar-filters-defaults .asset-viewer-project-filter {
+  z-index: auto;
+}
+.app-dialog--filters-defaults.calendar-filters-defaults .calendar-project-option--archived label > span > em {
+  color: var(--muted);
+  font-size: 0.85em;
+  font-style: normal;
+}
+.app-dialog--filters-defaults.calendar-filters-defaults .filters-defaults-recovery {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+.app-dialog--filters-defaults.calendar-filters-defaults .filters-defaults-recovery[hidden],
+.app-dialog--filters-defaults.calendar-filters-defaults .filters-defaults-recovery > [hidden] {
   display: none;
 }

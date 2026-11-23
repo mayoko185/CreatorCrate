@@ -14,8 +14,19 @@
   <div class="notice notice--success app-dialog-feedback" data-dialog-feedback role="status" hidden>
     <p data-dialog-feedback-text></p>
   </div>
-  <div class="calendar-view-{{ view }}" data-calendar-live-region data-calendar-month="{{ month }}">
+  <div class="calendar-view-{{ view }}" data-calendar-live-region data-calendar-month="{{ month }}" data-calendar-current-month="{{ today.slice(0, 7) }}">
   <span class="sr-only" data-calendar-live-status aria-live="polite" aria-atomic="true"></span>
+  {# WP14a: authoritative defaults metadata of this rendered page (effective
+     current View/status/week start, saved-key presence, fallbacks, durable
+     generation, displayed month, the Reset filters destination). Data only;
+     it travels with every live-region install so a prepared response is
+     never mistaken for the installed one. #}
+  {% if calendarDefaultsAuthorityJson %}
+  <script type="application/json" data-calendar-defaults-authority>{{ calendarDefaultsAuthorityJson | safe }}</script>
+  {% endif %}
+  {% if calendarDefaultsNotice %}
+  <p class="page-notice" role="status" data-calendar-defaults-notice>{{ calendarDefaultsNotice }}</p>
+  {% endif %}
   <div class="calendar-nav" aria-label="Calendar navigation">
     <div class="calendar-view-switcher">{{ viewSwitcher.render(view, pageUrl, 'Calendar display', true, 'Calendar', 'List') }}</div>
     <h2 tabindex="-1" data-calendar-month-heading>
@@ -43,15 +54,11 @@
       {% endif %}
     </div>
     <div class="calendar-nav-actions project-filter-actions project-filter-actions--projects">
+      {# WP14b: the one Filters & Defaults entry (the separate Defaults entry is retired). #}
       <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
-         href="#calendar-filter-dialog" aria-label="Filters"
-         data-dialog-open="calendar-filter-dialog" data-tooltip="Filters">
+         href="#calendar-filter-dialog" aria-label="Filters &amp; Defaults"
+         data-dialog-open="calendar-filter-dialog" data-tooltip="Filters &amp; Defaults">
         {{ icons.icon('content-filter') }}
-      </a>
-      <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
-         href="/calendar?defaults=1" aria-label="Calendar defaults"
-         data-dialog-open="calendar-defaults-dialog" data-tooltip="Calendar defaults">
-        {{ icons.icon('settings') }}
       </a>
     </div>
   </div>
@@ -147,61 +154,164 @@
     </form>
   {% endcall %}
 
-  {% call dialog.render('calendar-filter-dialog', 'Filters', dialogClass='app-dialog--utility') %}
-    <form id="calendar-filters" class="app-dialog-form project-form" method="get" action="/calendar" data-calendar-filters>
-      <div class="app-dialog-body">
-        <div class="page-defaults-grid">
-          <input type="hidden" name="month" value="{{ month }}">
-          {% if query.view %}<input type="hidden" name="view" value="{{ query.view }}">{% endif %}
-          {{ dropdown.searchableSingleSelect({ id: 'calendar-project-filter', name: 'project', label: 'Project',
-          options: projectOptions, valueKey: 'id', labelKey: 'title', selected: projectId,
-          placeholder: 'All projects', panelLabel: 'Project options', searchLabel: 'Search projects',
-          searchInputId: 'calendar-project-search', noResultsText: 'No matching projects',
-          optionListLabel: 'Project choices', optionIdPrefix: 'calendar-project',
-          fieldClasses: 'app-dialog-field asset-viewer-filter-field asset-viewer-project-filter projects-filter-field--project',
-          classes: 'asset-project-filter-disclosure' }) }}
-          {{ dropdown.singleSelect({ id: 'calendar-status-filter', name: 'status', label: 'Release status',
-          options: [{ value: 'all', label: 'All releases' }, { value: 'planned', label: 'Planned' }, { value: 'published', label: 'Published' }],
-          selected: status, panelLabel: 'Release status options',
-          fieldClasses: 'app-dialog-field asset-viewer-filter-field' }) }}
-          {{ dropdown.singleSelect({ id: 'calendar-week-start-filter', name: 'weekStart', label: 'Week starts',
-          options: [{ value: 'monday', label: 'Monday' }, { value: 'sunday', label: 'Sunday' }],
-          selected: weekStart, panelLabel: 'Week start options',
-          fieldClasses: 'app-dialog-field asset-viewer-filter-field' }) }}
-        </div>
-      </div>
-    </form>
-    <form class="projects-filter-reset app-dialog-footer" method="get" action="{{ resetFiltersUrl }}">
-      <button class="button button-secondary" type="submit" data-calendar-reset>Reset filters</button>
-    </form>
-  {% endcall %}
+  {#
+    WP14b Filters & Defaults: one dialog, owning forms side by side, no nesting.
+    - #calendar-filters-defaults-form holds the saved-state line and the
+      explicit-save status. client/calendar-filters-defaults.js binds it
+      (data-defaults-explicit-save, no autosave marker): Save new defaults
+      posts one snapshot of the THREE eligible settings (Desktop view, Release
+      status, Week starts) taken from the INSTALLED page authority, with the
+      current durable generation and an operation identity. Save and Reset
+      defaults are JavaScript-only: the form has no native mutation
+      (method="dialog", no saveable fields), both buttons are rendered disabled
+      and type="button", and the controller arms them only once it owns their
+      click paths. The legacy per-control autosave form is retired.
+    - #calendar-filters (GET) is the only filter state. Every control that
+      changes the Calendar (Projects, Project Types, Release status, Desktop
+      view, Week starts) belongs to it and navigates through the one Calendar
+      live-region engine; the displayed month travels as its hidden field.
+      Repeated values stay repeated (project=7&project=12, type=comic&type=book).
+  #}
+  {% set calendarAuthority = calendarDefaultsAuthority %}
+  {% set savedDefaultCount = calendarAuthority.savedKeys.length if calendarAuthority and calendarAuthority.savedKeys else 0 %}
+  {% call dialog.render('calendar-filter-dialog', 'Filters & Defaults', calendarDefaultsDialogOpen, '', 'calendar-filters-defaults-form', 'app-dialog--utility app-dialog--filters-defaults calendar-filters-defaults', [], true, 'Calendar') %}
+    <div class="app-dialog-body filters-defaults-dialog-body">
+      <form id="calendar-filters-defaults-form" method="dialog" class="filters-defaults-defaults-form"
+            data-dialog-form data-dialog-async="false" data-defaults-explicit-save novalidate>
+        <input type="hidden" name="_csrf" value="{{ _csrf }}">
 
-  {% call dialog.render('calendar-defaults-dialog', 'Calendar defaults', false, 'calendar-defaults-description', 'calendar-defaults-form', 'app-dialog--utility') %}
-    <form id="calendar-defaults-form" class="app-dialog-form project-form" method="post" action="/settings/defaults"
-          data-dialog-form data-dialog-async="false" data-calendar-defaults-fetch-save novalidate>
-      <p id="calendar-defaults-description" class="app-dialog-description">Choose the default desktop view, release status, and week start for Calendar.</p>
-      <div class="app-dialog-error" data-dialog-error role="alert" hidden>
-        <p data-dialog-error-text></p>
-        <ul data-dialog-error-list></ul>
-      </div>
-      <input type="hidden" name="_csrf" value="{{ _csrf }}">
-      <div class="app-dialog-body">
-        <div class="page-defaults-grid">
-          {% for field in calendarDefaults.fields %}
-            {% set fieldName = 'calendarView' if field.name == 'view' else ('calendarStatus' if field.name == 'status' else 'calendarWeekStart') %}
-            {% set fieldLabel = 'Desktop view' if field.name == 'view' else ('Default release status' if field.name == 'status' else 'Week starts') %}
-            <div class="field app-dialog-field" data-dialog-field="{{ field.name }}">
-              {{ dropdown.singleSelect({ id: field.id ~ '-dropdown', name: fieldName,
-                label: fieldLabel,
-                options: field.options, selected: field.selectedValue, optionIdPrefix: field.id,
-                nativeSelect: { id: field.id, attributes: [['required', true], ['data-autosubmit', 'fetch']] },
-                dispatchNativeChange: true }) }}
-            </div>
-          {% endfor %}
+        <div class="filters-defaults-status-row">
+          <p class="filters-defaults-saved-indicator" data-calendar-defaults-indicator>
+            {%- if not calendarAuthority -%}Saved defaults could not be read.
+            {%- elif savedDefaultCount == 0 -%}No saved defaults.
+            {%- elif savedDefaultCount == calendarAuthority.fields.length -%}Defaults saved.
+            {%- else -%}{{ savedDefaultCount }} of {{ calendarAuthority.fields.length }} defaults saved.{%- endif -%}
+          </p>
         </div>
-      </div>
-      <div class="app-dialog-status" data-settings-fetch-save-status role="status" aria-live="polite" aria-atomic="true"></div>
-    </form>
+
+        <div class="app-dialog-error" data-dialog-error role="alert" hidden>
+          <p data-dialog-error-text></p>
+          <ul data-dialog-error-list></ul>
+        </div>
+        <div class="app-dialog-status filters-defaults-status" data-settings-fetch-save-status role="status" aria-live="polite" aria-atomic="true"></div>
+        <div class="filters-defaults-recovery" data-calendar-defaults-recovery hidden>
+          <button class="button button-small button-secondary" type="button" data-calendar-defaults-retry hidden>Retry</button>
+          <button class="button button-small button-secondary" type="button" data-calendar-defaults-check hidden>Check again</button>
+        </div>
+      </form>
+
+      <form id="calendar-filters" class="filters-defaults-filters" method="get" action="/calendar" data-calendar-filters>
+        <input type="hidden" name="month" value="{{ month }}">
+        {% for id in carriedProjectIds %}
+          <input type="hidden" name="project" value="{{ id }}" data-calendar-intended-carrier data-cc-dropdown-carried-value>
+        {% endfor %}
+
+        <section class="filters-defaults-section" aria-labelledby="calendar-filters-heading">
+          <h3 id="calendar-filters-heading">Filters</h3>
+          <div class="filters-defaults-grid">
+            {% if projectFilterSelectedValues.length == 1 and carriedProjectIds.length == 1 %}
+              {% set projectFilterSummary = "1 project selected" %}
+            {% endif %}
+            {{ dropdown.multiSelect({
+              id: "calendar-project-filter",
+              name: "project",
+              label: "Projects",
+              options: projectFilterOptions or [],
+              selectedValues: projectFilterSelectedValues or [],
+              summary: projectFilterSummary,
+              selectAll: { value: '' },
+              emptySummary: "All projects",
+              countLabel: "projects",
+              searchable: true,
+              searchLabel: "Search projects",
+              searchInputId: "calendar-project-filter-search",
+              noResultsText: "No matching projects",
+              optionListLabel: "Project choices",
+              optionIdPrefix: "calendar-project",
+              panelLabel: "Project options",
+              emptyOptionText: "No projects available",
+              fieldClasses: "app-dialog-field asset-viewer-filter-field asset-viewer-project-filter calendar-filter-field--project",
+              fieldAttributes: [["data-calendar-project-filter", true]],
+              classes: "asset-project-filter-disclosure"
+            }) }}
+
+            {{ dropdown.multiSelect({
+              id: "calendar-type-filter",
+              name: "type",
+              label: "Project Types",
+              options: projectTypeOptions or [],
+              selectedValues: projectTypes or [],
+              selectAll: { value: '' },
+              emptySummary: "All types",
+              countLabel: "types",
+              searchable: true,
+              searchLabel: "Search project types",
+              searchInputId: "calendar-type-filter-search",
+              noResultsText: "No matching project types",
+              optionListLabel: "Project Type choices",
+              optionIdPrefix: "calendar-type",
+              panelLabel: "Project Type options",
+              emptyOptionText: "No project types available",
+              fieldClasses: "app-dialog-field asset-viewer-filter-field asset-viewer-project-filter calendar-filter-field--type",
+              fieldAttributes: [["data-calendar-type-filter", true]],
+              classes: "asset-project-filter-disclosure"
+            }) }}
+
+            {{ dropdown.singleSelect({
+              id: "calendar-status-filter",
+              name: "status",
+              label: "Release status",
+              options: [{ value: 'all', label: 'All releases' }, { value: 'planned', label: 'Planned' }, { value: 'published', label: 'Published' }],
+              selected: status,
+              optionIdPrefix: "calendar-status",
+              panelLabel: "Release status options",
+              fieldClasses: "app-dialog-field asset-viewer-filter-field"
+            }) }}
+          </div>
+        </section>
+
+        <section class="filters-defaults-section" aria-labelledby="calendar-misc-heading">
+          <h3 id="calendar-misc-heading">Miscellaneous</h3>
+          <div class="filters-defaults-grid">
+            {{ dropdown.singleSelect({
+              id: "calendar-view-filter",
+              name: "view",
+              label: "Desktop view",
+              options: [{ value: 'grid', label: 'Calendar' }, { value: 'list', label: 'List' }],
+              selected: view,
+              optionIdPrefix: "calendar-view",
+              panelLabel: "Desktop view options",
+              fieldClasses: "app-dialog-field asset-viewer-filter-field"
+            }) }}
+
+            {{ dropdown.singleSelect({
+              id: "calendar-week-start-filter",
+              name: "weekStart",
+              label: "Week starts",
+              options: [{ value: 'monday', label: 'Monday' }, { value: 'sunday', label: 'Sunday' }],
+              selected: weekStart,
+              optionIdPrefix: "calendar-week-start",
+              panelLabel: "Week start options",
+              fieldClasses: "app-dialog-field asset-viewer-filter-field"
+            }) }}
+          </div>
+        </section>
+      </form>
+    </div>
+    <footer class="app-dialog-footer filters-defaults-footer">
+      <button class="button button-secondary" type="button" disabled data-calendar-defaults-save>Save new defaults</button>
+      {# Reset defaults is JavaScript-only, like Save: no form, no native POST
+         and no rendered returnTo/generation. It is disabled until the
+         explicit-save controller owns it. #}
+      <button class="button button-secondary" type="button" disabled data-calendar-defaults-reset>Reset defaults</button>
+      {# GET-only: the server resolves the effective saved/default View, status
+         and week start; Projects and Project Types clear. The displayed month
+         is a hidden field (a GET form's action query would be replaced). #}
+      <form class="calendar-filter-reset filters-defaults-reset-form" method="get" action="/calendar">
+        <input type="hidden" name="month" value="{{ month }}">
+        <button class="button button-primary" type="submit" data-calendar-filters-reset>Reset filters</button>
+      </form>
+    </footer>
   {% endcall %}
 
   {# One Edit Release dialog for every Calendar release; release-edit-dialog.js

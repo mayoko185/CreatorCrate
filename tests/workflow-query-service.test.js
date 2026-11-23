@@ -1417,6 +1417,166 @@ describe('workflow query service', () => {
       }
     });
 
+    describe('repeated Project IDs and Project Types (WP11)', () => {
+      const TODAY = '2025-06-15';
+      const TYPE_CATALOGUE = [
+        { value: 'images', label: 'Images', color: '#111111', foregroundColor: '#ffffff' },
+        { value: 'comic', label: 'Comic Label', color: '#222222', foregroundColor: '#ffffff' },
+        { value: 'animation', label: 'Animation', color: '#333333', foregroundColor: '#ffffff' },
+      ];
+      let catalogue;
+      let wp11Service;
+      let comicA;
+      let comicB;
+      let animation;
+      let images;
+      let archivedComic;
+
+      beforeEach(() => {
+        catalogue = { getProjectTypeCatalogue: vi.fn(() => TYPE_CATALOGUE) };
+        wp11Service = createWorkflowQueryService({
+          db,
+          assetRepository,
+          projectPrimaryImageRepository: primaryImageRepository,
+          releaseRepository,
+          tagRepository,
+          projectOptionCatalogueService: catalogue,
+        });
+        comicA = insertProject(db, { title: 'WQS Comic A', projectType: 'comic' });
+        comicB = insertProject(db, { title: 'WQS Comic B', projectType: 'comic' });
+        animation = insertProject(db, { title: 'WQS Animation', projectType: 'animation' });
+        images = insertProject(db, { title: 'WQS Images', projectType: 'images' });
+        archivedComic = insertProject(db, {
+          title: 'WQS Archived Comic', projectType: 'comic', status: 'archived', archivedAt: '2025-01-01T00:00:00Z',
+        });
+        insertRelease(db, { projectId: comicA.id, title: 'CA One', plannedDate: '2025-06-01' });
+        insertRelease(db, { projectId: comicA.id, title: 'CA Two', plannedDate: '2025-07-01' });
+        insertRelease(db, { projectId: comicB.id, title: 'CB One' });
+        insertRelease(db, { projectId: animation.id, title: 'AN One', plannedDate: '2025-06-03' });
+        insertRelease(db, { projectId: images.id, title: 'IM One' });
+        insertRelease(db, { projectId: archivedComic.id, title: 'AC One' });
+      });
+
+      it('keeps the legacy single-Project URL as one ID plus the scalar alias', () => {
+        const filters = wp11Service.normalizeListFilters({ project: String(comicB.id) });
+        expect(filters.projectIds).toEqual([comicB.id]);
+        expect(filters.projectId).toBe(comicB.id);
+        expect(filters.projectTypes).toEqual([]);
+        const result = wp11Service.getReleaseList({ project: String(comicB.id) }, { today: TODAY });
+        expect(result.releases.map((release) => release.title)).toEqual(['CB One']);
+        expect(result.total).toBe(1);
+      });
+
+      it('dedupes and sorts repeated Project IDs, dropping malformed values individually', () => {
+        const forward = wp11Service.normalizeListFilters({ project: [String(comicB.id), String(comicA.id), String(comicB.id)] });
+        const reversed = wp11Service.normalizeListFilters({ project: [String(comicA.id), String(comicB.id)] });
+        expect(forward.projectIds).toEqual([comicA.id, comicB.id].sort((a, b) => a - b));
+        expect(reversed.projectIds).toEqual(forward.projectIds);
+        expect(forward.projectId).toBeNull();
+        expect(wp11Service.normalizeListFilters({ project: ['1junk', '+2', '0', String(images.id)] }).projectIds)
+          .toEqual([images.id]);
+        // Established policy: a lone malformed value stays unrestricted.
+        expect(wp11Service.normalizeListFilters({ project: 'abc' }).projectIds).toEqual([]);
+        expect(wp11Service.normalizeListFilters({ project: ['abc', '9007199254740993'] }).projectIds).toEqual([]);
+      });
+
+      // C1-A: Express parses `project[0]=A&project[1][]=B` to ['A', ['B']].
+      it('drops nested array/object Project entries instead of coercing them into IDs', () => {
+        const a = String(comicA.id);
+        const b = String(animation.id);
+        const reviewed = wp11Service.normalizeListFilters({ project: [a, [b]] });
+        expect(reviewed.projectIds).toEqual([comicA.id]);
+        expect(reviewed.projectId).toBe(comicA.id);
+        expect(wp11Service.normalizeListFilters({ project: [a, { x: b }] }).projectIds).toEqual([comicA.id]);
+        expect(wp11Service.normalizeListFilters({ project: [a, [b, b]] }).projectIds).toEqual([comicA.id]);
+        expect(wp11Service.normalizeListFilters({ project: [[a]] }).projectIds).toEqual([]);
+        expect(wp11Service.normalizeListFilters({ project: { 0: a } }).projectIds).toEqual([]);
+        // Valid flat scalars (strings or numbers) still dedupe and sort.
+        expect(wp11Service.normalizeListFilters({ project: [b, a, b, [a]] }).projectIds)
+          .toEqual([comicA.id, animation.id].sort((x, y) => x - y));
+        expect(wp11Service.normalizeListFilters({ project: [comicA.id, 2.5, 9007199254740993] }).projectIds)
+          .toEqual([comicA.id]);
+
+        const result = wp11Service.getReleaseList({ project: [a, [b]], sort: 'title', order: 'asc' }, { today: TODAY });
+        expect(result.releases.map((release) => release.title)).toEqual(['CA One', 'CA Two']);
+        expect(result.total).toBe(2);
+        // An unknown ID stays restrictive; a nested entry cannot widen it.
+        expect(wp11Service.getReleaseList({ project: ['999999', [a]] }, { today: TODAY }).total).toBe(0);
+      });
+
+      it('keeps unknown/deleted Project IDs as a restriction that matches nothing', () => {
+        const result = wp11Service.getReleaseList({ project: ['999999'] }, { today: TODAY });
+        expect(result.total).toBe(0);
+        expect(result.releases).toEqual([]);
+        expect(result.hasAnyReleases).toBe(true);
+        expect(wp11Service.getReleaseList({ project: ['999999', String(images.id)] }, { today: TODAY }).total).toBe(1);
+      });
+
+      it('ORs two Projects and keeps the archived-parent active-list restriction', () => {
+        const result = wp11Service.getReleaseList(
+          { project: [String(comicA.id), String(archivedComic.id)], sort: 'title', order: 'asc' },
+          { today: TODAY },
+        );
+        expect(result.releases.map((release) => release.title)).toEqual(['CA One', 'CA Two']);
+        expect(result.total).toBe(2);
+      });
+
+      it('validates Project Types against the live catalogue value, never the label', () => {
+        expect(wp11Service.normalizeListFilters({ type: 'comic' }).projectTypes).toEqual(['comic']);
+        expect(wp11Service.normalizeListFilters({ type: ['comic', 'animation', 'comic'] }).projectTypes)
+          .toEqual(['animation', 'comic']);
+        expect(wp11Service.normalizeListFilters({ type: ['Comic Label', 'wallpaper', 'stale', ''] }).projectTypes)
+          .toEqual([]);
+        expect(wp11Service.normalizeListFilters({ type: ['stale', 'images'] }).projectTypes).toEqual(['images']);
+      });
+
+      it('reads the catalogue only when a Type was supplied, and once per route-normalized request', () => {
+        wp11Service.normalizeListFilters({ project: String(comicA.id) });
+        expect(catalogue.getProjectTypeCatalogue).not.toHaveBeenCalled();
+        const raw = { type: ['comic'] };
+        const normalizedFilters = wp11Service.normalizeListFilters(raw);
+        wp11Service.getReleaseList(raw, { today: TODAY, normalizedFilters });
+        expect(catalogue.getProjectTypeCatalogue).toHaveBeenCalledTimes(1);
+      });
+
+      it('ORs Types, ANDs them with Projects, and agrees on totals and pages', () => {
+        const typesOnly = wp11Service.getReleaseList({ type: ['comic', 'animation'], sort: 'title', order: 'asc' }, { today: TODAY });
+        expect(typesOnly.releases.map((release) => release.title)).toEqual(['AN One', 'CA One', 'CA Two', 'CB One']);
+        expect(typesOnly.total).toBe(4);
+
+        const combined = { project: [String(comicA.id), String(images.id)], type: ['comic', 'animation'], sort: 'title', order: 'asc' };
+        const page1 = wp11Service.getReleaseList({ ...combined, pageSize: '1' }, { today: TODAY });
+        const page2 = wp11Service.getReleaseList({ ...combined, pageSize: '1', page: '2' }, { today: TODAY });
+        const clamped = wp11Service.getReleaseList({ ...combined, pageSize: '1', page: '9' }, { today: TODAY });
+        expect(page1.total).toBe(2);
+        expect(page1.pageCount).toBe(2);
+        expect(page1.releases.map((release) => release.title)).toEqual(['CA One']);
+        expect(page2.releases.map((release) => release.title)).toEqual(['CA Two']);
+        expect(clamped.page).toBe(2);
+        expect(clamped.releases.map((release) => release.title)).toEqual(['CA Two']);
+
+        const searched = wp11Service.getReleaseList({ ...combined, search: 'Two' }, { today: TODAY });
+        expect(searched.releases.map((release) => release.title)).toEqual(['CA Two']);
+        const scheduled = wp11Service.getReleaseList({ ...combined, schedule: 'overdue' }, { today: TODAY });
+        expect(scheduled.releases.map((release) => release.title)).toEqual(['CA One']);
+        const empty = wp11Service.getReleaseList({ project: String(images.id), type: 'comic' }, { today: TODAY });
+        expect(empty.total).toBe(0);
+        expect(empty.pageCount).toBe(1);
+      });
+
+      it('keeps selected historical Projects as options without inventing unknown ones', () => {
+        const options = wp11Service.getProjectsPageFilterOptions([comicA.id, archivedComic.id, 999999]);
+        const ids = options.map((option) => option.id);
+        expect(ids).toContain(comicA.id);
+        expect(ids).toContain(archivedComic.id);
+        expect(ids).not.toContain(999999);
+        expect(new Set(ids).size).toBe(ids.length);
+        // Legacy scalar and empty callers keep their behavior.
+        expect(wp11Service.getProjectsPageFilterOptions(archivedComic.id).map((option) => option.id)).toContain(archivedComic.id);
+        expect(wp11Service.getProjectsPageFilterOptions().map((option) => option.id)).not.toContain(archivedComic.id);
+      });
+    });
+
     it('returns releases with project_title and asset counts', () => {
       const project = insertProject(db, { title: 'Asset Count Project' });
       const release = insertRelease(db, { projectId: project.id, title: 'With Assets', status: 'planned' });
@@ -2295,6 +2455,115 @@ describe('workflow query service', () => {
       expect(sunday.firstDayWeekday).toBe(0);
       expect(service.getReleaseCalendar('2025-09', { today: '2025-09-01' }).firstDayWeekday).toBe(0);
       expect(service.getReleaseCalendar('2025-09', { today: '2025-09-01', weekStart: 'sunday' }).firstDayWeekday).toBe(1);
+    });
+
+    describe('WP13 multi-Project and Project Type Calendar filtering', () => {
+      const TYPE_CATALOGUE = [
+        { value: 'images', label: 'Images', color: '#111111', foregroundColor: '#ffffff' },
+        { value: 'comic', label: 'Comic', color: '#222222', foregroundColor: '#ffffff' },
+        { value: 'animation', label: 'Animation', color: '#333333', foregroundColor: '#ffffff' },
+      ];
+      let wp13Service;
+      let comic;
+      let comicTwo;
+      let animationArchived;
+      let images;
+      let ids;
+
+      beforeEach(() => {
+        wp13Service = createWorkflowQueryService({
+          db,
+          assetRepository,
+          projectPrimaryImageRepository: primaryImageRepository,
+          releaseRepository,
+          tagRepository,
+          projectOptionCatalogueService: { getProjectTypeCatalogue: vi.fn(() => TYPE_CATALOGUE) },
+        });
+        comic = insertProject(db, { title: 'WP13 Comic', projectType: 'comic' });
+        comicTwo = insertProject(db, { title: 'WP13 Comic Two', projectType: 'comic' });
+        animationArchived = insertProject(db, {
+          title: 'WP13 Animation Archived', projectType: 'animation', status: 'archived', archivedAt: '2025-01-01T00:00:00Z',
+        });
+        images = insertProject(db, { title: 'WP13 Images', projectType: 'images' });
+        ids = {
+          comicPlanned: insertRelease(db, { projectId: comic.id, title: 'C planned', plannedDate: '2025-06-10', plannedTime: '10:00' }).id,
+          comicTwoPlanned: insertRelease(db, { projectId: comicTwo.id, title: 'C2 planned', plannedDate: '2025-06-10', plannedTime: '09:00' }).id,
+          comicPublishedIn: insertRelease(db, {
+            projectId: comic.id, title: 'C published in', plannedDate: '2025-07-03', publishedDate: '2025-06-30',
+          }).id,
+          comicPublishedOut: insertRelease(db, {
+            projectId: comic.id, title: 'C published out', plannedDate: '2025-06-28', publishedDate: '2025-07-01',
+          }).id,
+          animationArchivedParent: insertRelease(db, {
+            projectId: animationArchived.id, title: 'A archived parent', plannedDate: '2025-06-10',
+          }).id,
+          images: insertRelease(db, { projectId: images.id, title: 'I planned', plannedDate: '2025-06-11' }).id,
+        };
+      });
+
+      const entriesOf = (calendar) => calendar.days.flatMap((day) => day.entries);
+      const june = (options) => wp13Service.getReleaseCalendar('2025-06', { today: '2025-06-15', ...options });
+
+      it('ORs Project IDs (deduplicated, any order) into the range query', () => {
+        const calendar = june({ projectIds: [comicTwo.id, comic.id, comicTwo.id] });
+        expect(entriesOf(calendar).map((entry) => entry.id))
+          .toEqual([ids.comicTwoPlanned, ids.comicPlanned, ids.comicPublishedIn]);
+        expect(calendar.days.find((day) => day.date === '2025-06-10').entries.map((entry) => entry.id))
+          .toEqual([ids.comicTwoPlanned, ids.comicPlanned]);
+      });
+
+      it('ORs Project Types and ANDs them with Projects', () => {
+        expect(entriesOf(june({ projectTypes: ['animation', 'comic'] })).map((entry) => entry.id)).toEqual([
+          ids.comicTwoPlanned, ids.comicPlanned, ids.animationArchivedParent, ids.comicPublishedIn,
+        ]);
+        expect(entriesOf(june({ projectIds: [comic.id, images.id], projectTypes: ['comic'] })).map((entry) => entry.id))
+          .toEqual([ids.comicPlanned, ids.comicPublishedIn]);
+        expect(entriesOf(june({ projectIds: [images.id], projectTypes: ['comic'] }))).toEqual([]);
+      });
+
+      it('lets the array selection win over the legacy scalar alias', () => {
+        expect(entriesOf(june({ projectId: images.id, projectIds: [comicTwo.id] })).map((entry) => entry.id))
+          .toEqual([ids.comicTwoPlanned]);
+        expect(entriesOf(june({ projectId: String(images.id) })).map((entry) => entry.id)).toEqual([ids.images]);
+      });
+
+      it('keeps publication precedence across the month boundary under a Type filter', () => {
+        const juneEntries = entriesOf(june({ projectTypes: ['comic'] }));
+        expect(juneEntries.find((entry) => entry.id === ids.comicPublishedIn))
+          .toMatchObject({ status: 'published', calendar_date: '2025-06-30', planned_date: '2025-07-03' });
+        expect(juneEntries.map((entry) => entry.id)).not.toContain(ids.comicPublishedOut);
+        const july = wp13Service.getReleaseCalendar('2025-07', { today: '2025-06-15', projectTypes: ['comic'] });
+        expect(entriesOf(july).map((entry) => [entry.id, entry.calendar_date]))
+          .toEqual([[ids.comicPublishedOut, '2025-07-01']]);
+        expect(july).toMatchObject({ month: '2025-07', prevMonth: '2025-06', nextMonth: '2025-08' });
+      });
+
+      it('keeps archived-parent entries visible and non-editable under a selection', () => {
+        const entries = entriesOf(june({ projectIds: [animationArchived.id, comic.id], projectTypes: ['animation', 'comic'] }));
+        expect(entries.map((entry) => [entry.id, entry.canEdit])).toEqual([
+          [ids.comicPlanned, true],
+          [ids.animationArchivedParent, false],
+          [ids.comicPublishedIn, false],
+        ]);
+      });
+
+      it('returns a full empty month for an empty range', () => {
+        const calendar = wp13Service.getReleaseCalendar('2099-02', { today: '2025-06-15', projectTypes: ['comic'] });
+        expect(calendar.days).toHaveLength(28);
+        expect(entriesOf(calendar)).toEqual([]);
+      });
+
+      it('normalizes Type values against the live catalogue and exposes complete options', () => {
+        expect(wp13Service.normalizeProjectTypeSelection(['comic', 'Comic', 'stale', '', 'animation', 'comic']))
+          .toEqual(['animation', 'comic']);
+        expect(wp13Service.normalizeProjectTypeSelection('images')).toEqual(['images']);
+        expect(wp13Service.normalizeProjectTypeSelection(undefined)).toEqual([]);
+        expect(wp13Service.getProjectTypeFilterOptions(['comic'])).toEqual([
+          { value: 'images', label: 'Images', selected: false },
+          { value: 'comic', label: 'Comic', selected: true },
+          { value: 'animation', label: 'Animation', selected: false },
+        ]);
+      });
     });
 
     it('reuses project primary-image presentation without using a release asset as fallback', () => {
